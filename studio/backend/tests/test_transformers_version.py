@@ -206,7 +206,10 @@ class TestCheckConfigNeeds550:
 
     def test_gemma4_architecture(self, tmp_path: Path):
         """config.json with Gemma4ForConditionalGeneration should return True."""
-        cfg = {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"}
+        cfg = {
+            "architectures": ["Gemma4ForConditionalGeneration"],
+            "model_type": "gemma4",
+        }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert _check_config_needs_550(str(tmp_path)) is True
@@ -272,7 +275,10 @@ class TestGetTransformersTier:
 
     def test_gemma4_config_json_returns_550(self, tmp_path: Path):
         """Local checkpoint with Gemma4 architecture → 550."""
-        cfg = {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"}
+        cfg = {
+            "architectures": ["Gemma4ForConditionalGeneration"],
+            "model_type": "gemma4",
+        }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert get_transformers_tier(str(tmp_path)) == "550"
@@ -289,15 +295,20 @@ class TestGetTransformersTier:
             "utils.transformers_version._check_config_needs_550",
             return_value = False,
         ):
-            assert get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
+            assert (
+                get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
+            )
 
     def test_llama_returns_default(self):
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
-        ), patch(
-            "utils.transformers_version._check_tokenizer_config_needs_v5",
-            return_value = False,
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_tokenizer_config_needs_v5",
+                return_value = False,
+            ),
         ):
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
 
@@ -314,11 +325,14 @@ class TestGetTransformersTier:
             return_value = False,
         ):
             assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
-        ), patch(
-            "utils.transformers_version._check_tokenizer_config_needs_v5",
-            return_value = False,
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_tokenizer_config_needs_v5",
+                return_value = False,
+            ),
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False

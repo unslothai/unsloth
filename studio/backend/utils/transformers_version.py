@@ -279,9 +279,7 @@ def _check_config_needs_550(model_name: str) -> bool:
         _config_needs_550_cache[model_name] = result
         return result
     except Exception as exc:
-        logger.debug(
-            "Could not fetch config.json for '%s': %s", model_name, exc
-        )
+        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
         _config_needs_550_cache[model_name] = False
         return False
 
@@ -507,12 +505,16 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
 
 def _ensure_venv_t5_530_exists() -> bool:
     """Ensure .venv_t5_530/ exists with transformers 5.3.0."""
-    return _ensure_venv_dir(_VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0")
+    return _ensure_venv_dir(
+        _VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0"
+    )
 
 
 def _ensure_venv_t5_550_exists() -> bool:
     """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
-    return _ensure_venv_dir(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES, "transformers 5.5.0")
+    return _ensure_venv_dir(
+        _VENV_T5_550_DIR, _VENV_T5_550_PACKAGES, "transformers 5.5.0"
+    )
 
 
 def _ensure_venv_t5_exists() -> bool:
