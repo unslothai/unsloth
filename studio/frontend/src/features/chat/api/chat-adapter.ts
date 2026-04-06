@@ -6,8 +6,6 @@ import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import {
   generateAudio,
-  listCachedGguf,
-  listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
@@ -45,6 +43,10 @@ type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+/** Default chat auto-load: Gemma 4B GGUF at the UI-recommended Unsloth dynamic quant. */
+const DEFAULT_CHAT_GGUF_REPO = "unsloth/gemma-4-E4B-it-GGUF";
+const DEFAULT_CHAT_GGUF_VARIANT = "UD-Q4_K_XL";
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
 function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
@@ -248,169 +250,103 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Auto-load the smallest downloaded model when the user tries to chat
- * without selecting one. Prefers GGUF (picks smallest cached variant),
- * falls back to smallest cached safetensors model.
+ * Auto-load the default chat model when none is selected: Gemma 4B GGUF.
+ * Prefers `UD-Q4_K_XL` (picker "recommended"). If that quant is not cached but
+ * another fully downloaded variant has a smaller on-disk size, loads that
+ * instead (no extra download). Otherwise fetches `UD-Q4_K_XL`. No other repos.
  */
-async function autoLoadSmallestModel(): Promise<boolean> {
+async function autoLoadDefaultChatModel(): Promise<boolean> {
   const hfToken = useChatRuntimeStore.getState().hfToken || null;
+  const preferredQuant = DEFAULT_CHAT_GGUF_VARIANT;
   const toastId = toast("Loading a model…", {
-    description: "Auto-selecting the smallest downloaded model.",
+    description: `Loading ${DEFAULT_CHAT_GGUF_REPO}…`,
     duration: 5000,
     closeButton: true,
   });
+
+  let quant = preferredQuant;
   try {
-    const [ggufRepos, modelRepos] = await Promise.all([
-      listCachedGguf().catch(() => []),
-      listCachedModels().catch(() => []),
-    ]);
+    const variantList = await listGgufVariants(DEFAULT_CHAT_GGUF_REPO);
+    const preferredMeta = variantList.variants.find(
+      (v) => v.quant === preferredQuant,
+    );
+    const preferredDownloaded = variantList.variants.some(
+      (v) => v.downloaded && v.quant === preferredQuant,
+    );
 
-    // Try GGUF first: pick the repo with the smallest total size,
-    // then pick its smallest downloaded variant.
-    if (ggufRepos.length > 0) {
-      const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
-      for (const repo of sorted) {
-        try {
-          const variants = await listGgufVariants(repo.repo_id);
-          const downloaded = variants.variants
-            .filter((v) => v.downloaded)
-            .sort((a, b) => a.size_bytes - b.size_bytes);
-          if (downloaded.length > 0) {
-            const variant = downloaded[0];
-            const loadResp = await loadModel({
-              model_path: repo.repo_id,
-              hf_token: hfToken,
-              max_seq_length: 0,
-              load_in_4bit: true,
-              is_lora: false,
-              gguf_variant: variant.quant,
-              trust_remote_code: false,
-            });
-            useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
-            const store = useChatRuntimeStore.getState();
-            store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
-            // Add model to store so the selector shows the name
-            const autoModel: ChatModelSummary = {
-              id: repo.repo_id,
-              name: loadResp.display_name ?? repo.repo_id,
-              isVision: loadResp.is_vision ?? false,
-              isLora: loadResp.is_lora ?? false,
-              isGguf: loadResp.is_gguf ?? false,
-              isAudio: loadResp.is_audio ?? false,
-              audioType: loadResp.audio_type ?? null,
-              hasAudioInput: loadResp.has_audio_input ?? false,
-            };
-            const existingModels = store.models;
-            if (!existingModels.some((m) => m.id === repo.repo_id)) {
-              store.setModels([...existingModels, autoModel]);
-            }
-            useChatRuntimeStore.setState({
-              ggufContextLength: loadResp.context_length ?? 131072,
-              ggufMaxContextLength: loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-              supportsReasoning: loadResp.supports_reasoning ?? false,
-              reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-              reasoningEnabled: loadResp.supports_reasoning ?? false,
-              supportsTools: loadResp.supports_tools ?? false,
-              toolsEnabled: loadResp.supports_tools ?? false,
-              codeToolsEnabled: loadResp.supports_tools ?? false,
-              kvCacheDtype: loadResp.cache_type_kv ?? null,
-              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-              defaultChatTemplate: loadResp.chat_template ?? null,
-              chatTemplateOverride: null,
-            });
-            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
-            return true;
-          }
-        } catch {
-          continue;
-        }
+    if (preferredDownloaded) {
+      quant = preferredQuant;
+    } else {
+      const preferredBytes = preferredMeta?.size_bytes ?? 0;
+      const smallerCached = variantList.variants
+        .filter(
+          (v) =>
+            v.downloaded &&
+            preferredBytes > 0 &&
+            v.size_bytes < preferredBytes,
+        )
+        .sort((a, b) => a.size_bytes - b.size_bytes);
+      if (smallerCached.length > 0) {
+        quant = smallerCached[0].quant;
+      } else {
+        toast("Downloading default model…", {
+          id: toastId,
+          description: `Fetching ${DEFAULT_CHAT_GGUF_REPO} (${preferredQuant}).`,
+          duration: 30000,
+        });
       }
     }
-
-    // Fall back to safetensors models
-    if (modelRepos.length > 0) {
-      const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
-      for (const repo of sorted) {
-        try {
-          const sfLoadResp = await loadModel({
-            model_path: repo.repo_id,
-            hf_token: hfToken,
-            max_seq_length: 4096,
-            load_in_4bit: true,
-            is_lora: false,
-            gguf_variant: null,
-            trust_remote_code: false,
-          });
-          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
-          const store = useChatRuntimeStore.getState();
-          store.setParams({ ...store.params, maxTokens: 4096 });
-          const sfModel: ChatModelSummary = {
-            id: repo.repo_id,
-            name: sfLoadResp.display_name ?? repo.repo_id,
-            isVision: sfLoadResp.is_vision ?? false,
-            isLora: sfLoadResp.is_lora ?? false,
-            isGguf: sfLoadResp.is_gguf ?? false,
-          };
-          if (!store.models.some((m) => m.id === repo.repo_id)) {
-            store.setModels([...store.models, sfModel]);
-          }
-          toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
-          return true;
-        } catch {
-          continue;
-        }
-      }
-    }
-
-    // No cached models found — try downloading a small default GGUF
-    toast("Downloading a small model…", {
+  } catch {
+    toast("Downloading default model…", {
       id: toastId,
-      description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
+      description: `Fetching ${DEFAULT_CHAT_GGUF_REPO} (${preferredQuant}).`,
       duration: 30000,
     });
-    try {
-      const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-GGUF",
-        hf_token: hfToken,
-        max_seq_length: 0,
-        load_in_4bit: true,
-        is_lora: false,
-        gguf_variant: "UD-Q4_K_XL",
-        trust_remote_code: false,
-      });
-      useChatRuntimeStore.getState().setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
-      const store = useChatRuntimeStore.getState();
-      store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
-      const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-GGUF",
-        isVision: loadResp.is_vision ?? false,
-        isLora: false,
-        isGguf: true,
-      };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-GGUF")) {
-        store.setModels([...store.models, defaultModel]);
-      }
-      useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength: loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        supportsTools: loadResp.supports_tools ?? false,
-        toolsEnabled: loadResp.supports_tools ?? false,
-        codeToolsEnabled: loadResp.supports_tools ?? false,
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-      });
-      toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
-      return true;
-    } catch {
-      toast.dismiss(toastId);
-      return false;
+  }
+
+  try {
+    const loadResp = await loadModel({
+      model_path: DEFAULT_CHAT_GGUF_REPO,
+      hf_token: hfToken,
+      max_seq_length: 0,
+      load_in_4bit: true,
+      is_lora: false,
+      gguf_variant: quant,
+      trust_remote_code: false,
+    });
+    useChatRuntimeStore.getState().setCheckpoint(DEFAULT_CHAT_GGUF_REPO, quant);
+    const store = useChatRuntimeStore.getState();
+    store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+    const autoModel: ChatModelSummary = {
+      id: DEFAULT_CHAT_GGUF_REPO,
+      name: loadResp.display_name ?? DEFAULT_CHAT_GGUF_REPO,
+      isVision: loadResp.is_vision ?? false,
+      isLora: loadResp.is_lora ?? false,
+      isGguf: loadResp.is_gguf ?? false,
+      isAudio: loadResp.is_audio ?? false,
+      audioType: loadResp.audio_type ?? null,
+      hasAudioInput: loadResp.has_audio_input ?? false,
+    };
+    const existingModels = store.models;
+    if (!existingModels.some((m) => m.id === DEFAULT_CHAT_GGUF_REPO)) {
+      store.setModels([...existingModels, autoModel]);
     }
+    useChatRuntimeStore.setState({
+      ggufContextLength: loadResp.context_length ?? 131072,
+      ggufMaxContextLength: loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+      supportsReasoning: loadResp.supports_reasoning ?? false,
+      reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+      reasoningEnabled: loadResp.supports_reasoning ?? false,
+      supportsTools: loadResp.supports_tools ?? false,
+      toolsEnabled: loadResp.supports_tools ?? false,
+      codeToolsEnabled: loadResp.supports_tools ?? false,
+      kvCacheDtype: loadResp.cache_type_kv ?? null,
+      loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+      defaultChatTemplate: loadResp.chat_template ?? null,
+      chatTemplateOverride: null,
+    });
+    toast.success(`Loaded ${DEFAULT_CHAT_GGUF_REPO} (${quant})`, { id: toastId });
+    return true;
   } catch {
     toast.dismiss(toastId);
     return false;
@@ -433,8 +369,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
-        // Auto-load the smallest downloaded model
-        const loaded = await autoLoadSmallestModel();
+        const loaded = await autoLoadDefaultChatModel();
         if (!loaded) {
           toast.error("No model loaded", {
             description: "Pick a model in the top bar, then retry.",
