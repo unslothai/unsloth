@@ -181,8 +181,11 @@ def _setup_log_capture(resp_queue: Any) -> None:
 
 def _activate_transformers_version(model_name: str) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
+    # Ensure backend is on path for utils imports
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
+
     from utils.transformers_version import activate_transformers_for_subprocess
 
     activate_transformers_for_subprocess(model_name)
@@ -202,19 +205,6 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     trust_remote_code = cmd.get("trust_remote_code", False)
-
-    # Auto-enable trust_remote_code for NemotronH/Nano models.
-    if not trust_remote_code:
-        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
-        _cp_lower = checkpoint_path.lower()
-        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
-            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
-        ):
-            trust_remote_code = True
-            logger.info(
-                "Auto-enabled trust_remote_code for Nemotron model: %s",
-                checkpoint_path,
-            )
 
     try:
         _send_response(
