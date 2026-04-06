@@ -517,10 +517,7 @@ def run_training_process(
     # (Qwen3.5, Gemma 4, etc.) are native and do NOT need it — enabling it
     # bypasses the compiler (disabling fused CE).
     _lowered = model_name.lower()
-    if (
-        "nemotron" in _lowered
-        and not config.get("trust_remote_code", False)
-    ):
+    if "nemotron" in _lowered and not config.get("trust_remote_code", False):
         config["trust_remote_code"] = True
         logger.info(
             "Auto-enabled trust_remote_code for Nemotron model: %s",
