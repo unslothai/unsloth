@@ -178,14 +178,14 @@ function UpdateStudioInstructions({
           <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
             Update Unsloth Studio
           </p>
-          {version ? (
-            <div className="flex items-center gap-1.5 text-sm">
-              <span className="font-mono text-muted-foreground">v{version}</span>
-              <span className="font-extrabold tracking-[0.12em] text-primary">
-                BETA
-              </span>
-            </div>
-          ) : null}
+          <div className="flex items-center gap-1.5 text-sm">
+            <span className="font-mono text-muted-foreground">
+              {version ? `v${version}` : "..."}
+            </span>
+            <span className="font-extrabold tracking-[0.12em] text-primary">
+              BETA
+            </span>
+          </div>
         </div>
       ) : null}
       <div className="flex items-center justify-end gap-0.5 text-[11px]">
