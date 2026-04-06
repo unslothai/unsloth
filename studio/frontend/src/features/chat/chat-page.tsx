@@ -485,7 +485,7 @@ function TopBarActions({
 
 function getInitialSingleChatView(): ChatView {
   const id = useChatRuntimeStore.getState().activeThreadId;
-  if (typeof id === "string" && id.length > 0) {
+  if (typeof id === "string" && id.length > 0 && !id.startsWith("__LOCALID_")) {
     return { mode: "single", threadId: id };
   }
   return { mode: "single" };

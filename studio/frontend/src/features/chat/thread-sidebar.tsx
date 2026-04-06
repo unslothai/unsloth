@@ -107,8 +107,11 @@ export function ThreadSidebar({
       }
     }
     if (activeId === item.id) {
+      // Directly set a new view with a nonce rather than going through
+      // onNewThread(), which may return early if the guard sees no
+      // threadId and no activeThreadId (after we just cleared it).
       useChatRuntimeStore.getState().setActiveThreadId(null);
-      onNewThread();
+      onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
     }
   }
 
