@@ -91,7 +91,8 @@ _config_needs_550_cache: dict[str, bool] = {}
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
-# Backwards-compat alias used by other modules
+# Backwards-compat alias — points to 5.5.0 (the highest 5.x tier).
+# Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
 
 # Pre-installed directories — created by setup.sh / setup.ps1
