@@ -485,7 +485,7 @@ function TopBarActions({
 
 function getInitialSingleChatView(): ChatView {
   const id = useChatRuntimeStore.getState().activeThreadId;
-  if (typeof id === "string" && id.length > 0 && !id.startsWith("__LOCALID_")) {
+  if (typeof id === "string" && id.length > 0) {
     return { mode: "single", threadId: id };
   }
   return { mode: "single" };
@@ -599,29 +599,20 @@ export function ChatPage(): ReactElement {
     void ejectModel();
   }, [ejectModel]);
   const handleNewThread = useCallback(() => {
-    void (async () => {
-      if (view.mode === "single") {
-        const currentThreadId = view.threadId ?? activeThreadId;
-        if (!currentThreadId) {
-          // Already at a fresh/unsaved chat state.
-          return;
-        }
-        try {
-          const hasMessages = !!(await db.messages
-            .where("threadId")
-            .equals(currentThreadId)
-            .first());
-          if (!hasMessages) {
-            return;
-          }
-        } catch {
-          // allow explicit new chat if Dexie fails
-        }
-      }
-      useChatRuntimeStore.getState().setActiveThreadId(null);
-      setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
-    })();
-  }, [activeThreadId, view]);
+    // Skip if we are already on a fresh unsaved draft with no messages sent.
+    // Once the user sends a message, append() sets activeThreadId in the store,
+    // so we check the store to know whether the current draft has been sent.
+    if (
+      view.mode === "single" &&
+      !view.threadId &&
+      !useChatRuntimeStore.getState().activeThreadId
+    ) {
+      return;
+    }
+
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }, [view]);
   const handleNewCompare = useCallback(() => {
     setView({ mode: "compare", pairId: crypto.randomUUID() });
     // Clear activeThreadId so compare panes do not inherit the single-chat
