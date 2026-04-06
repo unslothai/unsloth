@@ -75,6 +75,17 @@ assert_not_contains \
     "$_ps1_end" "studio -H 0.0.0.0"
 
 echo ""
+echo "=== install.ps1 Windows launcher (New-StudioShortcuts) ==="
+
+# The $studioCommand built inside the Windows launcher here-string must not
+# hard-code -H 0.0.0.0 — desktop shortcuts are local-only and should use
+# the loopback default.
+_ps1_launcher=$(grep -n 'studioCommand' "$INSTALL_PS1")
+assert_not_contains \
+    "install.ps1: Windows launcher studioCommand has no -H 0.0.0.0" \
+    "$_ps1_launcher" "studio -H 0.0.0.0"
+
+echo ""
 echo "=== README.md Launch section ==="
 
 # The primary Launch example must show 'unsloth studio' without -H 0.0.0.0

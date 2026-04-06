@@ -378,7 +378,7 @@ try {
         } catch {}
         exit 1
     }
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
+    `$studioCommand = '& "' + `$studioExe + '" studio -p ' + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
