@@ -302,15 +302,15 @@ def get_transformers_tier(model_name: str) -> str:
     """
     lowered = model_name.lower()
 
-    # --- Check 5.5.0 first ------------------------------------------------
+    # --- Fast substring checks (no I/O) ------------------------------------
     if any(sub in lowered for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS):
         return "550"
-    if _check_config_needs_550(model_name):
-        return "550"
-
-    # --- Check 5.3.0 ------------------------------------------------------
     if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
         return "530"
+
+    # --- Slow config fallbacks (local file first, then network) -----------
+    if _check_config_needs_550(model_name):
+        return "550"
     if _check_tokenizer_config_needs_v5(model_name):
         return "530"
 
