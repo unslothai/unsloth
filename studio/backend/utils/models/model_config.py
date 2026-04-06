@@ -1047,11 +1047,20 @@ def list_local_gguf_variants(
         (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
     """
     p = Path(directory)
-    # If a file path was passed (e.g. a standalone .gguf entry), scan its
-    # parent directory instead so we still find the correct variants.
+    # If a .gguf file path was passed (e.g. a standalone .gguf entry), fall
+    # back to the parent directory only when the parent has model metadata
+    # (config.json / adapter_config.json).  This confirms all GGUFs in that
+    # directory belong to the same model.  For loose standalone GGUFs without
+    # a config file, return empty to avoid cross-wiring unrelated models.
     if not p.is_dir():
         if p.is_file() and p.suffix.lower() == ".gguf":
-            p = p.parent
+            parent = p.parent
+            if (parent / "config.json").exists() or (
+                parent / "adapter_config.json"
+            ).exists():
+                p = parent
+            else:
+                return [], False
         else:
             return [], False
 
@@ -1093,11 +1102,17 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     Returns the resolved absolute path, or ``None`` if no match.
     """
     p = Path(directory)
-    # If a file path was passed (e.g. a standalone .gguf entry), use its
-    # parent directory so variant lookup still works.
+    # If a .gguf file path was passed, use its parent directory only when
+    # the parent has model metadata, confirming the GGUFs belong together.
     if not p.is_dir():
         if p.is_file() and p.suffix.lower() == ".gguf":
-            p = p.parent
+            parent = p.parent
+            if (parent / "config.json").exists() or (
+                parent / "adapter_config.json"
+            ).exists():
+                p = parent
+            else:
+                return None
         else:
             return None
 
