@@ -189,34 +189,33 @@ function UpdateStudioInstructions({
         </div>
       ) : null}
       <div className="flex items-center justify-end gap-0.5 text-[11px]">
-          <button
-            type="button"
-            onClick={() => setShell("windows")}
-            className={cn(
-              "px-0.5 py-0.5 font-medium transition-colors",
-              windows
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-emerald-600",
-            )}
-            aria-pressed={windows}
-          >
-            Windows
-          </button>
-          <span className="text-border">/</span>
-          <button
-            type="button"
-            onClick={() => setShell("unix")}
-            className={cn(
-              "px-0.5 py-0.5 font-medium transition-colors",
-              !windows
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-emerald-600",
-            )}
-            aria-pressed={!windows}
-          >
-            macOS/Linux
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => setShell("windows")}
+          className={cn(
+            "px-0.5 py-0.5 font-medium transition-colors",
+            windows
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-emerald-600",
+          )}
+          aria-pressed={windows}
+        >
+          Windows
+        </button>
+        <span className="text-border">/</span>
+        <button
+          type="button"
+          onClick={() => setShell("unix")}
+          className={cn(
+            "px-0.5 py-0.5 font-medium transition-colors",
+            !windows
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-emerald-600",
+          )}
+          aria-pressed={!windows}
+        >
+          macOS/Linux
+        </button>
       </div>
       <AnimatePresence mode="wait" initial={false}>
         <motion.p
