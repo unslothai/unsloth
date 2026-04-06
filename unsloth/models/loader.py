@@ -49,7 +49,6 @@ except:
     except:
         # For older versions of huggingface_hub
         from huggingface_hub.utils._token import get_token
-from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
     is_hip,
