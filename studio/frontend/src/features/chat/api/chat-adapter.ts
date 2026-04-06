@@ -251,9 +251,9 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 
 /**
  * Auto-load the default chat model when none is selected: Gemma 4B GGUF.
- * Prefers `UD-Q4_K_XL` (picker "recommended"). If that quant is not cached but
- * another fully downloaded variant has a smaller on-disk size, loads that
- * instead (no extra download). Otherwise fetches `UD-Q4_K_XL`. No other repos.
+ * If any variant is fully cached, loads that: `UD-Q4_K_XL` when present, else
+ * the smallest cached file (by bytes) to limit VRAM use. If nothing is cached,
+ * fetches `UD-Q4_K_XL`. No other repos.
  */
 async function autoLoadDefaultChatModel(): Promise<boolean> {
   const hfToken = useChatRuntimeStore.getState().hfToken || null;
@@ -267,34 +267,19 @@ async function autoLoadDefaultChatModel(): Promise<boolean> {
   let quant = preferredQuant;
   try {
     const variantList = await listGgufVariants(DEFAULT_CHAT_GGUF_REPO);
-    const preferredMeta = variantList.variants.find(
-      (v) => v.quant === preferredQuant,
-    );
-    const preferredDownloaded = variantList.variants.some(
-      (v) => v.downloaded && v.quant === preferredQuant,
-    );
+    const downloaded = variantList.variants
+      .filter((v) => v.downloaded)
+      .sort((a, b) => a.size_bytes - b.size_bytes);
 
-    if (preferredDownloaded) {
-      quant = preferredQuant;
+    if (downloaded.length > 0) {
+      const preferredHit = downloaded.find((v) => v.quant === preferredQuant);
+      quant = preferredHit ? preferredHit.quant : downloaded[0].quant;
     } else {
-      const preferredBytes = preferredMeta?.size_bytes ?? 0;
-      const smallerCached = variantList.variants
-        .filter(
-          (v) =>
-            v.downloaded &&
-            preferredBytes > 0 &&
-            v.size_bytes < preferredBytes,
-        )
-        .sort((a, b) => a.size_bytes - b.size_bytes);
-      if (smallerCached.length > 0) {
-        quant = smallerCached[0].quant;
-      } else {
-        toast("Downloading default model…", {
-          id: toastId,
-          description: `Fetching ${DEFAULT_CHAT_GGUF_REPO} (${preferredQuant}).`,
-          duration: 30000,
-        });
-      }
+      toast("Downloading default model…", {
+        id: toastId,
+        description: `Fetching ${DEFAULT_CHAT_GGUF_REPO} (${preferredQuant}).`,
+        duration: 30000,
+      });
     }
   } catch {
     toast("Downloading default model…", {
