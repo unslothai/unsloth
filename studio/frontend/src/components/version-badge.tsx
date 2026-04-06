@@ -43,7 +43,7 @@ export function VersionBadge({ className }: { className?: string }) {
       )}
     >
       <span className="font-mono text-muted-foreground">v{version}</span>
-      <span className="font-bold tracking-wider text-primary">BETA</span>
+      <span className="font-medium text-muted-foreground">Beta</span>
     </div>
   );
 }
