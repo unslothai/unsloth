@@ -206,6 +206,19 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     load_in_4bit = cmd.get("load_in_4bit", True)
     trust_remote_code = cmd.get("trust_remote_code", False)
 
+    # Auto-enable trust_remote_code for NemotronH/Nano models.
+    if not trust_remote_code:
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+        _cp_lower = checkpoint_path.lower()
+        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
+        ):
+            trust_remote_code = True
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s",
+                checkpoint_path,
+            )
+
     try:
         _send_response(
             resp_queue,
