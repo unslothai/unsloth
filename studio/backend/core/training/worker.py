@@ -476,14 +476,16 @@ def run_training_process(
         )
         return
 
-    # ── 1a. Auto-enable trust_remote_code for Nemotron models ──
+    # ── 1a. Auto-enable trust_remote_code for NemotronH/Nano models ──
     # NemotronH has config parsing bugs in transformers that require
     # trust_remote_code=True as a workaround. Other transformers 5.x models
     # (Qwen3.5, Gemma 4, etc.) are native and do NOT need it — enabling it
     # bypasses the compiler (disabling fused CE).
+    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+    _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
     _lowered = model_name.lower()
     if (
-        "nemotron" in _lowered
+        any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
         and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
         and not config.get("trust_remote_code", False)
     ):
