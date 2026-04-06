@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-_STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
+_STUDIO_CMD_PY = (
+    Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
+)
 
 
 def _find_typer_option_default(source: str, func_name: str, long_option: str):

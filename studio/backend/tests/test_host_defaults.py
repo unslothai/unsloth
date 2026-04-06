@@ -29,7 +29,10 @@ def _parse_function_param_defaults(source: str, func_name: str) -> dict:
     """
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == func_name
+        ):
             result = {}
             all_args = node.args.args
             defaults = node.args.defaults
@@ -77,7 +80,9 @@ def test_run_server_default_host_is_loopback():
     """
     source = _RUN_PY.read_text()
     defaults = _parse_function_param_defaults(source, "run_server")
-    assert "host" in defaults, "run_server() must have a 'host' parameter with a default"
+    assert (
+        "host" in defaults
+    ), "run_server() must have a 'host' parameter with a default"
     host_default = defaults["host"]
     assert host_default == "127.0.0.1", (
         f"run_server() host default must be '127.0.0.1' (loopback) "
@@ -98,6 +103,6 @@ def test_argparse_default_host_is_loopback():
         "Could not find add_argument('--host', ...) in run.py; "
         "ensure _make_argument_parser() contains it."
     )
-    assert host_default == "127.0.0.1", (
-        f"run.py argparse --host default must be '127.0.0.1', got '{host_default}'"
-    )
+    assert (
+        host_default == "127.0.0.1"
+    ), f"run.py argparse --host default must be '127.0.0.1', got '{host_default}'"
