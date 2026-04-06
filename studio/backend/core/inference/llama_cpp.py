@@ -322,14 +322,18 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per GPU.
+
+        Tries nvidia-smi first (NVIDIA), then falls back to vulkaninfo
+        (AMD/Intel/any Vulkan-capable GPU).
 
         Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Respects CUDA_VISIBLE_DEVICES if set (nvidia-smi path only).
+        Returns empty list if no GPU query method is available.
         """
         import os
 
+        # ── 1. Try nvidia-smi (NVIDIA GPUs) ──────────────────────────
         try:
             result = subprocess.run(
                 [
@@ -341,31 +345,104 @@ class LlamaCppBackend:
                 text = True,
                 timeout = 10,
             )
-            if result.returncode != 0:
-                return []
+            if result.returncode == 0:
+                # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
+                allowed = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None and cvd.strip():
+                    try:
+                        allowed = set(int(x.strip()) for x in cvd.split(","))
+                    except ValueError:
+                        pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
 
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
-
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
-            return gpus
+                gpus = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                return gpus
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"nvidia-smi not available: {e}")
+
+        # ── 2. Fallback: vulkaninfo (AMD / Intel / any Vulkan GPU) ───
+        try:
+            gpus = LlamaCppBackend._get_gpu_free_memory_vulkan()
+            if gpus:
+                return gpus
+        except Exception as e:
+            logger.debug(f"vulkaninfo fallback failed: {e}")
+
+        return []
+
+    @staticmethod
+    def _get_gpu_free_memory_vulkan() -> list[tuple[int, int]]:
+        """Query free VRAM via vulkaninfo memory budget.
+
+        Parses vulkaninfo output to find DEVICE_LOCAL memory heaps and
+        their budget (how much VRAM the OS allows this process to use,
+        already accounting for other applications).
+
+        Handles multi-GPU systems by splitting on ``GPU<N>:`` headers,
+        and handles GPUs with multiple DEVICE_LOCAL heaps by taking the
+        largest budget per physical device.
+
+        Returns list of (gpu_index, free_mib).
+        """
+        import re
+
+        result = subprocess.run(
+            ["vulkaninfo"],
+            capture_output = True,
+            text = True,
+            timeout = 15,
+        )
+        if result.returncode != 0:
             return []
+
+        output = result.stdout
+
+        # Split by physical device.  vulkaninfo prints "GPU0:", "GPU1:", etc.
+        # On single-GPU systems there is only one such section.
+        device_sections = re.split(r"(?=^GPU\d+:)", output, flags = re.MULTILINE)
+        device_sections = [
+            s for s in device_sections if re.match(r"^GPU\d+:", s.strip())
+        ]
+        # If no GPUn headers found, treat the whole output as one device.
+        if not device_sections:
+            device_sections = [output]
+
+        budget_re = re.compile(r"budget\s*=\s*(\d+)")
+        gpus: list[tuple[int, int]] = []
+
+        for gpu_idx, device_section in enumerate(device_sections):
+            # A single GPU can expose multiple DEVICE_LOCAL heaps (e.g.
+            # with resizable BAR).  Take the largest budget across all
+            # device-local heaps for this physical device.
+            max_free_mib = 0
+            heap_sections = re.split(r"(?=\tmemoryHeaps\[\d+\]:)", device_section)
+            for section in heap_sections:
+                if "MEMORY_HEAP_DEVICE_LOCAL_BIT" not in section:
+                    continue
+                budget_m = budget_re.search(section)
+                if not budget_m:
+                    continue
+                budget_bytes = int(budget_m.group(1))
+                free_mib = budget_bytes // (1024 * 1024)
+                if free_mib > max_free_mib:
+                    max_free_mib = free_mib
+
+            if max_free_mib > 0:
+                gpus.append((gpu_idx, max_free_mib))
+
+        if gpus:
+            logger.info(
+                f"Vulkan GPU memory detected: {', '.join(f'GPU{idx}={free}MiB' for idx, free in gpus)}"
+            )
+        return gpus
 
     @staticmethod
     def _select_gpus(
@@ -2622,7 +2699,7 @@ class LlamaCppBackend:
 
                                 except json.JSONDecodeError:
                                     logger.debug(
-                                        f"Skipping malformed SSE line: " f"{line[:100]}"
+                                        f"Skipping malformed SSE line: {line[:100]}"
                                     )
                             if _stream_done:
                                 break  # exit outer for
