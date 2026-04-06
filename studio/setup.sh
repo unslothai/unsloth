@@ -566,6 +566,29 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+
+    # ── 6b. Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+    # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
+    # Gemma 4 models need transformers>=5.5.0.
+    # Pre-install into separate directories to avoid runtime pip overhead.
+    # The training subprocess prepends the appropriate dir to sys.path.
+
+    # Clean up legacy single .venv_t5 directory
+    [ -d "$STUDIO_HOME/.venv_t5" ] && rm -rf "$STUDIO_HOME/.venv_t5"
+
+    mkdir -p "$VENV_T5_530_DIR"
+    run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
+    run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
+    step "transformers" "5.3.0 pre-installed"
+
+    mkdir -p "$VENV_T5_550_DIR"
+    run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
+    run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
+    step "transformers" "5.5.0 pre-installed"
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
