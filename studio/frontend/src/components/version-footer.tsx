@@ -38,12 +38,13 @@ export function VersionFooter({ className }: { className?: string }) {
   return (
     <footer
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-10 flex items-center justify-center py-2 text-xs text-muted-foreground",
+        "fixed bottom-0 left-0 right-0 z-10 flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground",
         className
       )}
     >
-      <span>
-        v{version} <span className="font-semibold">BETA</span>
+      <span className="font-mono">v{version}</span>
+      <span className="text-[10px] font-extrabold tracking-[0.12em] text-primary">
+        BETA
       </span>
     </footer>
   );
