@@ -576,6 +576,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     # Clean up legacy single .venv_t5 directory
     [ -d "$STUDIO_HOME/.venv_t5" ] && rm -rf "$STUDIO_HOME/.venv_t5"
 
+    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
     mkdir -p "$VENV_T5_530_DIR"
     run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
     run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
@@ -583,6 +584,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
     step "transformers" "5.3.0 pre-installed"
 
+    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
     mkdir -p "$VENV_T5_550_DIR"
     run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
     run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
