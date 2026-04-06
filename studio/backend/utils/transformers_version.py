@@ -125,9 +125,7 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
             sys.path.insert(0, _VENV_T5_550_DIR)
         logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
         _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = (
-            _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
-        )
+        os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
     elif tier == "530":
         if not _ensure_venv_t5_530_exists():
             raise RuntimeError(
@@ -138,9 +136,7 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
             sys.path.insert(0, _VENV_T5_530_DIR)
         logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
         _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = (
-            _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
-        )
+        os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
