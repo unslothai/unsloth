@@ -618,7 +618,7 @@ async def get_model_config(
         config_dict = load_model_defaults(model_name)
 
         # Detect model capabilities (pass HF token for gated models)
-        is_vision = is_vision_model(model_name)
+        is_vision = is_vision_model(model_name, hf_token = hf_token)
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
         audio_type = detect_audio_type(model_name, hf_token = hf_token)
 
