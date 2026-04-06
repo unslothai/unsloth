@@ -285,10 +285,23 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
         return []
 
     # If the directory itself is a model directory (has config AND weight
-    # files), it is not an LM Studio publisher structure -- _scan_models_dir
-    # already handles it.
+    # files), it is not an LM Studio publisher structure -- return it as a
+    # single model entry.  We cannot skip it silently because this function
+    # is the only scanner called for default LM Studio roots.
     if _is_model_directory(lm_dir):
-        return []
+        try:
+            updated_at = lm_dir.stat().st_mtime
+        except OSError:
+            updated_at = None
+        return [
+            LocalModelInfo(
+                id = str(lm_dir),
+                display_name = lm_dir.name,
+                path = str(lm_dir),
+                source = "lmstudio",
+                updated_at = updated_at,
+            ),
+        ]
 
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
@@ -311,9 +324,22 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 continue
 
             # If the child directory itself looks like a model directory
-            # (has config AND weight files), skip it -- _scan_models_dir
-            # already handles it.
+            # (has config AND weight files), surface it directly instead
+            # of descending into it as a publisher.
             if _is_model_directory(child):
+                try:
+                    updated_at = child.stat().st_mtime
+                except OSError:
+                    updated_at = None
+                found.append(
+                    LocalModelInfo(
+                        id = str(child),
+                        display_name = child.name,
+                        path = str(child),
+                        source = "lmstudio",
+                        updated_at = updated_at,
+                    ),
+                )
                 continue
 
             # child is a publisher directory -- scan its sub-directories
