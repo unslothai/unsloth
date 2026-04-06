@@ -517,22 +517,10 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                # HfFileSystem returns POSIX paths; use str.rsplit to extract
-                # filenames correctly on all platforms (os.path.split uses the
-                # OS separator which breaks on Windows).
-                try:
-                    files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                    files = [x.rsplit("/", 1)[-1] for x in files]
-                    if (
-                        sum(
-                            x == "adapter_config.json" or x == "config.json"
-                            for x in files
-                        )
-                        >= 2
-                    ):
-                        both_exist = True
-                except Exception:
-                    pass
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -1299,22 +1287,10 @@ class FastModel(FastBaseModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                # HfFileSystem returns POSIX paths; use str.rsplit to extract
-                # filenames correctly on all platforms (os.path.split uses the
-                # OS separator which breaks on Windows).
-                try:
-                    files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                    files = [x.rsplit("/", 1)[-1] for x in files]
-                    if (
-                        sum(
-                            x == "adapter_config.json" or x == "config.json"
-                            for x in files
-                        )
-                        >= 2
-                    ):
-                        both_exist = True
-                except Exception:
-                    pass
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
