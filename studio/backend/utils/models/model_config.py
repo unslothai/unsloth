@@ -668,14 +668,12 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         resolved_name = model_name
     cache_key = (resolved_name, _token_fingerprint(hf_token))
 
-    # Lock-free fast path for cache hits (dict reads are atomic under CPython's GIL).
-    cached = _vision_detection_cache.get(cache_key)
-    if cached is not None:
+    # Lock-free fast path for cache hits. Uses a sentinel to distinguish
+    # "key not found" from "value is False" in a single atomic dict.get() call.
+    _MISS = object()
+    cached = _vision_detection_cache.get(cache_key, _MISS)
+    if cached is not _MISS:
         return cached
-    # Also check for explicitly cached False (get returns None for both
-    # "not in dict" and "value is None", but we never store None).
-    if cache_key in _vision_detection_cache:
-        return _vision_detection_cache[cache_key]
 
     # Compute outside the lock to avoid serializing long-running detection
     # (subprocess spawns with 60s timeout, HF API calls) across all models.
@@ -765,10 +763,15 @@ def _is_vision_model_uncached(
         # cached as False. Transient failures (network, timeout) should not.
         try:
             from huggingface_hub.errors import RepositoryNotFoundError, GatedRepoError
-            if isinstance(e, (RepositoryNotFoundError, GatedRepoError)):
-                return False
         except ImportError:
-            pass
+            try:
+                from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+            except ImportError:
+                RepositoryNotFoundError = GatedRepoError = None
+        if RepositoryNotFoundError is not None and isinstance(
+            e, (RepositoryNotFoundError, GatedRepoError)
+        ):
+            return False
         if isinstance(e, (ValueError, json.JSONDecodeError)):
             return False
         return None
