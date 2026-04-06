@@ -603,17 +603,15 @@ export function ChatPage(): ReactElement {
       if (view.mode === "single") {
         const currentThreadId = view.threadId ?? activeThreadId;
         if (!currentThreadId) {
-          useChatRuntimeStore.getState().setActiveThreadId(null);
-          setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+          // Already at a fresh/unsaved chat state.
           return;
         }
         try {
-          const messageCount = await db.messages
+          const hasMessages = !!(await db.messages
             .where("threadId")
             .equals(currentThreadId)
-            .limit(1)
-            .count();
-          if (messageCount === 0) {
+            .first());
+          if (!hasMessages) {
             return;
           }
         } catch {
@@ -956,7 +954,7 @@ export function ChatPage(): ReactElement {
 
           {view.mode === "single" ? (
             <SingleContent
-              key={view.threadId ?? view.newThreadNonce ?? "new"}
+              key={view.threadId ?? "single"}
               threadId={view.threadId}
               newThreadNonce={view.newThreadNonce}
             />

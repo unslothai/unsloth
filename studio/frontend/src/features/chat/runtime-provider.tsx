@@ -596,6 +596,12 @@ function ThreadHistoryProvider({
 
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
+        // Keep single-chat runtime state in sync once a new chat is first
+        // persisted. Compare panes intentionally do not write global activeThreadId.
+        const thread = await db.threads.get(remoteId);
+        if (thread?.modelType === "base" && !thread.pairId) {
+          useChatRuntimeStore.getState().setActiveThreadId(remoteId);
+        }
         const content = cloneContent(message.content);
         const attachments =
           message.role === "user" ? cloneAttachments(message.attachments) : [];
@@ -693,14 +699,10 @@ function ThreadNewChatSwitch({
     if (isLoading) {
       return;
     }
-
-    // Clear immediately so the adapter never picks up a stale thread ID
-    // from a previous chat. Do not call initialize() here — that persisted an
-    // empty "New Chat" row on every New Chat click. Persistence runs on first
-    // real message append (history.append → threadListItem.initialize).
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-
+    // Switch to a fresh local thread without persisting it yet.
+    // Persistence still happens on first message append.
     void aui.threads().switchToNewThread();
+    useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
 
   return null;
