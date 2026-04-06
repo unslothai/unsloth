@@ -418,50 +418,15 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    Uses get_transformers_tier() to decide between .venv_t5_550/ (5.5.0),
-    .venv_t5_530/ (5.3.0), or the default 4.57.x.
-    """
+    """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        get_transformers_tier,
-        _resolve_base_model,
-        _ensure_venv_t5_530_exists,
-        _ensure_venv_t5_550_exists,
-        _VENV_T5_530_DIR,
-        _VENV_T5_550_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    tier = get_transformers_tier(resolved)
-
-    if tier == "550":
-        if not _ensure_venv_t5_550_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.5.0: .venv_t5_550 missing at {_VENV_T5_550_DIR}"
-            )
-        if _VENV_T5_550_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_550_DIR)
-        logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
-    elif tier == "530":
-        if not _ensure_venv_t5_530_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.3.0: .venv_t5_530 missing at {_VENV_T5_530_DIR}"
-            )
-        if _VENV_T5_530_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_530_DIR)
-        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def run_training_process(
