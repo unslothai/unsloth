@@ -52,6 +52,12 @@ class LoadRequest(BaseModel):
         None,
         description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
+    fit_target: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 4096,
+        description = "Optional llama-server --fit-target value for GGUF models when --fit is enabled.",
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -171,6 +177,10 @@ class LoadResponse(BaseModel):
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
+    fit_target: Optional[int] = Field(
+        None,
+        description = "Active llama-server --fit-target value for GGUF models, or None when not using --fit-target",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -236,6 +246,10 @@ class InferenceStatusResponse(BaseModel):
     speculative_type: Optional[str] = Field(
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+    )
+    fit_target: Optional[int] = Field(
+        None,
+        description = "Active llama-server --fit-target value for GGUF models, or None when not using --fit-target",
     )
 
 

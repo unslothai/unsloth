@@ -69,7 +69,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
-from models.inference import LoadResponse, InferenceStatusResponse
+from models.inference import LoadRequest, LoadResponse, InferenceStatusResponse
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -268,9 +268,24 @@ class TestContextValueSeparation:
 class TestPydanticModels:
     """Tests native_context_length field on Pydantic models."""
 
+    def test_load_request_has_fit_target_field(self):
+        """Field exists in LoadRequest.model_fields."""
+        assert "fit_target" in LoadRequest.model_fields
+
+    def test_load_request_fit_target_defaults_none(self):
+        """Omitting fit_target defaults to None."""
+        req = LoadRequest(model_path = "unsloth/test")
+        assert req.fit_target is None
+
+    def test_load_request_fit_target_accepts_int(self):
+        """fit_target stores valid integer values."""
+        req = LoadRequest(model_path = "unsloth/test", fit_target = 256)
+        assert req.fit_target == 256
+
     def test_load_response_has_field(self):
         """Field exists in LoadResponse.model_fields."""
         assert "native_context_length" in LoadResponse.model_fields
+        assert "fit_target" in LoadResponse.model_fields
 
     def test_load_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
@@ -319,6 +334,7 @@ class TestPydanticModels:
     def test_status_response_has_field(self):
         """Field exists in InferenceStatusResponse.model_fields."""
         assert "native_context_length" in InferenceStatusResponse.model_fields
+        assert "fit_target" in InferenceStatusResponse.model_fields
 
     def test_status_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
@@ -376,7 +392,7 @@ class TestRouteCompleteness:
         return blocks
 
     def test_gguf_load_responses_have_field(self):
-        """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
+        """Every GGUF LoadResponse (is_gguf = True) includes native_context_length + fit_target."""
         blocks = self._find_construction_blocks("LoadResponse")
         gguf_blocks = [
             b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b
@@ -388,6 +404,9 @@ class TestRouteCompleteness:
             assert (
                 "native_context_length" in block
             ), f"GGUF LoadResponse block #{i} missing native_context_length:\n{block[:200]}"
+            assert (
+                "fit_target" in block
+            ), f"GGUF LoadResponse block #{i} missing fit_target:\n{block[:200]}"
 
     def test_non_gguf_load_responses_omit_field(self):
         """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
@@ -403,14 +422,45 @@ class TestRouteCompleteness:
             ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
 
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has the field."""
+        """InferenceStatusResponse construction with llama_backend has both fields."""
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "native_context_length" in block:
+            if (
+                "llama_backend" in block
+                and "native_context_length" in block
+                and "fit_target" in block
+            ):
                 found = True
                 break
-        assert found, "No InferenceStatusResponse block with llama_backend has native_context_length"
+        assert found, (
+            "No InferenceStatusResponse block with llama_backend has "
+            "native_context_length and fit_target"
+        )
+
+
+# =====================================================================
+# E.1 TestFitTargetSource -- source-level verification
+# =====================================================================
+
+
+class TestFitTargetSource:
+    """Verify fit_target support is wired in llama_cpp backend source."""
+
+    @pytest.fixture(autouse = True)
+    def _load_source(self):
+        backend_path = (
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        )
+        self._source = backend_path.read_text()
+
+    def test_backend_has_fit_target_property(self):
+        assert "def fit_target(self)" in self._source
+        assert "self._fit_target" in self._source
+
+    def test_backend_passes_fit_target_to_command(self):
+        assert '"--fit-target"' in self._source
+        assert "fit_target if fit_target and fit_target > 0 else None" in self._source
 
 
 # =====================================================================

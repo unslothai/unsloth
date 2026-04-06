@@ -110,6 +110,7 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
+        self._fit_target: Optional[int] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
@@ -202,6 +203,10 @@ class LlamaCppBackend:
     @property
     def speculative_type(self) -> Optional[str]:
         return self._speculative_type
+
+    @property
+    def fit_target(self) -> Optional[int]:
+        return self._fit_target
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -1061,6 +1066,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
         speculative_type: Optional[str] = None,
+        fit_target: Optional[int] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -1290,9 +1296,15 @@ class LlamaCppBackend:
 
             if use_fit:
                 cmd.extend(["--fit", "on"])
+                self._fit_target = fit_target if fit_target and fit_target > 0 else None
+                if self._fit_target is not None:
+                    cmd.extend(["--fit-target", str(self._fit_target)])
             elif gpu_indices is not None:
                 # Model fits on selected GPU(s) -- offload all layers
                 cmd.extend(["-ngl", "-1"])
+                self._fit_target = None
+            else:
+                self._fit_target = None
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
@@ -1600,6 +1612,7 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._speculative_type = None
+            self._fit_target = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_heads = None

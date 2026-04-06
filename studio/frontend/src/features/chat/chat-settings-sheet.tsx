@@ -299,6 +299,9 @@ export function ChatSettingsPanel({
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const fitTarget = useChatRuntimeStore((s) => s.fitTarget);
+  const setFitTarget = useChatRuntimeStore((s) => s.setFitTarget);
+  const loadedFitTarget = useChatRuntimeStore((s) => s.loadedFitTarget);
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
@@ -309,7 +312,8 @@ export function ChatSettingsPanel({
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty;
+  const fitDirty = fitTarget !== loadedFitTarget;
+  const modelSettingsDirty = kvDirty || ctxDirty || specDirty || fitDirty;
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
@@ -616,6 +620,36 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">Fit Target</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Tune llama-server --fit-target for tight VRAM setups.
+                    </div>
+                  </div>
+                  <Select
+                    value={fitTarget != null ? String(fitTarget) : "auto"}
+                    onValueChange={(v) => {
+                      if (v === "auto") {
+                        setFitTarget(null);
+                        return;
+                      }
+                      const parsed = Number.parseInt(v, 10);
+                      setFitTarget(Number.isNaN(parsed) ? null : parsed);
+                    }}
+                  >
+                    <SelectTrigger className="h-7 w-[120px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto</SelectItem>
+                      <SelectItem value="64">64</SelectItem>
+                      <SelectItem value="128">128</SelectItem>
+                      <SelectItem value="256">256</SelectItem>
+                      <SelectItem value="512">512</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 {modelSettingsDirty && (
                   <div className="flex flex-wrap gap-1.5 pt-1">
                     <button
@@ -631,6 +665,7 @@ export function ChatSettingsPanel({
                         setCustomContextLength(null);
                         setKvCacheDtype(loadedKvCacheDtype);
                         setSpeculativeType(loadedSpeculativeType);
+                        setFitTarget(loadedFitTarget);
                       }}
                       className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
                     >

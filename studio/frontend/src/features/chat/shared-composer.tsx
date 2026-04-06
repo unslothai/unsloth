@@ -328,6 +328,7 @@ export function SharedComposer({
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const chatTemplateOverride = store.chatTemplateOverride;
+      const fitTarget = store.fitTarget;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -345,6 +346,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: chatTemplateOverride,
+          fit_target: fitTarget,
         });
         useChatRuntimeStore.getState().setCheckpoint(
           resp.model,
