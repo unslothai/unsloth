@@ -31,11 +31,8 @@ logger = get_logger(__name__)
 
 def _activate_transformers_version(model_name: str) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
-    # Ensure backend is on path for utils imports
-    backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
-
     from utils.transformers_version import activate_transformers_for_subprocess
 
     activate_transformers_for_subprocess(model_name)
