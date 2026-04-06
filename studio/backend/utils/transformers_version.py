@@ -273,9 +273,7 @@ def _get_config_json(model_name: str) -> dict | None:
         _config_json_cache[model_name] = cfg
         return cfg
     except Exception as exc:
-        logger.debug(
-            "Could not fetch config.json for '%s': %s", model_name, exc
-        )
+        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
         _config_json_cache[model_name] = None
         return None
 
