@@ -49,7 +49,6 @@ except:
     except:
         # For older versions of huggingface_hub
         from huggingface_hub.utils._token import get_token
-from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -506,7 +505,7 @@ class FastLanguageModel(FastLlamaModel):
             model_type = model_types
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -515,14 +514,10 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -1280,7 +1275,7 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -1289,13 +1284,10 @@ class FastModel(FastBaseModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
