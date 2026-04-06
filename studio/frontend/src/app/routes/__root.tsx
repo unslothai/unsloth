@@ -33,7 +33,7 @@ export const Route = createRootRoute({
 });
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
-const HIDDEN_FOOTER_ROUTES = ["/onboarding", "/login", "/change-password"];
+const HIDDEN_FOOTER_ROUTES = ["/onboarding", "/login", "/change-password", "/chat"];
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
