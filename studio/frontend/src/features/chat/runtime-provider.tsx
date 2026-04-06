@@ -600,7 +600,10 @@ function ThreadHistoryProvider({
         // persisted. Compare panes intentionally do not write global activeThreadId.
         const thread = await db.threads.get(remoteId);
         if (thread?.modelType === "base" && !thread.pairId) {
-          useChatRuntimeStore.getState().setActiveThreadId(remoteId);
+          const store = useChatRuntimeStore.getState();
+          if (store.activeThreadId !== remoteId) {
+            store.setActiveThreadId(remoteId);
+          }
         }
         const content = cloneContent(message.content);
         const attachments =
