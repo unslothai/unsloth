@@ -32,8 +32,9 @@ from utils.transformers_version import (
     _resolve_base_model,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_550,
+    _get_config_json,
     _tokenizer_class_cache,
-    _config_needs_550_cache,
+    _config_json_cache,
     needs_transformers_5,
     get_transformers_tier,
 )
@@ -202,7 +203,7 @@ class TestCheckConfigNeeds550:
     """Tests for _check_config_needs_550() local config.json checks."""
 
     def setup_method(self):
-        _config_needs_550_cache.clear()
+        _config_json_cache.clear()
 
     def test_gemma4_architecture(self, tmp_path: Path):
         """config.json with Gemma4ForConditionalGeneration should return True."""
@@ -242,8 +243,8 @@ class TestCheckConfigNeeds550:
 
         key = str(tmp_path)
         _check_config_needs_550(key)
-        assert key in _config_needs_550_cache
-        assert _config_needs_550_cache[key] is True
+        assert key in _config_json_cache
+        assert _config_json_cache[key] is not None
 
     def test_local_file_skips_network(self, tmp_path: Path):
         """When local config.json exists, no network request should be made."""
@@ -265,7 +266,7 @@ class TestGetTransformersTier:
 
     def setup_method(self):
         _tokenizer_class_cache.clear()
-        _config_needs_550_cache.clear()
+        _config_json_cache.clear()
 
     def test_gemma4_substring_returns_550(self):
         assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
@@ -316,6 +317,20 @@ class TestGetTransformersTier:
         """Ensure 5.5.0 is checked first — a model matching both should get 550."""
         # This shouldn't happen in practice, but verifies priority
         assert get_transformers_tier("gemma-4-model") == "550"
+
+    def test_config_json_model_type_530(self, tmp_path: Path):
+        """Local checkpoint with qwen3_moe model_type → 530."""
+        cfg = {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert get_transformers_tier(str(tmp_path)) == "530"
+
+    def test_config_json_model_type_glm4_moe(self, tmp_path: Path):
+        """Local checkpoint with glm4_moe model_type → 530."""
+        cfg = {"model_type": "glm4_moe", "architectures": ["Glm4MoeForCausalLM"]}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert get_transformers_tier(str(tmp_path)) == "530"
 
     def test_needs_transformers_5_compat(self):
         """needs_transformers_5 should return True for both 530 and 550 models."""

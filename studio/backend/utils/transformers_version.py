@@ -67,13 +67,24 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "qwen3.6",
 )
 
-# Architecture classes / model_type values that require transformers 5.5.0.
-# Checked via config.json (local or HuggingFace).
+# Architecture classes that require transformers 5.5.0.
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "Gemma4ForConditionalGeneration",
 }
+
+# model_type values (from config.json) → tier mapping.
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "gemma4",
+}
+_TRANSFORMERS_530_MODEL_TYPES: set[str] = {
+    "qwen3_moe",
+    "qwen3_5_moe",
+    "qwen3_vl_moe",
+    "qwen3_next",
+    "deepseek_v3_moe",
+    "glm4_moe",
+    "glm4_moe_lite",
+    "ministral",
 }
 
 # Tokenizer classes that only exist in transformers>=5.x
@@ -84,15 +95,14 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 # Cache for dynamic tokenizer_config.json lookups to avoid repeated fetches
 _tokenizer_class_cache: dict[str, bool] = {}
 
-# Cache for dynamic config.json lookups (architecture/model_type checks)
-_config_needs_550_cache: dict[str, bool] = {}
+# Cache for config.json lookups (returns the parsed dict or None)
+_config_json_cache: dict[str, dict | None] = {}
 
 # Versions
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
-# Backwards-compat alias — points to 5.5.0 (the highest 5.x tier).
-# Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
+# Backwards-compat alias used by other modules
 TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
 
 # Pre-installed directories — created by setup.sh / setup.ps1
@@ -100,45 +110,6 @@ _VENV_T5_530_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_530")
 _VENV_T5_550_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
-
-
-def activate_transformers_for_subprocess(model_name: str) -> None:
-    """Activate the correct transformers version in a subprocess worker.
-
-    Call this BEFORE any ML imports. Resolves LoRA adapters to their base
-    model, determines the required tier, and prepends the appropriate
-    ``.venv_t5_*`` directory to ``sys.path``.  Also propagates the path
-    via ``PYTHONPATH`` for child processes (e.g. GGUF converter).
-
-    Used by training, inference, and export workers.
-    """
-    resolved = _resolve_base_model(model_name)
-    tier = get_transformers_tier(resolved)
-
-    if tier == "550":
-        if not _ensure_venv_t5_550_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.5.0: "
-                f".venv_t5_550 missing at {_VENV_T5_550_DIR}"
-            )
-        if _VENV_T5_550_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_550_DIR)
-        logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
-    elif tier == "530":
-        if not _ensure_venv_t5_530_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.3.0: "
-                f".venv_t5_530 missing at {_VENV_T5_530_DIR}"
-            )
-        if _VENV_T5_530_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_530_DIR)
-        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
 
 
 def _resolve_base_model(model_name: str) -> str:
@@ -266,43 +237,28 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         return False
 
 
-def _check_config_needs_550(model_name: str) -> bool:
-    """Check ``config.json`` for architectures or model_type that require
-    transformers 5.5.0 (e.g. Gemma 4).
+_SENTINEL = object()  # distinguishes "not cached" from "cached as None"
 
-    Checks locally first, then falls back to fetching from HuggingFace.
-    Results are cached in ``_config_needs_550_cache``.
-    Returns False on any error (fail-open to lower tier).
+
+def _get_config_json(model_name: str) -> dict | None:
+    """Read and cache ``config.json`` for *model_name*.
+
+    Checks local path first, then fetches from HuggingFace.
+    Returns the parsed dict, or ``None`` on any error (fail-open).
+    The result is cached in ``_config_json_cache``.
     """
-    if model_name in _config_needs_550_cache:
-        return _config_needs_550_cache[model_name]
-
-    def _check_cfg(cfg: dict) -> bool:
-        archs = cfg.get("architectures", [])
-        if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
-            return True
-        if cfg.get("model_type") in _TRANSFORMERS_550_MODEL_TYPES:
-            return True
-        return False
+    cached = _config_json_cache.get(model_name, _SENTINEL)
+    if cached is not _SENTINEL:
+        return cached
 
     # --- Check local config.json first ------------------------------------
-    local_path = Path(model_name)
-    local_cfg = local_path / "config.json"
+    local_cfg = Path(model_name) / "config.json"
     if local_cfg.is_file():
         try:
             with open(local_cfg) as f:
                 cfg = json.load(f)
-            result = _check_cfg(cfg)
-            if result:
-                logger.info(
-                    "Local config.json check: %s needs transformers 5.5.0 "
-                    "(architectures=%s, model_type=%s)",
-                    model_name,
-                    cfg.get("architectures", []),
-                    cfg.get("model_type"),
-                )
-            _config_needs_550_cache[model_name] = result
-            return result
+            _config_json_cache[model_name] = cfg
+            return cfg
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_cfg, exc)
 
@@ -314,21 +270,26 @@ def _check_config_needs_550(model_name: str) -> bool:
         req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
         with urllib.request.urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
-        result = _check_cfg(cfg)
-        if result:
-            logger.info(
-                "Dynamic config.json check: %s needs transformers 5.5.0 "
-                "(architectures=%s, model_type=%s)",
-                model_name,
-                cfg.get("architectures", []),
-                cfg.get("model_type"),
-            )
-        _config_needs_550_cache[model_name] = result
-        return result
+        _config_json_cache[model_name] = cfg
+        return cfg
     except Exception as exc:
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_needs_550_cache[model_name] = False
+        logger.debug(
+            "Could not fetch config.json for '%s': %s", model_name, exc
+        )
+        _config_json_cache[model_name] = None
+        return None
+
+
+def _check_config_needs_550(model_name: str) -> bool:
+    """Check ``config.json`` for architectures or model_type that require
+    transformers 5.5.0.  Uses the shared ``_get_config_json`` cache."""
+    cfg = _get_config_json(model_name)
+    if cfg is None:
         return False
+    archs = cfg.get("architectures", [])
+    if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
+        return True
+    return cfg.get("model_type") in _TRANSFORMERS_550_MODEL_TYPES
 
 
 def get_transformers_tier(model_name: str) -> str:
@@ -338,19 +299,35 @@ def get_transformers_tier(model_name: str) -> str:
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    The 5.5.0 check runs first, then 5.3.0.
+    Fast path: substring checks (no I/O) for both tiers run first.
+    Slow path: single config.json fetch (cached) checks model_type for
+    both tiers, then tokenizer_config.json as final fallback.
     """
     lowered = model_name.lower()
 
-    # --- Fast substring checks (no I/O) ------------------------------------
+    # --- Fast substring checks (no I/O) -----------------------------------
     if any(sub in lowered for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS):
         return "550"
     if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
         return "530"
 
-    # --- Slow config fallbacks (local file first, then network) -----------
-    if _check_config_needs_550(model_name):
-        return "550"
+    # --- config.json model_type / architecture check (single fetch) -------
+    cfg = _get_config_json(model_name)
+    if cfg is not None:
+        model_type = cfg.get("model_type", "")
+        archs = cfg.get("architectures", [])
+
+        # Check 5.5.0 first
+        if model_type in _TRANSFORMERS_550_MODEL_TYPES:
+            return "550"
+        if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
+            return "550"
+
+        # Check 5.3.0
+        if model_type in _TRANSFORMERS_530_MODEL_TYPES:
+            return "530"
+
+    # --- Final fallback: tokenizer_config.json for 5.3.0 ------------------
     if _check_tokenizer_config_needs_v5(model_name):
         return "530"
 
