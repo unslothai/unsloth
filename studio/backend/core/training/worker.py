@@ -399,25 +399,19 @@ def run_training_process(
         )
         return
 
-    # ── 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models ──
-    # Some newer architectures (e.g. NemotronH) have config parsing bugs in
-    # transformers that require trust_remote_code=True as a workaround.
-    # Only auto-enable for models that genuinely need it (set in YAML defaults).
-    # Native transformers 5.x models (Qwen3.5, Gemma 4, etc.) do NOT need it
-    # and enabling it can bypass the compiler (disabling fused CE).
-    from utils.transformers_version import get_transformers_tier
-
+    # ── 1a. Auto-enable trust_remote_code for Nemotron models ──
+    # NemotronH has config parsing bugs in transformers that require
+    # trust_remote_code=True as a workaround. Other transformers 5.x models
+    # (Qwen3.5, Gemma 4, etc.) are native and do NOT need it — enabling it
+    # bypasses the compiler (disabling fused CE).
     _lowered = model_name.lower()
-    _tier = get_transformers_tier(model_name)
     if (
-        _tier != "default"
-        and _lowered.startswith("unsloth/")
-        and _tier not in ("530", "550")  # Native t5 models don't need trust_remote_code
+        "nemotron" in _lowered
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
         logger.info(
-            "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+            "Auto-enabled trust_remote_code for Nemotron model: %s",
             model_name,
         )
 

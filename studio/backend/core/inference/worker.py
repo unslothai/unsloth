@@ -322,19 +322,16 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
-        # Auto-enable trust_remote_code for unsloth/* transformers 5.x models
-        # (matches the training worker logic in core/training/worker.py)
+        # Auto-enable trust_remote_code for Nemotron models only.
+        # NemotronH has config parsing bugs requiring trust_remote_code=True.
+        # Other transformers 5.x models are native and do NOT need it.
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code:
-            from utils.transformers_version import needs_transformers_5
-
             model_name = config["model_name"]
-            if needs_transformers_5(model_name) and model_name.lower().startswith(
-                "unsloth/"
-            ):
+            if "nemotron" in model_name.lower():
                 trust_remote_code = True
                 logger.info(
-                    "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+                    "Auto-enabled trust_remote_code for Nemotron model: %s",
                     model_name,
                 )
 
