@@ -890,7 +890,9 @@ class TestSourceCodePatterns:
     def test_setup_ps1_llamaserver_probe_uses_safe_path_state(self):
         """The llama-server existence probe should not use raw Test-Path checks."""
         content = SETUP_PS1.read_text()
-        assert "$LlamaServerState = Get-UnslothPathState -Path $LlamaServerBin" in content
+        assert (
+            "$LlamaServerState = Get-UnslothPathState -Path $LlamaServerBin" in content
+        )
         assert "if (Test-Path $LlamaServerBin)" not in content
 
     def test_setup_ps1_normalizes_llama_acl(self):
@@ -898,7 +900,9 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         assert "function Repair-UnslothPathAcl" in content
         assert content.count("Repair-UnslothPathAcl -Path $LlamaCppDir") >= 3
-        assert "Could not normalize llama.cpp permissions for non-admin usage." in content
+        assert (
+            "Could not normalize llama.cpp permissions for non-admin usage." in content
+        )
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
