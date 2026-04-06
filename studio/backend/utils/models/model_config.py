@@ -26,7 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import List, Tuple
+import hashlib
 import json
+import threading
 import yaml
 
 
@@ -556,9 +558,9 @@ def _is_vision_model_subprocess(
     architectures (glm4_moe_lite, etc.).
 
     Returns True/False for definitive results, or None for transient failures
-    (timeouts) so callers can decide whether to cache the result.
-    Deterministic failures (non-zero exit, error in output) return False
-    so they are cached and not retried on every call.
+    (timeouts, subprocess errors) so callers can decide whether to cache
+    the result. Subprocess failures are treated as transient because they
+    can be caused by temporary HF/auth/network issues.
     """
     token_arg = hf_token or ""
 
@@ -585,7 +587,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 stderr or result.stdout.strip(),
             )
-            return False
+            return None
 
         data = json.loads(result.stdout.strip())
         if "error" in data:
@@ -594,7 +596,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 data["error"],
             )
-            return False
+            return None
 
         is_vlm = data["is_vision"]
         logger.info(
@@ -612,14 +614,25 @@ def _is_vision_model_subprocess(
         return None
     except Exception as exc:
         logger.warning("Vision check subprocess failed for '%s': %s", model_name, exc)
-        return False
+        return None
+
+
+def _token_fingerprint(token: Optional[str]) -> Optional[str]:
+    """Return a short SHA256 digest of the token for use as a cache key.
+
+    Avoids storing the raw bearer token in process memory as a dict key.
+    """
+    if token is None:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
 # Cache vision detection results per session to avoid repeated subprocess spawns.
-# Keyed by (normalized_model_name, hf_token) to handle gated models correctly.
+# Keyed by (normalized_model_name, token_fingerprint) to handle gated models correctly.
 # Only definitive results (True/False from successful detection) are cached;
 # transient failures (network errors, timeouts) are NOT cached so they can be retried.
 _vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+_vision_cache_lock = threading.Lock()
 
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -631,8 +644,8 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     runs in a subprocess with .venv_t5/ activated -- same pattern as the
     training and inference workers.
 
-    Results are cached per (model_name, hf_token) for the lifetime of the
-    process to avoid repeated subprocess spawns and HuggingFace API calls.
+    Results are cached per (model_name, token_fingerprint) for the lifetime of
+    the process to avoid repeated subprocess spawns and HuggingFace API calls.
     Transient failures are not cached so they can be retried on the next call.
 
     Args:
@@ -643,23 +656,34 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
     try:
         if is_local_path(model_name):
-            normalized = normalize_path(model_name)
+            resolved_name = normalize_path(model_name)
         else:
-            normalized = resolve_cached_repo_id_case(model_name)
-    except Exception:
-        normalized = model_name
-    cache_key = (normalized, hf_token)
+            resolved_name = resolve_cached_repo_id_case(model_name)
+    except Exception as exc:
+        logger.debug(
+            "Could not normalize model name '%s' for cache key: %s",
+            model_name,
+            exc,
+        )
+        resolved_name = model_name
+    cache_key = (resolved_name, _token_fingerprint(hf_token))
 
+    # Lock-free fast path for cache hits.
     if cache_key in _vision_detection_cache:
         return _vision_detection_cache[cache_key]
 
-    result = _is_vision_model_uncached(model_name, hf_token)
-    # Only cache definitive results; None means a transient failure occurred
-    # and we should retry on the next call instead of locking in a wrong answer.
-    if result is not None:
-        _vision_detection_cache[cache_key] = result
-        return result
-    return False
+    with _vision_cache_lock:
+        # Double-check inside lock to prevent thundering herd.
+        if cache_key in _vision_detection_cache:
+            return _vision_detection_cache[cache_key]
+
+        result = _is_vision_model_uncached(resolved_name, hf_token)
+        # Only cache definitive results; None means a transient failure occurred
+        # and we should retry on the next call instead of locking in a wrong answer.
+        if result is not None:
+            _vision_detection_cache[cache_key] = result
+            return result
+        return False
 
 
 def _is_vision_model_uncached(
@@ -731,6 +755,16 @@ def _is_vision_model_uncached(
 
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
+        # Permanent failures (model not found, gated, bad config) should be
+        # cached as False. Transient failures (network, timeout) should not.
+        try:
+            from huggingface_hub.errors import RepositoryNotFoundError, GatedRepoError
+            if isinstance(e, (RepositoryNotFoundError, GatedRepoError)):
+                return False
+        except ImportError:
+            pass
+        if isinstance(e, (ValueError, json.JSONDecodeError)):
+            return False
         return None
 
 
