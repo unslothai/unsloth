@@ -75,6 +75,97 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
     )
 
 
+def _causal_conv1d_platform_tag() -> str | None:
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux"):
+        if machine in {"x86_64", "amd64"}:
+            return "linux_x86_64"
+        if machine in {"aarch64", "arm64"}:
+            return "linux_aarch64"
+        return None
+    # No prebuilt wheels published for macOS or Windows
+    return None
+
+
+def _probe_causal_conv1d_env() -> dict[str, str] | None:
+    try:
+        probe = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json, sys, re, torch; "
+                    "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
+                    "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
+                    "torch_mm = parts[0] + '.' + minor; "
+                    "print(json.dumps({"
+                    "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
+                    "'torch_mm': torch_mm, "
+                    "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                    "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
+                    "}))"
+                ),
+            ],
+            stdout = _sp.PIPE,
+            stderr = _sp.PIPE,
+            text = True,
+            timeout = 30,
+        )
+    except _sp.TimeoutExpired:
+        logger.warning("Torch environment probe timed out after 30s")
+        return None
+    if probe.returncode != 0:
+        logger.warning(
+            "Failed to probe torch environment for causal-conv1d wheel:\n%s",
+            probe.stdout,
+        )
+        return None
+
+    try:
+        return json.loads(probe.stdout.strip())
+    except json.JSONDecodeError:
+        logger.warning(
+            "Failed to parse torch environment probe output: %s", probe.stdout
+        )
+        return None
+
+
+def _direct_wheel_url(
+    *,
+    filename_prefix: str,
+    package_version: str,
+    release_tag: str,
+    release_base_url: str,
+    env: dict[str, str] | None = None,
+) -> str | None:
+    env = env or _probe_causal_conv1d_env()
+    platform_tag = _causal_conv1d_platform_tag()
+    if env is None or platform_tag is None or not env.get("cuda_major"):
+        return None
+
+    filename = (
+        f"{filename_prefix}-{package_version}"
+        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"cxx11abi{env['cxx11abi']}-{env['python_tag']}-{env['python_tag']}-{platform_tag}.whl"
+    )
+    return f"{release_base_url}/{release_tag}/{filename}"
+
+
+def _url_exists(url: str) -> bool:
+    try:
+        request = urllib.request.Request(url, method = "HEAD")
+        with urllib.request.urlopen(request, timeout = 10):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        logger.warning("Unexpected HTTP error while probing %s: %s", url, exc)
+        return False
+    except Exception as exc:
+        logger.warning("Failed to probe %s: %s", url, exc)
+        return False
+
+
 def _install_package_wheel_first(
     *,
     event_queue: Any,
@@ -327,15 +418,50 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports."""
+    """Activate the correct transformers version BEFORE any ML imports.
+
+    Uses get_transformers_tier() to decide between .venv_t5_550/ (5.5.0),
+    .venv_t5_530/ (5.3.0), or the default 4.57.x.
+    """
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import activate_transformers_for_subprocess
+    from utils.transformers_version import (
+        get_transformers_tier,
+        _resolve_base_model,
+        _ensure_venv_t5_530_exists,
+        _ensure_venv_t5_550_exists,
+        _VENV_T5_530_DIR,
+        _VENV_T5_550_DIR,
+    )
 
-    activate_transformers_for_subprocess(model_name)
+    resolved = _resolve_base_model(model_name)
+    tier = get_transformers_tier(resolved)
+
+    if tier == "550":
+        if not _ensure_venv_t5_550_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.5.0: .venv_t5_550 missing at {_VENV_T5_550_DIR}"
+            )
+        if _VENV_T5_550_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_550_DIR)
+        logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "530":
+        if not _ensure_venv_t5_530_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.3.0: .venv_t5_530 missing at {_VENV_T5_530_DIR}"
+            )
+        if _VENV_T5_530_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_530_DIR)
+        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
+    else:
+        logger.info("Using default transformers (4.57.x) for %s", model_name)
 
 
 def run_training_process(
@@ -385,17 +511,14 @@ def run_training_process(
         )
         return
 
-    # ── 1a. Auto-enable trust_remote_code for NemotronH/Nano models ──
+    # ── 1a. Auto-enable trust_remote_code for Nemotron models ──
     # NemotronH has config parsing bugs in transformers that require
     # trust_remote_code=True as a workaround. Other transformers 5.x models
     # (Qwen3.5, Gemma 4, etc.) are native and do NOT need it — enabling it
     # bypasses the compiler (disabling fused CE).
-    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
-    _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
     _lowered = model_name.lower()
     if (
-        any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
-        and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
+        "nemotron" in _lowered
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
