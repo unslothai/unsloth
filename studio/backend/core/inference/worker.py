@@ -34,13 +34,50 @@ from utils.hardware import apply_gpu_ids
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports."""
+    """Activate the correct transformers version BEFORE any ML imports.
+
+    Uses get_transformers_tier() to decide between .venv_t5_550/ (5.5.0),
+    .venv_t5_530/ (5.3.0), or the default 4.57.x.
+    """
+    # Ensure backend is on path for utils imports
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import activate_transformers_for_subprocess
+    from utils.transformers_version import (
+        get_transformers_tier,
+        _resolve_base_model,
+        _ensure_venv_t5_530_exists,
+        _ensure_venv_t5_550_exists,
+        _VENV_T5_530_DIR,
+        _VENV_T5_550_DIR,
+    )
 
-    activate_transformers_for_subprocess(model_name)
+    resolved = _resolve_base_model(model_name)
+    tier = get_transformers_tier(resolved)
+
+    if tier == "550":
+        if not _ensure_venv_t5_550_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.5.0: .venv_t5_550 missing at {_VENV_T5_550_DIR}"
+            )
+        if _VENV_T5_550_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_550_DIR)
+        logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "530":
+        if not _ensure_venv_t5_530_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.3.0: .venv_t5_530 missing at {_VENV_T5_530_DIR}"
+            )
+        if _VENV_T5_530_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_530_DIR)
+        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
+    else:
+        logger.info("Using default transformers (4.57.x) for %s", model_name)
 
 
 def _decode_image(image_base64: str):
@@ -285,18 +322,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
-        # Auto-enable trust_remote_code for NemotronH/Nano models only.
+        # Auto-enable trust_remote_code for Nemotron models only.
         # NemotronH has config parsing bugs requiring trust_remote_code=True.
         # Other transformers 5.x models are native and do NOT need it.
-        # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
-        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code:
             model_name = config["model_name"]
-            _mn_lower = model_name.lower()
-            if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
-                _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
-            ):
+            if "nemotron" in model_name.lower():
                 trust_remote_code = True
                 logger.info(
                     "Auto-enabled trust_remote_code for Nemotron model: %s",
