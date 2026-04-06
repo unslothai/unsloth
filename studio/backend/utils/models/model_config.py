@@ -618,13 +618,13 @@ def _is_vision_model_subprocess(
 
 
 def _token_fingerprint(token: Optional[str]) -> Optional[str]:
-    """Return a short SHA256 digest of the token for use as a cache key.
+    """Return a SHA256 digest of the token for use as a cache key.
 
     Avoids storing the raw bearer token in process memory as a dict key.
     """
     if token is None:
         return None
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 # Cache vision detection results per session to avoid repeated subprocess spawns.
@@ -668,22 +668,28 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         resolved_name = model_name
     cache_key = (resolved_name, _token_fingerprint(hf_token))
 
-    # Lock-free fast path for cache hits.
+    # Lock-free fast path for cache hits (dict reads are atomic under CPython's GIL).
+    cached = _vision_detection_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    # Also check for explicitly cached False (get returns None for both
+    # "not in dict" and "value is None", but we never store None).
     if cache_key in _vision_detection_cache:
         return _vision_detection_cache[cache_key]
 
-    with _vision_cache_lock:
-        # Double-check inside lock to prevent thundering herd.
-        if cache_key in _vision_detection_cache:
-            return _vision_detection_cache[cache_key]
-
-        result = _is_vision_model_uncached(resolved_name, hf_token)
-        # Only cache definitive results; None means a transient failure occurred
-        # and we should retry on the next call instead of locking in a wrong answer.
-        if result is not None:
+    # Compute outside the lock to avoid serializing long-running detection
+    # (subprocess spawns with 60s timeout, HF API calls) across all models.
+    # The tradeoff: two concurrent calls for the same uncached model may
+    # both run detection, but they produce the same result and the second
+    # write is a benign no-op.
+    result = _is_vision_model_uncached(resolved_name, hf_token)
+    # Only cache definitive results; None means a transient failure occurred
+    # and we should retry on the next call instead of locking in a wrong answer.
+    if result is not None:
+        with _vision_cache_lock:
             _vision_detection_cache[cache_key] = result
-            return result
-        return False
+        return result
+    return False
 
 
 def _is_vision_model_uncached(
