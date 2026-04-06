@@ -123,6 +123,20 @@ function CopyableCommand({
   );
 }
 
+interface HardwareInfo {
+  gpu: {
+    gpu_name: string | null;
+    vram_total_gb: number | null;
+    vram_free_gb: number | null;
+  };
+  versions: {
+    unsloth: string | null;
+    torch: string | null;
+    transformers: string | null;
+    cuda: string | null;
+  };
+}
+
 function UpdateStudioInstructions({
   className,
   defaultShell,
@@ -133,6 +147,7 @@ function UpdateStudioInstructions({
   showTitle?: boolean;
 }): ReactElement {
   const [shell, setShell] = useState<UpdateShell>(defaultShell);
+  const [version, setVersion] = useState<string | null>(null);
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
   const fadeTransition = prefersReducedMotion
@@ -146,20 +161,34 @@ function UpdateStudioInstructions({
     setShell(defaultShell);
   }, [defaultShell]);
 
+  useEffect(() => {
+    fetch("/api/system/hardware")
+      .then((response) => {
+        if (!response.ok) throw new Error("Failed to fetch");
+        return response.json();
+      })
+      .then((data: HardwareInfo) => setVersion(data.versions.unsloth))
+      .catch(() => {});
+  }, []);
+
   return (
     <div className={cn("flex flex-col gap-3", className)}>
-      <div
-        className={cn(
-          "flex items-center gap-3",
-          showTitle ? "justify-between" : "justify-start",
-        )}
-      >
-        {showTitle ? (
+      {showTitle ? (
+        <div className="flex items-center justify-between gap-3">
           <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
             Update Unsloth Studio
           </p>
-        ) : null}
-        <div className="flex shrink-0 items-center gap-0.5 text-[11px]">
+          {version ? (
+            <div className="flex items-center gap-1.5 text-sm">
+              <span className="font-mono text-muted-foreground">v{version}</span>
+              <span className="font-extrabold tracking-[0.12em] text-primary">
+                BETA
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex items-center justify-end gap-0.5 text-[11px]">
           <button
             type="button"
             onClick={() => setShell("windows")}
