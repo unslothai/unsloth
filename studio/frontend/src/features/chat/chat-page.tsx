@@ -824,7 +824,7 @@ export function ChatPage(): ReactElement {
   }, [modelSelectorLocked, tour.open]);
 
   return (
-    <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
+    <div className="h-[calc(100dvh-6rem)] bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <SidebarProvider
         defaultOpen={true}
