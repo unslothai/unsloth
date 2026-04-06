@@ -524,7 +524,10 @@ class FastLanguageModel(FastLlamaModel):
                     files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
                     files = [x.rsplit("/", 1)[-1] for x in files]
                     if (
-                        sum(x == "adapter_config.json" or x == "config.json" for x in files)
+                        sum(
+                            x == "adapter_config.json" or x == "config.json"
+                            for x in files
+                        )
                         >= 2
                     ):
                         both_exist = True
@@ -1303,7 +1306,10 @@ class FastModel(FastBaseModel):
                     files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
                     files = [x.rsplit("/", 1)[-1] for x in files]
                     if (
-                        sum(x == "adapter_config.json" or x == "config.json" for x in files)
+                        sum(
+                            x == "adapter_config.json" or x == "config.json"
+                            for x in files
+                        )
                         >= 2
                     ):
                         both_exist = True
