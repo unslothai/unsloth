@@ -190,7 +190,11 @@ class UnslothTrainer:
             self._cuda_audio_used = False
 
         # --- Detect VLM ---
-        vision = is_vision_model(model_name, hf_token = hf_token) if not self.is_audio else False
+        vision = (
+            is_vision_model(model_name, hf_token = hf_token)
+            if not self.is_audio
+            else False
+        )
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
 
         logger.info(
@@ -558,7 +562,11 @@ class UnslothTrainer:
                 self._cuda_audio_used = False
 
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
-            vision = is_vision_model(model_name, hf_token = hf_token) if not self.is_audio else False
+            vision = (
+                is_vision_model(model_name, hf_token = hf_token)
+                if not self.is_audio
+                else False
+            )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self.model_name = model_name
             self.max_seq_length = max_seq_length

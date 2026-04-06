@@ -765,7 +765,10 @@ def _is_vision_model_uncached(
             from huggingface_hub.errors import RepositoryNotFoundError, GatedRepoError
         except ImportError:
             try:
-                from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+                from huggingface_hub.utils import (
+                    RepositoryNotFoundError,
+                    GatedRepoError,
+                )
             except ImportError:
                 RepositoryNotFoundError = GatedRepoError = None
         if RepositoryNotFoundError is not None and isinstance(
