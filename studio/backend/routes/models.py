@@ -142,11 +142,32 @@ def _is_model_directory(d: Path) -> bool:
     """Return ``True`` when *d* looks like a model directory.
 
     A model directory must have **both** a config file (``config.json`` or
-    ``adapter_config.json``) **and** weight files (``.gguf``, ``.safetensors``,
-    or ``.bin``).  Both conditions are required: a bare directory with only
-    loose ``.gguf`` files (no config) might be a mixed collection, and a
-    ``config.json`` alone (no weights) is not a model directory.
+    ``adapter_config.json``) **and** actual model weight files.  Both
+    conditions are required: a bare directory with only loose ``.gguf``
+    files (no config) might be a mixed collection, and a ``config.json``
+    alone (no weights) is not a model directory.
+
+    Excludes ``mmproj`` GGUF files (vision projectors) and non-weight
+    ``.bin`` files (``tokenizer.bin``, ``vocab.bin``, etc.) from the
+    weight check to avoid false positives.
     """
+
+    def _is_weight_file(f: Path) -> bool:
+        suffix = f.suffix.lower()
+        if suffix == ".safetensors":
+            return True
+        if suffix == ".gguf":
+            return "mmproj" not in f.name.lower()
+        if suffix == ".bin":
+            name = f.name.lower()
+            return (
+                name.startswith("pytorch_model")
+                or name.startswith("model")
+                or name.startswith("adapter_model")
+                or name.startswith("consolidated")
+            )
+        return False
+
     try:
         has_config = (d / "config.json").exists() or (
             d / "adapter_config.json"
@@ -154,7 +175,7 @@ def _is_model_directory(d: Path) -> bool:
         if not has_config:
             return False
         return any(
-            f.suffix.lower() in (".gguf", ".safetensors", ".bin")
+            _is_weight_file(f)
             for f in d.iterdir()
             if f.is_file()
         )
