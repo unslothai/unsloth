@@ -22,18 +22,13 @@ export function VersionFooter({ className }: { className?: string }) {
   const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    async function fetchVersion() {
-      try {
-        const response = await fetch("/api/system/hardware");
-        if (!response.ok) return;
-        const data: HardwareInfo = await response.json();
-        setVersion(data.versions.unsloth);
-      } catch (error) {
-        console.error("Failed to fetch version:", error);
-      }
-    }
-
-    fetchVersion();
+    fetch("/api/system/hardware")
+      .then((response) => {
+        if (!response.ok) throw new Error("Failed to fetch");
+        return response.json();
+      })
+      .then((data: HardwareInfo) => setVersion(data.versions.unsloth))
+      .catch(() => {});
   }, []);
 
   if (!version) {
