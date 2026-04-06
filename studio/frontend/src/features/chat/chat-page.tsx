@@ -225,6 +225,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 modelType="base"
                 pairId={pairId}
                 initialThreadId={baseThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="base" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -242,6 +243,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 modelType="lora"
                 pairId={pairId}
                 initialThreadId={loraThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="lora" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -343,6 +345,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 modelType="model1"
                 pairId={pairId}
                 initialThreadId={model1ThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model1" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -376,6 +379,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 modelType="model2"
                 pairId={pairId}
                 initialThreadId={model2ThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model2" />
                 <Thread hideComposer={true} hideWelcome={true} />

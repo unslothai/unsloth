@@ -658,7 +658,11 @@ function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
 
 function ThreadAutoSwitch({
   threadId,
-}: { threadId: string }): ReactElement | null {
+  syncActiveThreadId = true,
+}: {
+  threadId: string;
+  syncActiveThreadId?: boolean;
+}): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -670,11 +674,11 @@ function ThreadAutoSwitch({
   }, [aui, isLoading, mainThreadId, threadId]);
 
   useEffect(() => {
-    if (isLoading || mainThreadId !== threadId) {
+    if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
       return;
     }
     useChatRuntimeStore.getState().setActiveThreadId(threadId);
-  }, [isLoading, mainThreadId, threadId]);
+  }, [isLoading, mainThreadId, syncActiveThreadId, threadId]);
 
   return null;
 }
@@ -724,12 +728,14 @@ export function ChatRuntimeProvider({
   pairId,
   initialThreadId,
   newThreadNonce,
+  syncActiveThreadId = true,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
   initialThreadId?: string;
   newThreadNonce?: string;
+  syncActiveThreadId?: boolean;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
@@ -748,7 +754,12 @@ export function ChatRuntimeProvider({
       <ActiveThreadSync
         enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
       />
-      {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
+      {initialThreadId && (
+        <ThreadAutoSwitch
+          threadId={initialThreadId}
+          syncActiveThreadId={syncActiveThreadId}
+        />
+      )}
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />
       )}
