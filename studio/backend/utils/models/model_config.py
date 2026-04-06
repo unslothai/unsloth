@@ -26,7 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import List, Tuple
+import hashlib
 import json
+import threading
 import yaml
 
 
@@ -548,12 +550,17 @@ except Exception as exc:
 
 def _is_vision_model_subprocess(
     model_name: str, hf_token: Optional[str] = None
-) -> bool:
+) -> Optional[bool]:
     """Run is_vision_model check in a subprocess with transformers 5.x.
 
     Same pattern as training/inference workers: spawn a clean subprocess
     with .venv_t5/ prepended to sys.path so AutoConfig recognizes newer
     architectures (glm4_moe_lite, etc.).
+
+    Returns True/False for definitive results, or None for transient failures
+    (timeouts, subprocess errors) so callers can decide whether to cache
+    the result. Subprocess failures are treated as transient because they
+    can be caused by temporary HF/auth/network issues.
     """
     token_arg = hf_token or ""
 
@@ -580,7 +587,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 stderr or result.stdout.strip(),
             )
-            return False
+            return None
 
         data = json.loads(result.stdout.strip())
         if "error" in data:
@@ -589,7 +596,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 data["error"],
             )
-            return False
+            return None
 
         is_vlm = data["is_vision"]
         logger.info(
@@ -604,10 +611,28 @@ def _is_vision_model_subprocess(
 
     except subprocess.TimeoutExpired:
         logger.warning("Vision check subprocess timed out for '%s'", model_name)
-        return False
+        return None
     except Exception as exc:
         logger.warning("Vision check subprocess failed for '%s': %s", model_name, exc)
-        return False
+        return None
+
+
+def _token_fingerprint(token: Optional[str]) -> Optional[str]:
+    """Return a SHA256 digest of the token for use as a cache key.
+
+    Avoids storing the raw bearer token in process memory as a dict key.
+    """
+    if token is None:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Cache vision detection results per session to avoid repeated subprocess spawns.
+# Keyed by (normalized_model_name, token_fingerprint) to handle gated models correctly.
+# Only definitive results (True/False from successful detection) are cached;
+# transient failures (network errors, timeouts) are NOT cached so they can be retried.
+_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+_vision_cache_lock = threading.Lock()
 
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -616,12 +641,65 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Works for fine-tuned models since they inherit the base architecture.
 
     For models that require transformers 5.x (e.g. GLM-4.7-Flash), the check
-    runs in a subprocess with .venv_t5/ activated — same pattern as the
+    runs in a subprocess with .venv_t5/ activated -- same pattern as the
     training and inference workers.
+
+    Results are cached per (model_name, token_fingerprint) for the lifetime of
+    the process to avoid repeated subprocess spawns and HuggingFace API calls.
+    Transient failures are not cached so they can be retried on the next call.
 
     Args:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
+    """
+    # Normalize model name for cache key to avoid duplicate entries for
+    # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
+    try:
+        if is_local_path(model_name):
+            resolved_name = normalize_path(model_name)
+        else:
+            resolved_name = resolve_cached_repo_id_case(model_name)
+    except Exception as exc:
+        logger.debug(
+            "Could not normalize model name '%s' for cache key: %s",
+            model_name,
+            exc,
+        )
+        resolved_name = model_name
+    cache_key = (resolved_name, _token_fingerprint(hf_token))
+
+    # Lock-free fast path for cache hits. Uses a sentinel to distinguish
+    # "key not found" from "value is False" in a single atomic dict.get() call.
+    _MISS = object()
+    cached = _vision_detection_cache.get(cache_key, _MISS)
+    if cached is not _MISS:
+        return cached
+
+    # Compute outside the lock to avoid serializing long-running detection
+    # (subprocess spawns with 60s timeout, HF API calls) across all models.
+    # The tradeoff: two concurrent calls for the same uncached model may
+    # both run detection, but they produce the same result and the second
+    # write is a benign no-op.
+    result = _is_vision_model_uncached(resolved_name, hf_token)
+    # Only cache definitive results; None means a transient failure occurred
+    # and we should retry on the next call instead of locking in a wrong answer.
+    if result is not None:
+        with _vision_cache_lock:
+            _vision_detection_cache[cache_key] = result
+        return result
+    return False
+
+
+def _is_vision_model_uncached(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
+    """Uncached vision model detection -- called by is_vision_model().
+
+    Returns True/False for definitive results, or None when detection failed
+    due to a transient error (network, timeout, subprocess failure) so the
+    caller knows not to cache the result.
+
+    Do not call directly; use is_vision_model() instead.
     """
     # Models that need transformers 5.x must be checked in a subprocess
     # because AutoConfig in the main process (transformers 4.57.x) doesn't
@@ -630,7 +708,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     if needs_transformers_5(model_name):
         logger.info(
-            "Model '%s' needs transformers 5.x — checking vision via subprocess",
+            "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
         return _is_vision_model_subprocess(model_name, hf_token = hf_token)
@@ -681,7 +759,25 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
-        return False
+        # Permanent failures (model not found, gated, bad config) should be
+        # cached as False. Transient failures (network, timeout) should not.
+        try:
+            from huggingface_hub.errors import RepositoryNotFoundError, GatedRepoError
+        except ImportError:
+            try:
+                from huggingface_hub.utils import (
+                    RepositoryNotFoundError,
+                    GatedRepoError,
+                )
+            except ImportError:
+                RepositoryNotFoundError = GatedRepoError = None
+        if RepositoryNotFoundError is not None and isinstance(
+            e, (RepositoryNotFoundError, GatedRepoError)
+        ):
+            return False
+        if isinstance(e, (ValueError, json.JSONDecodeError)):
+            return False
+        return None
 
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
@@ -1034,6 +1130,26 @@ def list_gguf_variants(
     return variants, has_vision
 
 
+def _resolve_gguf_dir(p: Path) -> Optional[Path]:
+    """Resolve a path to the directory containing GGUF variants.
+
+    If *p* is already a directory, returns it directly.  If *p* is a ``.gguf``
+    file whose parent directory has model metadata (``config.json`` or
+    ``adapter_config.json``), returns the parent -- all GGUFs in that
+    directory belong to the same model.  Returns ``None`` for loose standalone
+    GGUFs (no config) to avoid cross-wiring unrelated models.
+    """
+    if p.is_dir():
+        return p
+    if p.is_file() and p.suffix.lower() == ".gguf":
+        parent = p.parent
+        if (parent / "config.json").exists() or (
+            parent / "adapter_config.json"
+        ).exists():
+            return parent
+    return None
+
+
 def list_local_gguf_variants(
     directory: str,
 ) -> tuple[list[GgufVariantInfo], bool]:
@@ -1046,8 +1162,8 @@ def list_local_gguf_variants(
     Returns:
         (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
     """
-    p = Path(directory)
-    if not p.is_dir():
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
         return [], False
 
     quant_totals: dict[str, int] = {}
@@ -1087,8 +1203,8 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     Returns the resolved absolute path, or ``None`` if no match.
     """
-    p = Path(directory)
-    if not p.is_dir():
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
         return None
 
     matches = sorted(
