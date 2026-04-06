@@ -174,11 +174,7 @@ def _is_model_directory(d: Path) -> bool:
         ).exists()
         if not has_config:
             return False
-        return any(
-            _is_weight_file(f)
-            for f in d.iterdir()
-            if f.is_file()
-        )
+        return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
     except OSError:
         return False
 
