@@ -82,6 +82,72 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+function Get-UnslothPathState {
+    param([string]$Path)
+
+    try {
+        $exists = Test-Path -LiteralPath $Path
+        return @{
+            Exists = [bool]$exists
+            AccessDenied = $false
+        }
+    } catch [System.UnauthorizedAccessException] {
+        return @{
+            Exists = $true
+            AccessDenied = $true
+        }
+    } catch {
+        return @{
+            Exists = $false
+            AccessDenied = $false
+        }
+    }
+}
+
+function Repair-UnslothPathAcl {
+    param([string]$Path)
+
+    $pathState = Get-UnslothPathState -Path $Path
+    if (-not $pathState.Exists -and -not $pathState.AccessDenied) {
+        return $false
+    }
+
+    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $aclArgs = @(
+        $Path,
+        "/grant:r", "$currentIdentity:(OI)(CI)M",
+        "/grant", "*S-1-5-32-545:(OI)(CI)RX",
+        "/T",
+        "/C",
+        "/Q"
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $null
+    $restoreNativeErrorPreference = $false
+    $ErrorActionPreference = "Continue"
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreference = $true
+    }
+
+    try {
+        $null = & icacls @aclArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            return $false
+        }
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($restoreNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -1785,6 +1851,10 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             if ($installedRelease) {
                 substep $installedRelease
             }
+            if (-not (Repair-UnslothPathAcl -Path $LlamaCppDir)) {
+                substep "Could not normalize llama.cpp permissions for non-admin usage." "Yellow"
+                substep "If GGUF load fails with Access denied, rerun setup once as Administrator." "Yellow"
+            }
         } elseif ($prebuiltExit -eq 3) {
             step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -1872,9 +1942,26 @@ $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
-if (Test-Path $LlamaServerBin) {
+$LlamaServerState = Get-UnslothPathState -Path $LlamaServerBin
+$LlamaServerExists = [bool]$LlamaServerState.Exists
+if ($LlamaServerState.AccessDenied) {
+    substep "Existing llama-server install is access-restricted. Attempting ACL repair..." "Yellow"
+    if (Repair-UnslothPathAcl -Path $LlamaCppDir) {
+        $LlamaServerState = Get-UnslothPathState -Path $LlamaServerBin
+        $LlamaServerExists = [bool]$LlamaServerState.Exists
+    }
+    if ($LlamaServerState.AccessDenied) {
+        substep "Could not access existing llama.cpp binaries. Rebuilding with refreshed permissions." "Yellow"
+        $NeedRebuild = $true
+    }
+}
+if ($LlamaServerExists -and -not $LlamaServerState.AccessDenied) {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path $CmakeCacheFile) {
+    $CmakeCacheState = Get-UnslothPathState -Path $CmakeCacheFile
+    if ($CmakeCacheState.AccessDenied) {
+        $NeedRebuild = $true
+        substep "CMake cache is access-restricted. Rebuilding llama.cpp with refreshed permissions." "Yellow"
+    } elseif ($CmakeCacheState.Exists) {
         $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
         if ($HasNvidiaSmi -and -not $cachedCuda) {
             Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
@@ -1889,7 +1976,7 @@ if (Test-Path $LlamaServerBin) {
 if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ($LlamaServerExists -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
     # up new model architecture support (e.g. Gemma 4).
@@ -2284,17 +2371,26 @@ if (-not $NeedLlamaSourceBuild) {
     $totalSec = [math]::Round($totalSw.Elapsed.TotalSeconds % 60, 1)
 
     # -- Summary --
-    if ($BuildOk -and (Test-Path $LlamaServerBin)) {
+    $LlamaServerBinState = Get-UnslothPathState -Path $LlamaServerBin
+    if ($BuildOk -and $LlamaServerBinState.Exists -and -not $LlamaServerBinState.AccessDenied) {
         step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
-        if (Test-Path $QuantizeBin) {
+        $QuantizeBinState = Get-UnslothPathState -Path $QuantizeBin
+        if ($QuantizeBinState.Exists -and -not $QuantizeBinState.AccessDenied) {
             step "llama-quantize" "built"
+        }
+        if (-not (Repair-UnslothPathAcl -Path $LlamaCppDir)) {
+            substep "Could not normalize llama.cpp permissions for non-admin usage." "Yellow"
         }
         step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
-        if ($BuildOk -and (Test-Path $altBin)) {
+        $AltBinState = Get-UnslothPathState -Path $altBin
+        if ($BuildOk -and $AltBinState.Exists -and -not $AltBinState.AccessDenied) {
             step "llama.cpp" "built"
+            if (-not (Repair-UnslothPathAcl -Path $LlamaCppDir)) {
+                substep "Could not normalize llama.cpp permissions for non-admin usage." "Yellow"
+            }
             step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
             step "llama.cpp" "build failed at: $FailedStep (${totalMin}m ${totalSec}s); continuing" "Yellow"
