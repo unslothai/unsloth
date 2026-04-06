@@ -76,10 +76,13 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
-  const allThreads = useLiveQuery(
-    () => db.threads.orderBy("createdAt").reverse().toArray(),
-    [],
-  );
+  const allThreads = useLiveQuery(async () => {
+    const threadIdsWithMessage = new Set(
+      (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
+    );
+    const rows = await db.threads.orderBy("createdAt").reverse().toArray();
+    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
+  }, []);
   const items = groupThreads(allThreads ?? []);
   const activeId = view.mode === "single" ? view.threadId : view.pairId;
 

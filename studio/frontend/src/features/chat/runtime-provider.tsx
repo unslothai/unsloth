@@ -669,6 +669,13 @@ function ThreadAutoSwitch({
     }
   }, [aui, isLoading, mainThreadId, threadId]);
 
+  useEffect(() => {
+    if (isLoading || mainThreadId !== threadId) {
+      return;
+    }
+    useChatRuntimeStore.getState().setActiveThreadId(threadId);
+  }, [isLoading, mainThreadId, threadId]);
+
   return null;
 }
 
@@ -683,29 +690,13 @@ function ThreadNewChatSwitch({
       return;
     }
 
-    let cancelled = false;
     // Clear immediately so the adapter never picks up a stale thread ID
-    // from a previous chat while we initialize the new one.
+    // from a previous chat. Do not call initialize() here — that persisted an
+    // empty "New Chat" row on every New Chat click. Persistence runs on first
+    // real message append (history.append → threadListItem.initialize).
     useChatRuntimeStore.getState().setActiveThreadId(null);
 
-    void (async () => {
-      try {
-        aui.threads().switchToNewThread();
-        const { remoteId } = await aui.threadListItem().initialize();
-        if (!cancelled) {
-          useChatRuntimeStore.getState().setActiveThreadId(remoteId);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          useChatRuntimeStore.getState().setActiveThreadId(null);
-        }
-        console.error("Failed to initialize new chat thread", error);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    void aui.threads().switchToNewThread();
   }, [aui, isLoading, nonce]);
 
   return null;
@@ -754,7 +745,9 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      <ActiveThreadSync enabled={modelType === "base" && !pairId && !newThreadNonce} />
+      <ActiveThreadSync
+        enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
+      />
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />

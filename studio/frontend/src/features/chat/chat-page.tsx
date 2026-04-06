@@ -479,11 +479,19 @@ function TopBarActions({
   );
 }
 
+function getInitialSingleChatView(): ChatView {
+  const id = useChatRuntimeStore.getState().activeThreadId;
+  if (typeof id === "string" && id.length > 0 && !id.startsWith("__LOCALID_")) {
+    return { mode: "single", threadId: id };
+  }
+  return { mode: "single" };
+}
+
 export function ChatPage(): ReactElement {
-  const [view, setView] = useState<ChatView>({
-    mode: "single",
-    newThreadNonce: crypto.randomUUID(),
-  });
+  // Do not set newThreadNonce here: each /chat mount would run ThreadNewChatSwitch
+  // and create spurious threads when navigating (e.g. Recipes / Export). New Chat
+  // explicitly sets a nonce in handleNewThread.
+  const [view, setView] = useState<ChatView>(getInitialSingleChatView);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
@@ -587,9 +595,31 @@ export function ChatPage(): ReactElement {
     void ejectModel();
   }, [ejectModel]);
   const handleNewThread = useCallback(() => {
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-    setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
-  }, []);
+    void (async () => {
+      if (view.mode === "single") {
+        const currentThreadId = view.threadId ?? activeThreadId;
+        if (!currentThreadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+          setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+          return;
+        }
+        try {
+          const messageCount = await db.messages
+            .where("threadId")
+            .equals(currentThreadId)
+            .limit(1)
+            .count();
+          if (messageCount === 0) {
+            return;
+          }
+        } catch {
+          // allow explicit new chat if Dexie fails
+        }
+      }
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+    })();
+  }, [activeThreadId, view]);
   const handleNewCompare = useCallback(() => {
     setView({ mode: "compare", pairId: crypto.randomUUID() });
     // Clear activeThreadId so compare panes do not inherit the single-chat
