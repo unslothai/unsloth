@@ -138,6 +138,30 @@ def _resolve_hf_cache_dir() -> Path:
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _is_model_directory(d: Path) -> bool:
+    """Return ``True`` when *d* looks like a model directory.
+
+    A model directory must have **both** a config file (``config.json`` or
+    ``adapter_config.json``) **and** weight files (``.gguf``, ``.safetensors``,
+    or ``.bin``).  Both conditions are required: a bare directory with only
+    loose ``.gguf`` files (no config) might be a mixed collection, and a
+    ``config.json`` alone (no weights) is not a model directory.
+    """
+    try:
+        has_config = (d / "config.json").exists() or (
+            d / "adapter_config.json"
+        ).exists()
+        if not has_config:
+            return False
+        return any(
+            f.suffix.lower() in (".gguf", ".safetensors", ".bin")
+            for f in d.iterdir()
+            if f.is_file()
+        )
+    except OSError:
+        return False
+
+
 def _scan_models_dir(
     models_dir: Path,
     *,
@@ -146,32 +170,14 @@ def _scan_models_dir(
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
-    # Check if the directory itself IS a model (has a model config AND
-    # weight files).  Both conditions are required: a bare directory with
-    # only loose .gguf files (no config) might be a mixed collection that
-    # should list files individually, and a config.json alone (no weights)
-    # does not make a model directory.
-    try:
-        _has_config = (models_dir / "config.json").exists() or (
-            models_dir / "adapter_config.json"
-        ).exists()
-        _has_weights = any(
-            f.suffix.lower() in (".gguf", ".safetensors", ".bin")
-            for f in models_dir.iterdir()
-            if f.is_file()
-        )
-        _is_self_model = _has_config and _has_weights
-    except OSError:
-        _is_self_model = False
-
-    found: List[LocalModelInfo] = []
+    _is_self_model = _is_model_directory(models_dir)
 
     if _is_self_model:
         try:
             updated_at = models_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        found.append(
+        return [
             LocalModelInfo(
                 id = str(models_dir),
                 display_name = models_dir.name,
@@ -179,8 +185,9 @@ def _scan_models_dir(
                 source = "models_dir",
                 updated_at = updated_at,
             ),
-        )
+        ]
 
+    found: List[LocalModelInfo] = []
     for child in models_dir.iterdir():
         if limit is not None and len(found) >= limit:
             break
@@ -213,10 +220,8 @@ def _scan_models_dir(
                 updated_at = updated_at,
             ),
         )
-    # Also scan for standalone .gguf files directly in the models directory.
-    # Skip this when the directory itself is a model -- its weight files are
-    # already represented by the single self-model entry above.
-    if not _is_self_model and (limit is None or len(found) < limit):
+    # Also scan for standalone .gguf files directly in the models directory
+    if limit is None or len(found) < limit:
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
@@ -281,23 +286,9 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
 
     # If the directory itself is a model directory (has config AND weight
     # files), it is not an LM Studio publisher structure -- _scan_models_dir
-    # already handles it.  Both conditions are required so that a stray
-    # config.json alone does not suppress scanning of nested LM Studio models.
-    try:
-        _has_config = (lm_dir / "config.json").exists() or (
-            lm_dir / "adapter_config.json"
-        ).exists()
-        _has_weights = any(
-            f.suffix.lower() in (".gguf", ".safetensors", ".bin")
-            for f in lm_dir.iterdir()
-            if f.is_file()
-        )
-        if _has_config and _has_weights:
-            return []
-    except OSError:
-        # If we cannot stat the files (permissions, broken symlink, etc.),
-        # treat the directory as a normal LM Studio root and continue.
-        pass
+    # already handles it.
+    if _is_model_directory(lm_dir):
+        return []
 
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
@@ -320,15 +311,9 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 continue
 
             # If the child directory itself looks like a model directory
-            # (has config metadata), skip it -- _scan_models_dir already
-            # handles it.  Only check for config files here, NOT weight
-            # files: a publisher directory may legitimately contain direct
-            # .gguf files that the inner scan handles.
-            _child_is_model = (
-                (child / "config.json").exists()
-                or (child / "adapter_config.json").exists()
-            )
-            if _child_is_model:
+            # (has config AND weight files), skip it -- _scan_models_dir
+            # already handles it.
+            if _is_model_directory(child):
                 continue
 
             # child is a publisher directory -- scan its sub-directories

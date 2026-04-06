@@ -1034,6 +1034,26 @@ def list_gguf_variants(
     return variants, has_vision
 
 
+def _resolve_gguf_dir(p: Path) -> Optional[Path]:
+    """Resolve a path to the directory containing GGUF variants.
+
+    If *p* is already a directory, returns it directly.  If *p* is a ``.gguf``
+    file whose parent directory has model metadata (``config.json`` or
+    ``adapter_config.json``), returns the parent -- all GGUFs in that
+    directory belong to the same model.  Returns ``None`` for loose standalone
+    GGUFs (no config) to avoid cross-wiring unrelated models.
+    """
+    if p.is_dir():
+        return p
+    if p.is_file() and p.suffix.lower() == ".gguf":
+        parent = p.parent
+        if (parent / "config.json").exists() or (
+            parent / "adapter_config.json"
+        ).exists():
+            return parent
+    return None
+
+
 def list_local_gguf_variants(
     directory: str,
 ) -> tuple[list[GgufVariantInfo], bool]:
@@ -1046,23 +1066,9 @@ def list_local_gguf_variants(
     Returns:
         (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
     """
-    p = Path(directory)
-    # If a .gguf file path was passed (e.g. a standalone .gguf entry), fall
-    # back to the parent directory only when the parent has model metadata
-    # (config.json / adapter_config.json).  This confirms all GGUFs in that
-    # directory belong to the same model.  For loose standalone GGUFs without
-    # a config file, return empty to avoid cross-wiring unrelated models.
-    if not p.is_dir():
-        if p.is_file() and p.suffix.lower() == ".gguf":
-            parent = p.parent
-            if (parent / "config.json").exists() or (
-                parent / "adapter_config.json"
-            ).exists():
-                p = parent
-            else:
-                return [], False
-        else:
-            return [], False
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
+        return [], False
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
@@ -1101,20 +1107,9 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     Returns the resolved absolute path, or ``None`` if no match.
     """
-    p = Path(directory)
-    # If a .gguf file path was passed, use its parent directory only when
-    # the parent has model metadata, confirming the GGUFs belong together.
-    if not p.is_dir():
-        if p.is_file() and p.suffix.lower() == ".gguf":
-            parent = p.parent
-            if (parent / "config.json").exists() or (
-                parent / "adapter_config.json"
-            ).exists():
-                p = parent
-            else:
-                return None
-        else:
-            return None
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
+        return None
 
     matches = sorted(
         f
