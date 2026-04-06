@@ -108,8 +108,6 @@ FORCE_FLOAT32 = [
     "gemma3n",
     "gpt_oss",
     "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
-    "gemma4,",  # Add comma bc gemma4 will match gemma4_text
-    "gemma4_text",
 ]
 
 global DISABLE_COMPILE_MODEL_NAMES
