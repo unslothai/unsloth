@@ -33,12 +33,10 @@ export const Route = createRootRoute({
 });
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
-const HIDDEN_FOOTER_ROUTES = ["/login", "/change-password", "/chat"];
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
-  const hideFooter = HIDDEN_FOOTER_ROUTES.includes(pathname);
 
   return (
     <AppProvider>
@@ -56,7 +54,7 @@ function RootLayout() {
           </Suspense>
         </motion.div>
       </AnimatePresence>
-      {!hideFooter && <VersionFooter />}
+      <VersionFooter />
     </AppProvider>
   );
 }
