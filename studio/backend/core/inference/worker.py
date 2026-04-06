@@ -329,9 +329,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         if not trust_remote_code:
             model_name = config["model_name"]
             _mn_lower = model_name.lower()
-            if (
-                "nemotron" in _mn_lower
-                and (_mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/"))
+            if "nemotron" in _mn_lower and (
+                _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
             ):
                 trust_remote_code = True
                 logger.info(
