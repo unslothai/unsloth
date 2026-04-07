@@ -21,8 +21,84 @@ import { Switch } from "@/components/ui/switch";
 import { AlertCircleIcon, ArrowRight01Icon, CheckmarkCircle02Icon, Key01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
+import { streamExportLogs, type ExportLogEntry } from "../api/export-api";
 import { collapseAnim } from "../anim";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
+
+// Max log lines kept in the dialog's local state. Matches the backend
+// ring buffer's maxlen so the UI shows the full scrollback captured
+// server side.
+const MAX_LOG_LINES = 4000;
+
+interface UseExportLogsResult {
+  lines: ExportLogEntry[];
+  connected: boolean;
+  error: string | null;
+}
+
+/**
+ * Subscribe to the live export log SSE stream while `exporting` is
+ * true, and accumulate lines in local state. Lines from the previous
+ * run are cleared when a new export starts.
+ */
+function useExportLogs(exporting: boolean): UseExportLogsResult {
+  const [lines, setLines] = useState<ExportLogEntry[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!exporting) return;
+
+    setLines([]);
+    setError(null);
+
+    const abortCtrl = new AbortController();
+    let cancelled = false;
+
+    streamExportLogs({
+      signal: abortCtrl.signal,
+      onOpen: () => {
+        if (!cancelled) setConnected(true);
+      },
+      onEvent: (event) => {
+        if (cancelled) return;
+        if (event.event === "log" && event.entry) {
+          const entry = event.entry;
+          setLines((prev) => {
+            const next = prev.length >= MAX_LOG_LINES
+              ? prev.slice(prev.length - MAX_LOG_LINES + 1)
+              : prev.slice();
+            next.push(entry);
+            return next;
+          });
+        } else if (event.event === "error" && event.error) {
+          setError(event.error);
+        }
+      },
+    }).catch((err: unknown) => {
+      if (cancelled) return;
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setError(err instanceof Error ? err.message : String(err));
+    }).finally(() => {
+      if (!cancelled) setConnected(false);
+    });
+
+    return () => {
+      cancelled = true;
+      abortCtrl.abort();
+      setConnected(false);
+    };
+  }, [exporting]);
+
+  return { lines, connected, error };
+}
+
+function formatLogLine(entry: ExportLogEntry): string {
+  // Strip trailing carriage returns that tqdm-style progress leaves
+  // in the stream so the scrollback doesn't render funky boxes.
+  return entry.line.replace(/\r+$/g, "");
+}
 
 type Destination = "local" | "hub";
 
@@ -75,6 +151,35 @@ export function ExportDialog({
   exportError,
   exportSuccess,
 }: ExportDialogProps) {
+  // Live log capture is only meaningful for export methods that run
+  // a slow subprocess operation with interesting stdout: merged and
+  // gguf. LoRA adapter export is a fast disk write and would just
+  // show a blank panel, so we hide it there.
+  const showLogPanel =
+    exportMethod === "merged" || exportMethod === "gguf";
+
+  const { lines: logLines, connected: logConnected, error: logError } =
+    useExportLogs(exporting && showLogPanel);
+
+  const logScrollRef = useRef<HTMLDivElement | null>(null);
+  // Auto-scroll to bottom whenever a new line arrives, unless the
+  // user has scrolled up to read earlier output.
+  const [followTail, setFollowTail] = useState(true);
+
+  useEffect(() => {
+    if (!followTail) return;
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logLines, followTail]);
+
+  const handleLogScroll = () => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const nearBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setFollowTail(nearBottom);
+  };
+
   return (
     <Dialog
       open={open}
@@ -83,7 +188,10 @@ export function ExportDialog({
         onOpenChange(v);
       }}
     >
-      <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => { if (exporting) e.preventDefault(); }}>
+      <DialogContent
+        className={showLogPanel ? "sm:max-w-2xl" : "sm:max-w-lg"}
+        onInteractOutside={(e) => { if (exporting) e.preventDefault(); }}
+      >
         {exportSuccess ? (
           <>
             <div className="flex flex-col items-center gap-3 py-6">
@@ -255,6 +363,73 @@ export function ExportDialog({
             <span className="font-medium text-foreground">{estimatedSize}</span>
           </div> */}
             </div>
+
+            {/* Live export output panel */}
+            <AnimatePresence>
+              {showLogPanel && (exporting || logLines.length > 0) && (
+                <motion.div {...collapseAnim} className="overflow-hidden">
+                  <div className="flex flex-col gap-1.5 pt-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Export output
+                      </label>
+                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground/80">
+                        <span
+                          className={
+                            logConnected
+                              ? "inline-block size-1.5 rounded-full bg-emerald-500"
+                              : "inline-block size-1.5 rounded-full bg-muted-foreground/40"
+                          }
+                        />
+                        <span>
+                          {logConnected
+                            ? "streaming"
+                            : exporting
+                              ? "connecting..."
+                              : "idle"}
+                        </span>
+                      </div>
+                    </div>
+                    <div
+                      ref={logScrollRef}
+                      onScroll={handleLogScroll}
+                      className="h-56 w-full overflow-auto rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-[11px] leading-[1.45] text-emerald-200/90"
+                    >
+                      {logLines.length === 0 ? (
+                        <div className="flex h-full items-center justify-center text-muted-foreground/70">
+                          <span className="flex items-center gap-2">
+                            <Spinner className="size-3" />
+                            Waiting for worker output...
+                          </span>
+                        </div>
+                      ) : (
+                        <pre className="whitespace-pre-wrap break-words">
+                          {logLines.map((entry, idx) => (
+                            <div
+                              key={idx}
+                              className={
+                                entry.stream === "stderr"
+                                  ? "text-rose-300/90"
+                                  : entry.stream === "status"
+                                    ? "text-sky-300/90"
+                                    : ""
+                              }
+                            >
+                              {formatLogLine(entry)}
+                            </div>
+                          ))}
+                        </pre>
+                      )}
+                    </div>
+                    {logError && (
+                      <p className="text-[11px] text-destructive/80">
+                        Log stream: {logError}
+                      </p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <DialogFooter>
               <Button

@@ -17,16 +17,144 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
+import errno
 import structlog
 from loggers import get_logger
 import os
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+
+
+def _setup_log_capture(resp_queue: Any) -> None:
+    """Redirect fds 1 and 2 through pipes so every line printed by this
+    worker process and any child process it spawns is forwarded to the
+    parent process via resp_queue as {"type": "log", ...} messages.
+
+    Must be called BEFORE LogConfig.setup_logging and BEFORE any ML
+    imports, otherwise library handlers may capture the original stderr
+    reference and bypass the pipe.
+
+    Lines are also echoed back to the original stdout/stderr so the
+    server console keeps receiving the full subprocess output.
+    """
+
+    try:
+        saved_out_fd = os.dup(1)
+        saved_err_fd = os.dup(2)
+    except OSError:
+        # dup failed (exotic platforms) - give up quietly, export still
+        # works, just no live log streaming.
+        return
+
+    try:
+        r_out, w_out = os.pipe()
+        r_err, w_err = os.pipe()
+    except OSError:
+        os.close(saved_out_fd)
+        os.close(saved_err_fd)
+        return
+
+    try:
+        os.dup2(w_out, 1)
+        os.dup2(w_err, 2)
+    except OSError:
+        for fd in (saved_out_fd, saved_err_fd, r_out, w_out, r_err, w_err):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return
+
+    # Close the write ends we just dup2'd (fds 1 and 2 are the real
+    # write ends now).
+    os.close(w_out)
+    os.close(w_err)
+
+    # Replace Python's sys.stdout/sys.stderr with line-buffered writers
+    # bound to the (now-redirected) fds 1 and 2.
+    try:
+        sys.stdout = os.fdopen(1, "w", buffering = 1, encoding = "utf-8", errors = "replace")
+        sys.stderr = os.fdopen(2, "w", buffering = 1, encoding = "utf-8", errors = "replace")
+    except Exception:
+        pass
+
+    def _reader(read_fd: int, stream_name: str, echo_fd: int) -> None:
+        buf = bytearray()
+        while True:
+            try:
+                chunk = os.read(read_fd, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EBADF:
+                    break
+                continue
+            if not chunk:
+                break
+            # Echo to the original fd so the server console still sees
+            # the full output.
+            try:
+                os.write(echo_fd, chunk)
+            except OSError:
+                pass
+            buf.extend(chunk)
+            # Split on \n OR \r so tqdm-style progress bars update.
+            while True:
+                nl = -1
+                for i, b in enumerate(buf):
+                    if b == 0x0A or b == 0x0D:
+                        nl = i
+                        break
+                if nl < 0:
+                    break
+                line = bytes(buf[:nl]).decode("utf-8", errors = "replace")
+                del buf[: nl + 1]
+                if not line:
+                    continue
+                try:
+                    resp_queue.put_nowait(
+                        {
+                            "type": "log",
+                            "stream": stream_name,
+                            "line": line,
+                            "ts": time.time(),
+                        }
+                    )
+                except Exception:
+                    # Queue put failed (full, closed, etc.) - drop the
+                    # line rather than crash the reader thread.
+                    pass
+        if buf:
+            try:
+                resp_queue.put_nowait(
+                    {
+                        "type": "log",
+                        "stream": stream_name,
+                        "line": bytes(buf).decode("utf-8", errors = "replace"),
+                        "ts": time.time(),
+                    }
+                )
+            except Exception:
+                pass
+
+    t_out = threading.Thread(
+        target = _reader,
+        args = (r_out, "stdout", saved_out_fd),
+        daemon = True,
+        name = "export-log-stdout",
+    )
+    t_err = threading.Thread(
+        target = _reader,
+        args = (r_err, "stderr", saved_err_fd),
+        daemon = True,
+        name = "export-log-stderr",
+    )
+    t_out.start()
+    t_err.start()
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -226,10 +354,19 @@ def run_export_process(
     """
     import queue as _queue
 
+    # Install fd-level stdout/stderr capture FIRST so every subsequent
+    # print and every child process inherits the redirected fds. This
+    # is what powers the live export log stream in the UI.
+    _setup_log_capture(resp_queue)
+
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = (
         "ignore"  # Suppress warnings at C-level before imports
     )
+    # Force unbuffered output from any child Python process (e.g. the
+    # GGUF converter) so their prints surface in the log stream as they
+    # happen rather than at the end.
+    os.environ["PYTHONUNBUFFERED"] = "1"
 
     import warnings
     from loggers.config import LogConfig
