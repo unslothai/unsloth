@@ -515,15 +515,29 @@ if [ "$_DOCKER_NO_VENV" = true ]; then
     # install_python_stack.py has steps 1-5 commented out for this branch.
     python "$SCRIPT_DIR/install_python_stack.py"
 
-    # Pre-install transformers 5.x into .venv_t5
+    # Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/
     echo ""
     echo "   Pre-installing transformers 5.x for newer model support..."
-    mkdir -p "$VENV_T5_DIR"
-    pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0" 2>/dev/null
-    pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1" 2>/dev/null
-    pip install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2" 2>/dev/null
-    pip install --target "$VENV_T5_DIR" "tiktoken" 2>/dev/null
-    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+
+    # Clean up legacy single .venv_t5 directory
+    [ -d "$STUDIO_HOME/.venv_t5" ] && rm -rf "$STUDIO_HOME/.venv_t5"
+
+    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
+    mkdir -p "$VENV_T5_530_DIR"
+    pip install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0" 2>/dev/null
+    pip install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0" 2>/dev/null
+    pip install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2" 2>/dev/null
+    pip install --target "$VENV_T5_530_DIR" "tiktoken" 2>/dev/null
+
+    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
+    mkdir -p "$VENV_T5_550_DIR"
+    pip install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0" 2>/dev/null
+    pip install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0" 2>/dev/null
+    pip install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2" 2>/dev/null
+    pip install --target "$VENV_T5_550_DIR" "tiktoken" 2>/dev/null
+
+    echo "✅ Transformers 5.3.0 pre-installed to $VENV_T5_530_DIR/"
+    echo "✅ Transformers 5.5.0 pre-installed to $VENV_T5_550_DIR/"
 
     echo ""
     echo "╔══════════════════════════════════════╗"
