@@ -32,8 +32,9 @@ from auth.authentication import get_current_subject
 # Import backend functions
 try:
     from utils.models import (
-        scan_trained_loras,
+        scan_trained_models,
         scan_exported_models,
+        get_base_model_from_checkpoint,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
@@ -62,8 +63,9 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from utils.models import (
-        scan_trained_loras,
+        scan_trained_models,
         scan_exported_models,
+        get_base_model_from_checkpoint,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
@@ -791,15 +793,16 @@ async def scan_loras(
         lora_list = []
 
         # Scan training outputs
-        trained_loras = scan_trained_loras(outputs_dir = resolved_outputs_dir)
-        for display_name, adapter_path in trained_loras:
-            base_model = get_base_model_from_lora(adapter_path)
+        trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+        for display_name, model_path, model_type in trained_models:
+            base_model = get_base_model_from_checkpoint(model_path)
             lora_list.append(
                 LoRAInfo(
                     display_name = display_name,
-                    adapter_path = adapter_path,
+                    adapter_path = model_path,
                     base_model = base_model,
                     source = "training",
+                    export_type = model_type,
                 )
             )
 

@@ -235,7 +235,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
             <div className="px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Fine-tuned (LoRA)
+                Fine-tuned
               </span>
             </div>
             <div className="min-h-0 flex-1">

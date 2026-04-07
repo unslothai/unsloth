@@ -1330,7 +1330,7 @@ export function LoraModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search local adapters"
+          placeholder="Search trained models"
           className="h-9 pl-8"
         />
       </div>
@@ -1339,7 +1339,7 @@ export function LoraModelPicker({
         <div className="p-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No adapters found.
+              No trained models found.
             </div>
           ) : (
             grouped.map(([baseModel, adapters], index) => (
@@ -1348,9 +1348,11 @@ export function LoraModelPicker({
                 <ListLabel>{baseModel}</ListLabel>
                 {adapters.map((adapter) => {
                   const isLocal = adapter.source === "local";
+                  const isTraining = adapter.source === "training";
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
+                  const isTrainingFull = isTraining && isMerged;
                   const isLocalGgufDir =
                     isLocal &&
                     (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
@@ -1360,6 +1362,8 @@ export function LoraModelPicker({
                       : "Local"
                     : isGguf
                       ? "GGUF"
+                      : isTrainingFull
+                        ? "Full"
                       : isExported
                         ? isMerged
                           ? "Merged"
@@ -1369,6 +1373,8 @@ export function LoraModelPicker({
                     ? isLocalGgufDir
                       ? "GGUF"
                       : "Local"
+                    : isTrainingFull
+                      ? "Full finetune"
                     : isExported
                       ? `${tag} · Exported`
                       : tag;
