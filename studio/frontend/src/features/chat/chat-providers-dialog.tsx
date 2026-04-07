@@ -607,8 +607,7 @@ export function ChatProvidersDialog({
                   </SelectContent>
                 </Select>
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Choose a provider from Studio's supported list. Your API key stays on this
-                  device and is encrypted before each request.
+                  Choose a provider from Studio's supported list.
                 </p>
               </div>
 
@@ -639,8 +638,7 @@ export function ChatProvidersDialog({
                   className="h-10 text-sm"
                 />
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Leave blank to use the registry default for this provider type. Set this to
-                  target a custom OpenAI-compatible endpoint.
+                  Leave blank to use the registry default for this provider type.
                 </p>
               </div>
 
