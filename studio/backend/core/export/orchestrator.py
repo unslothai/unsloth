@@ -118,9 +118,7 @@ class ExportOrchestrator:
     def get_logs_since(self, cursor: int) -> Tuple[List[Dict[str, Any]], int]:
         """Return log entries with seq > cursor, plus the new cursor."""
         with self._log_lock:
-            new_entries = [
-                entry for entry in self._log_buffer if entry["seq"] > cursor
-            ]
+            new_entries = [entry for entry in self._log_buffer if entry["seq"] > cursor]
         if new_entries:
             return new_entries, new_entries[-1]["seq"]
         return [], cursor
@@ -359,9 +357,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = resp.get("checkpoint")
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
-                    logger.info(
-                        "Checkpoint '%s' loaded in subprocess", checkpoint_path
-                    )
+                    logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
                     return True, resp.get("message", "Loaded successfully")
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
