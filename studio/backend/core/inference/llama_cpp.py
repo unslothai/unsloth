@@ -109,6 +109,7 @@ class LlamaCppBackend:
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        self._speculative_type: Optional[str] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
@@ -197,6 +198,10 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def speculative_type(self) -> Optional[str]:
+        return self._speculative_type
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -1055,6 +1060,7 @@ class LlamaCppBackend:
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
+        speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -1315,6 +1321,46 @@ class LlamaCppBackend:
             else:
                 self._cache_type_kv = None
 
+            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+            # variable draft lengths.  Helps most when the model repeats
+            # existing text (code refactoring, summarization, reasoning).
+            # For general chat with low repetition, overhead is ~5 ms.
+            #
+            # Benchmarks from llama.cpp PRs #18471, #19164:
+            #   Scenario                        | Without | With    | Speedup
+            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+            #
+            # Params from llama.cpp docs (docs/speculative.md):
+            #   --spec-ngram-size-n 24  (small n not recommended)
+            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+            #     dense models can reduce these)
+            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            _valid_spec_types = {"ngram-simple", "ngram-mod"}
+            if speculative_type and speculative_type in _valid_spec_types:
+                if not is_vision:  # spec decoding disabled for vision models
+                    cmd.extend(["--spec-type", speculative_type])
+                    if speculative_type == "ngram-mod":
+                        cmd.extend(
+                            [
+                                "--spec-ngram-size-n",
+                                "24",
+                                "--draft-min",
+                                "48",
+                                "--draft-max",
+                                "64",
+                            ]
+                        )
+                    self._speculative_type = speculative_type
+                else:
+                    self._speculative_type = None
+            else:
+                self._speculative_type = None
+
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
@@ -1553,6 +1599,7 @@ class LlamaCppBackend:
             self._reasoning_always_on = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_heads = None
