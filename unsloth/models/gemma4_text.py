@@ -247,7 +247,7 @@ class ProportionalRoPE(nn.Module):
     def __call__(self, x: mx.array, offset: int = 0) -> mx.array:
         # x shape: (B, n_heads, L, head_dim)
         seq_len = x.shape[-2]
-        positions = mx.arange(int(offset), int(offset) + seq_len, dtype = mx.float32)
+        positions = mx.arange(seq_len, dtype = mx.float32) + offset
 
         # (L, head_dim//2)
         freqs = mx.outer(positions, self._inv_freq)
