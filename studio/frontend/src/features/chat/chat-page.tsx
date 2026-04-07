@@ -71,6 +71,7 @@ type LoraCandidate = {
   id: string;
   baseModel: string;
   updatedAt?: number;
+  exportType?: "lora" | "merged" | "gguf";
 };
 
 function normalizeModelRef(value: string | null | undefined): string {
@@ -81,12 +82,13 @@ function pickBestLoraForBase(
   loras: LoraCandidate[],
   baseModel: string | null,
 ): LoraCandidate | null {
-  if (loras.length === 0) return null;
-  const sorted = [...loras].sort(
+  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
+  if (adapterOnly.length === 0) return null;
+  const sorted = [...adapterOnly].sort(
     (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
   );
   const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0];
+  if (!normalizedBase) return sorted[0] ?? null;
 
   const exact = sorted.find(
     (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
@@ -101,7 +103,7 @@ function pickBestLoraForBase(
       normalizedBase.includes(normalizedLoraBase)
     );
   });
-  return partial ?? sorted[0];
+  return partial ?? sorted[0] ?? null;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -154,7 +156,8 @@ type CompareModelSelection = {
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
     const cp = s.params.checkpoint;
-    return cp ? s.loras.some((l) => l.id === cp) : false;
+    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
+    return selected?.exportType === "lora";
   });
 }
 

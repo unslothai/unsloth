@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 import types as _types
+import importlib
 
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -90,3 +91,11 @@ def test_model_config_full_finetune_local_path_is_not_lora(
     assert config is not None
     assert config.is_lora is False
     assert config.base_model is None
+
+
+def test_scan_trained_loras_aliases_scan_trained_models():
+    utils_models = importlib.import_module("utils.models")
+    core_module = importlib.import_module("core")
+
+    assert utils_models.scan_trained_loras is utils_models.scan_trained_models
+    assert core_module.scan_trained_loras is core_module.scan_trained_models
