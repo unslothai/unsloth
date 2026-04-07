@@ -48,6 +48,27 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
     if not local_indices:
         return
 
+    # Only gate on model-loaded if a local provider is actually referenced
+    # by a model_config. Unused local provider nodes should not block runs.
+    local_names = {providers[i].get("name") for i in local_indices}
+    referenced_providers = {
+        mc.get("provider")
+        for mc in recipe.get("model_configs", [])
+        if isinstance(mc, dict)
+    }
+    if not local_names & referenced_providers:
+        # No model_config actually uses a local provider, just inject and move on
+        from urllib.parse import urlparse
+
+        parsed = urlparse(request_base_url)
+        port = parsed.port or 8888
+        endpoint = f"http://127.0.0.1:{port}/v1"
+        for i in local_indices:
+            providers[i]["endpoint"] = endpoint
+            providers[i]["api_key"] = ""
+            providers[i]["provider_type"] = "openai"
+        return
+
     # Verify a model is loaded.
     # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
     # or swapped after this check but before the recipe subprocess calls /v1.

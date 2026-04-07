@@ -74,7 +74,7 @@ def _patch_local_providers(recipe: dict[str, Any]) -> None:
         if not isinstance(provider, dict):
             continue
         if provider.pop("is_local", None):
-            provider.setdefault("endpoint", "http://127.0.0.1")
+            provider["endpoint"] = "http://127.0.0.1"
 
 
 @router.post("/validate", response_model = ValidateResponse)
