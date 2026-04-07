@@ -642,6 +642,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
+        const externalBackendProviderType =
+          externalProvider?.providerType === "custom"
+            ? "openai"
+            : externalProvider?.providerType;
         const buildRequestPayload = async (forceRefreshPublicKey = false) =>
           isExternalRequest
             ? {
@@ -653,7 +657,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 max_tokens: params.maxTokens,
                 presence_penalty: params.presencePenalty,
                 provider_id: externalProvider?.id,
-                provider_type: externalProvider?.providerType,
+                provider_type: externalBackendProviderType,
                 external_model: externalSelection.modelId,
                 encrypted_api_key: await encryptProviderApiKey(
                   externalApiKey,
