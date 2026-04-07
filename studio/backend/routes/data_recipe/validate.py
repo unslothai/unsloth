@@ -68,6 +68,15 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
     return errors
 
 
+def _patch_local_providers(recipe: dict[str, Any]) -> None:
+    """Strip is_local and fill a dummy endpoint so validation doesn't choke."""
+    for provider in recipe.get("model_providers", []):
+        if not isinstance(provider, dict):
+            continue
+        if provider.pop("is_local", None):
+            provider.setdefault("endpoint", "http://127.0.0.1")
+
+
 @router.post("/validate", response_model = ValidateResponse)
 def validate(payload: RecipePayload) -> ValidateResponse:
     recipe = payload.recipe
@@ -76,6 +85,8 @@ def validate(payload: RecipePayload) -> ValidateResponse:
             valid = False,
             errors = [ValidateError(message = "Recipe must include columns.")],
         )
+
+    _patch_local_providers(recipe)
 
     try:
         validate_recipe(recipe)

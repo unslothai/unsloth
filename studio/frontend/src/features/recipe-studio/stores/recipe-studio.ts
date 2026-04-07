@@ -736,6 +736,25 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         configs = applyRenameToConfigs(configs, oldName, newName);
       }
 
+      // When a provider switches from local → external, clear stale
+      // model: "local" on any model_config that references it.
+      if (
+        current.kind === "model_provider" &&
+        current.is_local &&
+        !next.is_local
+      ) {
+        const providerName = next.name;
+        for (const [cfgId, cfg] of Object.entries(configs)) {
+          if (
+            cfg.kind === "model_config" &&
+            cfg.provider === providerName &&
+            cfg.model === "local"
+          ) {
+            configs = { ...configs, [cfgId]: { ...cfg, model: "" } };
+          }
+        }
+      }
+
       return { configs, nodes, edges };
     };
     set(applyUpdate);
