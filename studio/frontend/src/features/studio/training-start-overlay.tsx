@@ -12,15 +12,104 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import {
   AnimatedSpan,
   Terminal,
   TypingAnimation,
 } from "@/components/ui/terminal";
-import { useTrainingActions, useTrainingRuntimeStore } from "@/features/training";
+import { getDownloadProgress } from "@/features/chat/api/chat-api";
+import {
+  useTrainingActions,
+  useTrainingConfigStore,
+  useTrainingRuntimeStore,
+} from "@/features/training";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
+
+const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+function formatBytes(n: number): string {
+  if (n <= 0) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+type DownloadState = {
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+};
+
+const EMPTY_DOWNLOAD_STATE: DownloadState = {
+  downloadedBytes: 0,
+  totalBytes: 0,
+  percent: 0,
+};
+
+function useModelDownloadProgress(modelName: string | null): DownloadState {
+  const phase = useTrainingRuntimeStore((s) => s.phase);
+  const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
+  const [state, setState] = useState<DownloadState>(EMPTY_DOWNLOAD_STATE);
+
+  const shouldPoll =
+    isStarting ||
+    phase === "configuring" ||
+    phase === "downloading_model" ||
+    phase === "downloading_dataset" ||
+    phase === "loading_model" ||
+    phase === "loading_dataset";
+
+  useEffect(() => {
+    if (!modelName || !HF_REPO_REGEX.test(modelName) || !shouldPoll) {
+      return;
+    }
+
+    let cancelled = false;
+    let finished = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      if (cancelled || finished) return;
+      try {
+        const prog = await getDownloadProgress(modelName);
+        if (cancelled) return;
+        const downloaded = prog.downloaded_bytes ?? 0;
+        const total = prog.expected_bytes ?? 0;
+        const ratio = prog.progress ?? 0;
+        const pct =
+          total > 0 ? Math.min(100, Math.round(ratio * 100)) : 0;
+        setState({
+          downloadedBytes: downloaded,
+          totalBytes: total,
+          percent: pct,
+        });
+        if (ratio >= 1.0) {
+          finished = true;
+          if (interval) {
+            clearInterval(interval);
+            interval = null;
+          }
+        }
+      } catch {
+        // Silently swallow; bar freezes at last value (matches chat flow).
+      }
+    };
+
+    void poll();
+    interval = setInterval(poll, 1500);
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, [modelName, shouldPoll]);
+
+  return state;
+}
 
 type TrainingStartOverlayProps = {
   message: string
@@ -33,6 +122,8 @@ export function TrainingStartOverlay({
 }: TrainingStartOverlayProps): ReactElement {
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
+  const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
+  const download = useModelDownloadProgress(selectedModel);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 
@@ -112,6 +203,23 @@ export function TrainingStartOverlay({
           <AnimatedSpan className="mt-2 text-muted-foreground">
             {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
           </AnimatedSpan>
+          {download.downloadedBytes > 0 ? (
+            <AnimatedSpan className="mt-3">
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                  <span>Downloading model weights...</span>
+                  <span className="tabular-nums">
+                    {download.totalBytes > 0
+                      ? `${formatBytes(download.downloadedBytes)} / ${formatBytes(download.totalBytes)} · ${download.percent}%`
+                      : `${formatBytes(download.downloadedBytes)} downloaded`}
+                  </span>
+                </div>
+                {download.totalBytes > 0 ? (
+                  <Progress value={download.percent} />
+                ) : null}
+              </div>
+            </AnimatedSpan>
+          ) : null}
           </Terminal>
         </div>
       </div>
