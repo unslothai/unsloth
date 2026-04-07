@@ -59,9 +59,7 @@ def test_get_base_model_from_checkpoint_falls_back_to_full_finetune_config(
     )
     (tmp_path / "model.safetensors").write_bytes(b"")
 
-    assert (
-        get_base_model_from_checkpoint(str(tmp_path)) == "HuggingFaceTB/SmolLM-135M"
-    )
+    assert get_base_model_from_checkpoint(str(tmp_path)) == "HuggingFaceTB/SmolLM-135M"
 
 
 def test_get_base_model_from_lora_rejects_full_finetune_dirs(tmp_path: Path):
