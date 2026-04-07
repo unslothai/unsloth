@@ -72,20 +72,20 @@ __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
     "save_to_gguf",
-    "save_to_vllm_4bit",
+    "save_to_autoround_4bit",
     "patch_saving_functions",
     "create_huggingface_repo",
 ]
 
 
 # ---------------------------------------------------------------------------
-# vLLM 4-bit export via Intel Auto-Round
+# 4-bit export via Intel Auto-Round
 # ---------------------------------------------------------------------------
 
-def save_to_vllm_4bit(
+def save_to_autoround_4bit(
     model_or_path,
     tokenizer=None,
-    output_dir: str = "vllm_4bit_model",
+    output_dir: str = "autoround_4bit_model",
     export_format: str = "auto_awq",   # "auto_awq" | "auto_gptq" | "auto_round"
     bits: int = 4,
     group_size: int = 128,
@@ -99,7 +99,7 @@ def save_to_vllm_4bit(
     token: Optional[str] = None,
     private: bool = False,
 ):
-    """Export a model to a 4-bit quantized format compatible with vLLM.
+    """Export a model to a 4-bit quantized format using Auto-Round.
 
     Uses Intel Auto-Round (https://github.com/intel/auto-round) to perform
     high-accuracy W4A16 quantization and saves as AWQ, GPTQ, or Auto-Round
@@ -136,7 +136,7 @@ def save_to_vllm_4bit(
         from auto_round import AutoRound
     except ImportError as exc:
         raise ImportError(
-            "Unsloth: auto-round is required for vLLM 4-bit export.\n"
+            "Unsloth: auto-round is required for Auto-Round 4-bit export.\n"
             "Install it with:  pip install auto-round\n"
             "GitHub: https://github.com/intel/auto-round"
         ) from exc
@@ -149,7 +149,7 @@ def save_to_vllm_4bit(
         )
 
     logger.warning_once(
-        f"Unsloth: Starting vLLM 4-bit export with Auto-Round "
+        f"Unsloth: Starting Auto-Round 4-bit export "
         f"(format={export_format}, bits={bits}, group_size={group_size}, iters={iters}). "
         f"This may take 10–30 minutes for a 7B model."
     )
@@ -173,7 +173,7 @@ def save_to_vllm_4bit(
             local_model = local_model.merge_and_unload()
 
         # Save merged weights to a temporary location so Auto-Round can load them.
-        _tmp_dir = tempfile.mkdtemp(prefix="_unsloth_vllm4bit_tmp_")
+        _tmp_dir = tempfile.mkdtemp(prefix="_unsloth_autoround4bit_tmp_")
         logger.warning_once(
             f"Unsloth: Saving merged 16-bit model to temporary dir: {_tmp_dir}"
         )
@@ -208,7 +208,7 @@ def save_to_vllm_4bit(
             shutil.rmtree(_tmp_dir, ignore_errors=True)
 
     logger.warning_once(
-        f"Unsloth: vLLM 4-bit model saved to '{output_dir}' "
+        f"Unsloth: Auto-Round 4-bit model saved to '{output_dir}' "
         f"(format={export_format}). "
         "Load with vLLM:  vllm serve <path> --quantization awq  (or gptq)"
     )

@@ -127,7 +127,7 @@ export async function exportLoRA(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
-export async function exportVllm4bit(params: {
+export async function exportAutoRound4bit(params: {
   save_directory: string;
   export_format?: string;
   bits?: number;
@@ -140,7 +140,7 @@ export async function exportVllm4bit(params: {
   hf_token?: string | null;
   private?: boolean;
 }): Promise<ExportOperationResponse> {
-  const response = await authFetch("/api/export/export/vllm4bit", {
+  const response = await authFetch("/api/export/export/autoround4bit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),

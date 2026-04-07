@@ -132,8 +132,8 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
     # Uses fields from ExportCommonOptions only
 
 
-class ExportVllm4bitRequest(ExportCommonOptions):
-    """Request for exporting the model to vLLM-compatible 4-bit format."""
+class ExportAutoRound4bitRequest(ExportCommonOptions):
+    """Request for exporting the model to 4-bit format using Auto-Round."""
 
     export_format: Literal["auto_awq", "auto_gptq", "auto_round"] = Field(
         "auto_awq",

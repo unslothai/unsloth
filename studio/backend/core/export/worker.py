@@ -161,8 +161,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
             )
-        elif export_type == "vllm4bit":
-            success, message = backend.export_vllm_4bit(
+        elif export_type == "autoround4bit":
+            success, message = backend.export_autoround_4bit(
                 save_directory = cmd.get("save_directory", ""),
                 export_format = cmd.get("export_format", "auto_awq"),
                 bits = cmd.get("bits", 4),

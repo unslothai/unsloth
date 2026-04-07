@@ -37,7 +37,7 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
-    ExportVllm4bitRequest,
+    ExportAutoRound4bitRequest,
 )
 
 router = APIRouter()
@@ -312,19 +312,19 @@ async def export_lora_adapter(
         )
 
 
-@router.post("/export/vllm4bit", response_model = ExportOperationResponse)
-async def export_vllm_4bit(
-    request: ExportVllm4bitRequest,
+@router.post("/export/autoround4bit", response_model = ExportOperationResponse)
+async def export_autoround_4bit(
+    request: ExportAutoRound4bitRequest,
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Export the model directly to vLLM 4-bit format using Auto-Round (AWQ/GPTQ).
+    Export the model to 4-bit format using Auto-Round (AWQ/GPTQ).
 
-    Wraps ExportBackend.export_vllm_4bit.
+    Wraps ExportBackend.export_autoround_4bit.
     """
     try:
         backend = get_export_backend()
-        success, message = backend.export_vllm_4bit(
+        success, message = backend.export_autoround_4bit(
             save_directory = request.save_directory,
             export_format = request.export_format,
             bits = request.bits,
@@ -345,8 +345,8 @@ async def export_vllm_4bit(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting vLLM 4-bit model: {e}", exc_info = True)
+        logger.error(f"Error exporting Auto-Round 4-bit model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to export vLLM 4-bit model: {str(e)}",
+            detail = f"Failed to export Auto-Round 4-bit model: {str(e)}",
         )

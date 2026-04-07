@@ -364,7 +364,7 @@ class ExportOrchestrator:
         except RuntimeError as exc:
             return False, str(exc)
 
-    def export_vllm_4bit(
+    def export_autoround_4bit(
         self,
         save_directory: str,
         export_format: str = "auto_awq",
@@ -383,7 +383,7 @@ class ExportOrchestrator:
 
         cmd = {
             "type": "export",
-            "export_type": "vllm4bit",
+            "export_type": "autoround4bit",
             "save_directory": save_directory,
             "export_format": export_format,
             "bits": bits,
@@ -399,7 +399,7 @@ class ExportOrchestrator:
         self._send_cmd(cmd)
 
         try:
-            resp = self._wait_response("export_vllm4bit_done", timeout=7200.0)
+            resp = self._wait_response("export_autoround4bit_done", timeout=7200.0)
             return resp.get("success", False), resp.get("message", "")
         except RuntimeError as exc:
             return False, str(exc)

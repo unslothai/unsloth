@@ -61,7 +61,7 @@ import {
   exportGGUF,
   exportLoRA,
   exportMerged,
-  exportVllm4bit,
+  exportAutoRound4bit,
   fetchCheckpoints,
   loadCheckpoint,
 } from "./api/export-api";
@@ -473,9 +473,9 @@ export function ExportPage() {
           hf_token: token,
           private: privateRepo,
         });
-      } else if (exportMethod === "vllm4bit") {
+      } else if (exportMethod === "autoround4bit") {
         const fmt = quantLevels[0] || "auto_awq";
-        await exportVllm4bit({
+        await exportAutoRound4bit({
           save_directory: `${saveDir}-${fmt.replace('auto_', '')}`,
           export_format: fmt,
           push_to_hub: pushToHub,
@@ -1044,7 +1044,7 @@ export function ExportPage() {
                     <QuantPicker value={quantLevels} onChange={setQuantLevels} />
                   </motion.div>
                 )}
-                {exportMethod === "vllm4bit" && (
+                {exportMethod === "autoround4bit" && (
                   <motion.div {...collapseAnim} className="overflow-visible">
                     <div className="flex flex-col gap-3">
                       <div className="flex items-center gap-2">

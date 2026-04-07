@@ -3,7 +3,7 @@
 
 import type { TrainingMethod } from "@/types/training";
 
-export type ExportMethod = "merged" | "lora" | "gguf" | "vllm4bit";
+export type ExportMethod = "merged" | "lora" | "gguf" | "autoround4bit";
 
 export const EXPORT_METHODS: {
   value: ExportMethod;
@@ -27,7 +27,7 @@ export const EXPORT_METHODS: {
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
   },
   {
-    value: "vllm4bit",
+    value: "autoround4bit",
     title: "4-bit (vLLM / Auto-Round)",
     description: "High-accuracy AWQ/GPTQ 4-bit for vLLM deployment.",
     tooltip:
@@ -81,7 +81,7 @@ export function getEstimatedSize(
   if (method === "lora") {
     return "~100 MB";
   }
-  if (method === "vllm4bit") {
+  if (method === "autoround4bit") {
     return "~4.1 GB";
   }
   return "—";
