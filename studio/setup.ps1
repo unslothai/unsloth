@@ -1579,23 +1579,37 @@ if ($stackExit -ne 0) {
     exit 1
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
-# Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
-# Gemma 4 models need transformers>=5.5.0.
-# Pre-install into separate directories to avoid runtime pip overhead.
-# The training subprocess prepends the appropriate dir to sys.path.
-Write-Host ""
+} else {
+    step "python" "dependencies up to date"
+    # Restore ErrorActionPreference (was lowered for pip/python section)
+    $ErrorActionPreference = $prevEAP
+}
 
-# Clean up legacy single .venv_t5 directory
+# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# Runs outside the deps fast-path gate so that upgrades from the legacy
+# single .venv_t5 are always migrated to the tiered layout.
+$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
+$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
 $VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
-if (Test-Path $VenvT5Legacy) { Remove-Item -Recurse -Force $VenvT5Legacy }
+
+$_NeedT5Install = $false
+if (Test-Path $VenvT5Legacy) {
+    Remove-Item -Recurse -Force $VenvT5Legacy
+    $_NeedT5Install = $true
+}
+if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
+# Also reinstall when python deps were updated
+if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
+
+if ($_NeedT5Install) {
+Write-Host ""
 
 $prevEAP_t5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
 # --- .venv_t5_530 (transformers 5.3.0) ---
 substep "pre-installing transformers 5.3.0 for newer model support..."
-$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
 if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
 New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
@@ -1629,7 +1643,6 @@ step "transformers" "5.3.0 pre-installed"
 
 # --- .venv_t5_550 (transformers 5.5.0) ---
 substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
-$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
 if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
 New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
 foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
@@ -1662,11 +1675,7 @@ if ($tiktokenInstallExit -ne 0) {
 $ErrorActionPreference = $prevEAP_t5
 step "transformers" "5.5.0 pre-installed"
 
-} else {
-    step "python" "dependencies up to date"
-    # Restore ErrorActionPreference (was lowered for pip/python section)
-    $ErrorActionPreference = $prevEAP
-}
+} # end $_NeedT5Install
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
