@@ -150,9 +150,9 @@ def test_raw_text_loader():
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
         assert "messy text" in clean_text, "Should clean text properly"
         paragraph_text = preprocessor.clean_text("Line 1\r\n\r\n\r\nLine 2")
-        assert paragraph_text == "Line 1\n\nLine 2", (
-            "Should preserve paragraph breaks while normalizing newlines"
-        )
+        assert (
+            paragraph_text == "Line 1\n\nLine 2"
+        ), "Should preserve paragraph breaks while normalizing newlines"
 
         # Test validation
         stats = preprocessor.validate_dataset(text_dataset)
