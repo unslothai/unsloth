@@ -445,8 +445,7 @@ export function ChatProvidersDialog({
       <DialogContent
         overlayClassName="bg-black/50 backdrop-blur-sm"
         className={
-          // 20% narrower than prior viewport-based widths (multiply by 0.8).
-          "flex max-h-[90dvh] w-[calc(60vw-1.2rem)] sm:w-[56.4vw] lg:w-[55.2vw] xl:w-[54vw] sm:max-w-none flex-col gap-0 overflow-y-auto p-0"
+          "flex max-h-[90dvh] w-[96vw] sm:max-w-none md:max-w-[56rem] lg:max-w-[62rem] xl:max-w-[66rem] 2xl:max-w-[70rem] flex-col gap-0 overflow-y-auto p-0"
         }
       >
         <DialogHeader className="shrink-0 space-y-2 px-8 pb-5 pt-8 text-left">
@@ -460,8 +459,8 @@ export function ChatProvidersDialog({
           </DialogDescription>
         </DialogHeader>
         <Separator />
-        <div className="grid min-w-0 grid-cols-1 gap-8 p-8 pt-6 sm:gap-10 md:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] md:gap-12 lg:gap-14">
-          <div className="min-w-0">
+        <div className="grid min-w-0 grid-cols-1 gap-8 p-8 pt-6 sm:gap-10 md:grid-cols-2 md:gap-0">
+          <div className="min-w-0 md:pr-8 lg:pr-10">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-2">
               <h3 className="text-sm font-semibold tracking-tight">Configured providers</h3>
               <span className="text-xs tabular-nums text-muted-foreground">
@@ -565,7 +564,7 @@ export function ChatProvidersDialog({
               )}
             </div>
           </div>
-          <div className="min-w-0 border-t border-border/80 pt-8 md:flex md:flex-col md:border-l md:border-t-0 md:pl-10 md:pt-0 lg:pl-12">
+          <div className="min-w-0 border-t border-border/80 pt-8 md:flex md:flex-col md:border-l md:border-t-0 md:pl-8 md:pt-0 lg:pl-10">
             <h3 className="mb-6 text-sm font-semibold tracking-tight">
               {editingProviderId ? "Edit provider" : "Add provider"}
             </h3>
