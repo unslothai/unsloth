@@ -82,11 +82,12 @@ __all__ = [
 # 4-bit export via Intel Auto-Round
 # ---------------------------------------------------------------------------
 
+
 def save_to_autoround_4bit(
     model_or_path,
-    tokenizer=None,
+    tokenizer = None,
     output_dir: str = "autoround_4bit_model",
-    export_format: str = "auto_awq",   # "auto_awq" | "auto_gptq" | "auto_round"
+    export_format: str = "auto_awq",  # "auto_awq" | "auto_gptq" | "auto_round"
     bits: int = 4,
     group_size: int = 128,
     sym: bool = True,
@@ -173,7 +174,7 @@ def save_to_autoround_4bit(
             local_model = local_model.merge_and_unload()
 
         # Save merged weights to a temporary location so Auto-Round can load them.
-        _tmp_dir = tempfile.mkdtemp(prefix="_unsloth_autoround4bit_tmp_")
+        _tmp_dir = tempfile.mkdtemp(prefix = "_unsloth_autoround4bit_tmp_")
         logger.warning_once(
             f"Unsloth: Saving merged 16-bit model to temporary dir: {_tmp_dir}"
         )
@@ -192,20 +193,20 @@ def save_to_autoround_4bit(
     try:
         ar = AutoRound(
             model_name_or_path,
-            tokenizer=ar_tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=iters,
-            nsamples=nsamples,
-            seqlen=seqlen,
-            dataset=dataset,
+            tokenizer = ar_tokenizer,
+            bits = bits,
+            group_size = group_size,
+            sym = sym,
+            iters = iters,
+            nsamples = nsamples,
+            seqlen = seqlen,
+            dataset = dataset,
         )
-        ar.quantize_and_save(output_dir=output_dir, format=export_format)
+        ar.quantize_and_save(output_dir = output_dir, format = export_format)
     finally:
         # Clean up the temp merge dir if we created one
         if not isinstance(model_or_path, str) and "_tmp_dir" in dir():
-            shutil.rmtree(_tmp_dir, ignore_errors=True)
+            shutil.rmtree(_tmp_dir, ignore_errors = True)
 
     logger.warning_once(
         f"Unsloth: Auto-Round 4-bit model saved to '{output_dir}' "
@@ -216,31 +217,29 @@ def save_to_autoround_4bit(
     # --- Optional Hub push -----------------------------------------------
     if push_to_hub:
         if not repo_id:
-            raise ValueError(
-                "Unsloth: repo_id is required when push_to_hub=True."
-            )
+            raise ValueError("Unsloth: repo_id is required when push_to_hub=True.")
         if token is None:
             token = get_token()
         from huggingface_hub import HfApi
 
-        hf_api = HfApi(token=token)
+        hf_api = HfApi(token = token)
         hf_api.create_repo(
-            repo_id=repo_id,
-            private=private,
-            exist_ok=True,
-            repo_type="model",
+            repo_id = repo_id,
+            private = private,
+            exist_ok = True,
+            repo_type = "model",
         )
         hf_api.upload_folder(
-            folder_path=output_dir,
-            repo_id=repo_id,
-            repo_type="model",
+            folder_path = output_dir,
+            repo_id = repo_id,
+            repo_type = "model",
         )
         logger.warning_once(
-            f"Unsloth: Uploaded quantized model to "
-            f"https://huggingface.co/{repo_id}"
+            f"Unsloth: Uploaded quantized model to " f"https://huggingface.co/{repo_id}"
         )
 
     return output_dir
+
 
 # llama.cpp specific targets - all takes 90s. Below takes 60s
 LLAMA_CPP_TARGETS = [

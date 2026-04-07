@@ -137,13 +137,13 @@ class ExportAutoRound4bitRequest(ExportCommonOptions):
 
     export_format: Literal["auto_awq", "auto_gptq", "auto_round"] = Field(
         "auto_awq",
-        description="Target 4-bit format natively supported by vLLM",
+        description = "Target 4-bit format natively supported by vLLM",
     )
-    bits: int = Field(4, description="Target bitwidth")
-    group_size: int = Field(128, description="Quantisation group size")
-    iters: int = Field(200, description="Auto-Round mapping iterations")
-    nsamples: int = Field(128, description="Calibration sample count")
+    bits: int = Field(4, description = "Target bitwidth")
+    group_size: int = Field(128, description = "Quantisation group size")
+    iters: int = Field(200, description = "Auto-Round mapping iterations")
+    nsamples: int = Field(128, description = "Calibration sample count")
     dataset: str = Field(
         "NeelNanda/pile-10k",
-        description="HuggingFace dataset for calibration",
+        description = "HuggingFace dataset for calibration",
     )
