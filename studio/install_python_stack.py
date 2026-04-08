@@ -213,6 +213,8 @@ def _ensure_rocm_torch() -> None:
         and probe.stdout.decode().strip() != ""
     )
 
+    rocm_torch_ready = has_hip_torch
+
     if not has_hip_torch:
         # Select best matching wheel tag (newest ROCm version <= installed)
         tag = next(
@@ -242,16 +244,22 @@ def _ensure_rocm_torch() -> None:
                 index_url,
                 constrain = False,
             )
+            rocm_torch_ready = True
 
-    # Always install bitsandbytes for AMD -- runs even when torch was not
-    # reinstalled (e.g. "unsloth studio update" on a venv that already has
-    # ROCm torch) so the AMD bitsandbytes dependency is not left missing.
-    pip_install(
-        "bitsandbytes (AMD)",
-        "--no-cache-dir",
-        "bitsandbytes>=0.49.1",
-        constrain = False,
-    )
+    # Install bitsandbytes only when the venv has a ROCm-compatible torch
+    # (either already present or just installed). Avoids leaving an AMD
+    # bitsandbytes on top of a CPU/CUDA torch on hosts where the ROCm
+    # runtime is older than any published torch wheel. Uses
+    # --force-reinstall so an existing CPU/CUDA bitsandbytes is replaced
+    # by the AMD build during upgrades.
+    if rocm_torch_ready:
+        pip_install(
+            "bitsandbytes (AMD)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "bitsandbytes>=0.49.1",
+            constrain = False,
+        )
 
 
 def _infer_no_torch() -> bool:

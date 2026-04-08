@@ -1105,21 +1105,25 @@ get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
     # rocm-rel-7.1.1/, rocm-rel-7.1/ (AMD publishes both M.m and M.m.p dirs).
+    # Accepts both X.Y and X.Y.Z host versions since /opt/rocm/.info/version
+    # and hipconfig --version can return either shape.
     case "$(uname -s)" in Linux) ;; *) echo ""; return ;; esac
 
-    # Detect full X.Y.Z version -- try amd-smi first, then /opt/rocm/.info/version, then hipconfig
+    # Detect ROCm version (X.Y or X.Y.Z) -- try amd-smi, then
+    # /opt/rocm/.info/version, then hipconfig.
     _full_ver=""
     _full_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
         amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
-            'NF>1{if(match($2,/[0-9]+\.[0-9]+\.[0-9]+/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
+            'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
         { [ -r /opt/rocm/.info/version ] && \
-            awk -F'[.-]' 'NF>=3{print $1"."$2"."$3; exit}' /opt/rocm/.info/version; } || \
+            awk 'match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1; exit} END{exit !found}' /opt/rocm/.info/version; } || \
         { command -v hipconfig >/dev/null 2>&1 && \
-            hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]+\.[0-9]+\.[0-9]/{print $1; found=1} END{exit !found}'; }) 2>/dev/null
+            hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null
 
-    # Validate: must be X.Y.Z with X >= 1
+    # Validate: must be X.Y or X.Y.Z with X >= 1
     case "$_full_ver" in
-        [1-9]*.*[0-9].*[0-9]*) : ;;
+        [1-9]*.[0-9]*.[0-9]*) : ;;  # X.Y.Z
+        [1-9]*.[0-9]*) : ;;          # X.Y
         *) echo ""; return ;;
     esac
     echo "https://repo.radeon.com/rocm/manylinux/rocm-rel-${_full_ver}/"
