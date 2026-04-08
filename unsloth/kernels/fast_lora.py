@@ -211,6 +211,8 @@ class LoRA_MLP(torch.autograd.Function):
 
             # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
             # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+            if upW_quant is not None and not isinstance(upW_quant, list) and upW_quant.dtype != dtype:
+                upW_quant.dtype = dtype
             upW = fast_dequantize(upW.t(), upW_quant)
             if upW.dtype != dtype:
                 upW = upW.to(dtype)
@@ -219,6 +221,8 @@ class LoRA_MLP(torch.autograd.Function):
             # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
             dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
+            if gateW_quant is not None and not isinstance(gateW_quant, list) and gateW_quant.dtype != dtype:
+                gateW_quant.dtype = dtype
             gateW = fast_dequantize(gateW.t(), gateW_quant)
             if gateW.dtype != dtype:
                 gateW = gateW.to(dtype)
@@ -526,6 +530,8 @@ class LoRA_QKV(torch.autograd.Function):
 
             # Combine derivatives to find dX
             # dQ
+            if QW_quant is not None and not isinstance(QW_quant, list) and QW_quant.dtype != dtype:
+                QW_quant.dtype = dtype
             QW = fast_dequantize(QW.t(), QW_quant)
             if QW.dtype != dtype:
                 QW = QW.to(dtype)
@@ -535,6 +541,8 @@ class LoRA_QKV(torch.autograd.Function):
             dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
 
             # dK
+            if KW_quant is not None and not isinstance(KW_quant, list) and KW_quant.dtype != dtype:
+                KW_quant.dtype = dtype
             KW = fast_dequantize(KW.t(), KW_quant)
             if KW.dtype != dtype:
                 KW = KW.to(dtype)
@@ -545,6 +553,8 @@ class LoRA_QKV(torch.autograd.Function):
             dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
 
             # dV
+            if VW_quant is not None and not isinstance(VW_quant, list) and VW_quant.dtype != dtype:
+                VW_quant.dtype = dtype
             VW = fast_dequantize(VW.t(), VW_quant)
             if VW.dtype != dtype:
                 VW = VW.to(dtype)
@@ -683,6 +693,8 @@ class LoRA_W(torch.autograd.Function):
             d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
             # Get derivative for dX
+            if W_quant is not None and not isinstance(W_quant, list) and W_quant.dtype != dtype:
+                W_quant.dtype = dtype
             W = fast_dequantize(W.t(), W_quant)
             if W.dtype != dtype:
                 W = W.to(dtype)

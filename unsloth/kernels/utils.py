@@ -1031,10 +1031,13 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
+        # Align quant_state.dtype to activation dtype so fast_dequantize picks
+        # the correct kernel (bf16_nf4 vs fp16_nf4) and allocates the output
+        # buffer in the right dtype directly. The post-cast is kept as a
+        # safety net for any edge case the pre-assignment cannot cover.
+        if W_quant is not None and not isinstance(W_quant, list) and W_quant.dtype != dtype:
+            W_quant.dtype = dtype
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
-        # fast_dequantize may return float16 from the global buffer even when
-        # activations are bfloat16 (quant_state.dtype from bnb-4bit checkpoints).
-        # Cast W to match the activation dtype to avoid mixed-dtype matmul errors.
         if W.dtype != dtype:
             W = W.to(dtype)
         out = torch_matmul(X, W.t(), out = out)
