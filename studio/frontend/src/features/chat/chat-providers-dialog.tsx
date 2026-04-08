@@ -22,7 +22,12 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { CloudIcon, Delete02Icon, Wifi02Icon } from "@hugeicons/core-free-icons";
+import {
+  DashboardSquare01Icon,
+  CloudIcon,
+  Delete02Icon,
+  Wifi02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
@@ -48,6 +53,52 @@ import { ApiProviderLogo } from "./api-provider-logo";
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
 const PROVIDER_FORM_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 const PROVIDER_FORM_DURATION = 0.2;
+const CUSTOM_PROVIDER_TYPE = "custom";
+const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
+const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
+  "No API key found, please make sure API key is added and valid for this provider.";
+
+function normalizeUrl(input: string): string {
+  return input.trim().replace(/\/+$/, "");
+}
+
+function resolveUiProviderTypeFromConfig(
+  configProviderType: string,
+  configDisplayName: string | null | undefined,
+  configBaseUrl: string | null | undefined,
+  registryRows: ProviderRegistryEntry[],
+  existingProviderType: string | undefined,
+): string {
+  if (existingProviderType === CUSTOM_PROVIDER_TYPE) {
+    return CUSTOM_PROVIDER_TYPE;
+  }
+  if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
+    return configProviderType;
+  }
+  const openAiRegistry = registryRows.find(
+    (entry) => entry.provider_type === CUSTOM_BACKEND_PROVIDER_TYPE,
+  );
+  if (!openAiRegistry) {
+    return configProviderType;
+  }
+  const displayName = (configDisplayName ?? "").trim().toLowerCase();
+  const openAiDisplayName = openAiRegistry.display_name.trim().toLowerCase();
+  if (displayName.length > 0 && displayName !== openAiDisplayName) {
+    return CUSTOM_PROVIDER_TYPE;
+  }
+  const configUrl = normalizeUrl(configBaseUrl ?? "");
+  const defaultUrl = normalizeUrl(openAiRegistry.base_url ?? "");
+  if (configUrl.length > 0 && configUrl !== defaultUrl) {
+    return CUSTOM_PROVIDER_TYPE;
+  }
+  return configProviderType;
+}
+
+function toBackendProviderType(uiProviderType: string): string {
+  return uiProviderType === CUSTOM_PROVIDER_TYPE
+    ? CUSTOM_BACKEND_PROVIDER_TYPE
+    : uiProviderType;
+}
 
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
@@ -86,18 +137,26 @@ export function ChatProvidersDialog({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
+  const [customProviderName, setCustomProviderName] = useState("Custom");
   const reduceMotion = useReducedMotion();
+  const isCustomProvider = providerType === CUSTOM_PROVIDER_TYPE;
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+  const hasCustomInRegistry = registryByType.has(CUSTOM_PROVIDER_TYPE);
 
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
+  const isManualModelList = isCustomProvider || isCuratedModelList;
 
-  const modelsPanelKey = isCuratedModelList ? "curated" : "remote";
+  const modelsPanelKey = isCustomProvider
+    ? "custom"
+    : isCuratedModelList
+      ? "curated"
+      : "remote";
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
@@ -142,6 +201,13 @@ export function ChatProvidersDialog({
           .filter((config) => config.is_enabled)
           .map((config) => {
             const existing = existingById.get(config.id);
+            const uiProviderType = resolveUiProviderTypeFromConfig(
+              config.provider_type,
+              config.display_name,
+              config.base_url,
+              registryRows,
+              existing?.providerType,
+            );
             const createdAt = Number.isFinite(Date.parse(config.created_at))
               ? Date.parse(config.created_at)
               : Date.now();
@@ -150,7 +216,7 @@ export function ChatProvidersDialog({
               : Date.now();
             return {
               id: config.id,
-              providerType: config.provider_type,
+              providerType: uiProviderType,
               name: config.display_name,
               baseUrl: config.base_url ?? "",
               models: existing?.models ?? [],
@@ -182,6 +248,7 @@ export function ChatProvidersDialog({
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
+    setCustomProviderName("Custom");
   }
 
   function toggleModel(modelId: string) {
@@ -213,9 +280,24 @@ export function ChatProvidersDialog({
     return parsed.toString().replace(/\/+$/, "");
   }
 
+  function parseBaseUrlForProvider(input: string, required: boolean): string | null {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      if (required) {
+        throw new Error("Base URL is required for custom providers.");
+      }
+      return null;
+    }
+    return parseOptionalBaseUrl(trimmed);
+  }
+
   async function loadModels() {
     if (!providerType) {
       toast.error("Choose a provider first.");
+      return;
+    }
+    if (isCustomProvider) {
+      toast.info("Custom providers use manual model IDs.");
       return;
     }
     if (isCuratedModelList) {
@@ -224,13 +306,13 @@ export function ChatProvidersDialog({
       );
       return;
     }
-    if (!apiKey.trim()) {
+    if (!isCustomProvider && !apiKey.trim()) {
       toast.error("Add an API key first.");
       return;
     }
     setModelsLoading(true);
     try {
-      const baseUrl = parseOptionalBaseUrl(baseUrlDraft);
+      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isCustomProvider);
       const models = await listProviderModels({
         providerType,
         apiKey: apiKey.trim(),
@@ -254,21 +336,23 @@ export function ChatProvidersDialog({
       toast.error("Choose a provider first.");
       return;
     }
-    const selectedRegistryEntry = registryByType.get(providerType);
-    const displayName = selectedRegistryEntry?.display_name ?? providerType;
-    if (!apiKey.trim()) {
+    const backendProviderType = toBackendProviderType(providerType);
+    const selectedRegistryEntry = registryByType.get(backendProviderType);
+    const displayName = isCustomProvider
+      ? (customProviderName.trim() || "Custom")
+      : (selectedRegistryEntry?.display_name ?? providerType);
+    if (!isCustomProvider && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
-    const modelsToSave = curated
+    const manualModels = isCustomProvider || curated;
+    const modelsToSave = manualModels
       ? [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])]
       : [...selectedModelIds];
-    if (curated) {
+    if (manualModels) {
       if (modelsToSave.length === 0) {
-        toast.error(
-          "Select at least one suggested model and/or add model IDs in the box below.",
-        );
+        toast.error("Add at least one model ID.");
         return;
       }
     } else {
@@ -283,9 +367,9 @@ export function ChatProvidersDialog({
     }
     setMutatingProvider(true);
     try {
-      const baseUrl = parseOptionalBaseUrl(baseUrlDraft);
+      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isCustomProvider);
       const created = await createProviderConfig({
-        providerType,
+        providerType: backendProviderType,
         displayName,
         baseUrl,
       });
@@ -297,14 +381,16 @@ export function ChatProvidersDialog({
         : Date.now();
       const provider: ExternalProviderConfig = {
         id: created.id,
-        providerType: created.provider_type,
+        providerType: isCustomProvider ? CUSTOM_PROVIDER_TYPE : created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
         createdAt,
         updatedAt,
       };
-      await setExternalProviderApiKey(created.id, apiKey.trim());
+      if (apiKey.trim()) {
+        await setExternalProviderApiKey(created.id, apiKey.trim());
+      }
       onProvidersChange([...providers.filter((p) => p.id !== created.id), provider]);
       resetForm();
       toast.success("Provider added.");
@@ -323,20 +409,20 @@ export function ChatProvidersDialog({
       toast.error("Provider not found.");
       return;
     }
-    if (!apiKey.trim()) {
+    const isEditingCustomProvider = existing.providerType === CUSTOM_PROVIDER_TYPE;
+    if (!isEditingCustomProvider && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
     }
     const entry = registryByType.get(existing.providerType);
     const curated = entry?.model_list_mode === "curated";
-    const modelsToSave = curated
+    const manualModels = isEditingCustomProvider || curated;
+    const modelsToSave = manualModels
       ? [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])]
       : [...selectedModelIds];
-    if (curated) {
+    if (manualModels) {
       if (modelsToSave.length === 0) {
-        toast.error(
-          "Select at least one suggested model and/or add model IDs in the box below.",
-        );
+        toast.error("Add at least one model ID.");
         return;
       }
     } else {
@@ -351,12 +437,18 @@ export function ChatProvidersDialog({
     }
     setMutatingProvider(true);
     try {
-      const baseUrl = parseOptionalBaseUrl(baseUrlDraft);
+      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isEditingCustomProvider);
       const updated = await updateProviderConfig(editingProviderId, {
-        displayName: existing.name,
+        displayName: isEditingCustomProvider
+          ? (customProviderName.trim() || "Custom")
+          : existing.name,
         baseUrl,
       });
-      await setExternalProviderApiKey(editingProviderId, apiKey.trim());
+      if (apiKey.trim()) {
+        await setExternalProviderApiKey(editingProviderId, apiKey.trim());
+      } else if (isEditingCustomProvider) {
+        removeExternalProviderApiKey(editingProviderId);
+      }
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
         ? Date.parse(updated.updated_at)
         : Date.now();
@@ -365,6 +457,7 @@ export function ChatProvidersDialog({
           provider.id === editingProviderId
             ? {
                 ...provider,
+                name: updated.display_name,
                 baseUrl: updated.base_url ?? "",
                 models: modelsToSave,
                 updatedAt,
@@ -385,8 +478,15 @@ export function ChatProvidersDialog({
   async function editProvider(provider: ExternalProviderConfig) {
     setEditingProviderId(provider.id);
     setProviderType(provider.providerType);
+    setCustomProviderName(provider.name || "Custom");
     setApiKey(await getExternalProviderApiKey(provider.id));
     setBaseUrlDraft(provider.baseUrl);
+    if (provider.providerType === CUSTOM_PROVIDER_TYPE) {
+      setAvailableModels([]);
+      setSelectedModelIds([]);
+      setManualModelIds(provider.models.join("\n"));
+      return;
+    }
     const entry = registryByType.get(provider.providerType);
     if (entry?.model_list_mode === "curated") {
       const defaults = new Set(entry.default_models);
@@ -419,23 +519,42 @@ export function ChatProvidersDialog({
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = (await getExternalProviderApiKey(provider.id)).trim();
     if (!savedKey) {
+      if (provider.providerType === CUSTOM_PROVIDER_TYPE) {
+        await editProvider(provider);
+        toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
+        return;
+      }
       await editProvider(provider);
       toast.info(`No API key found for ${provider.name}. Add one and save.`);
       return;
     }
     try {
       const result = await testProviderConnection({
-        providerType: provider.providerType,
+        providerType: toBackendProviderType(provider.providerType),
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
       });
       if (result.success) {
         toast.success(result.message);
       } else {
+        if (
+          provider.providerType === CUSTOM_PROVIDER_TYPE &&
+          result.message.includes("Illegal header value b'Bearer '")
+        ) {
+          toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
+          return;
+        }
         toast.error(result.message);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
+      if (
+        provider.providerType === CUSTOM_PROVIDER_TYPE &&
+        message.includes("Illegal header value b'Bearer '")
+      ) {
+        toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
+        return;
+      }
       toast.error(`Test failed: ${message}`);
     }
   }
@@ -603,16 +722,24 @@ export function ChatProvidersDialog({
                         </span>
                       </SelectItem>
                     ))}
+                    {!hasCustomInRegistry ? (
+                      <SelectItem value={CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex items-center gap-2">
+                          <HugeiconsIcon icon={DashboardSquare01Icon} className="size-4" />
+                          Custom
+                        </span>
+                      </SelectItem>
+                    ) : null}
                   </SelectContent>
                 </Select>
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Choose a provider from Studio's supported list.
+                  Choose a provider from Studio's supported list, or Custom.
                 </p>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="provider-api-key" className="text-sm font-medium">
-                  API key
+                  API key {isCustomProvider ? "(optional)" : ""}
                 </Label>
                 <Input
                   id="provider-api-key"
@@ -624,22 +751,40 @@ export function ChatProvidersDialog({
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="provider-base-url" className="text-sm font-medium">
-                  Base URL (optional)
-                </Label>
-                <Input
-                  id="provider-base-url"
-                  type="text"
-                  value={baseUrlDraft}
-                  onChange={(event) => setBaseUrlDraft(event.target.value)}
-                  placeholder="https://my-vllm-server.com/v1"
-                  className="h-10 text-sm"
-                />
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  Leave blank to use the registry default for this provider type.
-                </p>
-              </div>
+              {isCustomProvider ? (
+                <div className="space-y-2">
+                  <Label htmlFor="provider-custom-name" className="text-sm font-medium">
+                    Provider name
+                  </Label>
+                  <Input
+                    id="provider-custom-name"
+                    type="text"
+                    value={customProviderName}
+                    onChange={(event) => setCustomProviderName(event.target.value)}
+                    placeholder="Custom"
+                    className="h-10 text-sm"
+                  />
+                </div>
+              ) : null}
+
+              {isCustomProvider ? (
+                <div className="space-y-2">
+                  <Label htmlFor="provider-base-url" className="text-sm font-medium">
+                    Base URL
+                  </Label>
+                  <Input
+                    id="provider-base-url"
+                    type="text"
+                    value={baseUrlDraft}
+                    onChange={(event) => setBaseUrlDraft(event.target.value)}
+                    placeholder="https://my-vllm-server.com/v1"
+                    className="h-10 text-sm"
+                  />
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    Set this to target a custom OpenAI-compatible endpoint.
+                  </p>
+                </div>
+              ) : null}
 
               <div className="space-y-3">
                 <AnimatePresence initial={false} mode="wait">
@@ -675,11 +820,13 @@ export function ChatProvidersDialog({
                         variant="outline"
                         size="sm"
                         className="h-8"
-                        disabled={modelsLoading || mutatingProvider || isCuratedModelList}
+                        disabled={modelsLoading || mutatingProvider || isManualModelList}
                         title={
-                          isCuratedModelList
-                            ? "Full catalog is not fetched for this provider"
-                            : undefined
+                          isCustomProvider
+                            ? "Custom providers use manual model IDs"
+                            : isCuratedModelList
+                              ? "Full catalog is not fetched for this provider"
+                              : undefined
                         }
                         onClick={() => void loadModels()}
                       >
@@ -693,7 +840,26 @@ export function ChatProvidersDialog({
                         )}
                       </Button>
                     </div>
-                    {isCuratedModelList ? (
+                    {isCustomProvider ? (
+                      <div className="space-y-3">
+                        <p className="text-sm leading-relaxed text-muted-foreground">
+                          Enter exact model IDs served by your custom endpoint.
+                        </p>
+                        <div className="space-y-2 pl-1 pr-1 pb-1">
+                          <Label htmlFor="provider-manual-models" className="text-sm font-medium">
+                            Model IDs (one per line or comma-separated)
+                          </Label>
+                          <Textarea
+                            id="provider-manual-models"
+                            value={manualModelIds}
+                            onChange={(event) => setManualModelIds(event.target.value)}
+                            placeholder={"gpt-4o-mini\nQwen/Qwen3-14B"}
+                            rows={5}
+                            className="min-h-[100px] resize-y font-mono text-sm"
+                          />
+                        </div>
+                      </div>
+                    ) : isCuratedModelList ? (
                       <div className="space-y-3">
                         <p className="text-sm leading-relaxed text-muted-foreground">
                           This provider lists a huge number of models. Studio does not download the
@@ -743,7 +909,7 @@ export function ChatProvidersDialog({
                             </ul>
                           </div>
                         ) : null}
-                        <div className="space-y-2">
+                        <div className="space-y-2 pl-1 pr-1 pb-1">
                           <Label htmlFor="provider-manual-models" className="text-sm font-medium">
                             Model IDs (one per line or comma-separated)
                           </Label>
