@@ -139,11 +139,14 @@ class LoRA_MLP(torch.autograd.Function):
         # @torch_amp_custom_bwd inherits the float16 autocast context from
         # TRL's compiled GRPO trainer, which silently downcasts float32 gradient
         # tensors to float16 mid-computation, causing addmm_ dtype mismatches.
-        with torch.amp.autocast("cuda", enabled=False):
+        with torch.amp.autocast("cuda", enabled = False):
             # Cast incoming gradients to the activation dtype.
-            if dY.dtype != dtype: dY = dY.to(dtype)
-            if e.dtype != dtype:  e  = e.to(dtype)
-            if g.dtype != dtype:  g  = g.to(dtype)
+            if dY.dtype != dtype:
+                dY = dY.to(dtype)
+            if e.dtype != dtype:
+                e = e.to(dtype)
+            if g.dtype != dtype:
+                g = g.to(dtype)
 
             gateA, gateB, upA, upB, downA, downB = (
                 gateA.to(dtype),
@@ -166,9 +169,12 @@ class LoRA_MLP(torch.autograd.Function):
             DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
             DW, e, g = _backward_function(DW, e, g)
             h, df, de = DW, e, g
-            if h.dtype  != dtype: h  = h.to(dtype)
-            if df.dtype != dtype: df = df.to(dtype)
-            if de.dtype != dtype: de = de.to(dtype)
+            if h.dtype != dtype:
+                h = h.to(dtype)
+            if df.dtype != dtype:
+                df = df.to(dtype)
+            if de.dtype != dtype:
+                de = de.to(dtype)
 
             d_downA = torch.empty_like(downA)
             d_downB = torch.empty_like(downB)
@@ -204,14 +210,16 @@ class LoRA_MLP(torch.autograd.Function):
             # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
             # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
             upW = fast_dequantize(upW.t(), upW_quant)
-            if upW.dtype != dtype: upW = upW.to(dtype)
+            if upW.dtype != dtype:
+                upW = upW.to(dtype)
             dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
             del upW
             # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
             dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
             gateW = fast_dequantize(gateW.t(), gateW_quant)
-            if gateW.dtype != dtype: gateW = gateW.to(dtype)
+            if gateW.dtype != dtype:
+                gateW = gateW.to(dtype)
             # dX += de @ gateW.t()
             dX.addmm_(de, gateW.t())
             del gateW
@@ -459,11 +467,14 @@ class LoRA_QKV(torch.autograd.Function):
         # @torch_amp_custom_bwd inherits the float16 autocast context from
         # TRL's compiled GRPO trainer, which silently downcasts float32 gradient
         # tensors to float16 mid-computation, causing addmm_ dtype mismatches.
-        with torch.amp.autocast("cuda", enabled=False):
+        with torch.amp.autocast("cuda", enabled = False):
             # Cast incoming gradients to the activation dtype.
-            if dQ.dtype != dtype: dQ = dQ.to(dtype)
-            if dK.dtype != dtype: dK = dK.to(dtype)
-            if dV.dtype != dtype: dV = dV.to(dtype)
+            if dQ.dtype != dtype:
+                dQ = dQ.to(dtype)
+            if dK.dtype != dtype:
+                dK = dK.to(dtype)
+            if dV.dtype != dtype:
+                dV = dV.to(dtype)
 
             QA, QB, KA, KB, VA, VB = (
                 QA.to(dtype),
@@ -512,7 +523,8 @@ class LoRA_QKV(torch.autograd.Function):
             # Combine derivatives to find dX
             # dQ
             QW = fast_dequantize(QW.t(), QW_quant)
-            if QW.dtype != dtype: QW = QW.to(dtype)
+            if QW.dtype != dtype:
+                QW = QW.to(dtype)
             dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
             del QW
             # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
@@ -520,7 +532,8 @@ class LoRA_QKV(torch.autograd.Function):
 
             # dK
             KW = fast_dequantize(KW.t(), KW_quant)
-            if KW.dtype != dtype: KW = KW.to(dtype)
+            if KW.dtype != dtype:
+                KW = KW.to(dtype)
             # dX += dK @ KW.t()
             dX.addmm_(dK, KW.t())
             del KW
@@ -529,7 +542,8 @@ class LoRA_QKV(torch.autograd.Function):
 
             # dV
             VW = fast_dequantize(VW.t(), VW_quant)
-            if VW.dtype != dtype: VW = VW.to(dtype)
+            if VW.dtype != dtype:
+                VW = VW.to(dtype)
             # dX += dV @ VW.t()
             dX.addmm_(dV, VW.t())
             del VW
