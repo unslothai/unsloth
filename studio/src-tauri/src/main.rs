@@ -5,6 +5,7 @@ mod desktop_auth;
 mod install;
 mod process;
 mod update;
+mod windows_job;
 
 use log::info;
 use process::new_backend_state;
@@ -116,6 +117,7 @@ fn main() {
 
     setup_logging();
     info!("Unsloth Studio desktop app starting");
+    windows_job::initialize();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

@@ -163,10 +163,8 @@ fn spawn_script(
     }
 
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
-    // `process-wrap`'s JobObject wrapper always injects CREATE_SUSPENDED,
-    // and this PowerShell installer path is the one most likely to surface
-    // a visible hosted terminal window/tab on Win11. We keep tree cleanup via
-    // the hidden taskkill /T /F fallback in stop_install().
+    // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
+    // child cleanup on crash comes from inherited job membership instead.
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;

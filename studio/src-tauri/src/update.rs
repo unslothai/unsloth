@@ -58,21 +58,26 @@ fn spawn_update(
         cmd.env_remove("PYTHONPATH");
     }
 
-    let mut wrap = CommandWrap::from(cmd);
-    #[cfg(unix)]
-    wrap.wrap(ProcessGroup::leader());
     #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        wrap.wrap(CreationFlags(
-            windows::Win32::System::Threading::PROCESS_CREATION_FLAGS(CREATE_NO_WINDOW),
-        ));
-        wrap.wrap(JobObject);
-    }
+    let mut child: Box<dyn ChildWrapper + Send> = {
+        use std::os::windows::process::CommandExt;
 
-    let mut child = wrap
-        .spawn()
-        .map_err(|e| format!("Failed to spawn update: {}", e))?;
+        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn update: {}", e))?;
+        Box::new(child)
+    };
+
+    #[cfg(unix)]
+    let mut child: Box<dyn ChildWrapper + Send> = {
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        let child = wrap
+            .spawn()
+            .map_err(|e| format!("Failed to spawn update: {}", e))?;
+        Box::new(child)
+    };
 
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
@@ -247,8 +252,17 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
         warn!("Update did not exit gracefully, force killing");
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
-    info!("Update process group force stopped");
-    Ok(())
+    #[cfg(windows)]
+    {
+        crate::process::force_kill_process_tree(pid, child, "Update");
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        info!("Update process group force stopped");
+        Ok(())
+    }
 }

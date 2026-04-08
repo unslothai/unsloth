@@ -246,10 +246,8 @@ pub fn start_backend(
     }
 
     // On Windows, launch the backend directly with hidden-window flags.
-    // `process-wrap`'s JobObject wrapper injects CREATE_SUSPENDED, which can
-    // surface a visible hosted console window for this top-level `unsloth.exe`
-    // server process on Win11 even when CREATE_NO_WINDOW is requested.
-    // We keep cleanup via the hidden taskkill /T /F fallback in stop_backend().
+    // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
+    // children inherit crash-safe cleanup without the buggy per-child JobObject wrapper.
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
