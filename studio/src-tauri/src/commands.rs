@@ -1,5 +1,6 @@
 use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
+use crate::update;
 use log::{error, info, warn};
 use tauri::{AppHandle, Emitter};
 
@@ -251,6 +252,58 @@ pub fn install_system_packages(
     _state: tauri::State<'_, install::InstallState>,
 ) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
+}
+
+/// Run backend update: stop server, run `unsloth studio update`, emit progress.
+/// Does NOT restart the backend — the frontend handles shell update + relaunch after.
+#[tauri::command]
+pub async fn start_backend_update(
+    app: AppHandle,
+    backend_state: tauri::State<'_, BackendState>,
+    shutdown: tauri::State<'_, ShutdownFlag>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
+) -> Result<(), String> {
+    info!("start_backend_update command called");
+
+    // Signal the health watchdog to exit immediately, before any guards.
+    // This closes the race window where the watchdog could emit server-crashed
+    // between our command being called and stop_backend completing.
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Guard: reject if install is running
+    if install_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Cannot update while installation is in progress.".to_string());
+    }
+
+    // Guard: reject if update is already running
+    if update_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Update is already running.".to_string());
+    }
+
+    // Stop backend if running
+    if backend_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        info!("Stopping backend before update...");
+        process::stop_backend(&backend_state, &shutdown)?;
+    }
+
+    // Run update in a blocking thread
+    let state = update_state.inner().clone();
+    tokio::task::spawn_blocking(move || update::run_backend_update(app, state))
+        .await
+        .map_err(|e| format!("Update task panicked: {e}"))?
 }
 
 /// Periodic health check that detects deadlocked or hung backends.

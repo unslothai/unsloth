@@ -21,6 +21,7 @@ open = "5"
 process-wrap = { version = "9", features = ["std"] }
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 tauri-plugin-opener = "2.5.3"
+tauri-plugin-updater = "2"
 rand = "0.10.0"
 
 [target.'cfg(unix)'.dependencies]

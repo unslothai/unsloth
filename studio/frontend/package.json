@@ -44,6 +44,7 @@
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@toolwind/corner-shape": "^0.0.8-3",
     "@types/canvas-confetti": "^1.9.0",
     "@xyflow/react": "^12.10.0",
