@@ -1792,7 +1792,10 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         if trl_version >= Version("0.18.0"):
             # Guard LLM init - use existing vLLM engine when sharing weights,
             # otherwise keep the original LLM() creation for sync/reload path
-            vllm_llm_init_pattern = r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
+            vllm_llm_init_pattern = (
+                r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
+            )
+
             def guard_llm_init(match):
                 indent = match.group("indent")
                 original = match.group(0)
@@ -1802,6 +1805,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                     f"{indent}else:\n"
                     f"{indent}    {original.lstrip()}"
                 )
+
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
                 guard_llm_init,
