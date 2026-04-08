@@ -31,16 +31,48 @@ router = APIRouter()
 def _resolve_local_v1_endpoint(request: Request) -> str:
     """Return the loopback /v1 URL for the actual backend listen port.
 
-    Prefers ``app.state.server_port`` (set in run.py after binding) so that
-    deployments behind a reverse proxy, tunnel, or TLS terminator still hit
-    the real uvicorn socket. Falls back to the request URL only if the bound
-    port is not available (e.g. during tests that don't go through run.py).
+    Resolution order:
+      1. ``app.state.server_port`` - explicitly published by run.py after
+         the uvicorn server has bound. This is the most reliable source
+         because it survives reverse proxies, TLS terminators and tunnels.
+      2. ``request.scope["server"]`` - the real (host, port) tuple uvicorn
+         sets when the request is dispatched. Used when Studio is started
+         outside ``run_server`` (e.g. ``uvicorn studio.backend.main:app``).
+      3. ``request.base_url`` parsed - last resort for test fixtures that
+         do not route through a live uvicorn server.
     """
     port: Any = getattr(request.app.state, "server_port", None)
     if not isinstance(port, int) or port <= 0:
-        parsed = urlparse(str(request.base_url))
-        port = parsed.port if parsed.port is not None else 8888
+        server = request.scope.get("server")
+        if (
+            isinstance(server, tuple)
+            and len(server) >= 2
+            and isinstance(server[1], int)
+            and server[1] > 0
+        ):
+            port = server[1]
+        else:
+            parsed = urlparse(str(request.base_url))
+            port = parsed.port if parsed.port is not None else 8888
     return f"http://127.0.0.1:{int(port)}/v1"
+
+
+def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
+    """Return the set of model_aliases that are actually referenced by an
+    LLM column. Used to narrow the "Chat model loaded" gate so that orphan
+    model_config nodes on the canvas do not block unrelated recipe runs.
+    """
+    aliases: set[str] = set()
+    for column in recipe.get("columns", []):
+        if not isinstance(column, dict):
+            continue
+        column_type = column.get("column_type")
+        if not isinstance(column_type, str) or not column_type.startswith("llm"):
+            continue
+        alias = column.get("model_alias")
+        if isinstance(alias, str) and alias:
+            aliases.add(alias)
+    return aliases
 
 
 def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
@@ -52,12 +84,15 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
     if not providers:
         return
 
-    # Collect local providers and pop is_local from ALL dicts unconditionally
+    # Collect local providers and pop is_local from ALL dicts unconditionally.
+    # Strict `is True` guard so malformed payloads (is_local: 1,
+    # is_local: "true") do not accidentally trigger the loopback rewrite.
     local_indices: list[int] = []
     for i, provider in enumerate(providers):
         if not isinstance(provider, dict):
             continue
-        if provider.pop("is_local", None):
+        is_local = provider.pop("is_local", None)
+        if is_local is True:
             local_indices.append(i)
 
     if not local_indices:
@@ -65,15 +100,22 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
 
     endpoint = _resolve_local_v1_endpoint(request)
 
-    # Only gate on model-loaded if a local provider is actually referenced
-    # by a model_config. Unused local provider nodes should not block runs.
+    # Only gate on model-loaded if a local provider is actually reachable
+    # from an LLM column through a model_config. Orphan model_config nodes
+    # that reference a local provider but that no LLM column uses should
+    # not block runs; the recipe would never call /v1 for them.
     local_names = {
         providers[i].get("name") for i in local_indices if providers[i].get("name")
     }
+    used_aliases = _used_llm_model_aliases(recipe)
     referenced_providers = {
         mc.get("provider")
         for mc in recipe.get("model_configs", [])
-        if isinstance(mc, dict) and mc.get("provider")
+        if (
+            isinstance(mc, dict)
+            and mc.get("provider")
+            and mc.get("alias") in used_aliases
+        )
     }
 
     token = ""
