@@ -4380,8 +4380,14 @@ def validate_server(
         if install_kind is not None:
             _enable_gpu_layers = install_kind in _gpu_kinds
         else:
-            _enable_gpu_layers = host.has_usable_nvidia or (
-                host.is_macos and host.is_arm64
+            # Older call sites that don't pass install_kind: keep ROCm
+            # hosts in the GPU-validation path so an AMD-only Linux host
+            # is exercised against the actual hardware rather than the
+            # CPU fallback. NVIDIA and macOS-arm64 are already covered.
+            _enable_gpu_layers = (
+                host.has_usable_nvidia
+                or host.has_rocm
+                or (host.is_macos and host.is_arm64)
             )
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
