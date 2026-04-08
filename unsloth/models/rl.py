@@ -1864,7 +1864,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             source,
         )
 
-        # Replace self.llm.generate and self.llm.chat
+        # Replace self.llm.generate and self.llm.chat with lora_request (only when sharing weights)
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             lora_name = (
                 trainer_file
@@ -1877,7 +1877,10 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
             r"\1, lora_request = self.model.load_lora('"
             + lora_name
-            + r", load_tensors = True))",
+            + r", load_tensors = True)"
+            + r" if (getattr(self.llm, 'shared_weights', False)"
+            + r" or hasattr(getattr(self, 'model', None), 'vllm_engine'))"
+            + r" else None)",
             source,
         )
         # All these are to fix multiple commas before lora_request (in case the original code ends with something like ",)")

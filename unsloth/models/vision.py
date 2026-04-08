@@ -918,6 +918,7 @@ class FastBaseModel:
                 is_vision_model = is_vlm,
             )
             model.vllm_engine = llm
+            llm.shared_weights = True
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(
                 generate_batches, model.vllm_engine

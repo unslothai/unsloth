@@ -266,39 +266,45 @@ def grpo_trainer__prepare_inputs(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
-# Remove collective RPC of reload weights from generate
-# trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
+# Guard reload_weights and sync_weights - skip when fast inference LoRA shares weights with vLLM
 # https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
 def grpo_trainer__generate_single_turn(function_name, function):
     if function_name != "_generate_single_turn":
         return function
 
-    # Remove the reload_weights collective RPC call from the generate function's source
-    # function = function.replace('self.llm.collective_rpc("reload_weights")', "")
-    # The regex below does the same thing but is more flexible and can handle single or double quotes
-    # This is for older versions.
-    function = re.sub(
-        r"self\.llm\.collective_rpc\(\s*(['\"])reload_weights\1\s*\)",
-        "",
-        function,
+    # Guard reload_weights - only call when not sharing weights with vLLM
+    reload_weights_pattern = re.compile(
+        r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
+        re.MULTILINE,
     )
 
-    # Current TRL versions call vllm_generation.sync_weights() every step.
-    # When Unsloth fast inference LoRA is active, weights are already shared.
+    def replace_reload_weights_line(match):
+        indent = match.group("indent")
+        return (
+            f"{indent}if not (getattr(self.llm, 'shared_weights', False) or "
+            f"hasattr(getattr(self, 'model', None), 'vllm_engine')):\n"
+            f'{indent}    self.llm.collective_rpc("reload_weights")\n'
+        )
+
+    function = reload_weights_pattern.sub(replace_reload_weights_line, function)
+
+    # Guard sync_weights - skip when sharing weights with vLLM
     sync_weights_block = re.compile(
         r"(?P<indent>[ \t]*)with profiling_context\(self,\s*(['\"])sync_weights\2\s*\):\n"
         r"(?P=indent)[ \t]+self\.vllm_generation\.sync_weights\(\)\n",
         re.MULTILINE,
     )
 
-    def remove_sync_weights_block(match):
+    def guard_sync_weights_block(match):
         indent = match.group("indent")
         return (
-            f"{indent}# Unsloth fast inference LoRA shares weights with vLLM already.\n"
-            f"{indent}# Skipping per-step vLLM sync_weights().\n"
+            f"{indent}if not (getattr(getattr(self.vllm_generation, 'llm', None), 'shared_weights', False) or "
+            f"hasattr(getattr(self, 'model', None), 'vllm_engine')):\n"
+            f"{indent}    with profiling_context(self, 'sync_weights'):\n"
+            f"{indent}        self.vllm_generation.sync_weights()\n"
         )
 
-    function = sync_weights_block.sub(remove_sync_weights_block, function)
+    function = sync_weights_block.sub(guard_sync_weights_block, function)
 
     # TRL 0.24.0-0.25.1 truncation regression fix
     #
@@ -1411,7 +1417,7 @@ RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
 
 def openenv_vllm_reload_weights():
     # This function patches the trl openenv generate_rollout_completions function to:
-    # 1. Remove the reload_weights call (unsloth handles weight reloading)
+    # 1. Guard the reload_weights call (skip when sharing weights with vLLM)
     # 2. Fix wake_up call to be compatible with unsloth (remove tags to wake everything)
     #
     # The issue: TRL's wake_up(tags=["kv_cache"]) only wakes kv_cache, leaving is_sleeping=True
@@ -1448,8 +1454,20 @@ def openenv_vllm_reload_weights():
     src = textwrap.dedent(src)
     original_src = src
 
-    # Remove the reload_weights call - unsloth handles this differently
-    src = re.sub(r'.*\.collective_rpc\(\s*([\'"])reload_weights\1\s*\).*\n?', "", src)
+    reload_weights_pattern = re.compile(
+        r"^(?P<indent>[ \t]*)(?P<obj>\S+)\.collective_rpc\(\s*(['\"])reload_weights\3\s*\)\s*$",
+        re.MULTILINE,
+    )
+
+    def replace_reload_weights(match):
+        indent = match.group("indent")
+        obj = match.group("obj")
+        return (
+            f"{indent}if not getattr({obj}, 'shared_weights', False):\n"
+            f'{indent}    {obj}.collective_rpc("reload_weights")\n'
+        )
+
+    src = reload_weights_pattern.sub(replace_reload_weights, src)
 
     # Change wake_up(tags=["kv_cache"]) to wake_up() - wake everything to set is_sleeping=False
     # This prevents double wake_up issues. Unsloth's allocator skips weights anyway.
@@ -1539,7 +1557,9 @@ def vllm_generation_init_patch():
                 f"{indent}if hasattr(model, 'vllm_engine'):\n"
                 f"{indent}    # Unsloth already inits vLLM in fast inference mode. Do not redo :)\n"
                 f"{indent}    self.llm = model.vllm_engine\n"
-                f"{indent}    self.unsloth_fast_inference_lora = True\n"
+                f"{indent}    self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', True)\n"
+                f"{indent}    if hasattr(model, 'load_lora'):\n"
+                f"{indent}        self._unsloth_load_lora = model.load_lora\n"
                 f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
             )
 
@@ -1562,7 +1582,8 @@ def vllm_generation_init_patch():
         def replace_sync_weights(match):
             body = match.group("body")
             guard = (
-                "    if getattr(self, 'unsloth_fast_inference_lora', False):\n"
+                "    if getattr(self.llm, 'shared_weights', False) or "
+                "getattr(self, 'unsloth_fast_inference_lora', False):\n"
                 "        # Unsloth fast inference LoRA shares weights with vLLM already.\n"
                 "        return\n\n"
             )
@@ -1583,7 +1604,11 @@ def vllm_generation_init_patch():
 
         def replace_reload_weights(match):
             indent = match.group("indent")
-            return f'{indent}pass  # self.llm.collective_rpc("reload_weights")'
+            return (
+                f"{indent}if not (getattr(self.llm, 'shared_weights', False) or "
+                f"getattr(self, 'unsloth_fast_inference_lora', False)):\n"
+                f'{indent}    self.llm.collective_rpc("reload_weights")'
+            )
 
         patched_src, num_replacements = pattern.subn(
             replace_reload_weights, src, count = 1
@@ -1592,25 +1617,39 @@ def vllm_generation_init_patch():
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
             )
+
+        # Inject lora_request when sharing weights (vLLM needs the adapter)
+        lora_generate_pattern = re.compile(
+            r"(self\.llm\.generate\([^\)]+)\)",
+        )
+
+        def inject_lora_request(match):
+            return (
+                f"{match.group(1)}, lora_request="
+                f"self._unsloth_load_lora('vllm_gen_lora', load_tensors=True) "
+                f"if hasattr(self, '_unsloth_load_lora') else None)"
+            )
+
+        patched_src = lora_generate_pattern.sub(inject_lora_request, patched_src)
         return patched_src
 
     try:
         init_patched = patch_vllm_generation_method(
             "_init_vllm",
             patch_init_vllm,
-            "self.unsloth_fast_inference_lora = True",
+            "self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', True)",
             "init_vllm",
         )
         sync_patched = patch_vllm_generation_method(
             "sync_weights",
             patch_sync_weights,
-            "if getattr(self, 'unsloth_fast_inference_lora', False):",
+            "if getattr(self.llm, 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
             "sync_weights",
         )
         generate_patched = patch_vllm_generation_method(
             "generate",
             patch_generate,
-            'pass  # self.llm.collective_rpc("reload_weights")',
+            "if not (getattr(self.llm, 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
             "generate",
         )
     except RuntimeError as e:
