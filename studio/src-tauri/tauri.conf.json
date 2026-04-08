@@ -32,7 +32,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENjJENDYxMTQ1QTYyOEIKUldTTFlsb1VZZFJpTFY1aHgyRkRqZUdjWGg0Sm1BVEZoMDVWME5PdE42bjZiekFRc1Fsb0JNbmIK",
       "endpoints": [
-        "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
+        "https://github.com/Shine1i/unsloth/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
@@ -42,7 +42,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["appimage", "deb", "rpm", "dmg", "nsis"],
+    "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "resources": {
       "../../install.sh": "install.sh",
       "../../install.ps1": "install.ps1",

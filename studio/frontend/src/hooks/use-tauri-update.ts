@@ -17,8 +17,8 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
-  body: string | null;
-  date: string | null;
+  body?: string;
+  date?: string;
 }
 
 export function useTauriUpdate(isExternalServer = false) {
@@ -120,16 +120,16 @@ export function useTauriUpdate(isExternalServer = false) {
       setProgress(0);
 
       let downloaded = 0;
+      let contentLength = 0;
       await update.downloadAndInstall((event) => {
         switch (event.event) {
           case "Started":
+            contentLength = event.data.contentLength ?? 0;
             break;
           case "Progress":
             downloaded += event.data.chunkLength;
-            if (event.data.contentLength) {
-              setProgress(
-                Math.round((downloaded / event.data.contentLength) * 100),
-              );
+            if (contentLength > 0) {
+              setProgress(Math.round((downloaded / contentLength) * 100));
             }
             break;
           case "Finished":

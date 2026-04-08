@@ -111,7 +111,6 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
     <UpdateBanner
       status={update.status}
       info={update.info}
-      progress={update.progress}
       dismissed={update.dismissed}
       isExternalServer={isExternalServer}
       onInstall={update.installUpdate}

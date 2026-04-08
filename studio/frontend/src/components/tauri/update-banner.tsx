@@ -8,7 +8,6 @@ import { AnimatePresence, motion } from "motion/react";
 interface UpdateBannerProps {
   status: UpdateStatus;
   info: UpdateInfo | null;
-  progress: number;
   dismissed: boolean;
   isExternalServer?: boolean;
   onInstall: () => void;
@@ -20,7 +19,6 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 export function UpdateBanner({
   status,
   info,
-  progress,
   dismissed,
   isExternalServer = false,
   onInstall,
@@ -39,7 +37,7 @@ export function UpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className="fixed top-4 right-4 z-[9999] w-[380px]"
         >
-          <div className="relative overflow-hidden rounded-xl border border-border/60 bg-background/95 px-5 py-4 shadow-lg backdrop-blur-md">
+          <div className="corner-squircle relative overflow-hidden border border-border/60 bg-background/95 px-5 py-4 shadow-lg backdrop-blur-md">
             {/* Close button */}
             <button
               type="button"
@@ -52,24 +50,29 @@ export function UpdateBanner({
             </button>
 
             {/* Header */}
-            <p className="text-sm font-semibold text-foreground">
-              New version: v{info.version}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {isExternalServer
-                ? "Run `unsloth studio update` from your terminal"
-                : "A new app update is available to download"}
-            </p>
+            <div className="flex items-center gap-2">
+              <span className="text-lg">🦥</span>
+              <div>
+                <p className="text-sm font-semibold text-foreground">
+                  New version: v{info.version}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {isExternalServer
+                    ? "Run `unsloth studio update` from your terminal"
+                    : "A new app update is available"}
+                </p>
+              </div>
+            </div>
 
             {/* Actions */}
             <div className="mt-3 flex items-center gap-2">
-              <Button size="sm" onClick={onInstall} disabled={isExternalServer}>
+              <Button size="sm" className="corner-squircle" onClick={onInstall} disabled={isExternalServer}>
                 Update Now
               </Button>
-              <Button size="sm" variant="outline" disabled>
+              <Button size="sm" variant="outline" className="corner-squircle" disabled>
                 Release Notes
               </Button>
-              <Button size="sm" variant="ghost" onClick={onDismiss}>
+              <Button size="sm" variant="ghost" className="corner-squircle" onClick={onDismiss}>
                 Later
               </Button>
             </div>
