@@ -18,7 +18,11 @@ import {
   Terminal,
   TypingAnimation,
 } from "@/components/ui/terminal";
-import { getDownloadProgress } from "@/features/chat/api/chat-api";
+import {
+  getDatasetDownloadProgress,
+  getDownloadProgress,
+  type DownloadProgressResponse,
+} from "@/features/chat/api/chat-api";
 import {
   useTrainingActions,
   useTrainingConfigStore,
@@ -42,15 +46,30 @@ type DownloadState = {
   downloadedBytes: number;
   totalBytes: number;
   percent: number;
+  cachePath: string | null;
 };
 
 const EMPTY_DOWNLOAD_STATE: DownloadState = {
   downloadedBytes: 0,
   totalBytes: 0,
   percent: 0,
+  cachePath: null,
 };
 
-function useModelDownloadProgress(modelName: string | null): DownloadState {
+type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
+
+/**
+ * Polls a HF repo's download progress on a 1.5s tick. Used for both
+ * model weights (`/api/models/download-progress`) and dataset blobs
+ * (`/api/datasets/download-progress`) by swapping the fetcher.
+ *
+ * Stops polling once `progress >= 1.0` -- the bar freezes at the final
+ * value rather than disappearing, mirroring the existing chat flow.
+ */
+function useHfDownloadProgress(
+  repoId: string | null,
+  fetcher: Fetcher,
+): DownloadState {
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const [state, setState] = useState<DownloadState>(EMPTY_DOWNLOAD_STATE);
@@ -64,7 +83,7 @@ function useModelDownloadProgress(modelName: string | null): DownloadState {
     phase === "loading_dataset";
 
   useEffect(() => {
-    if (!modelName || !HF_REPO_REGEX.test(modelName) || !shouldPoll) {
+    if (!repoId || !HF_REPO_REGEX.test(repoId) || !shouldPoll) {
       return;
     }
 
@@ -75,7 +94,7 @@ function useModelDownloadProgress(modelName: string | null): DownloadState {
     const poll = async () => {
       if (cancelled || finished) return;
       try {
-        const prog = await getDownloadProgress(modelName);
+        const prog = await fetcher(repoId);
         if (cancelled) return;
         const downloaded = prog.downloaded_bytes ?? 0;
         const total = prog.expected_bytes ?? 0;
@@ -86,6 +105,7 @@ function useModelDownloadProgress(modelName: string | null): DownloadState {
           downloadedBytes: downloaded,
           totalBytes: total,
           percent: pct,
+          cachePath: prog.cache_path ?? null,
         });
         if (ratio >= 1.0) {
           finished = true;
@@ -106,9 +126,49 @@ function useModelDownloadProgress(modelName: string | null): DownloadState {
       cancelled = true;
       if (interval) clearInterval(interval);
     };
-  }, [modelName, shouldPoll]);
+  }, [repoId, shouldPoll, fetcher]);
 
   return state;
+}
+
+function useModelDownloadProgress(modelName: string | null): DownloadState {
+  return useHfDownloadProgress(modelName, getDownloadProgress);
+}
+
+function useDatasetDownloadProgress(datasetName: string | null): DownloadState {
+  return useHfDownloadProgress(datasetName, getDatasetDownloadProgress);
+}
+
+type DownloadRowProps = {
+  label: string;
+  state: DownloadState;
+};
+
+function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
+  if (state.downloadedBytes <= 0 && !state.cachePath) return null;
+  const sizeLabel =
+    state.totalBytes > 0
+      ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)} · ${state.percent}%`
+      : state.downloadedBytes > 0
+        ? `${formatBytes(state.downloadedBytes)} downloaded`
+        : "preparing...";
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span className="tabular-nums">{sizeLabel}</span>
+      </div>
+      {state.totalBytes > 0 ? <Progress value={state.percent} /> : null}
+      {state.cachePath ? (
+        <div
+          className="truncate text-[10px] text-muted-foreground/70"
+          title={state.cachePath}
+        >
+          {state.cachePath}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 type TrainingStartOverlayProps = {
@@ -123,7 +183,13 @@ export function TrainingStartOverlay({
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
-  const download = useModelDownloadProgress(selectedModel);
+  const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
+  const dataset = useTrainingConfigStore((s) => s.dataset);
+  // Only HF datasets have a download phase to track. Uploaded files are
+  // already on disk by the time the overlay shows up.
+  const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
+  const modelDownload = useModelDownloadProgress(selectedModel);
+  const datasetDownload = useDatasetDownloadProgress(hfDatasetName);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 
@@ -203,21 +269,20 @@ export function TrainingStartOverlay({
           <AnimatedSpan className="mt-2 text-muted-foreground">
             {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
           </AnimatedSpan>
-          {download.downloadedBytes > 0 ? (
+          {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                  <span>Downloading model weights...</span>
-                  <span className="tabular-nums">
-                    {download.totalBytes > 0
-                      ? `${formatBytes(download.downloadedBytes)} / ${formatBytes(download.totalBytes)} · ${download.percent}%`
-                      : `${formatBytes(download.downloadedBytes)} downloaded`}
-                  </span>
-                </div>
-                {download.totalBytes > 0 ? (
-                  <Progress value={download.percent} />
-                ) : null}
-              </div>
+              <DownloadRow
+                label="Downloading dataset..."
+                state={datasetDownload}
+              />
+            </AnimatedSpan>
+          ) : null}
+          {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
+            <AnimatedSpan className="mt-3">
+              <DownloadRow
+                label="Downloading model weights..."
+                state={modelDownload}
+              />
             </AnimatedSpan>
           ) : null}
           </Terminal>
