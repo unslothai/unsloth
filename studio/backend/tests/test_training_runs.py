@@ -12,7 +12,10 @@ from utils.training_runs import (
 
 
 def test_normalize_project_name_trims_and_collapses_whitespace():
-    assert normalize_project_name("  Customer   Support   LoRA  ") == "Customer Support LoRA"
+    assert (
+        normalize_project_name("  Customer   Support   LoRA  ")
+        == "Customer Support LoRA"
+    )
 
 
 def test_normalize_project_name_returns_none_for_empty_or_invalid_values():
@@ -21,7 +24,9 @@ def test_normalize_project_name_returns_none_for_empty_or_invalid_values():
 
 
 def test_slugify_project_name_makes_safe_suffix():
-    assert slugify_project_name("Customer Support / LoRA v2") == "customer-support-lora-v2"
+    assert (
+        slugify_project_name("Customer Support / LoRA v2") == "customer-support-lora-v2"
+    )
 
 
 def test_slugify_project_name_rejects_path_only_or_separator_only_values():
@@ -58,4 +63,7 @@ def test_extract_project_name_from_config_json_returns_normalized_name():
 def test_extract_project_name_from_config_json_handles_missing_or_invalid_payload():
     assert _extract_project_name_from_config_json(None) is None
     assert _extract_project_name_from_config_json("not-json") is None
-    assert _extract_project_name_from_config_json(json.dumps({"project_name": "   "})) is None
+    assert (
+        _extract_project_name_from_config_json(json.dumps({"project_name": "   "}))
+        is None
+    )
