@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, useRef, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import type { ModelConfig } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
@@ -47,11 +47,13 @@ export function ModelConfigDialog({
   const extraBodyId = `${config.id}-inference-extra-body`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
-  const lastProviderRef = useRef(config.provider);
-  if (lastProviderRef.current !== config.provider) {
-    lastProviderRef.current = config.provider;
+  // Sync providerInputRef with the current provider value. Updating a ref in
+  // an effect (vs reading/writing it during render) satisfies the
+  // react-hooks/refs rule and keeps the combobox blur path stable across
+  // re-renders.
+  useEffect(() => {
     providerInputRef.current = config.provider;
-  }
+  }, [config.provider]);
   const updateField = <K extends keyof ModelConfig>(
     key: K,
     value: ModelConfig[K],

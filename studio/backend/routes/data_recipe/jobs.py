@@ -37,9 +37,9 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
     port is not available (e.g. during tests that don't go through run.py).
     """
     port: Any = getattr(request.app.state, "server_port", None)
-    if not isinstance(port, int):
+    if not isinstance(port, int) or port <= 0:
         parsed = urlparse(str(request.base_url))
-        port = parsed.port or 8888
+        port = parsed.port if parsed.port is not None else 8888
     return f"http://127.0.0.1:{int(port)}/v1"
 
 

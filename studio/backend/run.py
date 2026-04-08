@@ -326,8 +326,11 @@ def run_server(
 
     # Expose the actual bound port so request-handling code can build
     # loopback URLs that point at the real backend, not whatever port a
-    # reverse proxy or tunnel exposed in the request URL.
-    app.state.server_port = port
+    # reverse proxy or tunnel exposed in the request URL. Only publish
+    # an explicit value when we know the concrete port; for ephemeral
+    # binds (port==0) leave it unset and let request handlers fall back
+    # to request.base_url, which carries the real listener port.
+    app.state.server_port = port if port and port > 0 else None
 
     # Run server in a daemon thread
     def _run():

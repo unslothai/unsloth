@@ -740,25 +740,26 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       // linked model_config nodes in sync. applyRenameToConfigs above has
       // already propagated any name change, so providerName here is the
       // post-rename value.
-      if (
-        current.kind === "model_provider" &&
-        current.is_local !== next.is_local
-      ) {
-        const providerName = next.name;
-        for (const [cfgId, cfg] of Object.entries(configs)) {
-          if (cfg.kind !== "model_config" || cfg.provider !== providerName) {
-            continue;
-          }
-          if (next.is_local && !cfg.model.trim()) {
-            // external -> local: auto fill the placeholder model id so the
-            // config does not fail "model is required" validation.
-            configs = { ...configs, [cfgId]: { ...cfg, model: "local" } };
-            continue;
-          }
-          if (!next.is_local && cfg.model === "local") {
-            // local -> external: clear the placeholder so the user picks a
-            // real model id for the new external endpoint.
-            configs = { ...configs, [cfgId]: { ...cfg, model: "" } };
+      if (current.kind === "model_provider" && next.kind === "model_provider") {
+        const prevIsLocal = current.is_local === true;
+        const nextIsLocal = next.is_local === true;
+        if (prevIsLocal !== nextIsLocal) {
+          const providerName = next.name;
+          for (const [cfgId, cfg] of Object.entries(configs)) {
+            if (cfg.kind !== "model_config" || cfg.provider !== providerName) {
+              continue;
+            }
+            if (nextIsLocal && !cfg.model.trim()) {
+              // external -> local: auto fill the placeholder model id so the
+              // config does not fail "model is required" validation.
+              configs = { ...configs, [cfgId]: { ...cfg, model: "local" } };
+              continue;
+            }
+            if (!nextIsLocal && cfg.model === "local") {
+              // local -> external: clear the placeholder so the user picks a
+              // real model id for the new external endpoint.
+              configs = { ...configs, [cfgId]: { ...cfg, model: "" } };
+            }
           }
         }
       }
