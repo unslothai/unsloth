@@ -61,13 +61,18 @@ def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     """Return the set of model_aliases that are actually referenced by an
     LLM column. Used to narrow the "Chat model loaded" gate so that orphan
     model_config nodes on the canvas do not block unrelated recipe runs.
+
+    The ``llm-`` prefix matches the existing convention in
+    ``core/data_recipe/service.py::_recipe_has_llm_columns`` and covers all
+    LLM column types emitted by the frontend (llm-text, llm-code,
+    llm-structured, llm-judge).
     """
     aliases: set[str] = set()
     for column in recipe.get("columns", []):
         if not isinstance(column, dict):
             continue
         column_type = column.get("column_type")
-        if not isinstance(column_type, str) or not column_type.startswith("llm"):
+        if not isinstance(column_type, str) or not column_type.startswith("llm-"):
             continue
         alias = column.get("model_alias")
         if isinstance(alias, str) and alias:
@@ -163,6 +168,19 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
         providers[i].pop("api_key_env", None)
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
+
+    # Force skip_health_check on any model_config that references a local
+    # provider. The local /v1/models endpoint only lists the real loaded
+    # model (e.g. "unsloth/llama-3.2-1b") and not the placeholder "local"
+    # that the recipe sends as the model id, so data_designer's pre-flight
+    # health check would otherwise fail before the first completion call.
+    # The backend route ignores the model id field in chat completions, so
+    # skipping the check is safe.
+    for mc in recipe.get("model_configs", []):
+        if not isinstance(mc, dict):
+            continue
+        if mc.get("provider") in local_names:
+            mc["skip_health_check"] = True
 
 
 def _normalize_run_name(value: Any) -> str | None:

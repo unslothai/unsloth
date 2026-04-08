@@ -329,7 +329,7 @@ def run_server(
     # reverse proxy or tunnel exposed in the request URL. Only publish
     # an explicit value when we know the concrete port; for ephemeral
     # binds (port==0) leave it unset and let request handlers fall back
-    # to request.base_url, which carries the real listener port.
+    # to the ASGI request scope or request.base_url.
     app.state.server_port = port if port and port > 0 else None
 
     # Run server in a daemon thread
