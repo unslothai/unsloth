@@ -929,7 +929,7 @@ export function ExportPage() {
                                 ) : (
                                   <ComboboxEmpty>No local models found</ComboboxEmpty>
                                 )}
-                                <ComboboxList className="p-1 max-h-none! overflow-visible!">
+                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
