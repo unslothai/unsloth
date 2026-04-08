@@ -4,6 +4,7 @@ mod commands;
 mod desktop_auth;
 mod install;
 mod process;
+mod update;
 
 use log::info;
 use process::new_backend_state;
@@ -80,6 +81,8 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "quit" => {
                 let install_state = app.state::<crate::install::InstallState>();
                 let _ = crate::install::stop_install(&install_state);
+                let update_state = app.state::<crate::update::UpdateState>();
+                let _ = crate::update::stop_update(&update_state);
                 let shutdown = app.state::<crate::process::ShutdownFlag>();
                 let state = app.state::<crate::process::BackendState>();
                 let _ = crate::process::stop_backend(&state, &shutdown);
@@ -123,9 +126,11 @@ fn main() {
         }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(install::new_install_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
+        .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
             commands::check_install_status,
             commands::start_install,
@@ -136,6 +141,7 @@ fn main() {
             commands::get_server_logs,
             commands::get_bootstrap_password,
             commands::open_logs_dir,
+            commands::start_backend_update,
             commands::install_system_packages,
             desktop_auth::get_desktop_password,
             desktop_auth::set_desktop_password,
@@ -162,6 +168,9 @@ fn main() {
                 // Cleanup on ALL exit paths — safety net for non-tray exits
                 if let Some(install_state) = app.try_state::<install::InstallState>() {
                     let _ = install::stop_install(&install_state);
+                }
+                if let Some(update_state) = app.try_state::<update::UpdateState>() {
+                    let _ = update::stop_update(&update_state);
                 }
                 if let Some(backend_state) = app.try_state::<process::BackendState>() {
                     let shutdown = app

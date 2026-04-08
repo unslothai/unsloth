@@ -18,6 +18,7 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
-    }
+    },
+    "updater:default"
   ]
 }

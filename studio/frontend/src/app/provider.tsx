@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { StartupScreen } from "@/components/tauri/startup-screen";
+import { UpdateBanner } from "@/components/tauri/update-banner";
+import { UpdateScreen } from "@/components/tauri/update-screen";
 import { Toaster } from "@/components/ui/sonner";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
+import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { ThemeProvider } from "next-themes";
 import { useEffect, useRef, type ReactNode } from "react";
@@ -83,9 +86,43 @@ async function animateToGoldenRatio(abortRef: { current: boolean }): Promise<voi
 // TauriWrapper
 // ---------------------------------------------------------------------------
 
+function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
+  const update = useTauriUpdate(isExternalServer);
+  const isUpdating =
+    update.status === "updating-backend" ||
+    update.status === "downloading" ||
+    update.status === "installing" ||
+    (update.status === "error" && !update.dismissed);
+
+  if (isUpdating) {
+    return (
+      <UpdateScreen
+        status={update.status}
+        logs={update.logs}
+        progress={update.progress}
+        error={update.error}
+        onRetry={update.retryUpdate}
+        onSkipRestart={update.skipAndRestart}
+      />
+    );
+  }
+
+  return (
+    <UpdateBanner
+      status={update.status}
+      info={update.info}
+      progress={update.progress}
+      dismissed={update.dismissed}
+      isExternalServer={isExternalServer}
+      onInstall={update.installUpdate}
+      onDismiss={update.dismiss}
+    />
+  );
+}
+
 function TauriWrapper({ children }: { children: ReactNode }) {
   const {
-    status, logs, error,
+    status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
     startInstall, retry, retryInstall, approveElevation,
   } = useTauriBackend();
@@ -115,7 +152,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   }, [status]);
 
   if (!isTauri) return <>{children}</>;
-  if (status === "running") return <>{children}</>;
+  if (status === "running") return <><TauriUpdateLayer isExternalServer={isExternalServer} />{children}</>;
 
   return (
     <StartupScreen
