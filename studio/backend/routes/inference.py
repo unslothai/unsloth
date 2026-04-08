@@ -887,6 +887,9 @@ def _build_external_messages(
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
+            # Skip assistant messages with empty content (some providers reject them)
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
             result.append({"role": msg.role, "content": msg.content})
         elif isinstance(msg.content, list):
             if supports_vision:
