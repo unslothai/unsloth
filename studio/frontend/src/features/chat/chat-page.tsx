@@ -9,6 +9,14 @@ import {
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -33,6 +41,7 @@ import {
   Settings04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { code as codePlugin } from "@streamdown/code";
 import {
   type CSSProperties,
   type ReactElement,
@@ -44,6 +53,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Streamdown } from "streamdown";
 import { toast } from "sonner";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
@@ -72,6 +82,42 @@ type LoraCandidate = {
   baseModel: string;
   updatedAt?: number;
 };
+
+const ENDPOINT_BASE_URL_FALLBACK = "http://127.0.0.1:8001/v1";
+const SHIKI_THEME = ["github-light", "github-dark"] as ["github-light", "github-dark"];
+
+function buildDefaultEndpointBaseUrl(): string {
+  if (typeof window === "undefined") {
+    return ENDPOINT_BASE_URL_FALLBACK;
+  }
+  return `${window.location.origin}/v1`;
+}
+
+function HighlightedSnippet({
+  language,
+  source,
+}: {
+  language: "python" | "bash";
+  source: string;
+}) {
+  const markdown = useMemo(
+    () => `\`\`\`${language}\n${source}\n\`\`\``,
+    [language, source],
+  );
+
+  return (
+    <div className="mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
+      <Streamdown
+        mode="static"
+        plugins={{ code: codePlugin }}
+        controls={{ code: false }}
+        shikiTheme={SHIKI_THEME}
+      >
+        {markdown}
+      </Streamdown>
+    </div>
+  );
+}
 
 function normalizeModelRef(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? "";
@@ -497,6 +543,11 @@ export function ChatPage(): ReactElement {
   // explicitly sets a nonce in handleNewThread.
   const [view, setView] = useState<ChatView>(getInitialSingleChatView);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [endpointDialogOpen, setEndpointDialogOpen] = useState(false);
+  const [endpointBaseUrl, setEndpointBaseUrl] = useState(
+    buildDefaultEndpointBaseUrl,
+  );
+  const [endpointApiKey, setEndpointApiKey] = useState("sk-no-key-required");
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -537,6 +588,47 @@ export function ChatPage(): ReactElement {
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint);
   }, [inferenceParams.checkpoint]);
+  const modelAlias = inferenceParams.checkpoint || "unsloth/your-model-alias";
+  const endpointPythonSnippet = useMemo(
+    () => `from openai import OpenAI
+
+client = OpenAI(
+    base_url="${endpointBaseUrl}",
+    api_key="${endpointApiKey}",
+)
+
+completion = client.chat.completions.create(
+    model="${modelAlias}",
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+)
+
+print(completion.choices[0].message.content)`,
+    [endpointApiKey, endpointBaseUrl, modelAlias],
+  );
+  const endpointCurlSnippet = useMemo(
+    () => `curl ${endpointBaseUrl}/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${endpointApiKey}" \\
+  -d '{
+    "model": "${modelAlias}",
+    "messages": [{"role": "user", "content": "What is 2+2?"}]
+  }'`,
+    [endpointApiKey, endpointBaseUrl, modelAlias],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setEndpointBaseUrl((prev) =>
+      prev === ENDPOINT_BASE_URL_FALLBACK ? buildDefaultEndpointBaseUrl() : prev,
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!endpointDialogOpen) return;
+    setEndpointBaseUrl((prev) =>
+      prev.trim().length === 0 ? buildDefaultEndpointBaseUrl() : prev,
+    );
+  }, [endpointDialogOpen]);
 
   const handleCheckpointChange = useCallback(
     (
@@ -641,6 +733,13 @@ export function ChatPage(): ReactElement {
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  const handleOpenEndpointDialog = useCallback(() => {
+    if (!inferenceParams.checkpoint) {
+      toast.message("Load a model first to access endpoint details.");
+      return;
+    }
+    setEndpointDialogOpen(true);
+  }, [inferenceParams.checkpoint]);
 
   const enterCompare = useCallback(() => {
     setViewBeforeCompare((prev) => prev ?? view);
@@ -932,6 +1031,17 @@ export function ChatPage(): ReactElement {
                 completionTokens={contextUsage.completionTokens}
               />
             ) : null}
+            {inferenceParams.checkpoint ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="mr-2 h-8 px-2 text-xs"
+                onClick={handleOpenEndpointDialog}
+                title="View OpenAI-compatible endpoint details"
+              >
+                Access Endpoint
+              </Button>
+            ) : null}
             <button
               type="button"
               onClick={() => setSettingsOpen((o) => !o)}
@@ -980,6 +1090,69 @@ export function ChatPage(): ReactElement {
             }
           }}
         />
+        <Dialog open={endpointDialogOpen} onOpenChange={setEndpointDialogOpen}>
+          <DialogContent className="corner-squircle sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Access Endpoint</DialogTitle>
+              <DialogDescription>
+                Use these OpenAI-compatible settings to connect to the active
+                model from your own code.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="grid gap-1.5">
+                <label htmlFor="endpoint-base-url" className="text-xs font-medium">
+                  Base URL
+                </label>
+                <Input
+                  id="endpoint-base-url"
+                  value={endpointBaseUrl}
+                  onChange={(event) => setEndpointBaseUrl(event.target.value)}
+                  className="font-mono text-xs"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label htmlFor="endpoint-api-key" className="text-xs font-medium">
+                  API Key
+                </label>
+                <Input
+                  id="endpoint-api-key"
+                  value={endpointApiKey}
+                  onChange={(event) => setEndpointApiKey(event.target.value)}
+                  className="font-mono text-xs"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label htmlFor="endpoint-model-alias" className="text-xs font-medium">
+                  Model Alias
+                </label>
+                <Input
+                  id="endpoint-model-alias"
+                  value={modelAlias}
+                  readOnly={true}
+                  className="font-mono text-xs"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <details className="rounded-md border p-2">
+                <summary className="cursor-pointer text-xs font-medium">
+                  Python (OpenAI SDK)
+                </summary>
+                <HighlightedSnippet
+                  language="python"
+                  source={endpointPythonSnippet}
+                />
+              </details>
+              <details className="rounded-md border p-2">
+                <summary className="cursor-pointer text-xs font-medium">
+                  cURL
+                </summary>
+                <HighlightedSnippet language="bash" source={endpointCurlSnippet} />
+              </details>
+            </div>
+          </DialogContent>
+        </Dialog>
       </SidebarProvider>
     </div>
   );
