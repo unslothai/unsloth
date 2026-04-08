@@ -1431,7 +1431,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        Invoke-SetupCommand { powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" } | Out-Null
+        Invoke-SetupCommand { Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1") } | Out-Null
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory

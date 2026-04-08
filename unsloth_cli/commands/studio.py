@@ -19,6 +19,38 @@ STUDIO_HOME = Path.home() / ".unsloth" / "studio"
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
+def _should_hide_windows_subprocesses() -> bool:
+    """Hide child console windows only for non-interactive Windows launches."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        return not sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
+def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
+    """Return Windows-only Popen kwargs that suppress transient console windows."""
+    if not _should_hide_windows_subprocesses():
+        return {}
+
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_factory is not None and startf_use_showwindow:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
@@ -115,7 +147,7 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                proc = _sp.Popen(args)
+                proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -250,9 +282,16 @@ def _run_setup_script(*, verbose: bool = False) -> None:
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
 
     if platform.system() == "Windows":
+        powershell_args = ["powershell.exe"]
+        if _should_hide_windows_subprocesses():
+            powershell_args.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
+        powershell_args.extend(["-ExecutionPolicy", "Bypass", "-File", str(script)])
         result = subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            powershell_args,
             env = env,
+            **_windows_hidden_subprocess_kwargs(),
         )
     else:
         result = subprocess.run(["bash", str(script)], env = env)

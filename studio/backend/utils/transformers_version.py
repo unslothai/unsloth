@@ -31,6 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs
+
 logger = get_logger(__name__)
 
 
@@ -331,6 +333,7 @@ def _install_to_venv_t5(pkg: str) -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
             return True
@@ -352,6 +355,7 @@ def _install_to_venv_t5(pkg: str) -> bool:
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         logger.error("install failed:\n%s", result.stdout)

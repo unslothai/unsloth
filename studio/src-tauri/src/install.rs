@@ -32,6 +32,8 @@ pub fn new_install_state() -> InstallState {
     Arc::new(Mutex::new(InstallProcess::default()))
 }
 
+use crate::process::trim_line_endings;
+
 // ── Script Resolution ──
 
 /// Returns (script_path, args) depending on dev vs production mode.
@@ -60,7 +62,11 @@ fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), Str
         info!("Dev mode: using repo script at {}", script.display());
         Ok((script, args))
     } else {
-        let name = if cfg!(unix) { "install.sh" } else { "install.ps1" };
+        let name = if cfg!(unix) {
+            "install.sh"
+        } else {
+            "install.ps1"
+        };
         let script = app
             .path()
             .resolve(name, tauri::path::BaseDirectory::Resource)
@@ -96,7 +102,13 @@ fn spawn_script(
     script: &Path,
     args: &[String],
     state: &InstallState,
-) -> Result<(Option<std::process::ChildStdout>, Option<std::process::ChildStderr>), String> {
+) -> Result<
+    (
+        Option<std::process::ChildStdout>,
+        Option<std::process::ChildStderr>,
+    ),
+    String,
+> {
     let mut install = state.lock().map_err(|e| e.to_string())?;
     if install.child.is_some() {
         return Err("Installation is already running.".to_string());
@@ -122,14 +134,23 @@ fn spawn_script(
         .stderr(Stdio::piped());
 
     #[cfg(windows)]
-    let mut cmd = Command::new("powershell");
+    let mut cmd = Command::new("powershell.exe");
     #[cfg(windows)]
-    cmd.args(["-ExecutionPolicy", "Bypass", "-File"])
-        .arg(script)
-        .args(args)
-        .current_dir(&work_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(script)
+    .args(args)
+    .current_dir(&work_dir)
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     // spawned by the install script. Only clear inside AppImage — native installs
@@ -141,25 +162,31 @@ fn spawn_script(
         cmd.env_remove("PYTHONPATH");
     }
 
-    // Suppress console window from install subprocess on Windows
+    // On Windows, launch the installer directly with CREATE_NO_WINDOW.
+    // `process-wrap`'s JobObject wrapper always injects CREATE_SUSPENDED,
+    // and this PowerShell installer path is the one most likely to surface
+    // a visible hosted terminal window/tab on Win11. We keep tree cleanup via
+    // the hidden taskkill /T /F fallback in stop_install().
     #[cfg(windows)]
-    {
+    let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn install script: {}", e))?;
+        Box::new(child)
+    };
 
-    // Spawn in a process group so kill() terminates the entire tree
-    // (bash/powershell + all subprocesses like uv, cmake, pip)
-    let mut wrap = CommandWrap::from(cmd);
     #[cfg(unix)]
-    wrap.wrap(ProcessGroup::leader());
-    #[cfg(windows)]
-    wrap.wrap(JobObject);
-
-    let mut child = wrap
-        .spawn()
-        .map_err(|e| format!("Failed to spawn install script: {}", e))?;
+    let mut child: Box<dyn ChildWrapper + Send> = {
+        // Keep the whole installer tree in a process group on Unix.
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        let child = wrap
+            .spawn()
+            .map_err(|e| format!("Failed to spawn install script: {}", e))?;
+        Box::new(child)
+    };
 
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
@@ -183,10 +210,14 @@ fn stream_output(
         let app_clone = app.clone();
         let state_clone = Arc::clone(state);
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(out);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
+            let mut reader = std::io::BufReader::new(out);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         // Parse structured Tauri protocol lines
                         if let Some(packages) = text.strip_prefix("[TAURI:NEED_SUDO] ") {
                             let pkgs: Vec<String> =
@@ -215,10 +246,14 @@ fn stream_output(
     if let Some(err) = stderr {
         let app_clone = app.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(err);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
+            let mut reader = std::io::BufReader::new(err);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         warn!("[install][stderr] {}", text);
                         let _ = app_clone.emit("install-progress", &text);
                     }
@@ -323,7 +358,7 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
 
 /// Stop a running install process gracefully.
 /// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL
-/// Windows: kill job object (no graceful equivalent)
+/// Windows: hidden taskkill /T /F to terminate the installer tree
 pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let mut child = {
         let mut install = match state.lock() {
@@ -371,11 +406,20 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
         warn!("Installer did not exit gracefully, force killing");
     }
 
-    // Force kill (SIGKILL on Unix, terminate job object on Windows)
-    let _ = child.kill();
-    let _ = child.wait();
-    info!("Installer process group force stopped");
-    Ok(())
+    #[cfg(windows)]
+    {
+        crate::process::force_kill_process_tree(pid, child, "Installer");
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        // Force kill (SIGKILL on Unix)
+        let _ = child.kill();
+        let _ = child.wait();
+        info!("Installer process group force stopped");
+        Ok(())
+    }
 }
 
 /// Install system packages with elevated permissions (Linux only).

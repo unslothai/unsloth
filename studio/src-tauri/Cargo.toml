@@ -31,6 +31,7 @@ libc = "0.2"
 elevated-command = "1.1.2"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [build-dependencies]

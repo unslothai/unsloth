@@ -32,6 +32,8 @@ import threading
 import yaml
 
 
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs
+
 logger = get_logger(__name__)
 
 # ── Model size extraction ────────────────────────────────────
@@ -578,6 +580,7 @@ def _is_vision_model_subprocess(
             capture_output = True,
             text = True,
             timeout = 60,
+            **_windows_hidden_subprocess_kwargs(),
         )
 
         if result.returncode != 0:

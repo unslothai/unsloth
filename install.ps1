@@ -672,7 +672,7 @@ shell.Run cmd, 0, False
         # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
             substep "trying alternative uv installer..." "Yellow"
-            powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+            Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
     }

@@ -19,6 +19,11 @@ pub async fn check_install_status() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
+    }
+
     // Match the same AppImage env clearing used in process.rs and install.rs,
     // otherwise the probe can fail due to bundled libs even when the install is fine.
     #[cfg(target_os = "linux")]
@@ -356,7 +361,9 @@ async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: Shutdown
                     consecutive_failures, port
                 );
                 if consecutive_failures >= 3 {
-                    error!("Health watchdog: backend unresponsive for 45s, killing and declaring dead");
+                    error!(
+                        "Health watchdog: backend unresponsive for 45s, killing and declaring dead"
+                    );
                     // Kill the zombie process so retry can start fresh
                     let _ = process::stop_backend(&state, &shutdown);
                     let _ = app.emit("server-crashed", ());
@@ -366,4 +373,3 @@ async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: Shutdown
         }
     }
 }
-

@@ -41,7 +41,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "resources": {
       "../../install.sh": "install.sh",

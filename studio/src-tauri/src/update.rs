@@ -32,7 +32,13 @@ pub fn new_update_state() -> UpdateState {
 fn spawn_update(
     bin: &std::path::Path,
     state: &UpdateState,
-) -> Result<(Option<std::process::ChildStdout>, Option<std::process::ChildStderr>), String> {
+) -> Result<
+    (
+        Option<std::process::ChildStdout>,
+        Option<std::process::ChildStderr>,
+    ),
+    String,
+> {
     let mut update = state.lock().map_err(|e| e.to_string())?;
     if update.child.is_some() {
         return Err("Update is already running.".to_string());
@@ -52,18 +58,17 @@ fn spawn_update(
         cmd.env_remove("PYTHONPATH");
     }
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
     let mut wrap = CommandWrap::from(cmd);
     #[cfg(unix)]
     wrap.wrap(ProcessGroup::leader());
     #[cfg(windows)]
-    wrap.wrap(JobObject);
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        wrap.wrap(CreationFlags(
+            windows::Win32::System::Threading::PROCESS_CREATION_FLAGS(CREATE_NO_WINDOW),
+        ));
+        wrap.wrap(JobObject);
+    }
 
     let mut child = wrap
         .spawn()
@@ -179,7 +184,7 @@ pub fn run_backend_update(app: AppHandle, state: UpdateState) -> Result<(), Stri
             let _ = app.emit("update-complete", ());
             Ok(())
         }
-        Ok((status, intentional)) if intentional => {
+        Ok((_status, intentional)) if intentional => {
             info!("[update] Update stopped intentionally");
             Err("Update stopped.".to_string())
         }

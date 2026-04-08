@@ -39,6 +39,54 @@ pub fn new_shutdown_flag() -> ShutdownFlag {
     Arc::new(AtomicBool::new(false))
 }
 
+pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    &bytes[..end]
+}
+
+/// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Force-kill a Windows process tree via hidden `taskkill /T /F`, falling
+/// back to `child.kill()` if taskkill itself fails.  Reaps the child afterward.
+#[cfg(windows)]
+pub(crate) fn force_kill_process_tree(
+    pid: u32,
+    child: &mut Box<dyn ChildWrapper + Send>,
+    label: &str,
+) {
+    use std::os::windows::process::CommandExt;
+
+    let taskkill_status = Command::new("taskkill.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    match taskkill_status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            warn!(
+                "taskkill returned non-zero status for {} pid {}: {}",
+                label, pid, status
+            );
+            let _ = child.kill();
+        }
+        Err(e) => {
+            warn!("taskkill failed for {} pid {}: {}", label, pid, e);
+            let _ = child.kill();
+        }
+    }
+
+    let _ = child.wait();
+    info!("{} process tree force stopped", label);
+}
+
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
@@ -94,20 +142,25 @@ fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
         info!("Dev mode: no local .venv found, falling back to installed backend");
     }
 
-    find_unsloth_binary().ok_or_else(|| {
-        "Unsloth binary not found. Please install Unsloth Studio first.".to_string()
-    })
+    find_unsloth_binary()
+        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth Studio first.".to_string())
 }
 
 /// Check if the installed unsloth CLI supports --api-only by probing --help output.
 /// Times out after 5s to avoid blocking startup if the binary hangs.
 fn supports_api_only(bin: &std::path::Path) -> bool {
-    let mut child = match std::process::Command::new(bin)
-        .args(["studio", "--help"])
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(["studio", "--help"])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+
+    #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -136,7 +189,12 @@ fn supports_api_only(bin: &std::path::Path) -> bool {
 }
 
 /// Spawn the backend process and wire up stdout/stderr reader threads.
-pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown: &ShutdownFlag) -> Result<(), String> {
+pub fn start_backend(
+    app: &AppHandle,
+    state: &BackendState,
+    port: u16,
+    shutdown: &ShutdownFlag,
+) -> Result<(), String> {
     let bin = resolve_backend_binary()?;
 
     shutdown.store(false, Ordering::SeqCst);
@@ -187,32 +245,33 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown:
         cmd.env_remove("PYTHONPATH");
     }
 
-    // On Windows, we use two complementary mechanisms:
-    // - CREATE_NEW_PROCESS_GROUP: enables CTRL_BREAK_EVENT for graceful shutdown
-    // - CREATE_NO_WINDOW: suppresses console windows from child processes
-    // - JobObject (below): ensures ALL children are killed when the job terminates
-    // These don't conflict — process groups handle signal routing,
-    // job objects handle lifecycle. Children can't escape the job object
-    // unless CREATE_BREAKAWAY_FROM_JOB is set (we don't set it).
+    // On Windows, launch the backend directly with hidden-window flags.
+    // `process-wrap`'s JobObject wrapper injects CREATE_SUSPENDED, which can
+    // surface a visible hosted console window for this top-level `unsloth.exe`
+    // server process on Win11 even when CREATE_NO_WINDOW is requested.
+    // We keep cleanup via the hidden taskkill /T /F fallback in stop_backend().
     #[cfg(windows)]
-    {
+    let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
+
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-    }
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn backend: {}", e))?;
+        Box::new(child)
+    };
 
-    // Spawn in a process group so stop_backend() kills the entire subprocess tree
-    // (Python + any workers it spawns), not just the top-level process.
-    let mut wrap = CommandWrap::from(cmd);
     #[cfg(unix)]
-    wrap.wrap(ProcessGroup::leader());
-    #[cfg(windows)]
-    wrap.wrap(JobObject);
-
-    let mut child = wrap
-        .spawn()
-        .map_err(|e| format!("Failed to spawn backend: {}", e))?;
+    let mut child: Box<dyn ChildWrapper + Send> = {
+        // Keep the backend tree in a process group on Unix for cleanup.
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        let child = wrap
+            .spawn()
+            .map_err(|e| format!("Failed to spawn backend: {}", e))?;
+        Box::new(child)
+    };
 
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
@@ -253,12 +312,16 @@ fn read_output_stream<R: std::io::Read>(
     state: &BackendState,
     is_stderr: bool,
 ) {
-    let reader = std::io::BufReader::new(stream);
+    let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
+    let mut buf = Vec::new();
 
-    for line in reader.lines() {
-        match line {
-            Ok(text) => {
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                 let log_line = if is_stderr {
                     format!("[stderr] {}", text)
                 } else {
@@ -306,28 +369,41 @@ fn read_output_stream<R: std::io::Read>(
 
     // Stream closed. Only the stdout reader checks for crashes.
     if !is_stderr {
-        let intentional = state
-            .lock()
-            .map(|proc| proc.intentional_stop)
-            .unwrap_or(false);
-        if !intentional {
-            error!("Backend process stdout closed unexpectedly (crash detected)");
-            let _ = app.emit("server-crashed", ());
-        }
-        // Clean up the child handle since the process has exited
         if let Ok(mut proc) = state.lock() {
-            // Try to wait on the child to reap it
-            if let Some(ref mut child) = proc.child {
-                let _ = child.wait();
+            let intentional = proc.intentional_stop;
+            let exited = if let Some(ref mut child) = proc.child {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        info!("Backend stdout stream ended with status: {}", status);
+                        true
+                    }
+                    Ok(None) => {
+                        warn!("Backend stdout stream ended, but process is still running");
+                        false
+                    }
+                    Err(e) => {
+                        warn!("Failed to query backend status after stdout closed: {}", e);
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
+            if exited {
+                proc.child = None;
+                if !intentional {
+                    error!("Backend process stdout closed unexpectedly (crash detected)");
+                    let _ = app.emit("server-crashed", ());
+                }
             }
-            proc.child = None;
         }
     }
 }
 
 /// Graceful shutdown of the backend process and its entire subprocess tree.
 /// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL to group
-/// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> kill job object
+/// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> hidden taskkill /T /F
 pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(), String> {
     shutdown.store(true, Ordering::SeqCst);
 
@@ -394,15 +470,28 @@ pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(),
         }
     }
 
-    // Force kill the entire process group/job object
-    warn!(
-        "Backend did not exit gracefully, force killing group (pid {})",
-        pid
-    );
-    let _ = child.kill();
+    #[cfg(windows)]
+    {
+        warn!(
+            "Backend did not exit gracefully, force killing process tree (pid {})",
+            pid
+        );
+        force_kill_process_tree(pid, child, "Backend");
+        return Ok(());
+    }
 
-    // Reap the process
-    let _ = child.wait();
-    info!("Backend process group forcefully stopped");
-    Ok(())
+    #[cfg(unix)]
+    {
+        // Force kill the process group on Unix
+        warn!(
+            "Backend did not exit gracefully, force killing group (pid {})",
+            pid
+        );
+        let _ = child.kill();
+
+        // Reap the process
+        let _ = child.wait();
+        info!("Backend process group forcefully stopped");
+        Ok(())
+    }
 }

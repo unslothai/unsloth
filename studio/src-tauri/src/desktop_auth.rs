@@ -13,7 +13,13 @@ pub fn get_desktop_password() -> Result<String, String> {
     let path = password_path()?;
     std::fs::read_to_string(&path)
         .map(|s| s.trim().to_string())
-        .map_err(|e| format!("Failed to read desktop password at {}: {}", path.display(), e))
+        .map_err(|e| {
+            format!(
+                "Failed to read desktop password at {}: {}",
+                path.display(),
+                e
+            )
+        })
 }
 
 /// Generate a random desktop password in Rust, write it to disk, and return it.
