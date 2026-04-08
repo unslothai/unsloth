@@ -1035,7 +1035,11 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         # the correct kernel (bf16_nf4 vs fp16_nf4) and allocates the output
         # buffer in the right dtype directly. The post-cast is kept as a
         # safety net for any edge case the pre-assignment cannot cover.
-        if W_quant is not None and not isinstance(W_quant, list) and W_quant.dtype != dtype:
+        if (
+            W_quant is not None
+            and not isinstance(W_quant, list)
+            and W_quant.dtype != dtype
+        ):
             W_quant.dtype = dtype
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         if W.dtype != dtype:
