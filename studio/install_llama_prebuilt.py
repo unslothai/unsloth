@@ -2502,9 +2502,7 @@ def detect_host() -> HostInfo:
         try:
             listing = run_capture([nvidia_smi, "-L"], timeout = 20)
             gpu_lines = [
-                line
-                for line in listing.stdout.splitlines()
-                if line.startswith("GPU ")
+                line for line in listing.stdout.splitlines() if line.startswith("GPU ")
             ]
             if gpu_lines:
                 has_physical_nvidia = True
@@ -3246,13 +3244,9 @@ def resolve_release_asset_choice(
         # windows-cpu bundle here would make the new HIP path
         # unreachable.
         if host.has_rocm:
-            published_choice = published_asset_choice_for_kind(
-                release, "windows-hip"
-            )
+            published_choice = published_asset_choice_for_kind(release, "windows-hip")
         else:
-            published_choice = published_asset_choice_for_kind(
-                release, "windows-cpu"
-            )
+            published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
     elif host.is_macos and host.is_x86_64:
@@ -4372,7 +4366,13 @@ def validate_server(
         # validation. Use the resolved install_kind as the source of
         # truth and fall back to host detection when the caller did not
         # pass one (keeps backwards compatibility with older call sites).
-        _gpu_kinds = {"linux-cuda", "linux-rocm", "windows-cuda", "windows-hip", "macos-arm64"}
+        _gpu_kinds = {
+            "linux-cuda",
+            "linux-rocm",
+            "windows-cuda",
+            "windows-hip",
+            "macos-arm64",
+        }
         if install_kind is not None:
             _enable_gpu_layers = install_kind in _gpu_kinds
         else:

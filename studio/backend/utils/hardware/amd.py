@@ -210,7 +210,11 @@ def _first_visible_amd_gpu_id() -> Optional[str]:
     set, and ``None`` when the env var explicitly narrows to zero GPUs
     ("" or "-1"), so callers can short-circuit to "available: False".
     """
-    for env_name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    for env_name in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
         raw = os.environ.get(env_name)
         if raw is None:
             continue

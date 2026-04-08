@@ -1363,8 +1363,7 @@ def apply_gpu_ids(gpu_ids) -> None:
     # way a downstream ROCm process inherits the narrowed mask even
     # before Studio's hardware detection has classified the host.
     _inherits_rocm_visibility = (
-        "HIP_VISIBLE_DEVICES" in os.environ
-        or "ROCR_VISIBLE_DEVICES" in os.environ
+        "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
     if IS_ROCM or _inherits_rocm_visibility:
         os.environ["HIP_VISIBLE_DEVICES"] = value
