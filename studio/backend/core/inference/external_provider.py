@@ -91,7 +91,11 @@ class ExternalProviderClient:
             "presence_penalty": presence_penalty,
         }
         if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+            # OpenAI newer models (gpt-4o, gpt-5.x) reject max_tokens
+            if self.provider_type == "openai":
+                body["max_completion_tokens"] = max_tokens
+            else:
+                body["max_tokens"] = max_tokens
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -406,7 +410,10 @@ class ExternalProviderClient:
             "presence_penalty": presence_penalty,
         }
         if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+            if self.provider_type == "openai":
+                body["max_completion_tokens"] = max_tokens
+            else:
+                body["max_tokens"] = max_tokens
 
         response = await _http_client.post(
             f"{self.base_url}/chat/completions",
