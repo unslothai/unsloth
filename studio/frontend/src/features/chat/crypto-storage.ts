@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import forge from "node-forge";
+
 /**
  * Password-derived AES-256-GCM encryption for API keys at rest in localStorage.
  *
@@ -63,53 +65,37 @@ export function clearSessionPassword(): void {
 
 // ── Key derivation ───────────────────────────────────────────────
 
-/** Derive an AES-256-GCM CryptoKey from a password and salt via PBKDF2. */
-export async function deriveKey(
+/** Derive a 256-bit AES key from a password and salt via PBKDF2-SHA256. */
+export function deriveKeyBytes(
   password: string,
   salt: Uint8Array,
-): Promise<CryptoKey> {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt: salt as BufferSource, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
+): string {
+  const saltStr = forge.util.binary.raw.encode(salt);
+  return forge.pkcs5.pbkdf2(password, saltStr, PBKDF2_ITERATIONS, 32, forge.md.sha256.create());
 }
 
 // ── Encrypt / Decrypt ────────────────────────────────────────────
 
 /**
  * Encrypt a plaintext string.
- * Returns a base64 string containing: salt (16 B) ‖ iv (12 B) ‖ ciphertext.
+ * Returns a base64 string containing: salt (16 B) ‖ iv (12 B) ‖ ciphertext ‖ tag (16 B).
  */
 export async function encryptValue(
   plaintext: string,
   password: string,
 ): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
-  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-  const key = await deriveKey(password, salt);
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    key,
-    new TextEncoder().encode(plaintext),
-  );
-  // Concatenate salt + iv + ciphertext into one ArrayBuffer
-  const combined = new Uint8Array(
-    SALT_BYTES + IV_BYTES + ciphertext.byteLength,
-  );
-  combined.set(salt, 0);
-  combined.set(iv, SALT_BYTES);
-  combined.set(new Uint8Array(ciphertext), SALT_BYTES + IV_BYTES);
-  return btoa(String.fromCharCode(...combined));
+  const salt = forge.random.getBytesSync(SALT_BYTES);
+  const iv = forge.random.getBytesSync(IV_BYTES);
+  const keyBytes = deriveKeyBytes(password, Uint8Array.from(salt, (c: string) => c.charCodeAt(0)));
+  const cipher = forge.cipher.createCipher("AES-GCM", keyBytes);
+  cipher.start({ iv, tagLength: 128 });
+  cipher.update(forge.util.createBuffer(forge.util.encodeUtf8(plaintext)));
+  cipher.finish();
+  const ciphertext = cipher.output.getBytes();
+  const tag = cipher.mode.tag.getBytes();
+  // Concatenate salt + iv + ciphertext + tag
+  const combined = salt + iv + ciphertext + tag;
+  return forge.util.encode64(combined);
 }
 
 /**
@@ -120,18 +106,23 @@ export async function decryptValue(
   encrypted: string,
   password: string,
 ): Promise<string> {
-  const combined = Uint8Array.from(atob(encrypted), (c) => c.charCodeAt(0));
-  if (combined.byteLength < SALT_BYTES + IV_BYTES + 1) {
+  const combined = forge.util.decode64(encrypted);
+  if (combined.length < SALT_BYTES + IV_BYTES + 1 + 16) {
     throw new Error("Invalid encrypted value: too short");
   }
   const salt = combined.slice(0, SALT_BYTES);
   const iv = combined.slice(SALT_BYTES, SALT_BYTES + IV_BYTES);
-  const ciphertext = combined.slice(SALT_BYTES + IV_BYTES);
-  const key = await deriveKey(password, salt);
-  const plainBuffer = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
-    key,
-    ciphertext,
-  );
-  return new TextDecoder().decode(plainBuffer);
+  const ciphertextAndTag = combined.slice(SALT_BYTES + IV_BYTES);
+  const ciphertext = ciphertextAndTag.slice(0, ciphertextAndTag.length - 16);
+  const tag = ciphertextAndTag.slice(ciphertextAndTag.length - 16);
+  const saltBytes = Uint8Array.from(salt, (c: string) => c.charCodeAt(0));
+  const keyBytes = deriveKeyBytes(password, saltBytes);
+  const decipher = forge.cipher.createDecipher("AES-GCM", keyBytes);
+  decipher.start({ iv, tag: forge.util.createBuffer(tag) });
+  decipher.update(forge.util.createBuffer(ciphertext));
+  const ok = decipher.finish();
+  if (!ok) {
+    throw new Error("Decryption failed: wrong password or tampered data");
+  }
+  return forge.util.decodeUtf8(decipher.output.getBytes());
 }

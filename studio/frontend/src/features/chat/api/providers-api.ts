@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import forge from "node-forge";
 import { authFetch } from "@/features/auth";
 
 export interface ProviderRegistryEntry {
@@ -75,39 +76,19 @@ export function isProviderKeyRotationError(error: unknown): boolean {
   );
 }
 
-function pemToBuffer(pem: string): ArrayBuffer {
-  const b64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) {
-    out[i] = bin.charCodeAt(i);
-  }
-  return out.buffer;
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
-
 let cachedPublicKeyPem: string | null = null;
-let cachedCryptoKey: CryptoKey | null = null;
+let cachedForgeKey: forge.pki.rsa.PublicKey | null = null;
 
 export function clearProviderPublicKeyCache(): void {
   cachedPublicKeyPem = null;
-  cachedCryptoKey = null;
+  cachedForgeKey = null;
 }
 
 async function importProviderPublicKey(
   forceRefresh = false,
-): Promise<CryptoKey> {
-  if (!forceRefresh && cachedCryptoKey) {
-    return cachedCryptoKey;
+): Promise<forge.pki.rsa.PublicKey> {
+  if (!forceRefresh && cachedForgeKey) {
+    return cachedForgeKey;
   }
   const response = await authFetch("/api/providers/public-key");
   const body = await parseJsonOrThrow<{ public_key: string }>(response);
@@ -115,19 +96,13 @@ async function importProviderPublicKey(
   if (!publicKeyPem) {
     throw new Error("Provider public key is missing.");
   }
-  if (!forceRefresh && cachedPublicKeyPem === publicKeyPem && cachedCryptoKey) {
-    return cachedCryptoKey;
+  if (!forceRefresh && cachedPublicKeyPem === publicKeyPem && cachedForgeKey) {
+    return cachedForgeKey;
   }
-  const cryptoKey = await crypto.subtle.importKey(
-    "spki",
-    pemToBuffer(publicKeyPem),
-    { name: "RSA-OAEP", hash: "SHA-256" },
-    false,
-    ["encrypt"],
-  );
+  const forgeKey = forge.pki.publicKeyFromPem(publicKeyPem);
   cachedPublicKeyPem = publicKeyPem;
-  cachedCryptoKey = cryptoKey;
-  return cryptoKey;
+  cachedForgeKey = forgeKey;
+  return forgeKey;
 }
 
 export async function encryptProviderApiKey(
@@ -135,13 +110,11 @@ export async function encryptProviderApiKey(
   forceRefresh = false,
 ): Promise<string> {
   const key = await importProviderPublicKey(forceRefresh);
-  const encoded = new TextEncoder().encode(plaintextApiKey);
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "RSA-OAEP" },
-    key,
-    encoded,
-  );
-  return arrayBufferToBase64(encrypted);
+  const encrypted = key.encrypt(plaintextApiKey, "RSA-OAEP", {
+    md: forge.md.sha256.create(),
+    mgf1: { md: forge.md.sha256.create() },
+  });
+  return forge.util.encode64(encrypted);
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
