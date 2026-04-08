@@ -848,7 +848,7 @@ export function ExportPage() {
                               </TooltipTrigger>
                               <TooltipContent
                                 side="top"
-                                className="max-w-65 text-xs"
+                                className="max-w-[260px] text-xs"
                               >
                                 Loads custom Python from the repo if the model
                                 needs it. Turn off if you do not trust the
