@@ -42,7 +42,13 @@ export interface CheckpointListResponse {
 export interface ExportOperationResponse {
   success: boolean;
   message: string;
-  details?: Record<string, unknown> | null;
+  /**
+   * Optional extras returned by the backend. The export endpoints set
+   * `details.output_path` to the resolved on-disk directory of the
+   * saved model when a local save was requested. Hub-only pushes leave
+   * `details` undefined.
+   */
+  details?: { output_path?: string | null } & Record<string, unknown>;
 }
 
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {

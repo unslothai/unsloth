@@ -377,7 +377,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
             "merged",
@@ -399,7 +399,7 @@ class ExportOrchestrator:
         hf_token: Optional[str] = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export base model (non-PEFT)."""
         return self._run_export(
             "base",
@@ -420,7 +420,7 @@ class ExportOrchestrator:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format."""
         return self._run_export(
             "gguf",
@@ -440,7 +440,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only."""
         return self._run_export(
             "lora",
@@ -453,13 +453,24 @@ class ExportOrchestrator:
             },
         )
 
-    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str]:
-        """Send an export command to the subprocess and wait for result."""
+    def _run_export(
+        self, export_type: str, params: dict
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Send an export command to the subprocess and wait for result.
+
+        Returns ``(success, message, output_path)``. ``output_path`` is the
+        resolved on-disk directory the worker actually wrote to (None when
+        the export only pushed to Hub or failed before any file was
+        written). Surfaced via the export route's ``details.output_path``
+        so the dialog's success screen can show the user where the model
+        landed.
+        """
         with self._lock:
             if not self._ensure_subprocess_alive():
                 return (
                     False,
                     "No export subprocess running. Load a checkpoint first.",
+                    None,
                 )
 
             self.clear_logs()
@@ -472,9 +483,13 @@ class ExportOrchestrator:
                         f"export_{export_type}_done",
                         timeout = 3600,  # GGUF for 30B+ models can take 30+ min
                     )
-                    return resp.get("success", False), resp.get("message", "")
+                    return (
+                        resp.get("success", False),
+                        resp.get("message", ""),
+                        resp.get("output_path"),
+                    )
                 except RuntimeError as exc:
-                    return False, str(exc)
+                    return False, str(exc), None
             finally:
                 self._export_active = False
 

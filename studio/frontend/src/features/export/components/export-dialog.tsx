@@ -39,13 +39,32 @@ interface UseExportLogsResult {
 
 /**
  * Subscribe to the live export log SSE stream while `exporting` is
- * true, and accumulate lines in local state. Lines from the previous
- * run are cleared when a new export starts.
+ * true, and accumulate lines in local state. Lines from a previous
+ * action are cleared:
+ *
+ *   - when a new export starts (`exporting` flips to true), and
+ *   - when the user switches export method, dialog opens fresh, or
+ *     the dialog closes — so re-opening into a different action's
+ *     screen doesn't show the prior screen's saved output.
  */
-function useExportLogs(exporting: boolean): UseExportLogsResult {
+function useExportLogs(
+  exporting: boolean,
+  exportMethod: ExportMethod | null,
+  open: boolean,
+): UseExportLogsResult {
   const [lines, setLines] = useState<ExportLogEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Reset log state whenever the user moves to a different screen --
+  // either by switching export method or by reopening the dialog -- so
+  // each (open × method) tuple shows only its own run history. The
+  // streaming effect below additionally clears on new export start.
+  useEffect(() => {
+    setLines([]);
+    setError(null);
+    setConnected(false);
+  }, [exportMethod, open]);
 
   useEffect(() => {
     if (!exporting) return;
@@ -94,6 +113,36 @@ function useExportLogs(exporting: boolean): UseExportLogsResult {
   return { lines, connected, error };
 }
 
+/**
+ * Tick every second while `exporting` is true and report elapsed
+ * seconds. Powers the "Working… 27s" badge in the log header so the
+ * panel doesn't look frozen during long single-step phases (cache
+ * file copy, GGUF conversion) when no new lines are arriving.
+ */
+function useElapsedSeconds(exporting: boolean): number {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!exporting) {
+      setElapsed(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setElapsed(0);
+    const id = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [exporting]);
+  return elapsed;
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
 function formatLogLine(entry: ExportLogEntry): string {
   // Strip trailing carriage returns that tqdm-style progress leaves
   // in the stream so the scrollback doesn't render funky boxes.
@@ -125,6 +174,12 @@ interface ExportDialogProps {
   exporting: boolean;
   exportError: string | null;
   exportSuccess: boolean;
+  /**
+   * Resolved on-disk realpath of the most recent successful export.
+   * Surfaced on the Export Complete screen so users can find their
+   * model. Null when the export only pushed to the Hub.
+   */
+  exportOutputPath: string | null;
 }
 
 export function ExportDialog({
@@ -150,6 +205,7 @@ export function ExportDialog({
   exporting,
   exportError,
   exportSuccess,
+  exportOutputPath,
 }: ExportDialogProps) {
   // Live log capture is only meaningful for export methods that run
   // a slow subprocess operation with interesting stdout: merged and
@@ -159,7 +215,8 @@ export function ExportDialog({
     exportMethod === "merged" || exportMethod === "gguf";
 
   const { lines: logLines, connected: logConnected, error: logError } =
-    useExportLogs(exporting && showLogPanel);
+    useExportLogs(exporting && showLogPanel, exportMethod, open);
+  const elapsedSeconds = useElapsedSeconds(exporting && showLogPanel);
 
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   // Auto-scroll to bottom whenever a new line arrives, unless the
@@ -198,13 +255,26 @@ export function ExportDialog({
               <div className="flex size-12 items-center justify-center rounded-full bg-emerald-500/10">
                 <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-6 text-emerald-500" />
               </div>
-              <div className="text-center">
+              <div className="flex flex-col items-center gap-2 text-center">
                 <h3 className="text-lg font-semibold">Export Complete</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
+                <p className="text-sm text-muted-foreground">
                   {destination === "hub"
                     ? "Model successfully pushed to Hugging Face Hub."
                     : "Model saved locally."}
                 </p>
+                {exportOutputPath ? (
+                  <div className="mt-1 flex w-full max-w-md flex-col items-stretch gap-1 rounded-lg border border-border/40 bg-muted/40 px-3 py-2 text-left">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Saved to
+                    </span>
+                    <code
+                      className="select-all break-all font-mono text-[12px] text-foreground"
+                      title={exportOutputPath}
+                    >
+                      {exportOutputPath}
+                    </code>
+                  </div>
+                ) : null}
               </div>
             </div>
             <DialogFooter>
@@ -388,6 +458,11 @@ export function ExportDialog({
                               ? "connecting..."
                               : "idle"}
                         </span>
+                        {exporting && elapsedSeconds > 0 ? (
+                          <span className="tabular-nums text-muted-foreground/70">
+                            · {formatElapsed(elapsedSeconds)}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div

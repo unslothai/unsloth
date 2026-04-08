@@ -31,6 +31,22 @@ from typing import Any
 logger = get_logger(__name__)
 
 
+# Gate that controls whether captured stdout/stderr lines are forwarded
+# to the parent's resp_queue (and from there to the export-dialog SSE
+# stream). Closed by default so the noisy bootstrap phase -- transformers
+# venv activation, Unsloth/torch imports, base-model resolution, "Top
+# GGUF/hub models" lists, vision detection, weight loading bars -- is
+# suppressed in the UI. _handle_export() opens the gate at the start of
+# the actual export work and leaves it open; the orchestrator always
+# spawns a fresh subprocess for the next checkpoint load (see
+# orchestrator._spawn_subprocess) which resets this state.
+#
+# Lines dropped while the gate is closed are still echoed to the saved
+# original stdout/stderr fds so the server console / log file keeps the
+# full output for debugging.
+_log_forward_gate = threading.Event()
+
+
 def _setup_log_capture(resp_queue: Any) -> None:
     """Redirect fds 1 and 2 through pipes so every line printed by this
     worker process and any child process it spawns is forwarded to the
@@ -41,7 +57,8 @@ def _setup_log_capture(resp_queue: Any) -> None:
     reference and bypass the pipe.
 
     Lines are also echoed back to the original stdout/stderr so the
-    server console keeps receiving the full subprocess output.
+    server console keeps receiving the full subprocess output, even
+    while ``_log_forward_gate`` is closed.
     """
 
     try:
@@ -115,6 +132,11 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 del buf[: nl + 1]
                 if not line:
                     continue
+                if not _log_forward_gate.is_set():
+                    # Gate closed (bootstrap phase) -- already echoed to
+                    # the saved console fd above; drop the line so the
+                    # export dialog doesn't see import / vendoring noise.
+                    continue
                 try:
                     resp_queue.put_nowait(
                         {
@@ -128,7 +150,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                     # Queue put failed (full, closed, etc.) - drop the
                     # line rather than crash the reader thread.
                     pass
-        if buf:
+        if buf and _log_forward_gate.is_set():
             try:
                 resp_queue.put_nowait(
                     {
@@ -158,37 +180,15 @@ def _setup_log_capture(resp_queue: Any) -> None:
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
-    """
+    """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -205,6 +205,19 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     trust_remote_code = cmd.get("trust_remote_code", False)
+
+    # Auto-enable trust_remote_code for NemotronH/Nano models.
+    if not trust_remote_code:
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+        _cp_lower = checkpoint_path.lower()
+        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
+        ):
+            trust_remote_code = True
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s",
+                checkpoint_path,
+            )
 
     try:
         _send_response(
@@ -254,9 +267,17 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     export_type = cmd["export_type"]  # "merged", "base", "gguf", "lora"
     response_type = f"export_{export_type}_done"
 
+    # Open the log forwarding gate so the user sees the actual export
+    # progress (Unsloth merge bars, file copies, GGUF conversion, etc.)
+    # in the live log panel. The gate stays open for the rest of this
+    # subprocess's life; the orchestrator spawns a fresh subprocess for
+    # the next checkpoint load, which resets the gate to closed.
+    _log_forward_gate.set()
+
+    output_path: Any = None
     try:
         if export_type == "merged":
-            success, message = backend.export_merged_model(
+            success, message, output_path = backend.export_merged_model(
                 save_directory = cmd.get("save_directory", ""),
                 format_type = cmd.get("format_type", "16-bit (FP16)"),
                 push_to_hub = cmd.get("push_to_hub", False),
@@ -265,7 +286,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 private = cmd.get("private", False),
             )
         elif export_type == "base":
-            success, message = backend.export_base_model(
+            success, message, output_path = backend.export_base_model(
                 save_directory = cmd.get("save_directory", ""),
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
@@ -274,7 +295,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 base_model_id = cmd.get("base_model_id"),
             )
         elif export_type == "gguf":
-            success, message = backend.export_gguf(
+            success, message, output_path = backend.export_gguf(
                 save_directory = cmd.get("save_directory", ""),
                 quantization_method = cmd.get("quantization_method", "Q4_K_M"),
                 push_to_hub = cmd.get("push_to_hub", False),
@@ -282,7 +303,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
             )
         elif export_type == "lora":
-            success, message = backend.export_lora_adapter(
+            success, message, output_path = backend.export_lora_adapter(
                 save_directory = cmd.get("save_directory", ""),
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
@@ -298,6 +319,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": response_type,
                 "success": success,
                 "message": message,
+                "output_path": output_path,
                 "ts": time.time(),
             },
         )
@@ -309,6 +331,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": response_type,
                 "success": False,
                 "message": str(exc),
+                "output_path": None,
                 "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
@@ -367,6 +390,13 @@ def run_export_process(
     # GGUF converter) so their prints surface in the log stream as they
     # happen rather than at the end.
     os.environ["PYTHONUNBUFFERED"] = "1"
+    # tqdm defaults to a 10-second mininterval when stdout is not a tty
+    # (which it isn't here -- we redirected fd 1/2 to a pipe). That makes
+    # multi-step progress bars look frozen in the export log panel. Force
+    # frequent flushes so the user sees movement during merge / GGUF
+    # conversion. Has no effect on single-step bars (e.g. "Copying 1
+    # files") which only emit start/end events regardless.
+    os.environ.setdefault("TQDM_MININTERVAL", "0.5")
 
     import warnings
     from loggers.config import LogConfig

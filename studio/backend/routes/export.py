@@ -183,6 +183,17 @@ async def get_export_status(
         )
 
 
+def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Wrap the resolved on-disk export path into the details dict the
+    frontend reads to populate the Export Complete screen. Returns None
+    when the export had no local component (Hub-only push) so the
+    Pydantic field stays absent rather than ``{"output_path": null}``.
+    """
+    if not output_path:
+        return None
+    return {"output_path": output_path}
+
+
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
@@ -195,7 +206,7 @@ async def export_merged_model(
     """
     try:
         backend = get_export_backend()
-        success, message = await asyncio.to_thread(
+        success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
             save_directory = request.save_directory,
             format_type = request.format_type,
@@ -208,7 +219,11 @@ async def export_merged_model(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success = True, message = message)
+        return ExportOperationResponse(
+            success = True,
+            message = message,
+            details = _export_details(output_path),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -231,7 +246,7 @@ async def export_base_model(
     """
     try:
         backend = get_export_backend()
-        success, message = await asyncio.to_thread(
+        success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
@@ -244,7 +259,11 @@ async def export_base_model(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success = True, message = message)
+        return ExportOperationResponse(
+            success = True,
+            message = message,
+            details = _export_details(output_path),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -267,7 +286,7 @@ async def export_gguf(
     """
     try:
         backend = get_export_backend()
-        success, message = await asyncio.to_thread(
+        success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
             save_directory = request.save_directory,
             quantization_method = request.quantization_method,
@@ -279,7 +298,11 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success = True, message = message)
+        return ExportOperationResponse(
+            success = True,
+            message = message,
+            details = _export_details(output_path),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -302,7 +325,7 @@ async def export_lora_adapter(
     """
     try:
         backend = get_export_backend()
-        success, message = await asyncio.to_thread(
+        success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
@@ -314,7 +337,11 @@ async def export_lora_adapter(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success = True, message = message)
+        return ExportOperationResponse(
+            success = True,
+            message = message,
+            details = _export_details(output_path),
+        )
     except HTTPException:
         raise
     except Exception as e:
