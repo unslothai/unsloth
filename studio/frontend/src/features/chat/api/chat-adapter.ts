@@ -45,7 +45,7 @@ type RunMessage = RunMessages[number];
 export const sentAudioNames = new Map<string, string>();
 
 /** Default chat auto-load: Gemma 4B GGUF at the UI-recommended Unsloth dynamic quant. */
-const DEFAULT_CHAT_GGUF_REPO = "unsloth/gemma-4-E4B-it-GGUF";
+const DEFAULT_CHAT_GGUF_REPO = "unsloth/gemma-4-E2B-it-GGUF";
 const DEFAULT_CHAT_GGUF_VARIANT = "UD-Q4_K_XL";
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
