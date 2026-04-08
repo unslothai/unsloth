@@ -238,13 +238,14 @@ def _first_visible_amd_gpu_id() -> Optional[str]:
         raw = raw.strip()
         if raw == "" or raw == "-1":
             return None
-        first = raw.split(",", 1)[0].strip()
-        if first:
-            return first
-        # Leading comma or all-whitespace first token -- fall through to
-        # the next env var in priority order rather than silently
-        # returning GPU 0.
-        continue
+        # Filter out empty tokens after splitting. This tolerates minor
+        # typos like ``HIP_VISIBLE_DEVICES=",1"`` (leading comma, user
+        # clearly meant to narrow to device 1) while still falling
+        # through to the next env var when every token is empty
+        # (e.g. ``,,,``).
+        tokens = [t.strip() for t in raw.split(",") if t.strip()]
+        if tokens:
+            return tokens[0]
     return "0"
 
 

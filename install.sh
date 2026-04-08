@@ -1158,27 +1158,55 @@ _pick_radeon_wheel() {
     # Scans $_RADEON_LISTING for the newest wheel whose filename starts exactly
     # with PACKAGE_NAME- and matches _RADEON_PYTAG + linux_x86_64.
     # Prints the full URL (resolving relative hrefs against _RADEON_BASE_URL).
+    #
+    # POSIX-compliant pipeline: all href parsing, filtering, and version
+    # selection is done inside a single awk script rather than reaching
+    # for GNU extensions (grep -o, sort -V) that would break under BSD
+    # or BusyBox coreutils.
     _pkg="$1"
     [ -n "$_RADEON_LISTING" ] || return 1
     [ -n "$_RADEON_PYTAG"   ] || return 1
     _tag="$_RADEON_PYTAG"
     _href=$(printf '%s\n' "$_RADEON_LISTING" \
-        | grep -o 'href="[^"]*"' \
-        | sed 's/href="//;s/"//' \
-        | awk -F/ -v pkg="$_pkg" -v tag="$_tag" '
+        | awk -v pkg="$_pkg" -v tag="$_tag" '
+            BEGIN { max_pad = ""; max_url = "" }
             {
-                base = $NF
-                sub(/[?#].*/, "", base)         # strip query / fragment
-                prefix = pkg "-"
-                # Match cpXY-cpXY or cpXY-abi3 with any linux x86_64 platform tag
-                # (linux_x86_64, manylinux_2_28_x86_64, manylinux2014_x86_64, etc.)
-                if (substr(base, 1, length(prefix)) == prefix &&
-                        index(base, "-" tag "-") > 0 &&
-                        match(base, /x86_64\.whl$/))
-                    print $0
-            }' \
-        | sort -V \
-        | tail -1)
+                line = $0
+                while (match(line, /href="[^"]*"/)) {
+                    # Strip the leading href=" (6 chars) and trailing " (1 char)
+                    url = substr(line, RSTART + 6, RLENGTH - 7)
+                    line = substr(line, RSTART + RLENGTH)
+
+                    # Extract basename, strip query / fragment
+                    n = split(url, p, "/")
+                    base = p[n]
+                    sub(/[?#].*/, "", base)
+
+                    prefix = pkg "-"
+                    # Match cpXY-cpXY or cpXY-abi3 with any linux x86_64
+                    # platform tag (linux_x86_64, manylinux_2_28_x86_64,
+                    # manylinux2014_x86_64, etc.)
+                    if (substr(base, 1, length(prefix)) == prefix &&
+                            index(base, "-" tag "-") > 0 &&
+                            match(base, /x86_64\.whl$/)) {
+                        # Extract the version component (first
+                        # dotted-number run) and pad each piece so a
+                        # plain lexical comparison gives us the newest.
+                        if (match(base, /[0-9]+\.[0-9]+(\.[0-9]+)?/)) {
+                            ver = substr(base, RSTART, RLENGTH)
+                            m = split(ver, v, ".")
+                            pad = ""
+                            for (i = 1; i <= m; i++)
+                                pad = pad sprintf("%08d", v[i])
+                            if (pad > max_pad) {
+                                max_pad = pad
+                                max_url = url
+                            }
+                        }
+                    }
+                }
+            }
+            END { if (max_url != "") print max_url }')
     [ -z "$_href" ] && return 1
     case "$_href" in
         http*) printf '%s\n' "$_href" ;;
