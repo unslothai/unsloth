@@ -5,7 +5,7 @@
 Pydantic schemas for Training API
 """
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
 
@@ -15,6 +15,10 @@ class TrainingStartRequest(BaseModel):
     # Model parameters
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
+    )
+    project_name: Optional[str] = Field(
+        None,
+        description = "Optional user-defined project name appended to run folders and shown in history",
     )
     training_type: str = Field(
         ..., description = "Training type: 'LoRA/QLoRA' or 'Full Finetuning'"
@@ -60,6 +64,14 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    @field_validator("project_name")
+    @classmethod
+    def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = " ".join(value.strip().split())
+        return normalized or None
 
     custom_format_mapping: Optional[Dict[str, Any]] = Field(
         None,
@@ -210,6 +222,7 @@ class TrainingRunSummary(BaseModel):
     id: str
     status: Literal["running", "completed", "stopped", "error"]
     model_name: str
+    project_name: Optional[str] = None
     dataset_name: str
     started_at: str
     ended_at: Optional[str] = None

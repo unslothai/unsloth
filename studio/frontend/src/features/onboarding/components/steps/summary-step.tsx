@@ -49,6 +49,7 @@ export function SummaryStep() {
   const {
     modelType,
     selectedModel,
+    projectName,
     trainingMethod,
     datasetSource,
     datasetFormat,
@@ -67,6 +68,7 @@ export function SummaryStep() {
       ({
         modelType,
         selectedModel,
+        projectName,
         trainingMethod,
         datasetSource,
         datasetFormat,
@@ -83,6 +85,7 @@ export function SummaryStep() {
       }) => ({
         modelType,
         selectedModel,
+        projectName,
         trainingMethod,
         datasetSource,
         datasetFormat,
@@ -150,6 +153,7 @@ export function SummaryStep() {
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
             <Row label="Type" value={modelType} capitalize />
+            <Row label="Project" value={projectName || "--"} />
             <Row label="Method" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"} />
           </div>
         </CardContent>

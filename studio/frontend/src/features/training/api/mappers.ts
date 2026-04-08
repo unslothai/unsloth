@@ -51,6 +51,7 @@ export function buildTrainingStartPayload(
 
   return {
     model_name: config.selectedModel ?? "",
+    project_name: config.projectName.trim() || null,
     training_type: toBackendTrainingType(config.trainingMethod),
     hf_token: config.hfToken.trim() || null,
     load_in_4bit: adapterMethod ? isQloraMethod : false,

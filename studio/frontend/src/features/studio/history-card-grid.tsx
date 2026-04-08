@@ -266,6 +266,8 @@ export function HistoryCardGrid({
         {runs.map((run) => {
           const badge = statusBadge[run.status] ?? statusBadge.error;
           const isRunning = run.status === "running";
+          const title = run.project_name || run.model_name;
+          const secondary = run.project_name ? run.model_name : run.dataset_name;
           return (
             <div
               role="button"
@@ -302,13 +304,18 @@ export function HistoryCardGrid({
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.model_name}
+                  title={title}
                 >
-                  {run.model_name}
+                  {title}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {run.dataset_name}
+                  {secondary}
                 </p>
+                {run.project_name && (
+                  <p className="truncate text-xs text-muted-foreground/80">
+                    {run.dataset_name}
+                  </p>
+                )}
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
                 <Sparkline values={run.loss_sparkline} id={run.id} />

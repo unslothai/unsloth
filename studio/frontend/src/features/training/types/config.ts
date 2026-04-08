@@ -20,6 +20,7 @@ export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
+  projectName: string;
   trainingMethod: TrainingMethod;
   hfToken: string;
   datasetSource: DatasetSource;
@@ -89,6 +90,7 @@ export interface TrainingConfigActions {
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
+  setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;

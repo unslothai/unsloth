@@ -225,6 +225,11 @@ export function ProgressSection({
             >
               {phaseLabel[data.phase]}
             </span>
+            {data.projectName && (
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+                {data.projectName}
+              </span>
+            )}
             <span className="text-[10px] tabular-nums text-muted-foreground">
               Epoch {formatNumber(data.currentEpoch, 2)}
             </span>
@@ -240,7 +245,7 @@ export function ProgressSection({
               </span>
               <span>{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-foreground/[0.05]" />
+            <Progress value={pct} className="h-2 bg-foreground/5" />
           </div>
 
           {!isHistorical && (
@@ -257,7 +262,12 @@ export function ProgressSection({
             </p>
           )}
 
-          <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-5">
+          <div
+            className={cn(
+              "grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2",
+              data.projectName ? "xl:grid-cols-6" : "xl:grid-cols-5",
+            )}
+          >
             <MetricStat
               label="Loss"
               valueClassName="text-2xl font-bold tracking-tight"
@@ -268,6 +278,11 @@ export function ProgressSection({
             <MetricStat label="Grad Norm">
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
+            {data.projectName && (
+              <MetricStat label="Project" valueClassName="truncate">
+                {data.projectName}
+              </MetricStat>
+            )}
             <MetricStat label="Model" valueClassName="truncate">
               {data.modelName || "--"}
             </MetricStat>
