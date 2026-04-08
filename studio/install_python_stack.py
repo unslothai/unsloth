@@ -55,7 +55,11 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         try:
             with open(path) as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
-            return int(parts[0]), int(parts[1])
+            # Explicit length guard avoids relying on the broad except
+            # below to swallow IndexError when the version file contains
+            # a single component (e.g. "6\n" on a partial install).
+            if len(parts) >= 2:
+                return int(parts[0]), int(parts[1])
         except Exception:
             pass
 
