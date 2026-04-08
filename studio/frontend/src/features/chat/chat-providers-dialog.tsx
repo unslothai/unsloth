@@ -389,7 +389,7 @@ export function ChatProvidersDialog({
         updatedAt,
       };
       if (apiKey.trim()) {
-        await setExternalProviderApiKey(created.id, apiKey.trim());
+        setExternalProviderApiKey(created.id, apiKey.trim());
       }
       onProvidersChange([...providers.filter((p) => p.id !== created.id), provider]);
       resetForm();
@@ -445,7 +445,7 @@ export function ChatProvidersDialog({
         baseUrl,
       });
       if (apiKey.trim()) {
-        await setExternalProviderApiKey(editingProviderId, apiKey.trim());
+        setExternalProviderApiKey(editingProviderId, apiKey.trim());
       } else if (isEditingCustomProvider) {
         removeExternalProviderApiKey(editingProviderId);
       }
@@ -479,7 +479,7 @@ export function ChatProvidersDialog({
     setEditingProviderId(provider.id);
     setProviderType(provider.providerType);
     setCustomProviderName(provider.name || "Custom");
-    setApiKey(await getExternalProviderApiKey(provider.id));
+    setApiKey(getExternalProviderApiKey(provider.id));
     setBaseUrlDraft(provider.baseUrl);
     if (provider.providerType === CUSTOM_PROVIDER_TYPE) {
       setAvailableModels([]);
@@ -517,7 +517,7 @@ export function ChatProvidersDialog({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
-    const savedKey = (await getExternalProviderApiKey(provider.id)).trim();
+    const savedKey = getExternalProviderApiKey(provider.id).trim();
     if (!savedKey) {
       if (provider.providerType === CUSTOM_PROVIDER_TYPE) {
         await editProvider(provider);

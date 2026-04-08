@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  decryptValue,
-  encryptValue,
-  getSessionPassword,
-} from "./crypto-storage";
 
 export interface ExternalProviderConfig {
   id: string;
@@ -195,55 +190,27 @@ export async function saveExternalProviders(
 }
 
 /**
- * Retrieve a provider API key, decrypting from localStorage.
- * Transparently migrates legacy plaintext keys to encrypted form.
- * Returns "" if no key is stored or no session password is available.
+ * Retrieve a provider API key from localStorage.
+ * Returns "" if no key is stored.
  */
-export async function getExternalProviderApiKey(
+export function getExternalProviderApiKey(
   providerId: string,
-): Promise<string> {
+): string {
   const keys = loadRawKeyMap();
-  const stored = keys[providerId];
-  if (!stored) return "";
-
-  const password = getSessionPassword();
-  if (!password) return "";
-
-  try {
-    return await decryptValue(stored, password);
-  } catch {
-    // Decryption failed — likely a legacy plaintext key. Migrate it.
-    try {
-      const encrypted = await encryptValue(stored, password);
-      keys[providerId] = encrypted;
-      saveRawKeyMap(keys);
-    } catch {
-      // Migration failed — return the raw value as-is
-    }
-    return stored;
-  }
+  return keys[providerId] ?? "";
 }
 
 /**
- * Store a provider API key, encrypting it before writing to localStorage.
- * Throws if no session password is available (should not happen in normal flow).
+ * Store a provider API key in localStorage.
  */
-export async function setExternalProviderApiKey(
+export function setExternalProviderApiKey(
   providerId: string,
   apiKey: string,
-): Promise<void> {
+): void {
   if (!canUseStorage()) return;
-  try {
-    const keys = loadRawKeyMap();
-    const password = getSessionPassword();
-    if (!password) {
-      throw new Error("No session password — cannot encrypt API key");
-    }
-    keys[providerId] = await encryptValue(apiKey, password);
-    saveRawKeyMap(keys);
-  } catch {
-    // ignore
-  }
+  const keys = loadRawKeyMap();
+  keys[providerId] = apiKey;
+  saveRawKeyMap(keys);
 }
 
 export function removeExternalProviderApiKey(providerId: string): void {
@@ -257,25 +224,3 @@ export function removeExternalProviderApiKey(providerId: string): void {
   }
 }
 
-/**
- * Re-encrypt all stored API keys when the user changes their password.
- * Decrypts each key with the old password and re-encrypts with the new one.
- */
-export async function reEncryptAllKeys(
-  oldPassword: string,
-  newPassword: string,
-): Promise<void> {
-  const keys = loadRawKeyMap();
-  if (Object.keys(keys).length === 0) return;
-  const migrated: Record<string, string> = {};
-  for (const [id, ciphertext] of Object.entries(keys)) {
-    try {
-      const plaintext = await decryptValue(ciphertext, oldPassword);
-      migrated[id] = await encryptValue(plaintext, newPassword);
-    } catch {
-      // If decryption fails (legacy plaintext), encrypt with new password
-      migrated[id] = await encryptValue(ciphertext, newPassword);
-    }
-  }
-  saveRawKeyMap(migrated);
-}
