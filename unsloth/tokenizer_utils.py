@@ -98,9 +98,10 @@ def try_fix_tokenizer(tokenizer, prepend = True):
 
         # Locate the token's id mapping in the string
         find_text = f'"id":{token_id},"content":"'
-        start = tokenizer_string.find(find_text) + len(find_text)
-        if start == -1:
+        find_pos = tokenizer_string.find(find_text)
+        if find_pos == -1:
             continue
+        start = find_pos + len(find_text)
         end = tokenizer_string.find('",', start)
 
         bad_token = tokenizer_string[start:end]
