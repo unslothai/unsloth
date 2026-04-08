@@ -8,6 +8,8 @@ Pydantic schemas for Training API
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
+from utils.training_runs import normalize_project_name
+
 
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
@@ -68,10 +70,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("project_name")
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        normalized = " ".join(value.strip().split())
-        return normalized or None
+        return normalize_project_name(value)
 
     custom_format_mapping: Optional[Dict[str, Any]] = Field(
         None,
