@@ -241,7 +241,7 @@ class ExportOrchestrator:
         self._spawn_subprocess(sub_config)
 
         try:
-            resp = self._wait_response("loaded", timeout = 300)
+            resp = self._wait_response("loaded", timeout = 900)
         except RuntimeError as exc:
             self._shutdown_subprocess(timeout = 5)
             self.current_checkpoint = None
