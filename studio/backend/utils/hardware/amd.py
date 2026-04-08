@@ -188,6 +188,18 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     }
 
 
+def _has_real_metrics(metrics: dict[str, Any]) -> bool:
+    """Return True when ``metrics`` contains at least one non-None value.
+
+    ``amd-smi`` can return a zero-exit JSON envelope that is missing every
+    expected field (error response, unsupported card, hipless container).
+    In that case ``_extract_gpu_metrics`` produces a dict where every value
+    is ``None`` -- callers must surface this as ``available: False`` rather
+    than ``available: True`` with empty data.
+    """
+    return any(value is not None for value in metrics.values())
+
+
 def get_physical_gpu_count() -> Optional[int]:
     """Return physical AMD GPU count via amd-smi, or None on failure."""
     data = _run_amd_smi("list")
@@ -249,6 +261,12 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
         gpu_data = data
 
     metrics = _extract_gpu_metrics(gpu_data)
+    if not _has_real_metrics(metrics):
+        # amd-smi returned a JSON envelope with no usable fields (error
+        # response or unsupported card). Surface as unavailable rather
+        # than available-with-empty-data so the UI does not render a
+        # ghost device.
+        return {"available": False}
     metrics["available"] = True
     return metrics
 
@@ -285,7 +303,11 @@ def get_visible_gpu_utilization(
 
     devices = []
     for fallback_idx, gpu_data in enumerate(gpu_list):
-        # Use AMD-reported GPU ID when available, fall back to enumeration index
+        # Use AMD-reported GPU ID when available, fall back to enumeration
+        # index. Newer amd-smi versions wrap scalars as ``{"value": 0,
+        # "unit": "none"}``, so route raw_id through ``_parse_numeric``
+        # which already handles bare ints, floats, strings, and that
+        # dict shape uniformly.
         raw_id = (
             gpu_data.get(
                 "gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))
@@ -293,13 +315,26 @@ def get_visible_gpu_utilization(
             if isinstance(gpu_data, dict)
             else fallback_idx
         )
-        try:
-            idx = int(raw_id)
-        except (TypeError, ValueError):
+        parsed_id = _parse_numeric(raw_id)
+        if parsed_id is None:
+            logger.debug(
+                "amd-smi GPU id %r could not be parsed; falling back to "
+                "enumeration index %d",
+                raw_id,
+                fallback_idx,
+            )
             idx = fallback_idx
+        else:
+            idx = int(parsed_id)
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)
+        if not _has_real_metrics(metrics):
+            # Skip ghost entries: an amd-smi response that decodes to a
+            # dict but contains no usable fields (error envelope, etc.)
+            # would otherwise show up as a device row with all-None
+            # numbers in the UI.
+            continue
         metrics["index"] = idx
         metrics["index_kind"] = "physical"
         metrics["visible_ordinal"] = ordinal_map.get(idx, len(devices))
