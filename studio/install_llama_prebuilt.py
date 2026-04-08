@@ -2494,12 +2494,27 @@ def detect_host() -> HostInfo:
     has_physical_nvidia = False
     has_usable_nvidia = False
     if nvidia_smi:
+        # Require `nvidia-smi -L` to actually list a GPU before treating the
+        # host as NVIDIA. The banner text "NVIDIA-SMI ..." is printed even
+        # when the command fails to communicate with the driver (e.g. stale
+        # container leftovers), which would otherwise misclassify an AMD
+        # ROCm host as NVIDIA and short-circuit the ROCm path.
+        try:
+            listing = run_capture([nvidia_smi, "-L"], timeout = 20)
+            gpu_lines = [
+                line
+                for line in listing.stdout.splitlines()
+                if line.startswith("GPU ")
+            ]
+            if gpu_lines:
+                has_physical_nvidia = True
+                has_usable_nvidia = visible_device_tokens != []
+        except Exception:
+            pass
+
         try:
             result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
-            if "NVIDIA-SMI" in merged:
-                has_physical_nvidia = True
-                has_usable_nvidia = visible_device_tokens != []
             for line in merged.splitlines():
                 if "CUDA Version:" in line:
                     raw = line.split("CUDA Version:", 1)[1].strip().split()[0]
@@ -2981,11 +2996,28 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # the exact GPU target via rocminfo, which is more reliable for consumer
         # GPUs (e.g. gfx1151) that may not be in the prebuilt.
         if host.has_rocm and not host.has_usable_nvidia:
-            rocm_name = f"llama-{llama_tag}-bin-ubuntu-rocm-7.2-x64.tar.gz"
-            if rocm_name in upstream_assets:
+            # Scan upstream assets for any rocm-<version> prebuilt and prefer
+            # the newest one. Hardcoding a single rocm-7.2 filename means
+            # ROCm 6.x / 7.0 / 7.1 / 7.3+ users always fall through to a
+            # source build even when a matching prebuilt exists upstream.
+            import re as _re_rocm
+
+            _rocm_pattern = _re_rocm.compile(
+                rf"llama-{_re_rocm.escape(llama_tag)}-bin-ubuntu-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.tar\.gz"
+            )
+            rocm_candidates: list[tuple[tuple[int, ...], str]] = []
+            for _name in upstream_assets:
+                _m = _rocm_pattern.match(_name)
+                if _m is None:
+                    continue
+                _parts = tuple(int(p) for p in _m.group(1).split("."))
+                rocm_candidates.append((_parts, _name))
+            rocm_candidates.sort(reverse = True)
+            if rocm_candidates:
+                rocm_name = rocm_candidates[0][1]
                 log(f"AMD ROCm detected -- trying upstream prebuilt {rocm_name}")
                 log(
-                    "Note: prebuilt is compiled for ROCm 7.2; if your ROCm version differs, "
+                    "Note: if your ROCm runtime version differs significantly, "
                     "this may fail preflight and fall back to a source build (safe)"
                 )
                 return AssetChoice(
@@ -3120,7 +3152,13 @@ def resolve_release_asset_choice(
         )
 
     published_choice: AssetChoice | None = None
-    if host.is_windows and host.is_x86_64 and not host.has_rocm:
+    if host.is_windows and host.is_x86_64:
+        # Always try the published Windows CPU bundle, even on AMD ROCm
+        # hosts. If a windows-hip bundle is added to published releases
+        # in the future, the upstream resolver below would pick it first
+        # via resolve_asset_choice; falling back to the hash-approved
+        # windows-cpu bundle is still better than the upstream CPU
+        # asset for AMD Windows hosts without a HIP prebuilt.
         published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
@@ -4233,7 +4271,11 @@ def validate_server(
             "--batch-size",
             "32",
         ]
-        if host.has_usable_nvidia or (host.is_macos and host.is_arm64):
+        if (
+            host.has_usable_nvidia
+            or host.has_rocm
+            or (host.is_macos and host.is_arm64)
+        ):
             command.extend(["--n-gpu-layers", "1"])
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")

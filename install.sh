@@ -987,10 +987,26 @@ _has_amd_rocm_gpu() {
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
         return 0
     elif command -v amd-smi >/dev/null 2>&1 && \
-         amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[]/{ found=1 } END{ exit !found }'; then
+         amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         return 0
     fi
     return 1
+}
+
+# ── NVIDIA usable-GPU helper ──
+# Returns 0 (true) only if nvidia-smi is present AND actually lists a GPU.
+# Prevents AMD-only hosts with a stale nvidia-smi on PATH from being routed
+# into the CUDA branch.
+_has_usable_nvidia_gpu() {
+    _nvsmi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _nvsmi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _nvsmi="/usr/bin/nvidia-smi"
+    else
+        return 1
+    fi
+    "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'
 }
 
 # ── Detect GPU and choose PyTorch index URL ──
@@ -1001,12 +1017,17 @@ get_torch_index_url() {
     _base="https://download.pytorch.org/whl"
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
-    # Try nvidia-smi
+    # Try nvidia-smi -- require the binary to actually list a usable GPU.
+    # Presence of the binary alone (container leftovers, stale driver
+    # packages) is not sufficient: otherwise an AMD-only host would
+    # silently install CUDA wheels.
     _smi=""
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        _smi="nvidia-smi"
-    elif [ -x "/usr/bin/nvidia-smi" ]; then
-        _smi="/usr/bin/nvidia-smi"
+    if _has_usable_nvidia_gpu; then
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            _smi="nvidia-smi"
+        elif [ -x "/usr/bin/nvidia-smi" ]; then
+            _smi="/usr/bin/nvidia-smi"
+        fi
     fi
     if [ -z "$_smi" ]; then
         # No NVIDIA GPU -- check for AMD ROCm GPU
@@ -1021,7 +1042,7 @@ get_torch_index_url() {
             { [ -r /opt/rocm/.info/version ] && \
                 awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version; } || \
             { command -v hipconfig >/dev/null 2>&1 && \
-                hipconfig --version 2>/dev/null | awk 'NR==1{split($1,a,"."); if(a[1]+0>0) print "rocm"a[1]"."a[2]}'; } || \
+                hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]/{split($1,a,"."); if(a[1]+0>0){print "rocm"a[1]"."a[2]; found=1}} END{exit !found}'; } || \
             { command -v dpkg-query >/dev/null 2>&1 && \
                 ver="$(dpkg-query -W -f='${Version}\n' rocm-core 2>/dev/null)" && \
                 [ -n "$ver" ] && \
@@ -1087,7 +1108,7 @@ get_radeon_wheel_url() {
         { [ -r /opt/rocm/.info/version ] && \
             awk -F'[.-]' 'NF>=3{print $1"."$2"."$3; exit}' /opt/rocm/.info/version; } || \
         { command -v hipconfig >/dev/null 2>&1 && \
-            hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]+\.[0-9]+\.[0-9]/{print $1}'; }) 2>/dev/null
+            hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]+\.[0-9]+\.[0-9]/{print $1; found=1} END{exit !found}'; }) 2>/dev/null
 
     # Validate: must be X.Y.Z with X >= 1
     case "$_full_ver" in
@@ -1241,18 +1262,31 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             fi
 
             if [ "$_radeon_listing_ok" = true ]; then
-                substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
-                _torch_arg="torch"; _tv_arg="torchvision"; _ta_arg="torchaudio"; _tri_arg=""
-                _torch_whl=$(_pick_radeon_wheel "torch"       2>/dev/null) && _torch_arg="$_torch_whl"
-                _tv_whl=$(_pick_radeon_wheel    "torchvision" 2>/dev/null) && _tv_arg="$_tv_whl"
-                _ta_whl=$(_pick_radeon_wheel    "torchaudio"  2>/dev/null) && _ta_arg="$_ta_whl"
-                _tri_whl=$(_pick_radeon_wheel   "triton"      2>/dev/null) && _tri_arg="$_tri_whl"
-                # Build install args; skip empty _tri_arg to avoid passing "" to uv
-                _radeon_pkgs="$_torch_arg $_tv_arg $_ta_arg"
-                [ -n "$_tri_arg" ] && _radeon_pkgs="$_tri_arg $_radeon_pkgs"
-                run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
-                    --find-links "$_RADEON_BASE_URL" \
-                    $_radeon_pkgs
+                # Require torch, torchvision, torchaudio wheels to all resolve
+                # from the Radeon listing. If any is missing for this Python
+                # tag, fall through to the standard ROCm index instead of
+                # silently mixing Radeon wheels with PyPI defaults.
+                _torch_whl=$(_pick_radeon_wheel "torch"       2>/dev/null) || _torch_whl=""
+                _tv_whl=$(_pick_radeon_wheel    "torchvision" 2>/dev/null) || _tv_whl=""
+                _ta_whl=$(_pick_radeon_wheel    "torchaudio"  2>/dev/null) || _ta_whl=""
+                _tri_whl=$(_pick_radeon_wheel   "triton"      2>/dev/null) || _tri_whl=""
+                if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ]; then
+                    substep "[WARN] Radeon repo lacks a complete wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
+                    run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                        "$TORCH_CONSTRAINT" torchvision torchaudio \
+                        --index-url "$TORCH_INDEX_URL"
+                else
+                    substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
+                    if [ -n "$_tri_whl" ]; then
+                        run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
+                            --find-links "$_RADEON_BASE_URL" \
+                            "$_tri_whl" "$_torch_whl" "$_tv_whl" "$_ta_whl"
+                    else
+                        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                            --find-links "$_RADEON_BASE_URL" \
+                            "$_torch_whl" "$_tv_whl" "$_ta_whl"
+                    fi
+                fi
             else
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                 run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \

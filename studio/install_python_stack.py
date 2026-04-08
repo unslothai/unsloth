@@ -157,20 +157,28 @@ def _has_usable_nvidia_gpu() -> bool:
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
-    Runs only on Linux hosts where ROCm is installed and an AMD GPU is
-    present.  No-op when torch already links against HIP (ROCm) or CUDA
-    (NVIDIA).  Skips on Windows/macOS and on mixed AMD+NVIDIA hosts
-    (NVIDIA takes precedence).
+    Runs only on Linux hosts where an AMD GPU is present and the ROCm
+    runtime is detectable (rocminfo / amd-smi / hipconfig / rocm-core
+    package).  No-op when torch already links against HIP (ROCm) or on
+    Windows/macOS or on mixed AMD+NVIDIA hosts (NVIDIA takes precedence).
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
+    # Explicit OS guard so the helper is safe to call from any context --
+    # ROCm wheels are only published for Linux x86_64.
+    if IS_WINDOWS or IS_MACOS:
+        return
     # NVIDIA takes precedence on mixed hosts -- but only if an actual GPU is usable
     if _has_usable_nvidia_gpu():
         return
-    rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
-    if not os.path.isdir(rocm_root) and not shutil.which("hipcc"):
-        return  # no ROCm toolchain
+    # Rely on _has_rocm_gpu() (rocminfo / amd-smi GPU data rows) as the
+    # authoritative "is this actually an AMD ROCm host?" signal. The old
+    # gate required /opt/rocm or hipcc to exist, which breaks on
+    # runtime-only ROCm installs (package-managed minimal installs,
+    # Radeon software) that ship amd-smi/rocminfo without /opt/rocm or
+    # hipcc, and leaves `unsloth studio update` unable to repair a
+    # CPU-only venv on those systems.
     if not _has_rocm_gpu():
-        return  # ROCm tools present but no AMD GPU
+        return  # no AMD GPU visible
 
     ver = _detect_rocm_version()
     if ver is None:

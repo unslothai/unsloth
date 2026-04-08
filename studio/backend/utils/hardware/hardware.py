@@ -1187,6 +1187,19 @@ def get_physical_gpu_count() -> int:
     return _physical_gpu_count
 
 
+def _backend_visible_devices_env() -> Optional[str]:
+    """Return the raw visibility env string that applies to this backend.
+
+    On ROCm, HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES take precedence
+    over CUDA_VISIBLE_DEVICES; the helper mirrors the resolution logic in
+    ``_get_parent_visible_gpu_spec`` so ``backend_cuda_visible_devices``
+    reports the value that is actually narrowing the visible device set.
+    """
+    if IS_ROCM:
+        return _get_parent_visible_gpu_spec().get("raw")
+    return os.environ.get("CUDA_VISIBLE_DEVICES")
+
+
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
     if device in (DeviceType.CUDA, DeviceType.XPU):
@@ -1232,7 +1245,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             return {
                 "available": True,
                 "backend": device.value,
-                "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "backend_cuda_visible_devices": _backend_visible_devices_env(),
                 "parent_visible_gpu_ids": parent_visible_ids,
                 "devices": devices,
                 "index_kind": index_kind,
@@ -1241,7 +1254,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         return {
             "available": False,
             "backend": device.value,
-            "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "backend_cuda_visible_devices": _backend_visible_devices_env(),
             "parent_visible_gpu_ids": parent_visible_ids,
             "devices": [],
             "index_kind": "physical",
@@ -1348,7 +1361,10 @@ def apply_gpu_ids(gpu_ids) -> None:
         os.environ["HIP_VISIBLE_DEVICES"] = value
         os.environ["ROCR_VISIBLE_DEVICES"] = value
     _visible_gpu_count = None
-    logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm=%s)", value, IS_ROCM)
+    if IS_ROCM:
+        logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)
+    else:
+        logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
 def get_device_map(

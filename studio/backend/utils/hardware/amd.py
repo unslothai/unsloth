@@ -10,6 +10,7 @@ nvidia.py counterparts.
 
 import json
 import math
+import os
 import re
 import subprocess
 from typing import Any, Optional
@@ -93,9 +94,7 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         return num
     if "kib" in unit or "kb" in unit:
         return num / 1024
-    if unit and (
-        "b" in unit and "g" not in unit and "m" not in unit and "k" not in unit
-    ):
+    if unit in ("b", "byte", "bytes"):
         # Plain bytes
         return num / (1024 * 1024)
 
@@ -203,9 +202,34 @@ def get_physical_gpu_count() -> Optional[int]:
     return None
 
 
+def _first_visible_amd_gpu_id() -> Optional[str]:
+    """Return the physical AMD GPU id that should be treated as 'primary'.
+
+    Honours HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
+    in that order (HIP respects all three). Returns ``"0"`` when none are
+    set, and ``None`` when the env var explicitly narrows to zero GPUs
+    ("" or "-1"), so callers can short-circuit to "available: False".
+    """
+    for env_name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        raw = os.environ.get(env_name)
+        if raw is None:
+            continue
+        raw = raw.strip()
+        if raw == "" or raw == "-1":
+            return None
+        first = raw.split(",", 1)[0].strip()
+        if first:
+            return first
+        break
+    return "0"
+
+
 def get_primary_gpu_utilization() -> dict[str, Any]:
-    """Return utilization metrics for the primary AMD GPU."""
-    data = _run_amd_smi("metric", "-g", "0")
+    """Return utilization metrics for the primary visible AMD GPU."""
+    gpu_idx = _first_visible_amd_gpu_id()
+    if gpu_idx is None:
+        return {"available": False}
+    data = _run_amd_smi("metric", "-g", gpu_idx)
     if data is None:
         return {"available": False}
 
