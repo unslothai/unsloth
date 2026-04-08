@@ -776,6 +776,7 @@ export function RecipeStudioPage({
         categoryOptions={dialogOptions.categoryOptions}
         modelConfigAliases={dialogOptions.modelConfigAliases}
         modelProviderOptions={dialogOptions.modelProviderOptions}
+        localProviderNames={dialogOptions.localProviderNames}
         toolProfileAliases={dialogOptions.toolProfileAliases}
         datetimeOptions={dialogOptions.datetimeOptions}
         onUpdate={updateConfig}
