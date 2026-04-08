@@ -59,6 +59,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
     except Exception:
         return None
 
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -354,7 +355,9 @@ def list_local_datasets(
 
 @router.get("/download-progress")
 async def get_dataset_download_progress(
-    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
+    repo_id: str = Query(
+        ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress for a HuggingFace dataset repo.
