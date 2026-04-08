@@ -185,9 +185,9 @@ def _ensure_rocm_torch() -> None:
         print("   ROCm detected but version unreadable -- skipping torch reinstall")
         return
 
-    # Skip if torch already links against HIP (ROCm is already working).
-    # Do NOT skip for CUDA-only builds since they are unusable on AMD-only hosts
-    # (the NVIDIA check above already handled mixed AMD+NVIDIA setups).
+    # Probe whether torch already links against HIP (ROCm is already working).
+    # Do NOT skip for CUDA-only builds since they are unusable on AMD-only
+    # hosts (the NVIDIA check above already handled mixed AMD+NVIDIA setups).
     try:
         probe = subprocess.run(
             [
@@ -201,36 +201,43 @@ def _ensure_rocm_torch() -> None:
         )
     except (OSError, subprocess.TimeoutExpired):
         probe = None
-    if probe is not None and probe.returncode == 0 and probe.stdout.decode().strip():
-        return  # torch already has HIP/ROCm backend
-
-    # Select best matching wheel tag (newest ROCm version <= installed)
-    tag = next(
-        (
-            t
-            for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-            if ver >= (maj, mn)
-        ),
-        None,
+    has_hip_torch = (
+        probe is not None
+        and probe.returncode == 0
+        and probe.stdout.decode().strip() != ""
     )
-    if tag is None:
-        print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping")
-        return
 
-    index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-    print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
-    pip_install(
-        f"ROCm torch ({tag})",
-        "--force-reinstall",
-        "--no-cache-dir",
-        "torch>=2.4,<2.11.0",
-        "torchvision<0.26.0",
-        "torchaudio<2.11.0",
-        "--index-url",
-        index_url,
-        constrain = False,
-    )
-    # Also install bitsandbytes for AMD
+    if not has_hip_torch:
+        # Select best matching wheel tag (newest ROCm version <= installed)
+        tag = next(
+            (
+                t
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                if ver >= (maj, mn)
+            ),
+            None,
+        )
+        if tag is None:
+            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping")
+            return
+
+        index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+        print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+        pip_install(
+            f"ROCm torch ({tag})",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "torch>=2.4,<2.11.0",
+            "torchvision<0.26.0",
+            "torchaudio<2.11.0",
+            "--index-url",
+            index_url,
+            constrain = False,
+        )
+
+    # Always install bitsandbytes for AMD -- runs even when torch was not
+    # reinstalled (e.g. "unsloth studio update" on a venv that already has
+    # ROCm torch) so the AMD bitsandbytes dependency is not left missing.
     pip_install(
         "bitsandbytes (AMD)",
         "--no-cache-dir",

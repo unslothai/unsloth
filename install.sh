@@ -1030,7 +1030,14 @@ get_torch_index_url() {
         fi
     fi
     if [ -z "$_smi" ]; then
-        # No NVIDIA GPU -- check for AMD ROCm GPU
+        # No NVIDIA GPU -- check for AMD ROCm GPU.
+        # PyTorch only publishes ROCm wheels for linux-x86_64; skip the
+        # ROCm branch entirely on aarch64 / arm64 / other architectures
+        # so non-x86_64 Linux hosts fall back cleanly to CPU wheels.
+        case "$(uname -m)" in
+            x86_64|amd64) : ;;
+            *) echo "$_base/cpu"; return ;;
+        esac
         if ! _has_amd_rocm_gpu; then
             echo "$_base/cpu"; return
         fi
@@ -1241,6 +1248,17 @@ if [ "$_MIGRATED" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     fi
+    # AMD ROCm: install bitsandbytes even in migrated environments so
+    # existing ROCm installs gain the AMD bitsandbytes build without a
+    # fresh reinstall.
+    if [ "$SKIP_TORCH" = false ]; then
+        case "$TORCH_INDEX_URL" in
+            */rocm*)
+                substep "installing bitsandbytes for AMD ROCm..."
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
+                ;;
+        esac
+    fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
     if [ "$SKIP_TORCH" = true ]; then
@@ -1277,14 +1295,29 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         --index-url "$TORCH_INDEX_URL"
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
+                    # Use version constraints + --find-links + --no-index so
+                    # uv resolves a compatible torch / torchvision / torchaudio
+                    # set from the Radeon listing (instead of picking the
+                    # highest-version wheel for each package independently,
+                    # which can assemble a version-mismatched stack).
+                    # The wheel presence check above guarantees the listing
+                    # has at least one wheel per package; uv will pick the
+                    # newest version-compatible triple.
                     if [ -n "$_tri_whl" ]; then
                         run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
+                            --no-index \
                             --find-links "$_RADEON_BASE_URL" \
-                            "$_tri_whl" "$_torch_whl" "$_tv_whl" "$_ta_whl"
+                            "$TORCH_CONSTRAINT" \
+                            "torchvision<0.26.0" \
+                            "torchaudio<2.11.0" \
+                            "triton<3.7"
                     else
                         run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                            --no-index \
                             --find-links "$_RADEON_BASE_URL" \
-                            "$_torch_whl" "$_tv_whl" "$_ta_whl"
+                            "$TORCH_CONSTRAINT" \
+                            "torchvision<0.26.0" \
+                            "torchaudio<2.11.0"
                     fi
                 fi
             else

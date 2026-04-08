@@ -220,7 +220,10 @@ def _first_visible_amd_gpu_id() -> Optional[str]:
         first = raw.split(",", 1)[0].strip()
         if first:
             return first
-        break
+        # Leading comma or all-whitespace first token -- fall through to
+        # the next env var in priority order rather than silently
+        # returning GPU 0.
+        continue
     return "0"
 
 

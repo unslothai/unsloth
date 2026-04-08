@@ -2554,6 +2554,12 @@ def detect_host() -> HostInfo:
 
             if visible_gpu_rows:
                 has_usable_nvidia = True
+                # Older nvidia-smi versions (pre -L support) hit the
+                # except in the first try block but still succeed here,
+                # leaving has_physical_nvidia unset. Mirror the -L path
+                # so downstream diagnostics on line ~4390 still run.
+                if not has_physical_nvidia:
+                    has_physical_nvidia = True
             elif visible_device_tokens == []:
                 has_usable_nvidia = False
             elif supports_explicit_visible_device_matching(visible_device_tokens):
@@ -2564,17 +2570,16 @@ def detect_host() -> HostInfo:
             pass
 
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
-    import re as _re
 
     def _amd_smi_has_gpu(stdout: str) -> bool:
         """Check for 'GPU: <number>' data rows, not just a table header."""
-        return bool(_re.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
+        return bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
 
     has_rocm = False
     if is_linux:
         for _cmd, _check in (
             # rocminfo: look for "gfxNNNN" with nonzero first digit (gfx000 is CPU agent)
-            (["rocminfo"], lambda out: bool(_re.search(r"gfx[1-9]", out.lower()))),
+            (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
@@ -3000,10 +3005,8 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             # the newest one. Hardcoding a single rocm-7.2 filename means
             # ROCm 6.x / 7.0 / 7.1 / 7.3+ users always fall through to a
             # source build even when a matching prebuilt exists upstream.
-            import re as _re_rocm
-
-            _rocm_pattern = _re_rocm.compile(
-                rf"llama-{_re_rocm.escape(llama_tag)}-bin-ubuntu-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.tar\.gz"
+            _rocm_pattern = re.compile(
+                rf"llama-{re.escape(llama_tag)}-bin-ubuntu-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.tar\.gz"
             )
             rocm_candidates: list[tuple[tuple[int, ...], str]] = []
             for _name in upstream_assets:
@@ -3153,13 +3156,20 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        # Always try the published Windows CPU bundle, even on AMD ROCm
-        # hosts. If a windows-hip bundle is added to published releases
-        # in the future, the upstream resolver below would pick it first
-        # via resolve_asset_choice; falling back to the hash-approved
-        # windows-cpu bundle is still better than the upstream CPU
-        # asset for AMD Windows hosts without a HIP prebuilt.
-        published_choice = published_asset_choice_for_kind(release, "windows-cpu")
+        # AMD Windows hosts should prefer a hash-approved published
+        # Windows HIP bundle when one exists, but otherwise fall through
+        # to resolve_asset_choice() so the upstream HIP prebuilt is
+        # tried before the CPU fallback. Hard-pinning the published
+        # windows-cpu bundle here would make the new HIP path
+        # unreachable.
+        if host.has_rocm:
+            published_choice = published_asset_choice_for_kind(
+                release, "windows-hip"
+            )
+        else:
+            published_choice = published_asset_choice_for_kind(
+                release, "windows-cpu"
+            )
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
     elif host.is_macos and host.is_x86_64:
@@ -4248,6 +4258,7 @@ def validate_server(
     install_dir: Path,
     *,
     runtime_line: str | None = None,
+    install_kind: str | None = None,
 ) -> None:
     last_failure: PrebuiltFallback | None = None
     for port_attempt in range(1, SERVER_PORT_BIND_ATTEMPTS + 1):
@@ -4271,11 +4282,21 @@ def validate_server(
             "--batch-size",
             "32",
         ]
-        if (
-            host.has_usable_nvidia
-            or host.has_rocm
-            or (host.is_macos and host.is_arm64)
-        ):
+        # Only enable GPU offload for assets that actually ship GPU code.
+        # Gating on `host.has_rocm` alone breaks the intentional CPU
+        # fallback on AMD Windows hosts without a HIP prebuilt: the CPU
+        # binary would be launched with `--n-gpu-layers 1` and fail
+        # validation. Use the resolved install_kind as the source of
+        # truth and fall back to host detection when the caller did not
+        # pass one (keeps backwards compatibility with older call sites).
+        _gpu_kinds = {"linux-cuda", "linux-rocm", "windows-cuda", "windows-hip", "macos-arm64"}
+        if install_kind is not None:
+            _enable_gpu_layers = install_kind in _gpu_kinds
+        else:
+            _enable_gpu_layers = host.has_usable_nvidia or (
+                host.is_macos and host.is_arm64
+            )
+        if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
@@ -4985,6 +5006,7 @@ def validate_prebuilt_choice(
         host,
         install_dir,
         runtime_line = choice.runtime_line,
+        install_kind = choice.install_kind,
     )
     log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
