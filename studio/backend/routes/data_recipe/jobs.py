@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -23,15 +25,28 @@ from models.data_recipe import (
     RecipePayload,
 )
 
-from datetime import timedelta
-
 router = APIRouter()
 
 
-def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> None:
+def _resolve_local_v1_endpoint(request: Request) -> str:
+    """Return the loopback /v1 URL for the actual backend listen port.
+
+    Prefers ``app.state.server_port`` (set in run.py after binding) so that
+    deployments behind a reverse proxy, tunnel, or TLS terminator still hit
+    the real uvicorn socket. Falls back to the request URL only if the bound
+    port is not available (e.g. during tests that don't go through run.py).
+    """
+    port: Any = getattr(request.app.state, "server_port", None)
+    if not isinstance(port, int):
+        parsed = urlparse(str(request.base_url))
+        port = parsed.port or 8888
+    return f"http://127.0.0.1:{int(port)}/v1"
+
+
+def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
     """
     Mutate recipe dict in-place: for any provider with is_local=True,
-    generate a 24h JWT and fill in the endpoint pointing at this server.
+    generate a JWT and fill in the endpoint pointing at this server.
     """
     providers = recipe.get("model_providers")
     if not providers:
@@ -48,69 +63,64 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
     if not local_indices:
         return
 
+    endpoint = _resolve_local_v1_endpoint(request)
+
     # Only gate on model-loaded if a local provider is actually referenced
     # by a model_config. Unused local provider nodes should not block runs.
-    local_names = {providers[i].get("name") for i in local_indices}
+    local_names = {
+        providers[i].get("name") for i in local_indices if providers[i].get("name")
+    }
     referenced_providers = {
         mc.get("provider")
         for mc in recipe.get("model_configs", [])
-        if isinstance(mc, dict)
+        if isinstance(mc, dict) and mc.get("provider")
     }
-    if not local_names & referenced_providers:
-        # No model_config actually uses a local provider, just inject and move on
-        from urllib.parse import urlparse
 
-        parsed = urlparse(request_base_url)
-        port = parsed.port or 8888
-        endpoint = f"http://127.0.0.1:{port}/v1"
-        for i in local_indices:
-            providers[i]["endpoint"] = endpoint
-            providers[i]["api_key"] = ""
-            providers[i]["provider_type"] = "openai"
-        return
+    token = ""
+    if local_names & referenced_providers:
+        # Verify a model is loaded.
+        # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
+        # or swapped after this check but before the recipe subprocess calls /v1.
+        # The inference endpoint returns a clear 400 in that case.
+        #
+        # Imports are deferred to avoid circular dependencies with inference modules.
+        from routes.inference import get_llama_cpp_backend
+        from core.inference import get_inference_backend
 
-    # Verify a model is loaded.
-    # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
-    # or swapped after this check but before the recipe subprocess calls /v1.
-    # The inference endpoint returns a clear 400 in that case.
-    #
-    # Imports are deferred to avoid circular dependencies with inference modules.
-    from routes.inference import get_llama_cpp_backend
-    from core.inference import get_inference_backend
+        llama = get_llama_cpp_backend()
+        model_loaded = llama.is_loaded
+        if not model_loaded:
+            backend = get_inference_backend()
+            model_loaded = bool(backend.active_model_name)
+        if not model_loaded:
+            raise ValueError(
+                "No model loaded in Chat. Load a model first, then run the recipe."
+            )
 
-    llama = get_llama_cpp_backend()
-    model_loaded = llama.is_loaded
-    if not model_loaded:
-        backend = get_inference_backend()
-        model_loaded = bool(backend.active_model_name)
-    if not model_loaded:
-        raise ValueError(
-            "No model loaded in Chat. Load a model first, then run the recipe."
+        from auth.authentication import (
+            create_access_token,
+        )  # deferred: avoids circular import
+
+        # Uses the "unsloth" admin subject. If the user changes their password,
+        # the JWT secret rotates and this token becomes invalid mid-run.
+        # Acceptable for v1 - recipes typically finish well within one session.
+        token = create_access_token(
+            subject = "unsloth",
+            expires_delta = timedelta(hours = 24),
         )
 
-    from auth.authentication import (
-        create_access_token,
-    )  # deferred: avoids circular import
-
-    # Uses the "unsloth" admin subject. If the user changes their password,
-    # the JWT secret rotates and this token becomes invalid mid-run.
-    # Acceptable for v1 — recipes typically finish well within one session.
-    token = create_access_token(
-        subject = "unsloth",
-        expires_delta = timedelta(hours = 24),
-    )
-
-    # Always use loopback — request.base_url may reflect a proxy or 0.0.0.0
-    from urllib.parse import urlparse  # deferred: only needed for local providers
-
-    parsed = urlparse(request_base_url)
-    port = parsed.port or 8888
-    endpoint = f"http://127.0.0.1:{port}/v1"
-
+    # Defensively strip any stale "external"-only fields the frontend may
+    # have left on the dict (extra_headers/extra_body/api_key_env). The UI
+    # hides these inputs in local mode but the payload builder still serializes
+    # them, so a previously external provider that flipped to local can carry
+    # invalid JSON or rogue auth headers into the local /v1 call.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
         providers[i]["provider_type"] = "openai"
+        providers[i].pop("api_key_env", None)
+        providers[i].pop("extra_headers", None)
+        providers[i].pop("extra_body", None)
 
 
 def _normalize_run_name(value: Any) -> str | None:
@@ -155,7 +165,7 @@ def create_job(payload: RecipePayload, request: Request):
             ) from exc
 
     try:
-        _inject_local_providers(recipe, str(request.base_url))
+        _inject_local_providers(recipe, request)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 

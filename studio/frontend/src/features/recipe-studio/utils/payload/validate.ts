@@ -84,12 +84,16 @@ export function validateModelConfigProviders(
   modelConfigConfigs: ModelConfig[],
   modelAliases: Set<string>,
   modelProviderNames: Set<string>,
+  localProviderNames: Set<string>,
   errors: string[],
 ): void {
   for (const config of modelConfigConfigs) {
     const provider = config.provider.trim();
     const alias = config.name;
-    if (modelAliases.has(alias) && !config.model.trim()) {
+    const isLocal = localProviderNames.has(provider);
+    // Local providers do not require a real model id - the loaded Chat
+    // model is used regardless of what gets sent in the payload.
+    if (!isLocal && modelAliases.has(alias) && !config.model.trim()) {
       errors.push(`Model config ${alias}: model is required.`);
     }
     if (provider && !modelProviderNames.has(provider)) {

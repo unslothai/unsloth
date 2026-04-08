@@ -324,6 +324,11 @@ def run_server(
     _server = uvicorn.Server(config)
     _shutdown_event = Event()
 
+    # Expose the actual bound port so request-handling code can build
+    # loopback URLs that point at the real backend, not whatever port a
+    # reverse proxy or tunnel exposed in the request URL.
+    app.state.server_port = port
+
     # Run server in a daemon thread
     def _run():
         asyncio.run(_server.serve())

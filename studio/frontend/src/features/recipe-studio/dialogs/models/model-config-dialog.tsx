@@ -59,6 +59,21 @@ export function ModelConfigDialog({
     onUpdate({ [key]: value } as Partial<ModelConfig>);
   };
 
+  // Apply provider selection while keeping the local-provider model autofill
+  // consistent across both dropdown selection and free-typed + blur input.
+  const applyProviderChange = (selectedProvider: string) => {
+    const isLocal = localProviderNames.has(selectedProvider);
+    if (isLocal && !config.model.trim()) {
+      onUpdate({ provider: selectedProvider, model: "local" });
+      return;
+    }
+    if (!isLocal && config.model === "local") {
+      onUpdate({ provider: selectedProvider, model: "" });
+      return;
+    }
+    updateField("provider", selectedProvider);
+  };
+
   return (
     <div className="space-y-4">
       <NameField
@@ -87,17 +102,7 @@ export function ModelConfigDialog({
             filteredItems={providerOptions}
             filter={null}
             value={config.provider || null}
-            onValueChange={(value) => {
-              const selectedProvider = value ?? "";
-              const isLocal = localProviderNames.has(selectedProvider);
-              if (isLocal && !config.model.trim()) {
-                onUpdate({ provider: selectedProvider, model: "local" });
-              } else if (!isLocal && config.model === "local") {
-                onUpdate({ provider: selectedProvider, model: "" });
-              } else {
-                updateField("provider", selectedProvider);
-              }
-            }}
+            onValueChange={(value) => applyProviderChange(value ?? "")}
             onInputValueChange={(value) => {
               providerInputRef.current = value;
             }}
@@ -111,7 +116,7 @@ export function ModelConfigDialog({
               onBlur={() => {
                 const next = providerInputRef.current;
                 if (next !== config.provider) {
-                  updateField("provider", next);
+                  applyProviderChange(next);
                 }
               }}
             />
