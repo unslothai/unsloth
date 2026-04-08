@@ -91,7 +91,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className={cn(
           "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible pb-4 md:pb-4",
-          hideComposer ? "bg-background" : "relative bg-transparent",
+          hideComposer ? "bg-background" : "bg-transparent",
         )}>
           {!hideComposer && (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-background" aria-hidden />

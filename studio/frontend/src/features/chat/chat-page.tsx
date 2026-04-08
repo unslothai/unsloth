@@ -251,7 +251,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             </div>
           </div>
         </div>
-        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+        <div className="sticky bottom-0 z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 py-4">
           <SharedComposer handlesRef={handlesRef} />
         </div>
       </div>
@@ -387,7 +387,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             </div>
           </div>
         </div>
-        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+        <div className="sticky bottom-0 z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 py-4">
           <SharedComposer
             handlesRef={handlesRef}
             model1={model1}
