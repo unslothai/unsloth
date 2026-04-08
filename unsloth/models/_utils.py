@@ -230,8 +230,10 @@ def apply_unsloth_gradient_checkpointing(
 # Gemma3N: timm vision wrappers don't support flex_attention.
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
+# GPT-OSS: Transformers may auto-route flash_attention_2 to flash-attn3,
+# which currently errors on non-Hopper GPUs in some generation paths.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
-_EAGER_ONLY_PREFIXES = ("gemma3n",)
+_EAGER_ONLY_PREFIXES = ("gemma3n", "gemma4", "gpt_oss")
 
 
 def _is_flex_excluded(model_type):
@@ -2770,13 +2772,48 @@ def is_moe_model(model) -> bool:
     return num_experts is not None and num_experts > 0
 
 
+def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -> str:
+    """
+    Resolve the actual parameter path for MoE expert weights.
+
+    Most current Unsloth MoE models expose expert weights under
+    ``mlp.experts.*``. Gemma4 stores them directly under ``experts.*``.
+    Prefer the path that exists on the loaded module when possible.
+    """
+    if hasattr(model, "named_parameters"):
+        try:
+            for name, _ in model.named_parameters():
+                if name == default_name or name.endswith("." + default_name):
+                    return default_name
+                if name == alternate_name or name.endswith("." + alternate_name):
+                    return alternate_name
+        except Exception:
+            pass
+
+    config = getattr(model, "config", model)
+    model_types = {getattr(config, "model_type", None)}
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None:
+        model_types.add(getattr(text_config, "model_type", None))
+
+    if any(
+        isinstance(model_type, str) and model_type.startswith("gemma4")
+        for model_type in model_types
+    ):
+        return alternate_name
+
+    return default_name
+
+
 def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
     """
     Get the target_parameters for MoE expert layers if applicable.
 
     For MoE models, returns the parameter paths for expert weights
     (gate_up_proj, down_proj) that should be targeted by PEFT's
-    target_parameters for LoRA on nn.Parameter.
+    target_parameters for LoRA on nn.Parameter. The exact parameter path
+    depends on the model layout, for example ``mlp.experts.*`` or
+    ``experts.*``.
 
     Only includes MoE parameters that match what's in target_modules:
     - If "down_proj" is in target_modules -> includes "mlp.experts.down_proj"
@@ -2824,6 +2861,17 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
     else:
         target_set = set(target_modules) if target_modules else set()
 
+    gate_up_name = _resolve_moe_parameter_name(
+        model,
+        default_name = "mlp.experts.gate_up_proj",
+        alternate_name = "experts.gate_up_proj",
+    )
+    down_name = _resolve_moe_parameter_name(
+        model,
+        default_name = "mlp.experts.down_proj",
+        alternate_name = "experts.down_proj",
+    )
+
     # gate_up_proj combines both gate_proj and up_proj in MoE
     # Also match "gate_up_proj" directly since users may specify the fused name
     if (
@@ -2831,10 +2879,10 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         or "up_proj" in target_set
         or "gate_up_proj" in target_set
     ):
-        moe_params.append("mlp.experts.gate_up_proj")
+        moe_params.append(gate_up_name)
 
     if "down_proj" in target_set:
-        moe_params.append("mlp.experts.down_proj")
+        moe_params.append(down_name)
 
     if moe_params:
         print(
