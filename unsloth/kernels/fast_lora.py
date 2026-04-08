@@ -140,10 +140,8 @@ class LoRA_MLP(torch.autograd.Function):
         # TRL's compiled GRPO trainer, which silently downcasts float32 gradient
         # tensors to float16 mid-computation, causing addmm_ dtype mismatches.
 
-
-
         # Use the tensor's actual device type so this works on CUDA and XPU.
-        with torch.amp.autocast(X.device.type, enabled=False):
+        with torch.amp.autocast(X.device.type, enabled = False):
             # Cast incoming gradients to the activation dtype.
             if dY.dtype != dtype:
                 dY = dY.to(dtype)
@@ -472,10 +470,8 @@ class LoRA_QKV(torch.autograd.Function):
         # TRL's compiled GRPO trainer, which silently downcasts float32 gradient
         # tensors to float16 mid-computation, causing addmm_ dtype mismatches.
 
-
-
         # Use the tensor's actual device type so this works on CUDA and XPU.
-        with torch.amp.autocast(X.device.type, enabled=False):
+        with torch.amp.autocast(X.device.type, enabled = False):
             # Cast incoming gradients to the activation dtype.
             if dQ.dtype != dtype:
                 dQ = dQ.to(dtype)
@@ -666,8 +662,9 @@ class LoRA_W(torch.autograd.Function):
         # TRL's compiled GRPO trainer, which silently downcasts float32 gradient
         # tensors to float16 mid-computation, causing addmm_ dtype mismatches.
         # Use the tensor's actual device type so this works on CUDA and XPU.
-        with torch.amp.autocast(X.device.type, enabled=False):
-            if dY.dtype != dtype: dY = dY.to(dtype)
+        with torch.amp.autocast(X.device.type, enabled = False):
+            if dY.dtype != dtype:
+                dY = dY.to(dtype)
 
             A, B = A.to(dtype), B.to(dtype)
 
@@ -687,7 +684,8 @@ class LoRA_W(torch.autograd.Function):
 
             # Get derivative for dX
             W = fast_dequantize(W.t(), W_quant)
-            if W.dtype != dtype: W = W.to(dtype)
+            if W.dtype != dtype:
+                W = W.to(dtype)
             dX = dY @ W.t()
             del W
             # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
