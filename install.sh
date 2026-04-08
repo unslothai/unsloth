@@ -1288,36 +1288,68 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _tv_whl=$(_pick_radeon_wheel    "torchvision" 2>/dev/null) || _tv_whl=""
                 _ta_whl=$(_pick_radeon_wheel    "torchaudio"  2>/dev/null) || _ta_whl=""
                 _tri_whl=$(_pick_radeon_wheel   "triton"      2>/dev/null) || _tri_whl=""
-                if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ]; then
-                    substep "[WARN] Radeon repo lacks a complete wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
+                # Sanity-check torch / torchvision / torchaudio are a
+                # matching release. The Radeon repo publishes multiple
+                # generations simultaneously, so picking the highest-version
+                # wheel for each package independently can assemble a
+                # mismatched trio (e.g. torch 2.9.1 + torchvision 0.23.0 +
+                # torchaudio 2.9.0 from the current rocm-rel-7.2.1 index).
+                # Check that torch and torchaudio share the same X.Y public
+                # version prefix, and that torchvision's minor correctly
+                # pairs with torch's minor (torchvision = torch.minor - 5
+                # since torch 2.4 -> torchvision 0.19 -> torch 2.9 ->
+                # torchvision 0.24).
+                _torch_ver=""
+                _tv_ver=""
+                _ta_ver=""
+                if [ -n "$_torch_whl" ]; then
+                    _torch_ver=$(printf '%s\n' "$_torch_whl" | sed -n 's|.*/torch-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
+                fi
+                if [ -n "$_tv_whl" ]; then
+                    _tv_ver=$(printf '%s\n' "$_tv_whl" | sed -n 's|.*/torchvision-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
+                fi
+                if [ -n "$_ta_whl" ]; then
+                    _ta_ver=$(printf '%s\n' "$_ta_whl" | sed -n 's|.*/torchaudio-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
+                fi
+                _radeon_versions_match=false
+                if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
+                    _torch_major=${_torch_ver%%.*}
+                    _torch_minor=${_torch_ver#*.}
+                    _ta_major=${_ta_ver%%.*}
+                    _ta_minor=${_ta_ver#*.}
+                    _tv_major=${_tv_ver%%.*}
+                    _tv_minor=${_tv_ver#*.}
+                    # torchvision expected minor (e.g. torch 2.9 -> 0.24)
+                    _expected_tv_minor=$((_torch_minor + 15))
+                    if [ "$_torch_major" = "$_ta_major" ] && \
+                       [ "$_torch_minor" = "$_ta_minor" ] && \
+                       [ "$_tv_major" = "0" ] && \
+                       [ "$_tv_minor" = "$_expected_tv_minor" ]; then
+                        _radeon_versions_match=true
+                    fi
+                fi
+                if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
+                   [ "$_radeon_versions_match" != true ]; then
+                    substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                     run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL"
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
-                    # Use version constraints + --find-links + --no-index so
-                    # uv resolves a compatible torch / torchvision / torchaudio
-                    # set from the Radeon listing (instead of picking the
-                    # highest-version wheel for each package independently,
-                    # which can assemble a version-mismatched stack).
-                    # The wheel presence check above guarantees the listing
-                    # has at least one wheel per package; uv will pick the
-                    # newest version-compatible triple.
+                    # Pass explicit wheel URLs so the matched trio is
+                    # installed together. --find-links lets uv discover
+                    # the Radeon listing for any local lookup, and PyPI
+                    # (not disabled) provides transitive deps like
+                    # filelock / sympy / networkx which are not in the
+                    # Radeon listing.
                     if [ -n "$_tri_whl" ]; then
                         run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
-                            --no-index \
                             --find-links "$_RADEON_BASE_URL" \
-                            "$TORCH_CONSTRAINT" \
-                            "torchvision<0.26.0" \
-                            "torchaudio<2.11.0" \
-                            "triton<3.7"
+                            "$_tri_whl" "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     else
                         run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
-                            --no-index \
                             --find-links "$_RADEON_BASE_URL" \
-                            "$TORCH_CONSTRAINT" \
-                            "torchvision<0.26.0" \
-                            "torchaudio<2.11.0"
+                            "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     fi
                 fi
             else

@@ -2993,6 +2993,65 @@ def published_asset_choice_for_kind(
     return None
 
 
+def _detect_host_rocm_version() -> tuple[int, int] | None:
+    """Return (major, minor) of the installed ROCm runtime, or None.
+
+    Best-effort read from /opt/rocm/.info/version, amd-smi version, and
+    hipconfig --version. Used to pick a compatible upstream llama.cpp
+    ROCm prebuilt rather than always taking the numerically newest one
+    (which can be newer than the host runtime).
+    """
+    rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
+    for path in (
+        os.path.join(rocm_root, ".info", "version"),
+        os.path.join(rocm_root, "lib", "rocm_version"),
+    ):
+        try:
+            with open(path) as fh:
+                parts = fh.read().strip().split("-")[0].split(".")
+            return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+    amd_smi = shutil.which("amd-smi")
+    if amd_smi:
+        try:
+            result = subprocess.run(
+                [amd_smi, "version"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0:
+                m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
+                if m:
+                    return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+    hipconfig = shutil.which("hipconfig")
+    if hipconfig:
+        try:
+            result = subprocess.run(
+                [hipconfig, "--version"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0:
+                raw = (result.stdout or "").strip().split("\n")[0]
+                parts = raw.split(".")
+                if (
+                    len(parts) >= 2
+                    and parts[0].isdigit()
+                    and parts[1].split("-")[0].isdigit()
+                ):
+                    return int(parts[0]), int(parts[1].split("-")[0])
+        except Exception:
+            pass
+    return None
+
+
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
@@ -3001,10 +3060,14 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # the exact GPU target via rocminfo, which is more reliable for consumer
         # GPUs (e.g. gfx1151) that may not be in the prebuilt.
         if host.has_rocm and not host.has_usable_nvidia:
-            # Scan upstream assets for any rocm-<version> prebuilt and prefer
-            # the newest one. Hardcoding a single rocm-7.2 filename means
-            # ROCm 6.x / 7.0 / 7.1 / 7.3+ users always fall through to a
-            # source build even when a matching prebuilt exists upstream.
+            # Scan upstream assets for any rocm-<version> prebuilt. When the
+            # host ROCm runtime version is known, pick the newest candidate
+            # whose major.minor is <= host version -- otherwise a ROCm 6.4
+            # host would download the rocm-7.2 tarball, fail preflight, and
+            # fall back to a source build even though a compatible 6.4
+            # prebuilt exists. If no compatible candidate matches (e.g. host
+            # runtime is older than every published prebuilt), fall back to
+            # the numerically newest so we at least try something.
             _rocm_pattern = re.compile(
                 rf"llama-{re.escape(llama_tag)}-bin-ubuntu-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.tar\.gz"
             )
@@ -3016,9 +3079,29 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 _parts = tuple(int(p) for p in _m.group(1).split("."))
                 rocm_candidates.append((_parts, _name))
             rocm_candidates.sort(reverse = True)
-            if rocm_candidates:
-                rocm_name = rocm_candidates[0][1]
-                log(f"AMD ROCm detected -- trying upstream prebuilt {rocm_name}")
+            _host_rocm_version = _detect_host_rocm_version()
+            _compatible: list[tuple[tuple[int, ...], str]] = rocm_candidates
+            if _host_rocm_version is not None:
+                _compatible = [
+                    item
+                    for item in rocm_candidates
+                    if item[0][:2] <= _host_rocm_version
+                ]
+            if rocm_candidates and not _compatible:
+                # Fall back to the newest candidate so a source build is
+                # not forced when the host runtime is older than every
+                # published prebuilt: preflight will still catch a true
+                # incompatibility and trigger a fallback.
+                _compatible = rocm_candidates[:1]
+            if _compatible:
+                rocm_name = _compatible[0][1]
+                if _host_rocm_version is not None:
+                    log(
+                        f"AMD ROCm {_host_rocm_version[0]}.{_host_rocm_version[1]} "
+                        f"detected -- trying upstream prebuilt {rocm_name}"
+                    )
+                else:
+                    log(f"AMD ROCm detected -- trying upstream prebuilt {rocm_name}")
                 log(
                     "Note: if your ROCm runtime version differs significantly, "
                     "this may fail preflight and fall back to a source build (safe)"

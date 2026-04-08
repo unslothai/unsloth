@@ -287,26 +287,31 @@ def _install_package_wheel_first(
             f"{pypi_name}=={pypi_version}",
         ]
 
-    # Source compilation on ROCm can take 10-30 minutes; use a generous timeout
-    timeout = 1800 if is_hip else 300
+    # Source compilation on ROCm can take 10-30 minutes; use a generous
+    # timeout. Non-HIP installs preserve the pre-existing "no timeout"
+    # behaviour so unrelated slow installs (e.g. causal-conv1d source
+    # build on Linux aarch64 or unsupported torch/CUDA combinations)
+    # are not aborted at 5 minutes by this PR.
+    _run_kwargs: dict[str, Any] = {
+        "stdout": _sp.PIPE,
+        "stderr": _sp.STDOUT,
+        "text": True,
+    }
+    if is_hip:
+        _run_kwargs["timeout"] = 1800
 
     try:
-        result = _sp.run(
-            pypi_cmd,
-            stdout = _sp.PIPE,
-            stderr = _sp.STDOUT,
-            text = True,
-            timeout = timeout,
-        )
+        result = _sp.run(pypi_cmd, **_run_kwargs)
     except _sp.TimeoutExpired:
         logger.error(
             "%s installation timed out after %ds",
             display_name,
-            timeout,
+            _run_kwargs.get("timeout"),
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after {timeout}s",
+            f"{display_name} installation timed out after "
+            f"{_run_kwargs.get('timeout')}s",
         )
         return
 

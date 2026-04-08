@@ -157,15 +157,21 @@ def _has_usable_nvidia_gpu() -> bool:
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
-    Runs only on Linux hosts where an AMD GPU is present and the ROCm
-    runtime is detectable (rocminfo / amd-smi / hipconfig / rocm-core
-    package).  No-op when torch already links against HIP (ROCm) or on
-    Windows/macOS or on mixed AMD+NVIDIA hosts (NVIDIA takes precedence).
+    Runs only on Linux x86_64 hosts where an AMD GPU is present and the
+    ROCm runtime is detectable (rocminfo / amd-smi / hipconfig /
+    rocm-core package).  No-op when torch already links against HIP
+    (ROCm), on Windows / macOS, on non-x86_64 Linux (PyTorch does not
+    publish ROCm wheels for aarch64 / arm64), or on mixed AMD+NVIDIA
+    hosts (NVIDIA takes precedence).
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
-    # Explicit OS guard so the helper is safe to call from any context --
-    # ROCm wheels are only published for Linux x86_64.
+    # Explicit OS / architecture guards so the helper is safe to call
+    # from any context -- PyTorch only publishes ROCm wheels for
+    # linux_x86_64, so aarch64 / arm64 hosts must skip this repair path
+    # instead of failing the update with a missing-wheel error.
     if IS_WINDOWS or IS_MACOS:
+        return
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
     # NVIDIA takes precedence on mixed hosts -- but only if an actual GPU is usable
     if _has_usable_nvidia_gpu():
@@ -218,22 +224,24 @@ def _ensure_rocm_torch() -> None:
             None,
         )
         if tag is None:
-            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping")
-            return
-
-        index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-        print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
-        pip_install(
-            f"ROCm torch ({tag})",
-            "--force-reinstall",
-            "--no-cache-dir",
-            "torch>=2.4,<2.11.0",
-            "torchvision<0.26.0",
-            "torchaudio<2.11.0",
-            "--index-url",
-            index_url,
-            constrain = False,
-        )
+            print(
+                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- "
+                f"skipping torch reinstall"
+            )
+        else:
+            index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+            print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+            pip_install(
+                f"ROCm torch ({tag})",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "torch>=2.4,<2.11.0",
+                "torchvision<0.26.0",
+                "torchaudio<2.11.0",
+                "--index-url",
+                index_url,
+                constrain = False,
+            )
 
     # Always install bitsandbytes for AMD -- runs even when torch was not
     # reinstalled (e.g. "unsloth studio update" on a venv that already has
