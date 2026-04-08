@@ -1750,12 +1750,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '
                 'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
             )
-            # Replace with our vLLM engine
+            # Replace with our vLLM engine when sharing weights
             sampling_params = (
                 " " * 12
-                + "self.llm = model.vllm_engine; self._last_loaded_step = 0; "
+                + "if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False): "
+                + "self.llm = model.vllm_engine; self._last_loaded_step = 0\n"
+                + " " * 12
                 + sampling_params
-            )  # Add spaces
+            )
 
             # count the indentation of last line of sampling_params.
             splitted_sampling_params = sampling_params.split("\n")
@@ -1788,14 +1790,23 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 )
 
         if trl_version >= Version("0.18.0"):
-            # Replace LLM init with already existing vLLM engine for colocate mode
-            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
-            vllm_llm_replacement = "self.llm = model.vllm_engine\n"
+            # Guard LLM init - use existing vLLM engine when sharing weights,
+            # otherwise keep the original LLM() creation for sync/reload path
+            vllm_llm_init_pattern = r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
+            def guard_llm_init(match):
+                indent = match.group("indent")
+                original = match.group(0)
+                return (
+                    f"{indent}if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False):\n"
+                    f"{indent}    self.llm = model.vllm_engine\n"
+                    f"{indent}else:\n"
+                    f"{indent}    {original.lstrip()}"
+                )
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
-                vllm_llm_replacement,
+                guard_llm_init,
                 new_vllm_part,
-                flags = re.DOTALL,  # Ensure . matches newlines [[5]]
+                flags = re.DOTALL,
             )
 
         init = init.replace(vllm_part, new_vllm_part)
@@ -1878,8 +1889,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             r"\1, lora_request = self.model.load_lora('"
             + lora_name
             + r", load_tensors = True)"
-            + r" if (getattr(self.llm, 'shared_weights', False)"
-            + r" or hasattr(getattr(self, 'model', None), 'vllm_engine'))"
+            + r" if getattr(self.llm, 'shared_weights', False)"
             + r" else None)",
             source,
         )

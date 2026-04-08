@@ -281,8 +281,7 @@ def grpo_trainer__generate_single_turn(function_name, function):
     def replace_reload_weights_line(match):
         indent = match.group("indent")
         return (
-            f"{indent}if not (getattr(self.llm, 'shared_weights', False) or "
-            f"hasattr(getattr(self, 'model', None), 'vllm_engine')):\n"
+            f"{indent}if not getattr(self.llm, 'shared_weights', False):\n"
             f'{indent}    self.llm.collective_rpc("reload_weights")\n'
         )
 
@@ -298,8 +297,7 @@ def grpo_trainer__generate_single_turn(function_name, function):
     def guard_sync_weights_block(match):
         indent = match.group("indent")
         return (
-            f"{indent}if not (getattr(getattr(self.vllm_generation, 'llm', None), 'shared_weights', False) or "
-            f"hasattr(getattr(self, 'model', None), 'vllm_engine')):\n"
+            f"{indent}if not getattr(getattr(self.vllm_generation, 'llm', None), 'shared_weights', False):\n"
             f"{indent}    with profiling_context(self, 'sync_weights'):\n"
             f"{indent}        self.vllm_generation.sync_weights()\n"
         )
@@ -1557,8 +1555,8 @@ def vllm_generation_init_patch():
                 f"{indent}if hasattr(model, 'vllm_engine'):\n"
                 f"{indent}    # Unsloth already inits vLLM in fast inference mode. Do not redo :)\n"
                 f"{indent}    self.llm = model.vllm_engine\n"
-                f"{indent}    self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', True)\n"
-                f"{indent}    if hasattr(model, 'load_lora'):\n"
+                f"{indent}    self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', False)\n"
+                f"{indent}    if getattr(self.llm, 'shared_weights', False) and hasattr(model, 'load_lora'):\n"
                 f"{indent}        self._unsloth_load_lora = model.load_lora\n"
                 f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
             )
@@ -1637,7 +1635,7 @@ def vllm_generation_init_patch():
         init_patched = patch_vllm_generation_method(
             "_init_vllm",
             patch_init_vllm,
-            "self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', True)",
+            "self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', False)",
             "init_vllm",
         )
         sync_patched = patch_vllm_generation_method(
