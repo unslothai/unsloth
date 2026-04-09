@@ -464,6 +464,77 @@ class TestFitTargetSource:
 
 
 # =====================================================================
+# E.2 TestFitTargetBehavior -- runtime behavior
+# =====================================================================
+
+
+class TestFitTargetBehavior:
+    """Runtime behavior for explicit fit_target + explicit context."""
+
+    def test_explicit_fit_target_keeps_requested_context(self, tmp_path, backend):
+        """When full ctx won't fit GPU-only, fit_target keeps requested ctx via --fit."""
+        gguf_path = tmp_path / "model.gguf"
+        gguf_path.write_bytes(b"not-a-real-gguf")
+
+        captured_cmd = {}
+
+        class _DummyProc:
+            def __init__(self, cmd, **kwargs):
+                captured_cmd["cmd"] = cmd
+                self.stdout = iter(())
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout = None):
+                return 0
+
+            def kill(self):
+                pass
+
+        def _fake_read_metadata(_path: str):
+            backend._context_length = 131072
+            backend._n_layers = 32
+            backend._n_kv_heads = 8
+            backend._n_heads = 32
+            backend._embedding_length = 4096
+
+        with patch.object(
+            backend, "_find_llama_server_binary", return_value = "llama-server"
+        ), patch.object(
+            backend, "_read_gguf_metadata", side_effect = _fake_read_metadata
+        ), patch.object(
+            backend, "_get_gguf_size_bytes", return_value = 4 * 1024**3
+        ), patch.object(
+            backend, "_get_gpu_free_memory", return_value = [(0, 12000)]
+        ), patch.object(
+            backend, "_select_gpus", return_value = (None, True)
+        ), patch.object(
+            backend, "_fit_context_to_vram", return_value = 8192
+        ), patch.object(
+            backend, "_wait_for_health", return_value = True
+        ), patch(
+            "core.inference.llama_cpp.subprocess.Popen", side_effect = _DummyProc
+        ):
+            ok = backend.load_model(
+                gguf_path = str(gguf_path),
+                model_identifier = "test-model",
+                n_ctx = 100000,
+                fit_target = 256,
+            )
+
+        assert ok is True
+        cmd = captured_cmd["cmd"]
+        assert "-c" in cmd
+        assert cmd[cmd.index("-c") + 1] == "100000"
+        assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
+        assert "--fit-target" in cmd and cmd[cmd.index("--fit-target") + 1] == "256"
+        assert backend.fit_target == 256
+
+        backend.unload_model()
+
+
+# =====================================================================
 # E. TestEdgeCases
 # =====================================================================
 
