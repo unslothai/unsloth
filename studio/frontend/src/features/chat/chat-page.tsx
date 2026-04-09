@@ -98,9 +98,14 @@ function HighlightedSnippet({
     [language, source],
   );
 
+  // Streamdown memoizes/diffs markdown blocks and can hold onto previously
+  // highlighted content when only an inline value inside the code fence
+  // changes (e.g. the API key). Forcing a remount keyed on the source string
+  // guarantees the displayed snippet always matches the latest props.
   return (
     <div className="mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!overflow-x-auto [&_code]:!whitespace-pre-wrap [&_code]:!break-all [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
       <Streamdown
+        key={markdown}
         mode="static"
         plugins={{ code: codePlugin }}
         controls={{ code: false }}
