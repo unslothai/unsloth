@@ -230,10 +230,8 @@ def apply_unsloth_gradient_checkpointing(
 # Gemma3N: timm vision wrappers don't support flex_attention.
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
-# GPT-OSS: Transformers may auto-route flash_attention_2 to flash-attn3,
-# which currently errors on non-Hopper GPUs in some generation paths.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
-_EAGER_ONLY_PREFIXES = ("gemma3n", "gemma4", "gpt_oss")
+_EAGER_ONLY_PREFIXES = ("gemma3n",)
 
 
 def _is_flex_excluded(model_type):
