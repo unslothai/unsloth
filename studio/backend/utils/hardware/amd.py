@@ -172,16 +172,12 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     )
     vram_util = (
         round((vram_used_mb / vram_total_mb) * 100, 1)
-        if vram_used_mb is not None
-        and vram_total_mb is not None
-        and vram_total_mb > 0
+        if vram_used_mb is not None and vram_total_mb is not None and vram_total_mb > 0
         else None
     )
     power_util = (
         round((power_draw / power_limit) * 100, 1)
-        if power_draw is not None
-        and power_limit is not None
-        and power_limit > 0
+        if power_draw is not None and power_limit is not None and power_limit > 0
         else None
     )
 
