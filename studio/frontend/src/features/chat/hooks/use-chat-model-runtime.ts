@@ -349,6 +349,8 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora ? true : false);
+      const previousLoadedFitTarget =
+        useChatRuntimeStore.getState().loadedFitTarget;
       // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
       const isLocal = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(modelId);
       const isCachedLora = isLora && isLocal;
@@ -497,6 +499,7 @@ export function useChatModelRuntime() {
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
+                  fit_target: previousLoadedFitTarget,
                 });
                 await refresh();
               } catch {
