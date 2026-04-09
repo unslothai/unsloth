@@ -1421,13 +1421,18 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
     fi
-    # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths)
-    case "$TORCH_INDEX_URL" in
-        */rocm*)
-            substep "installing bitsandbytes for AMD ROCm..."
-            run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir "bitsandbytes>=0.49.1"
-            ;;
-    esac
+    # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
+    # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
+    # host stays in GGUF-only mode rather than pulling in bitsandbytes,
+    # which is only useful once torch is present for training.
+    if [ "$SKIP_TORCH" = false ]; then
+        case "$TORCH_INDEX_URL" in
+            */rocm*)
+                substep "installing bitsandbytes for AMD ROCm..."
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir "bitsandbytes>=0.49.1"
+                ;;
+        esac
+    fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
