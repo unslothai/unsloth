@@ -303,10 +303,8 @@ async def load_model(
 
             inference_config = load_inference_config(config.identifier)
 
-            # Auto-generate API key for external OpenAI-compatible access
-            fastapi_request.app.state.external_api_key = (
-                f"sk-unsloth-{_secrets.token_urlsafe(32)}"
-            )
+            # Clear any previous API key — user must explicitly enable endpoint
+            fastapi_request.app.state.external_api_key = None
 
             return LoadResponse(
                 status = "loaded",
@@ -446,10 +444,8 @@ async def load_model(
         except Exception:
             pass
 
-        # Auto-generate API key for external OpenAI-compatible access
-        fastapi_request.app.state.external_api_key = (
-            f"sk-unsloth-{_secrets.token_urlsafe(32)}"
-        )
+        # Clear any previous API key — user must explicitly enable endpoint
+        fastapi_request.app.state.external_api_key = None
 
         return LoadResponse(
             status = "loaded",
@@ -902,20 +898,11 @@ def _extract_content_parts(
 # ── Access Endpoint (external OpenAI-compatible access) ──────────
 
 
-@router.get("/access-endpoint")
-async def get_access_endpoint(
-    request: Request,
-    current_subject: str = Depends(get_current_subject),
-):
-    """Return API key, local/external URLs, and model info for the Access Endpoint dialog."""
-    api_key = getattr(request.app.state, "external_api_key", None)
-    if not api_key:
-        raise HTTPException(status_code = 400, detail = "No model loaded")
-
+def _build_endpoint_urls(request: Request):
+    """Return (local_url, external_url) for the Access Endpoint dialog."""
     port = getattr(request.app.state, "server_port", None)
     local_url = f"http://127.0.0.1:{port}/v1" if port else f"{request.base_url}v1"
 
-    # Resolve external IP when bound to all interfaces (same as startup banner)
     external_url = None
     bind_host = getattr(request.app.state, "bind_host", None)
     if bind_host in ("0.0.0.0", "::") and port:
@@ -925,20 +912,78 @@ async def get_access_endpoint(
         if ext_ip and ext_ip not in ("127.0.0.1", "0.0.0.0", "localhost"):
             external_url = f"http://{ext_ip}:{port}/v1"
 
+    return local_url, external_url
+
+
+def _get_loaded_model_name():
+    """Return the currently loaded model identifier."""
     llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded:
+        return llama_backend.model_identifier
     backend = get_inference_backend()
-    model = (
-        llama_backend.model_identifier
-        if llama_backend.is_loaded
-        else (list(backend.models.keys())[0] if backend.models else "default")
-    )
+    if backend.models:
+        return list(backend.models.keys())[0]
+    return "default"
+
+
+@router.get("/access-endpoint")
+async def get_access_endpoint(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return endpoint state, API key, URLs, and model info."""
+    api_key = getattr(request.app.state, "external_api_key", None)
+    local_url, external_url = _build_endpoint_urls(request)
 
     return {
+        "enabled": api_key is not None,
         "api_key": api_key,
         "local_url": local_url,
         "external_url": external_url,
-        "model": model,
+        "model": _get_loaded_model_name(),
     }
+
+
+@router.post("/access-endpoint/enable")
+async def enable_access_endpoint(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Enable external API access: restart llama-server with --parallel 2 and generate an API key."""
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(status_code = 400, detail = "No GGUF model loaded")
+
+    # Restart with --parallel 2 for concurrent Studio + external access
+    await asyncio.to_thread(llama_backend.set_parallel, 2)
+
+    # Generate API key
+    api_key = f"sk-unsloth-{_secrets.token_urlsafe(32)}"
+    request.app.state.external_api_key = api_key
+
+    local_url, external_url = _build_endpoint_urls(request)
+    return {
+        "enabled": True,
+        "api_key": api_key,
+        "local_url": local_url,
+        "external_url": external_url,
+        "model": _get_loaded_model_name(),
+    }
+
+
+@router.post("/access-endpoint/disable")
+async def disable_access_endpoint(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Disable external API access: restart llama-server with --parallel 1 and clear the API key."""
+    request.app.state.external_api_key = None
+
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded:
+        await asyncio.to_thread(llama_backend.set_parallel, 1)
+
+    return {"enabled": False}
 
 
 @router.post("/chat/completions")

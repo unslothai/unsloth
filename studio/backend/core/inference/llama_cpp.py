@@ -129,6 +129,8 @@ class LlamaCppBackend:
         self._stdout_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        self._launch_cmd: Optional[list[str]] = None
+        self._launch_env: Optional[dict] = None
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -1516,6 +1518,8 @@ class LlamaCppBackend:
             if gpu_indices is not None:
                 env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
 
+            self._launch_cmd = list(cmd)
+            self._launch_env = dict(env)
             self._stdout_lines = []
             self._process = subprocess.Popen(
                 cmd,
@@ -1630,6 +1634,58 @@ class LlamaCppBackend:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             return True
+
+    def set_parallel(self, n: int) -> bool:
+        """Restart llama-server with a different --parallel value.
+
+        Kills the running process and relaunches with the same command
+        but ``--parallel`` swapped.  Returns True if the restarted server
+        passes the health check.
+        """
+        if not self._launch_cmd or not self._launch_env:
+            raise RuntimeError("No launch command stored — cannot restart")
+
+        cmd = list(self._launch_cmd)
+        # Swap --parallel value
+        try:
+            idx = cmd.index("--parallel")
+            cmd[idx + 1] = str(n)
+        except (ValueError, IndexError):
+            cmd.extend(["--parallel", str(n)])
+
+        with self._lock:
+            self._kill_process()
+            self._port = self._find_free_port()
+            # Update port in cmd
+            try:
+                pi = cmd.index("--port")
+                cmd[pi + 1] = str(self._port)
+            except (ValueError, IndexError):
+                cmd.extend(["--port", str(self._port)])
+
+            self._launch_cmd = list(cmd)
+            self._stdout_lines = []
+            self._process = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                env = self._launch_env,
+            )
+            self._stdout_thread = threading.Thread(
+                target = self._drain_stdout, daemon = True, name = "llama-stdout"
+            )
+            self._stdout_thread.start()
+
+        if not self._wait_for_health(timeout = 120.0):
+            self._kill_process()
+            raise RuntimeError("llama-server failed to restart with new --parallel")
+
+        self._healthy = True
+        logger.info(
+            f"llama-server restarted with --parallel {n} on port {self._port}"
+        )
+        return True
 
     def _kill_process(self):
         """Terminate the subprocess if running."""

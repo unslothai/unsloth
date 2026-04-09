@@ -537,6 +537,8 @@ export function ChatPage(): ReactElement {
   const [view, setView] = useState<ChatView>(getInitialSingleChatView);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endpointDialogOpen, setEndpointDialogOpen] = useState(false);
+  const [endpointEnabled, setEndpointEnabled] = useState(false);
+  const [endpointLoading, setEndpointLoading] = useState(false);
   const [endpointLocalUrl, setEndpointLocalUrl] = useState("");
   const [endpointExternalUrl, setEndpointExternalUrl] = useState<string | null>(null);
   const [endpointBaseUrl, setEndpointBaseUrl] = useState("");
@@ -609,6 +611,23 @@ print(completion.choices[0].message.content)`,
     [endpointApiKey, endpointBaseUrl, modelAlias],
   );
 
+  const applyEndpointData = useCallback(
+    (data: {
+      enabled: boolean;
+      api_key: string | null;
+      local_url: string;
+      external_url: string | null;
+      model: string;
+    }) => {
+      setEndpointEnabled(data.enabled);
+      setEndpointApiKey(data.api_key ?? "");
+      setEndpointLocalUrl(data.local_url);
+      setEndpointExternalUrl(data.external_url ?? null);
+      setEndpointBaseUrl(data.local_url);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!endpointDialogOpen) return;
     let cancelled = false;
@@ -616,16 +635,39 @@ print(completion.choices[0].message.content)`,
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
-        setEndpointApiKey(data.api_key);
-        setEndpointLocalUrl(data.local_url);
-        setEndpointExternalUrl(data.external_url ?? null);
-        setEndpointBaseUrl(data.local_url);
+        applyEndpointData(data);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [endpointDialogOpen]);
+  }, [endpointDialogOpen, applyEndpointData]);
+
+  const handleToggleEndpoint = useCallback(async () => {
+    setEndpointLoading(true);
+    try {
+      const action = endpointEnabled ? "disable" : "enable";
+      const res = await authFetch(`/api/inference/access-endpoint/${action}`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        toast.error(err?.detail ?? "Failed to toggle endpoint");
+        return;
+      }
+      const data = await res.json();
+      applyEndpointData(data);
+      toast.success(
+        data.enabled
+          ? "API endpoint enabled"
+          : "API endpoint disabled",
+      );
+    } catch {
+      toast.error("Failed to toggle endpoint");
+    } finally {
+      setEndpointLoading(false);
+    }
+  }, [endpointEnabled, applyEndpointData]);
 
   const handleCheckpointChange = useCallback(
     (
@@ -1092,93 +1134,124 @@ print(completion.choices[0].message.content)`,
             <DialogHeader>
               <DialogTitle>Access Endpoint</DialogTitle>
               <DialogDescription>
-                Use these OpenAI-compatible settings to connect to the active
-                model from your own code.
+                Serve the active model as an OpenAI-compatible API endpoint
+                for use from your own code, scripts, or other applications.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-3">
-              <div className="grid gap-1.5">
-                <label className="text-xs font-medium">Base URL (Local)</label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={endpointLocalUrl}
-                    readOnly
-                    className="font-mono text-xs"
-                  />
-                  {endpointBaseUrl !== endpointLocalUrl && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 shrink-0 text-xs"
-                      onClick={() => setEndpointBaseUrl(endpointLocalUrl)}
-                    >
-                      Use
-                    </Button>
-                  )}
-                </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="text-sm">
+                {endpointEnabled ? (
+                  <span className="font-medium text-green-600 dark:text-green-400">
+                    Endpoint is running
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    Endpoint is off
+                  </span>
+                )}
               </div>
-              {endpointExternalUrl && (
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium">Base URL (Network)</label>
-                  <div className="flex items-center gap-2">
+              <Button
+                variant={endpointEnabled ? "outline" : "default"}
+                size="sm"
+                disabled={endpointLoading}
+                onClick={handleToggleEndpoint}
+              >
+                {endpointLoading
+                  ? endpointEnabled
+                    ? "Stopping..."
+                    : "Starting..."
+                  : endpointEnabled
+                    ? "Disable"
+                    : "Enable"}
+              </Button>
+            </div>
+            {endpointEnabled && (
+              <>
+                <div className="space-y-3">
+                  <div className="grid gap-1.5">
+                    <label className="text-xs font-medium">Base URL (Local)</label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={endpointLocalUrl}
+                        readOnly
+                        className="font-mono text-xs"
+                      />
+                      {endpointBaseUrl !== endpointLocalUrl && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 shrink-0 text-xs"
+                          onClick={() => setEndpointBaseUrl(endpointLocalUrl)}
+                        >
+                          Use
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  {endpointExternalUrl && (
+                    <div className="grid gap-1.5">
+                      <label className="text-xs font-medium">Base URL (Network)</label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={endpointExternalUrl}
+                          readOnly
+                          className="font-mono text-xs"
+                        />
+                        {endpointBaseUrl !== endpointExternalUrl && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 shrink-0 text-xs"
+                            onClick={() => setEndpointBaseUrl(endpointExternalUrl)}
+                          >
+                            Use
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid gap-1.5">
+                    <label htmlFor="endpoint-api-key" className="text-xs font-medium">
+                      API Key
+                    </label>
                     <Input
-                      value={endpointExternalUrl}
+                      id="endpoint-api-key"
+                      value={endpointApiKey}
                       readOnly
                       className="font-mono text-xs"
                     />
-                    {endpointBaseUrl !== endpointExternalUrl && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 shrink-0 text-xs"
-                        onClick={() => setEndpointBaseUrl(endpointExternalUrl)}
-                      >
-                        Use
-                      </Button>
-                    )}
+                  </div>
+                  <div className="grid gap-1.5">
+                    <label htmlFor="endpoint-model-alias" className="text-xs font-medium">
+                      Model
+                    </label>
+                    <Input
+                      id="endpoint-model-alias"
+                      value={modelAlias}
+                      readOnly
+                      className="font-mono text-xs"
+                    />
                   </div>
                 </div>
-              )}
-              <div className="grid gap-1.5">
-                <label htmlFor="endpoint-api-key" className="text-xs font-medium">
-                  API Key
-                </label>
-                <Input
-                  id="endpoint-api-key"
-                  value={endpointApiKey}
-                  readOnly
-                  className="font-mono text-xs"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label htmlFor="endpoint-model-alias" className="text-xs font-medium">
-                  Model
-                </label>
-                <Input
-                  id="endpoint-model-alias"
-                  value={modelAlias}
-                  readOnly
-                  className="font-mono text-xs"
-                />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <details className="rounded-md border p-2">
-                <summary className="cursor-pointer text-xs font-medium">
-                  Python (OpenAI SDK)
-                </summary>
-                <HighlightedSnippet
-                  language="python"
-                  source={endpointPythonSnippet}
-                />
-              </details>
-              <details className="rounded-md border p-2">
-                <summary className="cursor-pointer text-xs font-medium">
-                  cURL
-                </summary>
-                <HighlightedSnippet language="bash" source={endpointCurlSnippet} />
-              </details>
-            </div>
+                <div className="space-y-2">
+                  <details className="rounded-md border p-2">
+                    <summary className="cursor-pointer text-xs font-medium">
+                      Python (OpenAI SDK)
+                    </summary>
+                    <HighlightedSnippet
+                      language="python"
+                      source={endpointPythonSnippet}
+                    />
+                  </details>
+                  <details className="rounded-md border p-2">
+                    <summary className="cursor-pointer text-xs font-medium">
+                      cURL
+                    </summary>
+                    <HighlightedSnippet language="bash" source={endpointCurlSnippet} />
+                  </details>
+                </div>
+              </>
+            )}
           </DialogContent>
         </Dialog>
       </SidebarProvider>
