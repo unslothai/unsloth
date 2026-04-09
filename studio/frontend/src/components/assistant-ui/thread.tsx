@@ -91,12 +91,12 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter
           className={cn(
-            "aui-thread-viewport-footer mt-auto flex w-full flex-col overflow-visible",
+            "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
             hideComposer ? "gap-2" : "gap-4",
-            // Compare: stay sticky so jump-to-bottom stays in view; transparent + pass-through clicks so
+            // Compare: pointer-events pass-through so messages behind footer stay clickable
             hideComposer
-              ? "sticky bottom-0 z-20 bg-transparent pointer-events-none pb-3 md:pb-3"
-              : "sticky bottom-0 z-20 bg-transparent pb-4 md:pb-4",
+              ? "pointer-events-none pb-3"
+              : "relative pb-4",
           )}
         >
           {!hideComposer && (
@@ -108,7 +108,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
               hideComposer && "pointer-events-auto",
             )}
           >
-            <ThreadScrollToBottom compact={hideComposer} />
+            <ThreadScrollToBottom />
           </div>
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
