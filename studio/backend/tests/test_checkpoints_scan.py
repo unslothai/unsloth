@@ -82,7 +82,9 @@ def test_scan_checkpoints_uses_output_dir_history_for_base_model(tmp_path, monke
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
 
-def test_scan_checkpoints_matches_project_suffixed_default_dir_against_history(tmp_path, monkeypatch):
+def test_scan_checkpoints_matches_project_suffixed_default_dir_against_history(
+    tmp_path, monkeypatch
+):
     run_name = build_default_output_dir_name(
         "unsloth/Llama-3.2-3B-Instruct",
         "Customer Support",
