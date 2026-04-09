@@ -10,6 +10,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -18,6 +24,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sheet,
   SheetContent,
@@ -43,7 +55,8 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   DEFAULT_INFERENCE_PARAMS,
@@ -56,6 +69,13 @@ export type { InferenceParams } from "./types/runtime";
 export interface Preset {
   name: string;
   params: InferenceParams;
+}
+
+interface SystemPromptTemplate {
+  id: string;
+  name: string;
+  content: string;
+  updatedAt: number;
 }
 
 const BUILTIN_PRESETS: Preset[] = [
@@ -86,6 +106,7 @@ const BUILTIN_PRESETS: Preset[] = [
 
 const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
+const CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -127,6 +148,51 @@ function loadSavedActivePreset(): string {
     return localStorage.getItem(CHAT_ACTIVE_PRESET_KEY) ?? "Default";
   } catch {
     return "Default";
+  }
+}
+
+function createSystemPromptId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadSavedSystemPrompts(): SystemPromptTemplate[] {
+  if (!canUseStorage()) return [];
+  try {
+    const raw = localStorage.getItem(CHAT_SYSTEM_PROMPTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is SystemPromptTemplate => {
+        if (!item || typeof item !== "object") return false;
+        const maybe = item as Partial<SystemPromptTemplate>;
+        return (
+          typeof maybe.id === "string" &&
+          typeof maybe.name === "string" &&
+          typeof maybe.content === "string"
+        );
+      })
+      .map((item) => ({
+        id: item.id.trim(),
+        name: item.name.trim() || "Untitled prompt",
+        content: item.content,
+        updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
+      }))
+      .filter((item) => item.id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function saveSystemPrompts(templates: SystemPromptTemplate[]) {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(CHAT_SYSTEM_PROMPTS_KEY, JSON.stringify(templates));
+  } catch {
+    // ignore
   }
 }
 
@@ -316,8 +382,20 @@ export function ChatSettingsPanel({
   const [activePreset, setActivePreset] = useState(() =>
     loadSavedActivePreset(),
   );
-  const [savePresetOpen, setSavePresetOpen] = useState(false);
-  const [presetNameDraft, setPresetNameDraft] = useState("");
+  const [presetNameInput, setPresetNameInput] = useState(() =>
+    loadSavedActivePreset(),
+  );
+  const presetControlRowRef = useRef<HTMLDivElement>(null);
+  const [presetMenuWidthPx, setPresetMenuWidthPx] = useState<number | undefined>(
+    undefined,
+  );
+  const [systemPromptManagerOpen, setSystemPromptManagerOpen] = useState(false);
+  const [systemPrompts, setSystemPrompts] = useState<SystemPromptTemplate[]>(
+    () => loadSavedSystemPrompts(),
+  );
+  const [selectedSystemPromptId, setSelectedSystemPromptId] = useState<string | null>(null);
+  const [systemPromptNameDraft, setSystemPromptNameDraft] = useState("");
+  const [systemPromptContentDraft, setSystemPromptContentDraft] = useState("");
   const presets = useMemo(
     () => [...BUILTIN_PRESETS, ...customPresets],
     [customPresets],
@@ -348,32 +426,38 @@ export function ChatSettingsPanel({
     }
   }
 
-  function openSavePresetDialog() {
-    setPresetNameDraft(activePreset === "Default" ? "" : activePreset);
-    setSavePresetOpen(true);
-  }
-
   function savePresetWithName(rawName: string) {
     const trimmed = rawName.trim();
     if (!trimmed) {
+      toast.error("Enter a preset name");
       return;
     }
     if (BUILTIN_PRESETS.some((preset) => preset.name === trimmed)) {
+      toast.error(`"${trimmed}" is reserved. Pick a different name.`);
       return;
     }
+    const isBuiltinActive = BUILTIN_PRESETS.some((p) => p.name === activePreset);
     setCustomPresets((prev) => {
-      const next = [
-        ...prev.filter((preset) => preset.name !== trimmed),
-        { name: trimmed, params: { ...params } },
-      ];
+      const next = prev.filter((p) => {
+        if (p.name === trimmed) return false;
+        if (
+          !isBuiltinActive &&
+          activePreset !== trimmed &&
+          p.name === activePreset
+        ) {
+          return false;
+        }
+        return true;
+      });
+      const merged = [...next, { name: trimmed, params: { ...params } }];
       if (canUseStorage()) {
         try {
-          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(next));
+          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(merged));
         } catch {
           // ignore
         }
       }
-      return next;
+      return merged;
     });
     if (canUseStorage()) {
       try {
@@ -383,7 +467,7 @@ export function ChatSettingsPanel({
       }
     }
     setActivePreset(trimmed);
-    setSavePresetOpen(false);
+    setPresetNameInput(trimmed);
   }
 
   function deletePreset(name: string) {
@@ -413,6 +497,103 @@ export function ChatSettingsPanel({
     }
   }
 
+  function openSystemPromptManager() {
+    const available =
+      systemPrompts.length > 0
+        ? systemPrompts
+        : [
+            {
+              id: createSystemPromptId(),
+              name: "Prompt 1",
+              content: params.systemPrompt,
+              updatedAt: Date.now(),
+            },
+          ];
+    if (systemPrompts.length === 0) {
+      setSystemPrompts(available);
+      saveSystemPrompts(available);
+    }
+    const selected =
+      available.find((item) => item.id === selectedSystemPromptId) ?? available[0];
+    setSelectedSystemPromptId(selected.id);
+    setSystemPromptNameDraft(selected.name);
+    setSystemPromptContentDraft(selected.content);
+    setSystemPromptManagerOpen(true);
+  }
+
+  function saveCurrentSystemPromptTemplate() {
+    if (!selectedSystemPromptId) return;
+    const now = Date.now();
+    const next = systemPrompts.map((item) =>
+      item.id === selectedSystemPromptId
+        ? {
+            ...item,
+            name: systemPromptNameDraft.trim() || "Untitled prompt",
+            content: systemPromptContentDraft,
+            updatedAt: now,
+          }
+        : item,
+    );
+    setSystemPrompts(next);
+    saveSystemPrompts(next);
+  }
+
+  function createSystemPromptTemplate() {
+    const created: SystemPromptTemplate = {
+      id: createSystemPromptId(),
+      name: "Untitled prompt",
+      content: "",
+      updatedAt: Date.now(),
+    };
+    const next = [created, ...systemPrompts];
+    setSystemPrompts(next);
+    saveSystemPrompts(next);
+    setSelectedSystemPromptId(created.id);
+    setSystemPromptNameDraft(created.name);
+    setSystemPromptContentDraft(created.content);
+  }
+
+  function duplicateSystemPromptTemplate() {
+    const duplicate: SystemPromptTemplate = {
+      id: createSystemPromptId(),
+      name: `${(systemPromptNameDraft.trim() || "Prompt")} copy`,
+      content: systemPromptContentDraft,
+      updatedAt: Date.now(),
+    };
+    const next = [duplicate, ...systemPrompts];
+    setSystemPrompts(next);
+    saveSystemPrompts(next);
+    setSelectedSystemPromptId(duplicate.id);
+    setSystemPromptNameDraft(duplicate.name);
+    setSystemPromptContentDraft(duplicate.content);
+  }
+
+  function deleteCurrentSystemPromptTemplate() {
+    if (!selectedSystemPromptId) return;
+    const remaining = systemPrompts.filter((item) => item.id !== selectedSystemPromptId);
+    const next =
+      remaining.length > 0
+        ? remaining
+        : [
+            {
+              id: createSystemPromptId(),
+              name: "Prompt 1",
+              content: params.systemPrompt,
+              updatedAt: Date.now(),
+            },
+          ];
+    setSystemPrompts(next);
+    saveSystemPrompts(next);
+    const selected = next[0];
+    setSelectedSystemPromptId(selected.id);
+    setSystemPromptNameDraft(selected.name);
+    setSystemPromptContentDraft(selected.content);
+  }
+
+  function applySystemPromptTemplate() {
+    set("systemPrompt")(systemPromptContentDraft);
+  }
+
   useEffect(() => {
     if (presets.some((preset) => preset.name === activePreset)) return;
     setActivePreset("Default");
@@ -424,6 +605,22 @@ export function ChatSettingsPanel({
       }
     }
   }, [activePreset, presets]);
+
+  useEffect(() => {
+    setPresetNameInput(activePreset);
+  }, [activePreset]);
+
+  useLayoutEffect(() => {
+    const el = presetControlRowRef.current;
+    if (!el) return;
+    const measure = () => {
+      setPresetMenuWidthPx(el.getBoundingClientRect().width);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open]);
 
   const settingsContent = (
     <>
@@ -440,52 +637,115 @@ export function ChatSettingsPanel({
       <div className="flex-1 overflow-y-auto px-1.5">
         {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
         <div className="mt-4 px-2 pb-3">
-          <div className="flex items-center gap-2">
-            <Select value={activePreset} onValueChange={applyPreset}>
-              <SelectTrigger className="h-8 flex-1 corner-squircle text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {presets.map((p) => (
-                  <SelectItem key={p.name} value={p.name}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <button
-              type="button"
-              onClick={openSavePresetDialog}
-              className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
-              title="Save preset"
-            >
-              <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => deletePreset(activePreset)}
-              disabled={isBuiltinPreset}
-              className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                isBuiltinPreset
-                  ? "Built-in presets cannot be deleted"
-                  : "Delete selected preset"
-              }
-            >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-              Delete
-            </button>
+          <div className="space-y-1.5">
+            <div ref={presetControlRowRef} className="w-full min-w-0">
+              <DropdownMenu>
+                <InputGroup className="!h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 has-[>[data-align=inline-end]]:[&>input]:pr-1 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
+                  <InputGroupInput
+                    id="inference-preset-name"
+                    value={presetNameInput}
+                    onChange={(e) => setPresetNameInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        savePresetWithName(presetNameInput);
+                      }
+                    }}
+                    placeholder="Preset name"
+                    maxLength={80}
+                    autoComplete="off"
+                    className="h-full min-h-8 min-w-0 self-stretch pl-3 pr-2 text-xs"
+                    aria-label="Inference preset name"
+                  />
+                  <InputGroupAddon
+                    align="inline-end"
+                    className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-0 has-[>button]:mr-0"
+                  >
+                    <DropdownMenuTrigger asChild={true}>
+                      <InputGroupButton
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="h-full min-h-8 shrink-0 rounded-none rounded-r-2xl border-l border-border px-2 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
+                        title="Choose a preset"
+                        aria-label="Open preset list"
+                      >
+                        <HugeiconsIcon
+                          icon={ArrowDown01Icon}
+                          className="size-3.5"
+                          strokeWidth={2}
+                        />
+                      </InputGroupButton>
+                    </DropdownMenuTrigger>
+                  </InputGroupAddon>
+                </InputGroup>
+                <DropdownMenuContent
+                  align="end"
+                  className="min-w-40 max-w-none"
+                  style={
+                    presetMenuWidthPx != null
+                      ? {
+                          width: presetMenuWidthPx,
+                          minWidth: presetMenuWidthPx,
+                        }
+                      : undefined
+                  }
+                >
+                  {presets.map((p) => (
+                    <DropdownMenuItem
+                      key={p.name}
+                      onSelect={() => applyPreset(p.name)}
+                    >
+                      {p.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => savePresetWithName(presetNameInput)}
+                disabled={presetNameInput.trim().length === 0}
+                className="flex h-8 items-center justify-center gap-1.5 rounded-4xl border px-3 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title="Save current settings under this name"
+              >
+                <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => deletePreset(activePreset)}
+                disabled={isBuiltinPreset}
+                className="flex h-8 items-center justify-center gap-1.5 rounded-4xl border px-3 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title={
+                  isBuiltinPreset
+                    ? "Built-in presets cannot be deleted"
+                    : "Delete selected preset"
+                }
+              >
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                Delete
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="px-2 pb-4">
-          <label
-            htmlFor="system-prompt"
-            className="mb-1.5 block text-xs font-medium"
-          >
-            System Prompt
-          </label>
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <label htmlFor="system-prompt" className="block text-xs font-medium">
+              System Prompt
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              onClick={openSystemPromptManager}
+            >
+              Manage
+            </Button>
+          </div>
           <Textarea
             id="system-prompt"
             value={params.systemPrompt}
@@ -565,33 +825,35 @@ export function ChatSettingsPanel({
                       </p>
                     )}
                 </div>
-                <div className="flex items-center justify-between gap-3">
+                <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
                   <div className="min-w-0">
                     <div className="text-xs font-medium">KV Cache Dtype</div>
                     <div className="text-[11px] text-muted-foreground">
                       Quantize KV cache to reduce VRAM.
                     </div>
                   </div>
-                  <Select
-                    value={kvCacheDtype ?? "f16"}
-                    onValueChange={(v) => {
-                      setKvCacheDtype(v === "f16" ? null : v);
-                    }}
-                  >
-                    <SelectTrigger className="h-7 w-[90px] text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="f16">f16</SelectItem>
-                      <SelectItem value="bf16">bf16</SelectItem>
-                      <SelectItem value="q8_0">q8_0</SelectItem>
-                      <SelectItem value="q5_1">q5_1</SelectItem>
-                      <SelectItem value="q4_1">q4_1</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="w-full min-w-0">
+                    <Select
+                      value={kvCacheDtype ?? "f16"}
+                      onValueChange={(v) => {
+                        setKvCacheDtype(v === "f16" ? null : v);
+                      }}
+                    >
+                      <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="f16">f16</SelectItem>
+                        <SelectItem value="bf16">bf16</SelectItem>
+                        <SelectItem value="q8_0">q8_0</SelectItem>
+                        <SelectItem value="q5_1">q5_1</SelectItem>
+                        <SelectItem value="q4_1">q4_1</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 {!currentModelIsVision && (
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium">
                         Speculative Decoding
@@ -600,20 +862,22 @@ export function ChatSettingsPanel({
                         Speed up generation with no VRAM cost.
                       </div>
                     </div>
-                    <Select
-                      value={speculativeType ?? "off"}
-                      onValueChange={(v) => {
-                        setSpeculativeType(v === "off" ? null : v);
-                      }}
-                    >
-                      <SelectTrigger className="h-7 w-[120px] text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ngram-mod">On</SelectItem>
-                        <SelectItem value="off">Off</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="w-full min-w-0">
+                      <Select
+                        value={speculativeType ?? "off"}
+                        onValueChange={(v) => {
+                          setSpeculativeType(v === "off" ? null : v);
+                        }}
+                      >
+                        <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ngram-mod">On</SelectItem>
+                          <SelectItem value="off">Off</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 )}
                 {modelSettingsDirty && (
@@ -774,51 +1038,105 @@ export function ChatSettingsPanel({
         <ChatTemplateSection onReloadModel={onReloadModel} />
       </div>
       <Dialog
-        open={savePresetOpen}
+        open={systemPromptManagerOpen}
         onOpenChange={(nextOpen) => {
-          setSavePresetOpen(nextOpen);
-          if (!nextOpen) {
-            setPresetNameDraft("");
-          }
+          setSystemPromptManagerOpen(nextOpen);
         }}
       >
-        <DialogContent className="corner-squircle sm:max-w-sm">
+        <DialogContent className="corner-squircle sm:max-w-[50.4rem]">
           <DialogHeader>
-            <DialogTitle>Save Preset</DialogTitle>
+            <DialogTitle>System Prompt Manager</DialogTitle>
             <DialogDescription>
-              Enter a name for this inference preset.
+              Save and reuse system prompts for chat sessions.
             </DialogDescription>
           </DialogHeader>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              savePresetWithName(presetNameDraft);
-            }}
-            className="space-y-4"
-          >
-            <Input
-              autoFocus={true}
-              value={presetNameDraft}
-              onChange={(event) => setPresetNameDraft(event.target.value)}
-              placeholder="Preset name"
-              maxLength={80}
-            />
-            <DialogFooter>
+          <div className="grid gap-4 sm:grid-cols-[13rem_minmax(0,1fr)]">
+            <div className="space-y-2">
+              <div className="flex gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 flex-1 text-[11px]"
+                  onClick={createSystemPromptTemplate}
+                >
+                  New
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 flex-1 text-[11px]"
+                  onClick={duplicateSystemPromptTemplate}
+                  disabled={!selectedSystemPromptId}
+                >
+                  Duplicate
+                </Button>
+              </div>
+              <div className="max-h-[16.8rem] space-y-1 overflow-y-auto rounded-md border p-1.5">
+                {systemPrompts.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSystemPromptId(item.id);
+                      setSystemPromptNameDraft(item.name);
+                      setSystemPromptContentDraft(item.content);
+                    }}
+                    className={`w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
+                      selectedSystemPromptId === item.id
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent/60"
+                    }`}
+                  >
+                    <span className="block truncate">{item.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Input
+                value={systemPromptNameDraft}
+                onChange={(event) => setSystemPromptNameDraft(event.target.value)}
+                placeholder="Prompt name"
+                maxLength={80}
+              />
+              <Textarea
+                value={systemPromptContentDraft}
+                onChange={(event) => setSystemPromptContentDraft(event.target.value)}
+                placeholder="You are a helpful assistant..."
+                className="min-h-[14.7rem] text-xs corner-squircle"
+                rows={10}
+              />
+            </div>
+          </div>
+          <DialogFooter className="flex-wrap gap-2 sm:justify-between">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={deleteCurrentSystemPromptTemplate}
+              disabled={!selectedSystemPromptId}
+            >
+              Delete
+            </Button>
+            <div className="flex gap-2">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setSavePresetOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={presetNameDraft.trim().length === 0}
+                onClick={saveCurrentSystemPromptTemplate}
+                disabled={!selectedSystemPromptId}
               >
                 Save
               </Button>
-            </DialogFooter>
-          </form>
+              <Button
+                type="button"
+                onClick={applySystemPromptTemplate}
+                disabled={!selectedSystemPromptId}
+              >
+                Apply
+              </Button>
+            </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
@@ -963,7 +1281,7 @@ function ChatTemplateSection({
         <Textarea
           value={displayValue}
           onChange={(e) => setOverride(e.target.value)}
-          className="min-h-32 font-mono text-[10px] leading-relaxed corner-squircle"
+          className="min-h-32 font-mono text-[8px] leading-relaxed md:text-[8px] corner-squircle"
           rows={6}
           spellCheck={false}
         />

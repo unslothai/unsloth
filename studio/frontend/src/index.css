@@ -395,6 +395,16 @@
     width: calc(100% + 1.25rem);
     max-width: calc(100% + 1.25rem);
   }
+
+  .dark .aui-thread-root [data-streamdown="code-block"] {
+    background: #181818;
+    border: 1px solid oklch(1 0 0 / 0.07);
+    border-radius: 0.625rem;
+  }
+
+  .dark .aui-thread-root [data-streamdown="code-block"] pre {
+    background: transparent !important;
+  }
 }
 
 /* Minimal scrollbar — thumb only, no track */
