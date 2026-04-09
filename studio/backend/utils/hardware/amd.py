@@ -159,10 +159,14 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     )
     if isinstance(vram_data, dict):
         vram_used_mb = _parse_memory_mb(
-            vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
+            vram_data.get(
+                "used_vram", vram_data.get("vram_used", vram_data.get("used"))
+            )
         )
         vram_total_mb = _parse_memory_mb(
-            vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
+            vram_data.get(
+                "total_vram", vram_data.get("vram_total", vram_data.get("total"))
+            )
         )
     else:
         vram_used_mb = None
