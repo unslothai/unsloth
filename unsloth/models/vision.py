@@ -1094,6 +1094,41 @@ class FastBaseModel:
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
+
+            # For multimodal models (e.g. Gemma-4) the
+            # `final_logit_softcapping` attribute lives on
+            # `config.text_config`, but Unsloth's GRPO trainer reads it from
+            # the top-level `model.config`. Inject it at the top level so the
+            # lookup finds the correct value (e.g. 30.0 for Gemma-4) instead
+            # of silently defaulting to 0. No-op for models that already
+            # expose it at the top level or do not use softcapping.
+            try:
+                _top_config = model.config
+                if getattr(_top_config, "final_logit_softcapping", None) is None:
+                    _softcap = None
+                    _text_cfg = getattr(_top_config, "text_config", None)
+                    if _text_cfg is not None:
+                        _softcap = getattr(
+                            _text_cfg, "final_logit_softcapping", None,
+                        )
+                    if _softcap is None:
+                        _get_text = getattr(_top_config, "get_text_config", None)
+                        if callable(_get_text):
+                            try:
+                                _softcap = getattr(
+                                    _get_text(),
+                                    "final_logit_softcapping",
+                                    None,
+                                )
+                            except Exception:
+                                pass
+                    if _softcap is not None:
+                        try:
+                            setattr(_top_config, "final_logit_softcapping", _softcap)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         patch_saving_functions(model, vision = True)
         if tokenizer is None:
             # Last resort: try loading tokenizer via AutoTokenizer, then PreTrainedTokenizerFast
