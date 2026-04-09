@@ -22,6 +22,39 @@ __all__ = [
 
 __INT_TO_FLOAT_MAPPER = \
 {
+    "unsloth/gemma-4-E2B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ),
+    "unsloth/gemma-4-E4B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ),
+    "unsloth/gemma-4-26B-A4B-it" : (
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ),
+    "unsloth/gemma-4-31B-it" : (
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ),
+    "unsloth/gemma-4-E2B" : (
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ),
+    "unsloth/gemma-4-E4B" : (
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
+    ),
+    "unsloth/gemma-4-26B-A4B" : (
+        "unsloth/gemma-4-26B-A4B",
+        "google/gemma-4-26B-A4B",
+    ),
+    "unsloth/gemma-4-31B" : (
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ),
+
     "unsloth/mistral-7b-bnb-4bit" : (
         "unsloth/mistral-7b",
         "mistralai/Mistral-7B-v0.1",
