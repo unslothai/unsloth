@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
+import sys
+from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
@@ -1983,13 +1985,8 @@ def patch_trl_disable_gradient_checkpointing():
     ):
         return
 
-    from contextlib import contextmanager
-
     @contextmanager
-    def _noop_disable_gradient_checkpointing(
-        model,
-        gradient_checkpointing_kwargs = None,
-    ):
+    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs=None):
         yield
 
     _noop_disable_gradient_checkpointing._unsloth_noop_patched = True
@@ -1999,27 +1996,18 @@ def patch_trl_disable_gradient_checkpointing():
     # Also rebind any trl.* module that already imported the symbol by
     # reference, so the noop applies even when the trainer module cached the
     # original at import time. We walk sys.modules dynamically rather than
-    # hardcoding a list, so this picks up:
-    #   trl.trainer.grpo_trainer, trl.trainer.dpo_trainer,
-    #   trl.trainer.rloo_trainer, trl.experimental.dppo.dppo_trainer,
-    #   trl.experimental.gfpo.gfpo_trainer,
-    #   trl.experimental.grpo_with_replay_buffer.grpo_with_replay_buffer_trainer
-    # and any future TRL module that adds `from ...models.utils import
-    # disable_gradient_checkpointing`.
-    import sys as _sys
-
-    for _mod_name, _mod in list(_sys.modules.items()):
-        if _mod is None:
-            continue
-        if not _mod_name.startswith("trl."):
+    # hardcoding a list, so this picks up every trainer that does
+    # `from ...models.utils import disable_gradient_checkpointing`
+    # (grpo, dpo, rloo, dppo, gfpo, grpo_with_replay_buffer, and any future
+    # TRL trainer module).
+    for _mod_name, _mod in list(sys.modules.items()):
+        if _mod is None or not _mod_name.startswith("trl."):
             continue
         try:
             _bound = getattr(_mod, "disable_gradient_checkpointing", None)
-        except Exception:
+        except (AttributeError, ImportError):
             continue
         if _bound is None:
-            continue
-        if getattr(_bound, "_unsloth_noop_patched", False):
             continue
         try:
             setattr(
@@ -2027,8 +2015,14 @@ def patch_trl_disable_gradient_checkpointing():
                 "disable_gradient_checkpointing",
                 _noop_disable_gradient_checkpointing,
             )
-        except Exception:
+        except (AttributeError, TypeError):
             pass
+
+    logger.warning_once(
+        "Unsloth: Patched trl.models.utils.disable_gradient_checkpointing with "
+        "a no-op to preserve Unsloth gradient checkpointing across TRL "
+        "generation passes."
+    )
     return
 
 
@@ -2067,9 +2061,12 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     # Install the disable_gradient_checkpointing noop BEFORE
-    # patch_trl_rl_trainers so the compiled cache picks up the noop
-    # at its `from trl.trainer.grpo_trainer import disable_gradient_checkpointing`
-    # binding time.
+    # patch_trl_rl_trainers. patch_trl_rl_trainers imports extra trl.* trainer
+    # submodules while generating the compiled cache; any new trl.* modules
+    # imported after the sys.modules walk would keep their original (broken)
+    # binding of disable_gradient_checkpointing. Running the noop install
+    # first ensures the canonical trl.models.utils symbol is already replaced
+    # before those submodules bind it.
     patch_trl_disable_gradient_checkpointing()
     patch_trl_rl_trainers()
     patch_trl_openenv()

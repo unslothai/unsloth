@@ -855,7 +855,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_sizes_chunks = chunk_optional(image_sizes, B)
 
             temperature = self.temperature
-            logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
+            # Gemma-4 multimodal configs store final_logit_softcapping on the
+            # nested text_config; fall back to it so VLM training matches HF.
+            logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
+            if logit_softcapping is None:
+                _text_cfg = getattr(model.config, "text_config", None)
+                if _text_cfg is not None:
+                    logit_softcapping = getattr(_text_cfg, "final_logit_softcapping", None)
             if logit_softcapping is None:
                 logit_softcapping = 0
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
@@ -1107,7 +1113,13 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)  # Gemma
+        logit_softcapping = getattr(model.config, "final_logit_softcapping", None)  # Gemma
+        if logit_softcapping is None:
+            # Gemma-4 multimodal configs store final_logit_softcapping on the
+            # nested text_config; fall back to it so VLM training matches HF.
+            _text_cfg = getattr(model.config, "text_config", None)
+            if _text_cfg is not None:
+                logit_softcapping = getattr(_text_cfg, "final_logit_softcapping", None)
         if logit_softcapping is None:
             logit_softcapping = 0
         logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
