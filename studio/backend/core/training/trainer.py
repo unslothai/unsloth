@@ -190,7 +190,11 @@ class UnslothTrainer:
             self._cuda_audio_used = False
 
         # --- Detect VLM ---
-        vision = is_vision_model(model_name) if not self.is_audio else False
+        vision = (
+            is_vision_model(model_name, hf_token = hf_token)
+            if not self.is_audio
+            else False
+        )
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
 
         logger.info(
@@ -558,7 +562,11 @@ class UnslothTrainer:
                 self._cuda_audio_used = False
 
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
-            vision = is_vision_model(model_name) if not self.is_audio else False
+            vision = (
+                is_vision_model(model_name, hf_token = hf_token)
+                if not self.is_audio
+                else False
+            )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -2658,14 +2666,14 @@ class UnslothTrainer:
         eval_steps: float = 0.00,
         output_dir: str | None = None,
         num_epochs: int = 3,
-        learning_rate: float = 5e-5,
+        learning_rate: float = 2e-4,
         batch_size: int = 2,
         gradient_accumulation_steps: int = 4,
         warmup_steps: int = None,
         warmup_ratio: float = None,
         max_steps: int = 0,
         save_steps: int = 0,
-        weight_decay: float = 0.01,
+        weight_decay: float = 0.001,
         random_seed: int = 3407,
         packing: bool = False,
         train_on_completions: bool = False,
@@ -3034,7 +3042,7 @@ class UnslothTrainer:
                 "fp16": not is_bfloat16_supported(),
                 "bf16": is_bfloat16_supported(),
                 "logging_steps": 1,
-                "weight_decay": training_args.get("weight_decay", 0.01),
+                "weight_decay": training_args.get("weight_decay", 0.001),
                 "seed": training_args.get("random_seed", 3407),
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),

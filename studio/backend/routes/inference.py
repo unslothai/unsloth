@@ -5,11 +5,12 @@
 Inference API routes for model loading and text generation.
 """
 
+import os
 import sys
 import time
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
@@ -20,6 +21,9 @@ import threading
 
 
 import re as _re
+
+# Model size extraction (shared with core/inference/llama_cpp.py)
+from utils.models import extract_model_size_b as _extract_model_size_b
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -86,8 +90,23 @@ import io
 import wave
 import base64
 import numpy as np
+from datetime import date as _date
 
 router = APIRouter()
+
+# Appended to tool-use nudge to discourage plan-without-action
+_TOOL_ACTION_NUDGE = (
+    " IMPORTANT: Always call tools directly -- never write code yourself."
+    " Never describe what you plan to do -- just call the tool immediately."
+    " For any code request, call the python tool. For any factual question, call web_search."
+    " Do NOT output code blocks -- use the python tool instead."
+)
+
+# Regex for stripping leaked tool-call XML from assistant messages/stream
+_TOOL_XML_RE = _re.compile(
+    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    _re.DOTALL,
+)
 logger = get_logger(__name__)
 
 
@@ -156,9 +175,11 @@ async def load_model(
                     inference = inference_config,
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
+                    native_context_length = llama_backend.native_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     chat_template = llama_backend.chat_template,
+                    speculative_type = llama_backend.speculative_type,
                 )
         else:
             if (
@@ -243,6 +264,7 @@ async def load_model(
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
+                    speculative_type = request.speculative_type,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -255,6 +277,7 @@ async def load_model(
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
+                    speculative_type = request.speculative_type,
                 )
 
             if not success:
@@ -291,11 +314,13 @@ async def load_model(
                 inference = inference_config,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
+                native_context_length = llama_backend.native_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
+                speculative_type = llama_backend.speculative_type,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -630,6 +655,8 @@ async def get_status(
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
+                native_context_length = llama_backend.native_context_length,
+                speculative_type = llama_backend.speculative_type,
             )
 
         # Otherwise, report Unsloth backend status
@@ -1078,6 +1105,77 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            # ── Tool-use system prompt nudge ──────────────────────
+            _tool_names = {t["function"]["name"] for t in tools_to_use}
+            _has_web = "web_search" in _tool_names
+            _has_code = "python" in _tool_names or "terminal" in _tool_names
+
+            _date_line = f"The current date is {_date.today().isoformat()}."
+
+            # Small models (<9B) struggle with multi-step search plans,
+            # so simplify the web tips to avoid plan-then-stall behavior.
+            _model_size_b = _extract_model_size_b(model_name)
+            _is_small_model = _model_size_b is not None and _model_size_b < 9
+
+            if _is_small_model:
+                _web_tips = "Do not repeat the same search query."
+            else:
+                _web_tips = (
+                    "When you search and find a relevant URL in the results, "
+                    "fetch its full content by calling web_search with the url parameter. "
+                    "Do not repeat the same search query. If a search returns "
+                    "no useful results, try rephrasing or fetching a result URL directly."
+                )
+            _code_tips = (
+                "Use code execution for math, calculations, data processing, "
+                "or to parse and analyze information from tool results."
+            )
+
+            if _has_web and _has_code:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "tools rather than answering from memory. "
+                    + _web_tips
+                    + " "
+                    + _code_tips
+                )
+            elif _has_code:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "code execution rather than answering from memory. " + _code_tips
+                )
+            elif _has_web:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "web search for up-to-date or uncertain factual "
+                    "information rather than answering from memory. " + _web_tips
+                )
+            else:
+                _nudge = ""
+
+            if _nudge:
+                _nudge += _TOOL_ACTION_NUDGE
+                # Append nudge to system prompt (preserve user's prompt)
+                if system_prompt:
+                    system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
+                else:
+                    system_prompt = _nudge
+                # Rebuild gguf_messages with updated system prompt
+                gguf_messages = []
+                if system_prompt:
+                    gguf_messages.append({"role": "system", "content": system_prompt})
+                gguf_messages.extend(chat_messages)
+
+            # ── Strip stale tool-call XML from conversation history ─
+            for _msg in gguf_messages:
+                if _msg.get("role") == "assistant" and isinstance(
+                    _msg.get("content"), str
+                ):
+                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
@@ -1096,7 +1194,7 @@ async def openai_chat_completions(
                     else True,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
-                    else 10,
+                    else 25,
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
@@ -1136,7 +1234,14 @@ async def openai_chat_completions(
                             break
 
                         if event["type"] == "status":
+                            # Empty status marks an iteration boundary
+                            # in the GGUF tool loop (e.g. after a
+                            # re-prompt).  Reset the cumulative cursor
+                            # so the next assistant turn streams cleanly.
+                            if not event["text"]:
+                                prev_text = ""
                             # Emit tool status as a custom SSE event
+                            # (including empty ones to clear UI badges)
                             status_data = json.dumps(
                                 {
                                     "type": "tool_status",
@@ -1158,9 +1263,13 @@ async def openai_chat_completions(
                             continue
 
                         # "content" type -- cumulative text
-                        cumulative = event.get("text", "")
-                        new_text = cumulative[len(prev_text) :]
-                        prev_text = cumulative
+                        # Sanitize the full cumulative then diff against
+                        # the last sanitized snapshot so cross-chunk XML
+                        # tags are handled correctly.
+                        raw_cumulative = event.get("text", "")
+                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        new_text = clean_cumulative[len(prev_text) :]
+                        prev_text = clean_cumulative
                         if not new_text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -1577,6 +1686,94 @@ async def openai_chat_completions(
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = str(e))
+
+
+# =====================================================================
+# Sandbox file serving  (/sandbox/{session_id}/{filename})
+# =====================================================================
+
+_SANDBOX_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+
+
+@router.get("/sandbox/{session_id}/{filename}")
+async def serve_sandbox_file(
+    session_id: str,
+    filename: str,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """
+    Serve image files created by Python tool execution.
+
+    Accepts auth via Authorization header OR ?token= query param
+    (needed because <img src> cannot send custom headers).
+    """
+    from fastapi.responses import FileResponse
+
+    # ── Authentication (header or query param) ──────────────────
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt_token = auth_header[7:]
+    elif token:
+        jwt_token = token
+    else:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing authentication token",
+        )
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
+    await get_current_subject(creds)
+
+    # ── Filename sanitization ───────────────────────────────────
+    safe_filename = os.path.basename(filename)
+    if not safe_filename or safe_filename in (".", ".."):
+        raise HTTPException(status_code = 404, detail = "Not found")
+
+    # ── Extension allowlist ─────────────────────────────────────
+    ext = os.path.splitext(safe_filename)[1].lower()
+    media_type = _SANDBOX_MEDIA_TYPES.get(ext)
+    if not media_type:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "File type not allowed",
+        )
+
+    # ── Path containment check ──────────────────────────────────
+    home = os.path.expanduser("~")
+    sandbox_root = os.path.realpath(os.path.join(home, "studio_sandbox"))
+    safe_session = os.path.basename(session_id.replace("..", ""))
+    if not safe_session:
+        raise HTTPException(status_code = 404, detail = "Not found")
+
+    file_path = os.path.realpath(
+        os.path.join(sandbox_root, safe_session, safe_filename)
+    )
+    if not file_path.startswith(sandbox_root + os.sep):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Access denied",
+        )
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code = 404, detail = "Not found")
+
+    return FileResponse(
+        path = file_path,
+        media_type = media_type,
+        headers = {
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # =====================================================================

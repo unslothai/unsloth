@@ -306,37 +306,15 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
-    """
+    """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def run_training_process(
@@ -386,20 +364,22 @@ def run_training_process(
         )
         return
 
-    # ── 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models ──
-    # Some newer architectures (e.g. NemotronH) have config parsing bugs in
-    # transformers that require trust_remote_code=True as a workaround.
-    # Only auto-enable for unsloth/* prefixed models (trusted source).
-    from utils.transformers_version import needs_transformers_5
-
+    # ── 1a. Auto-enable trust_remote_code for NemotronH/Nano models ──
+    # NemotronH has config parsing bugs in transformers that require
+    # trust_remote_code=True as a workaround. Other transformers 5.x models
+    # (Qwen3.5, Gemma 4, etc.) are native and do NOT need it — enabling it
+    # bypasses the compiler (disabling fused CE).
+    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+    _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+    _lowered = model_name.lower()
     if (
-        needs_transformers_5(model_name)
-        and model_name.lower().startswith("unsloth/")
+        any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+        and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
         logger.info(
-            "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+            "Auto-enabled trust_remote_code for Nemotron model: %s",
             model_name,
         )
 
@@ -795,7 +775,7 @@ def run_training_process(
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
-            weight_decay = config.get("weight_decay", 0.01),
+            weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
             train_on_completions = config.get("train_on_completions", False),
@@ -1141,7 +1121,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
         "optim": config.get("optim", "adamw_8bit"),
-        "weight_decay": config.get("weight_decay", 0.01),
+        "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
     }
 

@@ -168,6 +168,7 @@ export function useChatModelRuntime() {
     id: string;
     displayName: string;
     isDownloaded?: boolean;
+    isCachedLora?: boolean;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
@@ -246,12 +247,19 @@ export function useChatModelRuntime() {
         const ggufMaxContextLength = statusRes.is_gguf
           ? (statusRes.max_context_length ?? null)
           : null;
+        const ggufNativeContextLength = statusRes.is_gguf
+          ? (statusRes.native_context_length ?? null)
+          : null;
+        const currentSpecType = statusRes.speculative_type ?? null;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
           supportsTools,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
+          ggufNativeContextLength,
+          speculativeType: currentSpecType,
+          loadedSpeculativeType: currentSpecType,
         });
 
         // Set reasoning default for Qwen3.5 small models
@@ -290,8 +298,11 @@ export function useChatModelRuntime() {
     setLoadToastDismissedState(false);
     clearCheckpoint();
     if (tid != null) toast.dismiss(tid);
+    const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
     toast.info("Stopped loading model", {
-      description: "The current download may still finish in the background.",
+      description: isCachedOrLocal
+        ? undefined
+        : "The current download may still finish in the background.",
     });
     // Fire-and-forget: tell backend to stop, don't block UI
     unloadModel({ model_path: model.id }).catch(() => {});
@@ -335,20 +346,24 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora ? true : false);
+      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
+      const isLocal = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(modelId);
+      const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
+        !isDownloaded && isCachedLora ? "Loading trained model into memory." : null,
       ]
         .filter(Boolean)
         .join(" ");
       setModelsError(null);
       setLoadToastDismissedState(false);
-      const loadInfo = { id: modelId, displayName, isDownloaded };
+      const loadInfo = { id: modelId, displayName, isDownloaded, isCachedLora };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
-        isDownloaded
+        isDownloaded || isCachedLora
           ? { percent: null, label: null, phase: "starting" }
           : { percent: 0, label: "Preparing download", phase: "downloading" },
       );
@@ -381,7 +396,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength } = useChatRuntimeStore.getState();
+            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
             // GGUF: use custom context length, or 0 = model's native context
             // Non-GGUF: use the Max Seq Length slider value
             const effectiveMaxSeqLength = customContextLength != null
@@ -397,6 +412,7 @@ export function useChatModelRuntime() {
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
               chat_template_override: chatTemplateOverride,
               cache_type_kv: kvCacheDtype,
+              speculative_type: speculativeType,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -419,11 +435,15 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
+            const loadedSpec = loadResponse.speculative_type ?? null;
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
             const reportedMaxCtx = loadResponse.is_gguf
               ? (loadResponse.max_context_length ?? null)
+              : null;
+            const reportedNativeCtx = loadResponse.is_gguf
+              ? (loadResponse.native_context_length ?? null)
               : null;
             // A successful reload has applied settings, so clear pending custom
             // context state and display the backend-reported effective context.
@@ -433,6 +453,7 @@ export function useChatModelRuntime() {
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
+              ggufNativeContextLength: reportedNativeCtx,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
@@ -441,6 +462,8 @@ export function useChatModelRuntime() {
               codeToolsEnabled: loadResponse.supports_tools ?? false,
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              speculativeType: loadedSpec,
+              loadedSpeculativeType: loadedSpec,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
@@ -477,15 +500,16 @@ export function useChatModelRuntime() {
           }
         }
 
-        const toastTitle = isDownloaded ? "Starting model…" : "Downloading model…";
+        const isCachedLoad = isDownloaded || isCachedLora;
+        const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const toastId = toast(
           null,
           {
             description: renderLoadDescription(
               toastTitle,
               loadingDescription,
-              isDownloaded ? null : 0,
-              isDownloaded ? null : "Preparing download",
+              isCachedLoad ? null : 0,
+              isCachedLoad ? null : "Preparing download",
               cancelLoading,
             ),
             duration: Infinity,
@@ -503,7 +527,7 @@ export function useChatModelRuntime() {
 
         // Poll download progress for non-cached models (GGUF and non-GGUF)
         let progressInterval: ReturnType<typeof setInterval> | null = null;
-        if (!isDownloaded) {
+        if (!isDownloaded && !isCachedLora) {
           const expectedBytes =
             typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
           let hasShownProgress = false;

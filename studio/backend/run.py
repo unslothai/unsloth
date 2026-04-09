@@ -312,10 +312,10 @@ def run_server(
     if frontend_path:
         if setup_frontend(app, frontend_path):
             if not silent:
-                print(f"✅ Frontend loaded from {frontend_path}")
+                print(f"[OK] Frontend loaded from {frontend_path}")
         else:
             if not silent:
-                print(f"⚠️ Frontend not found at {frontend_path}")
+                print(f"[WARNING] Frontend not found at {frontend_path}")
 
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
@@ -323,6 +323,14 @@ def run_server(
     )
     _server = uvicorn.Server(config)
     _shutdown_event = Event()
+
+    # Expose the actual bound port so request-handling code can build
+    # loopback URLs that point at the real backend, not whatever port a
+    # reverse proxy or tunnel exposed in the request URL. Only publish
+    # an explicit value when we know the concrete port; for ephemeral
+    # binds (port==0) leave it unset and let request handlers fall back
+    # to the ASGI request scope or request.base_url.
+    app.state.server_port = port if port and port > 0 else None
 
     # Run server in a daemon thread
     def _run():

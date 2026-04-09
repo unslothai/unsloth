@@ -22,6 +22,20 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# --------------------------------------------------------------------------
+#  Maintainer-editable defaults
+#  Change these in the GitHub-hosted script so users get updated defaults.
+#  User env vars always override these baked-in values.
+# --------------------------------------------------------------------------
+# Prefer "latest" over "master" -- "master" bypasses the prebuilt resolver
+# (no matching GitHub release), forces a source build, and causes HTTP 422
+# errors. Only use "master" temporarily when the latest release is missing
+# support for a new model architecture.
+$DefaultLlamaPrForce = ""
+$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
+$DefaultLlamaTag = "latest"
+$DefaultLlamaForceCompileRef = "master"
+
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
@@ -60,6 +74,37 @@ function Refresh-Environment {
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
     $env:Path = "$machinePath;$userPath"
+}
+
+# PowerShell 5.1 compatibility helper: avoid relying on New-TemporaryFile.
+function New-UnslothTemporaryFile {
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    return Get-Item -LiteralPath $tempPath
+}
+
+function Get-InstalledLlamaPrebuiltRelease {
+    param([string]$InstallDir)
+
+    $metadataPath = Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json"
+    if (-not (Test-Path $metadataPath)) {
+        return $null
+    }
+
+    try {
+        $payload = Get-Content $metadataPath -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+
+    if (-not $payload.published_repo -or -not $payload.release_tag) {
+        return $null
+    }
+
+    $message = "installed release: $($payload.published_repo)@$($payload.release_tag)"
+    if ($payload.tag -and $payload.tag -ne $payload.release_tag) {
+        $message += " (tag $($payload.tag))"
+    }
+    return $message
 }
 
 # Find nvcc on PATH, CUDA_PATH, or standard toolkit dirs.
@@ -114,7 +159,9 @@ function Find-Nvcc {
 
     # 3. Scan standard toolkit directory
     if (Test-Path $toolkitBase) {
-        $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
+        $latest = Get-ChildItem -Directory $toolkitBase | Where-Object {
+            $_.Name -match '^v(\d+)\.(\d+)'
+        } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending | Select-Object -First 1
         if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
             return (Join-Path $latest.FullName 'bin\nvcc.exe')
         }
@@ -490,8 +537,7 @@ if (-not $HasNvidiaSmi) {
 if (-not $HasNvidiaSmi) {
     Write-Host ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
-    Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
-    Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
+    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
     Write-Host ""
 } else {
     step "gpu" "NVIDIA GPU detected"
@@ -1112,9 +1158,11 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
         $bunExit = Invoke-SetupCommand { bun install }
-        # On Windows, .bin/ entries can be tsc, tsc.cmd, or tsc.ps1
-        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
-        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
+        # On Windows, .bin/ entries vary by package manager:
+        #   npm  → tsc, tsc.cmd, tsc.ps1
+        #   bun  → tsc.exe, tsc.bunx
+        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
         if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
             # bun install succeeded and critical binaries are present
         } elseif ($bunExit -eq 0) {
@@ -1124,8 +1172,8 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
             $bunExit = Invoke-SetupCommand { bun install }
-            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
-            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
+            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
                 Write-Host "   bun retry failed, falling back to npm" -ForegroundColor Yellow
                 if (Test-Path "node_modules") {
@@ -1522,57 +1570,112 @@ if ($CuTag -eq "cpu") {
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
+$stackExit = $LASTEXITCODE
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
-
-# ── Pre-install transformers 5.x into .venv_t5/ ──
-# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-# at runtime (slow, ~10-15s), we pre-install into a separate directory.
-# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-Write-Host ""
-substep "pre-installing transformers 5.x for newer model support..."
-$VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
-if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
-New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
-$prevEAP_t5 = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        exit 1
-    }
+if ($stackExit -ne 0) {
+    Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
+    Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
+    exit 1
 }
-# tiktoken is needed by Qwen-family tokenizers -- install with deps since
-# regex/requests may be missing on Windows
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5Dir tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
-} else {
-    $output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
-}
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" "Yellow"
-}
-$ErrorActionPreference = $prevEAP_t5
-step "transformers" "5.x pre-installed"
 
 } else {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
 }
+
+# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# Runs outside the deps fast-path gate so that upgrades from the legacy
+# single .venv_t5 are always migrated to the tiered layout.
+$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
+$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
+$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+
+$_NeedT5Install = $false
+if (Test-Path $VenvT5Legacy) {
+    Remove-Item -Recurse -Force $VenvT5Legacy
+    $_NeedT5Install = $true
+}
+if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
+# Also reinstall when python deps were updated
+if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
+
+if ($_NeedT5Install) {
+Write-Host ""
+
+$prevEAP_t5 = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
+# --- .venv_t5_530 (transformers 5.3.0) ---
+substep "pre-installing transformers 5.3.0 for newer model support..."
+if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
+New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
+foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_530Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_530Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_530Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_530Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_530/ -- Qwen tokenizers may fail" "Yellow"
+}
+step "transformers" "5.3.0 pre-installed"
+
+# --- .venv_t5_550 (transformers 5.5.0) ---
+substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
+if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
+New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
+foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_550Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_550Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_550Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_550Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
+}
+$ErrorActionPreference = $prevEAP_t5
+step "transformers" "5.5.0 pre-installed"
+
+} # end $_NeedT5Install
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
@@ -1582,85 +1685,163 @@ if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $Unslot
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
-$RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { "latest" }
-$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
-$resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-install-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>&1
-$resolveExit = $LASTEXITCODE
-$ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 1).ToString().Trim() } else { "" }
-if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
-    Write-Host ""
-    substep "Failed to resolve an installable prebuilt llama.cpp tag via $HelperReleaseRepo" "Yellow"
-    Write-LlamaFailureLog -Output ($resolveOutput | Out-String)
-    # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
-    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
-    $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
-    $fallbackExit = $LASTEXITCODE
-    $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
-        ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
-    } elseif ($RequestedLlamaTag -eq "latest") {
-        # Try Unsloth release repo first, then fall back to ggml-org upstream
-        $resolvedLatest = $null
-        try {
-            $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$HelperReleaseRepo/releases/latest" -ErrorAction Stop
-            $resolvedLatest = $latestRelease.tag_name
-        } catch {}
-        if (-not $resolvedLatest) {
-            try {
-                $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -ErrorAction Stop
-                $resolvedLatest = $latestRelease.tag_name
-            } catch {}
-        }
-        if ($resolvedLatest) { $resolvedLatest } else { $RequestedLlamaTag }
-    } else {
-        $RequestedLlamaTag
-    }
+$RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
+$HelperReleaseRepo = "ggml-org/llama.cpp"
+$LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
+
+$LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
+$LlamaSource = $DefaultLlamaSource
+if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $LlamaSource.Length - 4) }
+$ResolvedSourceUrl = $LlamaSource
+$ResolvedSourceRef = $RequestedLlamaTag
+$ResolvedSourceRefKind = "tag"
+$ResolvedLlamaTag = $RequestedLlamaTag
+
+if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
     $SkipPrebuiltInstall = $true
 }
 
-Write-Host ""
-substep "Resolved llama.cpp release tag: $ResolvedLlamaTag"
+function Invoke-LlamaHelper {
+    param(
+        [string[]]$Arguments,
+        [string]$StderrPath = $null
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $null
+    $restoreNativeErrorPreference = $false
+    $ErrorActionPreference = "Continue"
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreference = $true
+    }
+
+    try {
+        # Capture all output (stdout + stderr) so that PowerShell does not
+        # convert stderr lines into visible ErrorRecord objects.  Separate
+        # stdout from stderr afterwards.
+        $allOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $stdoutLines = @()
+        $stderrLines = @()
+        foreach ($line in $allOutput) {
+            if ($line -is [System.Management.Automation.ErrorRecord]) {
+                $stderrLines += $line.ToString()
+            } else {
+                $stdoutLines += $line
+            }
+        }
+        if ($StderrPath -and $stderrLines.Count -gt 0) {
+            $stderrLines | Out-File -FilePath $StderrPath -Encoding utf8
+        }
+        return [pscustomobject]@{
+            Output = $stdoutLines
+            ExitCode = $exitCode
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($restoreNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+}
+
+if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
+    step "llama.cpp" "custom source: $LlamaSource -- forcing source build" "Yellow"
+    $NeedLlamaSourceBuild = $true
+    $SkipPrebuiltInstall = $true
+}
+
+if (-not $LlamaPr -and $LlamaPrForce -and $LlamaPrForce -match '^\d+$' -and [int]$LlamaPrForce -gt 0) {
+    $LlamaPr = $LlamaPrForce
+    step "llama.cpp" "baked-in PR_FORCE=$LlamaPrForce" "Yellow"
+}
+
+if ($LlamaPr) {
+    if ($LlamaPr -notmatch '^\d+$' -or [int]$LlamaPr -le 0) {
+        Write-Host "[ERROR] UNSLOTH_LLAMA_PR=$LlamaPr is not a valid PR number" -ForegroundColor Red
+        exit 1
+    }
+    step "llama.cpp" "UNSLOTH_LLAMA_PR=$LlamaPr -- will build from PR head" "Yellow"
+    $ResolvedLlamaTag = "pr-$LlamaPr"
+    $ResolvedSourceUrl = $LlamaSource
+    $ResolvedSourceRef = "pr-$LlamaPr"
+    $ResolvedSourceRefKind = "pull"
+    $NeedLlamaSourceBuild = $true
+    $SkipPrebuiltInstall = $true
+}
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
+} elseif ($SkipPrebuiltInstall) {
+    Write-Host ""
+    substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
     if (Test-Path $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
-    if ($SkipPrebuiltInstall) {
-        substep "Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build" "Yellow"
-    } else {
-        $prebuiltArgs = @(
+    $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
-            "--llama-tag", $ResolvedLlamaTag,
-            "--published-repo", $HelperReleaseRepo
+            "--llama-tag", $RequestedLlamaTag,
+            "--published-repo", $HelperReleaseRepo,
+            "--simple-policy"
         )
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        if ($script:UnslothVerbose) {
-            # Show live output in verbose mode while still capturing for error log
-            $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
-            & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
-            $prebuiltExit = $LASTEXITCODE
-            $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
-            Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
-        } else {
-            $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
-            $prebuiltExit = $LASTEXITCODE
+        $previousNativeErrorPreference = $null
+        $restoreNativeErrorPreference = $false
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+            $restoreNativeErrorPreference = $true
+        }
+        try {
+            if ($script:UnslothVerbose) {
+                # Show live output in verbose mode while still capturing for error log
+                $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
+                & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
+                $prebuiltExit = $LASTEXITCODE
+                $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
+                Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
+            } else {
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltExit = $LASTEXITCODE
+            }
+        } finally {
+            if ($restoreNativeErrorPreference) {
+                $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+            }
         }
         $ErrorActionPreference = $prevEAPPrebuilt
 
         if ($prebuiltExit -eq 0) {
-            step "llama.cpp" "prebuilt installed and validated"
+            if ($prebuiltOutput -match "already matches") {
+                step "llama.cpp" "prebuilt up to date and validated"
+            } else {
+                step "llama.cpp" "prebuilt installed and validated"
+            }
+            $installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir
+            if ($installedRelease) {
+                substep $installedRelease
+            }
+        } elseif ($prebuiltExit -eq 3) {
+            step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path $LlamaCppDir) {
+                substep "Existing install was restored" "Yellow"
+            }
+            substep "Close Studio or other llama.cpp users and retry" "Yellow"
+            exit 3
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -1670,7 +1851,6 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
         }
-    }
 }
 
 # ==========================================================================
@@ -1758,7 +1938,10 @@ if (Test-Path $LlamaServerBin) {
 if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
+} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+    # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
+    # tag is "master" (a moving target), always rebuild so the binary picks
+    # up new model architecture support (e.g. Gemma 4).
     Write-Host ""
     step "llama.cpp" "already built"
 } elseif (-not $HasCmakeForBuild) {
@@ -1813,42 +1996,207 @@ if (-not $NeedLlamaSourceBuild) {
         [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
     }
 
+    if (-not $LlamaPr) {
+        $ResolvedSourceUrl = $LlamaSource
+        if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+            if ($RequestedLlamaTag -eq "latest") {
+                $ResolvedSourceRef = if ($env:UNSLOTH_LLAMA_FORCE_COMPILE_REF) {
+                    $env:UNSLOTH_LLAMA_FORCE_COMPILE_REF
+                } else {
+                    $DefaultLlamaForceCompileRef
+                }
+                $ResolvedSourceRefKind = "branch"
+            } else {
+                $ResolvedSourceRef = $RequestedLlamaTag
+                $ResolvedSourceRefKind = "tag"
+            }
+        } elseif ($RequestedLlamaTag -eq "latest") {
+            $resolveTagArgs = @("--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp", "--output-format", "json")
+            $resolveTagResult = Invoke-LlamaHelper -Arguments $resolveTagArgs
+            $resolveTagOutput = $resolveTagResult.Output
+            $resolveTagExit = $resolveTagResult.ExitCode
+            if ($resolveTagExit -eq 0 -and $resolveTagOutput) {
+                try {
+                    $ResolvedSourceRef = (($resolveTagOutput | Out-String) | ConvertFrom-Json).llama_tag
+                } catch {
+                    $ResolvedSourceRef = ""
+                }
+            } else {
+                $ResolvedSourceRef = ""
+            }
+            if ([string]::IsNullOrWhiteSpace($ResolvedSourceRef)) {
+                $ResolvedSourceRef = "latest"
+            }
+            $ResolvedSourceRefKind = "tag"
+        } else {
+            $ResolvedSourceRef = $RequestedLlamaTag
+            $ResolvedSourceRefKind = "tag"
+        }
+        if ([string]::IsNullOrWhiteSpace($ResolvedSourceUrl)) { $ResolvedSourceUrl = $LlamaSource }
+        if ([string]::IsNullOrWhiteSpace($ResolvedSourceRef)) { $ResolvedSourceRef = $RequestedLlamaTag }
+    }
+
     # -- Step A: Clone or pull llama.cpp --
 
-    $UseConcreteRef = ($ResolvedLlamaTag -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedLlamaTag))
+    $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
-        Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
-        if ($UseConcreteRef) {
-            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag }
+        Write-Host "   Syncing llama.cpp to $ResolvedSourceRef..." -ForegroundColor Gray
+        # Always sync the remote URL so switching between default/fork sources works
+        Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$ResolvedSourceUrl.git" } | Out-Null
+        if ($LlamaPr) {
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin "pull/$LlamaPr/head" }
+            if ($gitFetchExit -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git fetch PR #$LlamaPr"
+            } else {
+                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B "pr-$LlamaPr" FETCH_HEAD }
+                if ($gitCheckoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout PR #$LlamaPr"
+                } else {
+                    Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                }
+            }
+        } elseif ($ResolvedSourceRefKind -eq "pull") {
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin $ResolvedSourceRef }
+            if ($gitFetchExit -ne 0) {
+                substep "git fetch failed -- using existing source" "Yellow"
+            } else {
+                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
+                if ($gitCheckoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout"
+                } else {
+                    Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                }
+            }
+        } elseif ($ResolvedSourceRefKind -eq "commit") {
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin $ResolvedSourceRef }
+            if ($gitFetchExit -ne 0) {
+                substep "git fetch failed -- using existing source" "Yellow"
+            } else {
+                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
+                if ($gitCheckoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout"
+                } else {
+                    Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                }
+            }
+        } elseif ($UseConcreteRef) {
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin $ResolvedSourceRef }
+            if ($gitFetchExit -ne 0) {
+                substep "git fetch failed -- using existing source" "Yellow"
+            } else {
+                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
+                if ($gitCheckoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout"
+                } else {
+                    Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                }
+            }
         } else {
             $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin }
-        }
-        if ($gitFetchExit -ne 0) {
-            substep "git fetch failed -- using existing source" "Yellow"
-        } else {
-            $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
-            if ($gitCheckoutExit -ne 0) {
-                $BuildOk = $false
-                $FailedStep = "git checkout"
+            if ($gitFetchExit -ne 0) {
+                substep "git fetch failed -- using existing source" "Yellow"
             } else {
-                Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
+                if ($gitCheckoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout"
+                } else {
+                    Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                }
             }
         }
     } else {
-        Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
+        Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
         $buildTmp = "$LlamaCppDir.build.$PID"
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path $LlamaCppDir -Parent)
         if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
-        $cloneArgs = @("clone", "--depth", "1")
-        if ($UseConcreteRef) {
-            $cloneArgs += @("--branch", $ResolvedLlamaTag)
-        }
-        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $buildTmp)
-        $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git @cloneArgs }
-        if ($cloneExit -ne 0) {
-            $BuildOk = $false
-            $FailedStep = "git clone"
-            if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+        if ($LlamaPr) {
+            $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$LlamaSource.git" $buildTmp }
+            if ($cloneExit -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git clone"
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+            }
+            if ($BuildOk) {
+                $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
+                if ($fetchExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git fetch PR #$LlamaPr"
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                }
+            }
+            if ($BuildOk) {
+                $checkoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp checkout "pr-$LlamaPr" }
+                if ($checkoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout PR #$LlamaPr"
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                }
+            }
+        } elseif ($ResolvedSourceRefKind -eq "pull") {
+            $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$ResolvedSourceUrl.git" $buildTmp }
+            if ($cloneExit -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git clone"
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+            }
+            if ($BuildOk) {
+                $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
+                if ($fetchExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git fetch source PR ref"
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                }
+            }
+            if ($BuildOk) {
+                $checkoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp checkout -B unsloth-llama-build FETCH_HEAD }
+                if ($checkoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout source PR ref"
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                }
+            }
+        } elseif ($ResolvedSourceRefKind -eq "commit") {
+            $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$ResolvedSourceUrl.git" $buildTmp }
+            if ($cloneExit -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git clone"
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+            }
+            if ($BuildOk) {
+                $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
+                if ($fetchExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git fetch source commit"
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                }
+            }
+            if ($BuildOk) {
+                $checkoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp checkout -B unsloth-llama-build FETCH_HEAD }
+                if ($checkoutExit -ne 0) {
+                    $BuildOk = $false
+                    $FailedStep = "git checkout source commit"
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                }
+            }
+        } else {
+            $cloneArgs = @("clone", "--depth", "1")
+            if ($UseConcreteRef) {
+                $cloneArgs += @("--branch", $ResolvedSourceRef)
+            }
+            $cloneArgs += @("$ResolvedSourceUrl.git", $buildTmp)
+            $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git @cloneArgs }
+            if ($cloneExit -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git clone"
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+            }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
         if ($BuildOk) {

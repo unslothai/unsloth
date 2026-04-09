@@ -1294,8 +1294,6 @@ def apply_gpu_ids(gpu_ids) -> None:
 
 def get_device_map(
     gpu_ids: Optional[list[int]] = None,
-    *,
-    for_inference: bool = False,
 ) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
@@ -1327,7 +1325,7 @@ def get_device_map(
                 multi_gpu = True
 
         if multi_gpu:
-            return "balanced_low_0" if for_inference else "balanced"
+            return "balanced"
 
     return "sequential"
 
