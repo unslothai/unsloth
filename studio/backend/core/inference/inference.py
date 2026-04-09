@@ -6,6 +6,7 @@ Core inference backend - streamlined
 """
 
 import os as _os
+
 # On AMD ROCm, Unsloth's global monkey-patching of transformers model classes
 # (LlamaRotaryEmbedding, attention modules, etc.) causes HIP kernel crashes
 # (_assert_async_cuda_kernel -> HSA_STATUS_ERROR_EXCEPTION) during inference.
@@ -558,12 +559,14 @@ class InferenceBackend:
                         "are not yet compatible with HIP)"
                     )
                     from transformers import AutoModelForCausalLM, AutoTokenizer
+
                     _load_kwargs = dict(
                         dtype = dtype or torch.bfloat16,
                         device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
+
                     # Skip 4-bit on ROCm: bnb matmul kernels crash on HIP.
                     # Also resolve pre-quantized Unsloth model names (e.g.
                     # "unsloth/xxx-bnb-4bit") to their FP16 originals since
@@ -580,7 +583,8 @@ class InferenceBackend:
                                 resolved = name[: -len(suffix)]
                                 logger.info(
                                     "Resolved pre-quantized base '%s' -> '%s' for ROCm 16-bit inference",
-                                    name, resolved,
+                                    name,
+                                    resolved,
                                 )
                                 return resolved
                         return name
@@ -589,15 +593,18 @@ class InferenceBackend:
                         # Load base model then apply adapter
                         _base = _resolve_fp16_base(config.base_model)
                         model = AutoModelForCausalLM.from_pretrained(
-                            _base, **_load_kwargs,
+                            _base,
+                            **_load_kwargs,
                         )
                         from peft import PeftModel
+
                         model = PeftModel.from_pretrained(model, config.path)
                         tokenizer = AutoTokenizer.from_pretrained(config.path)
                     else:
                         _path = _resolve_fp16_base(config.path)
                         model = AutoModelForCausalLM.from_pretrained(
-                            _path, **_load_kwargs,
+                            _path,
+                            **_load_kwargs,
                         )
                         tokenizer = AutoTokenizer.from_pretrained(config.path)
                     model.eval()
