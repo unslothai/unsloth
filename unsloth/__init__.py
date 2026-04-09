@@ -297,7 +297,9 @@ if DEVICE_TYPE == "cuda":
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+                cdequantize_blockwise_fp32 = (
+                    bnb.functional.lib.cdequantize_blockwise_fp32
+                )
                 libcuda_dirs()
             except:
                 warnings.warn(
