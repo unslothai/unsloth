@@ -48,6 +48,23 @@ IS_ROCM: bool = (
 )
 
 
+def _backend_label(device: DeviceType) -> str:
+    """Return the user-facing backend name for API responses.
+
+    Internally we still represent ROCm hosts as ``DeviceType.CUDA`` because
+    ROCm torch sets ``torch.cuda.is_available() = True`` and reuses the whole
+    ``torch.cuda.*`` API surface, so branching on ``DeviceType`` stays
+    consistent with the rest of the codebase. For the JSON responses served
+    to the Studio frontend and other clients, however, "cuda" is misleading
+    on an AMD machine. This helper swaps the label to ``"rocm"`` when the
+    module-level ``IS_ROCM`` flag is set so the UI can render the correct
+    backend name without every caller having to duplicate the check.
+    """
+    if IS_ROCM and device == DeviceType.CUDA:
+        return "rocm"
+    return device.value
+
+
 # ========== Detection ==========
 
 
@@ -199,7 +216,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
 
             return {
                 "available": True,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "device": idx,
                 "device_name": props.name,
                 "total_gb": total / (1024**3),
@@ -210,7 +227,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error(f"Error getting CUDA GPU info: {e}")
-            return {"available": False, "backend": device.value, "error": str(e)}
+            return {"available": False, "backend": _backend_label(device), "error": str(e)}
 
     # ---- XPU path (Intel GPU) ----
     if device == DeviceType.XPU:
@@ -226,7 +243,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
 
             return {
                 "available": True,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "device": idx,
                 "device_name": props.name,
                 "total_gb": total / (1024**3),
@@ -237,7 +254,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error("Error getting XPU GPU info: %s", e)
-            return {"available": False, "backend": device.value, "error": str(e)}
+            return {"available": False, "backend": _backend_label(device), "error": str(e)}
 
     # ---- MLX path (Apple Silicon) ----
     if device == DeviceType.MLX:
@@ -252,7 +269,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
 
             return {
                 "available": True,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "device": 0,
                 "device_name": f"Apple Silicon ({platform.processor() or platform.machine()})",
                 "total_gb": total / (1024**3),
@@ -263,7 +280,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error(f"Error getting MLX GPU info: {e}")
-            return {"available": False, "backend": device.value, "error": str(e)}
+            return {"available": False, "backend": _backend_label(device), "error": str(e)}
 
     # ---- CPU-only ----
     return {"available": False, "backend": "cpu"}
@@ -438,14 +455,14 @@ def get_gpu_utilization() -> Dict[str, Any]:
     if device == DeviceType.CUDA:
         result = _smi_query("get_primary_gpu_utilization")
         if result is not None:
-            result["backend"] = device.value
+            result["backend"] = _backend_label(device)
             return result
 
     mem = get_gpu_memory_info()
     if device != DeviceType.CPU and mem.get("available"):
         return {
             "available": True,
-            "backend": device.value,
+            "backend": _backend_label(device),
             "gpu_utilization_pct": None,
             "temperature_c": None,
             "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
@@ -456,7 +473,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
             "power_utilization_pct": None,
         }
 
-    return {"available": False, "backend": device.value}
+    return {"available": False, "backend": _backend_label(device)}
 
 
 def get_visible_gpu_utilization() -> Dict[str, Any]:
@@ -470,7 +487,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             parent_cuda_visible_devices = parent_visible_spec["raw"],
         )
         if result is not None:
-            result["backend"] = device.value
+            result["backend"] = _backend_label(device)
             return result
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
@@ -510,7 +527,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 )
             return {
                 "available": True,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "parent_visible_gpu_ids": parent_ids,
                 "devices": devices,
                 "index_kind": index_kind,
@@ -521,14 +538,14 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         if not mem.get("available"):
             return {
                 "available": False,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "parent_visible_gpu_ids": [],
                 "devices": [],
                 "index_kind": "relative",
             }
         return {
             "available": True,
-            "backend": device.value,
+            "backend": _backend_label(device),
             "parent_visible_gpu_ids": [0],
             "devices": [
                 {
@@ -550,7 +567,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 
     return {
         "available": False,
-        "backend": device.value,
+        "backend": _backend_label(device),
         "parent_visible_gpu_ids": [],
         "devices": [],
         "index_kind": "relative",
@@ -1215,7 +1232,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     parent_visible_spec["raw"],
                 )
                 if result.get("available"):
-                    result["backend"] = device.value
+                    result["backend"] = _backend_label(device)
                     return result
             except Exception as e:
                 logger.warning("Backend GPU visibility query failed: %s", e)
@@ -1244,7 +1261,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             ]
             return {
                 "available": True,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "backend_cuda_visible_devices": _backend_visible_devices_env(),
                 "parent_visible_gpu_ids": parent_visible_ids,
                 "devices": devices,
@@ -1253,7 +1270,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
 
         return {
             "available": False,
-            "backend": device.value,
+            "backend": _backend_label(device),
             "backend_cuda_visible_devices": _backend_visible_devices_env(),
             "parent_visible_gpu_ids": parent_visible_ids,
             "devices": [],
@@ -1265,7 +1282,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         if not mem.get("available"):
             return {
                 "available": False,
-                "backend": device.value,
+                "backend": _backend_label(device),
                 "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                 "parent_visible_gpu_ids": [],
                 "devices": [],
@@ -1273,7 +1290,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             }
         return {
             "available": True,
-            "backend": device.value,
+            "backend": _backend_label(device),
             "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "parent_visible_gpu_ids": [0],
             "devices": [
@@ -1290,7 +1307,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
 
     return {
         "available": False,
-        "backend": device.value,
+        "backend": _backend_label(device),
         "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "parent_visible_gpu_ids": [],
         "devices": [],

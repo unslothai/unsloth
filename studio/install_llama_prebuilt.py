@@ -3051,6 +3051,37 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                     return int(parts[0]), int(parts[1].split("-")[0])
         except Exception:
             pass
+
+    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
+    # and _detect_rocm_version() in install_python_stack.py so package-managed
+    # ROCm hosts without /opt/rocm/.info/version still report a usable version
+    # and the <= host version filter in resolve_upstream_asset_choice picks
+    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    for _cmd in (
+        ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
+        ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
+    ):
+        _exe = shutil.which(_cmd[0])
+        if not _exe:
+            continue
+        try:
+            _result = subprocess.run(
+                [_exe, *_cmd[1:]],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+        except Exception:
+            continue
+        if _result.returncode != 0 or not _result.stdout.strip():
+            continue
+        _raw = _result.stdout.strip()
+        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+        _raw = re.sub(r"^\d+:", "", _raw)
+        _m = re.match(r"(\d+)[.-](\d+)", _raw)
+        if _m:
+            return int(_m.group(1)), int(_m.group(2))
     return None
 
 

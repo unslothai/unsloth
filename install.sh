@@ -1266,7 +1266,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.2" unsloth-zoo
+            "unsloth>=2026.4.4" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1274,7 +1274,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.2" unsloth-zoo
+            "unsloth>=2026.4.4" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -1287,7 +1287,7 @@ if [ "$_MIGRATED" = true ]; then
         case "$TORCH_INDEX_URL" in
             */rocm*)
                 substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir "bitsandbytes>=0.49.1"
                 ;;
         esac
     fi
@@ -1331,17 +1331,27 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 # pairs with torch's minor (torchvision = torch.minor - 5
                 # since torch 2.4 -> torchvision 0.19 -> torch 2.9 ->
                 # torchvision 0.24).
+                # URL-decode each wheel name so %2B -> + before version
+                # extraction. Real Radeon wheel hrefs are percent-encoded
+                # (torch-2.10.0%2Brocm7.2.0...), so a plain [+-] terminator
+                # in the sed regex below would never match and
+                # _radeon_versions_match would stay false for every real
+                # listing, silently forcing a fallback to the generic
+                # ROCm index.
                 _torch_ver=""
                 _tv_ver=""
                 _ta_ver=""
                 if [ -n "$_torch_whl" ]; then
-                    _torch_ver=$(printf '%s\n' "$_torch_whl" | sed -n 's|.*/torch-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
+                    _torch_name=$(printf '%s' "${_torch_whl##*/}" | sed 's/%2[Bb]/+/g')
+                    _torch_ver=$(printf '%s\n' "$_torch_name" | sed -n 's|^torch-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
                 fi
                 if [ -n "$_tv_whl" ]; then
-                    _tv_ver=$(printf '%s\n' "$_tv_whl" | sed -n 's|.*/torchvision-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
+                    _tv_name=$(printf '%s' "${_tv_whl##*/}" | sed 's/%2[Bb]/+/g')
+                    _tv_ver=$(printf '%s\n' "$_tv_name" | sed -n 's|^torchvision-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
                 fi
                 if [ -n "$_ta_whl" ]; then
-                    _ta_ver=$(printf '%s\n' "$_ta_whl" | sed -n 's|.*/torchaudio-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
+                    _ta_name=$(printf '%s' "${_ta_whl##*/}" | sed 's/%2[Bb]/+/g')
+                    _ta_ver=$(printf '%s\n' "$_ta_name" | sed -n 's|^torchaudio-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
                 fi
                 _radeon_versions_match=false
                 if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
@@ -1405,7 +1415,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     case "$TORCH_INDEX_URL" in
         */rocm*)
             substep "installing bitsandbytes for AMD ROCm..."
-            run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
+            run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir "bitsandbytes>=0.49.1"
             ;;
     esac
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
@@ -1415,7 +1425,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.4.2" unsloth-zoo
+            "unsloth>=2026.4.4" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1426,7 +1436,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.4.2" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.4.4" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
@@ -1437,7 +1447,7 @@ else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.2" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.4" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else

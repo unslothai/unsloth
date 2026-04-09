@@ -105,6 +105,40 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
+    # Distro package-manager fallbacks. Package-managed ROCm installs can
+    # expose GPUs via rocminfo / amd-smi but still lack /opt/rocm/.info/version
+    # and hipconfig, so probe dpkg (Debian/Ubuntu) and rpm (RHEL/Fedora/SUSE)
+    # for the rocm-core package version. Matches the chain in
+    # install.sh::get_torch_index_url so `unsloth studio update` behaves
+    # the same as a fresh `curl | sh` install.
+    import re as _re_pkg
+
+    for cmd in (
+        ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
+        ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
+    ):
+        exe = shutil.which(cmd[0])
+        if not exe:
+            continue
+        try:
+            result = subprocess.run(
+                [exe, *cmd[1:]],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+        raw = result.stdout.strip()
+        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+        raw = _re_pkg.sub(r"^\d+:", "", raw)
+        m = _re_pkg.match(r"(\d+)[.-](\d+)", raw)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+
     return None
 
 
