@@ -1109,7 +1109,9 @@ class FastBaseModel:
                     _text_cfg = getattr(_top_config, "text_config", None)
                     if _text_cfg is not None:
                         _softcap = getattr(
-                            _text_cfg, "final_logit_softcapping", None,
+                            _text_cfg,
+                            "final_logit_softcapping",
+                            None,
                         )
                     if _softcap is None:
                         _get_text = getattr(_top_config, "get_text_config", None)

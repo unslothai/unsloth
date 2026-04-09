@@ -1977,7 +1977,9 @@ def patch_trl_disable_gradient_checkpointing():
     if not hasattr(_tmu, "disable_gradient_checkpointing"):
         return
     if getattr(
-        _tmu.disable_gradient_checkpointing, "_unsloth_noop_patched", False,
+        _tmu.disable_gradient_checkpointing,
+        "_unsloth_noop_patched",
+        False,
     ):
         return
 
@@ -1985,9 +1987,11 @@ def patch_trl_disable_gradient_checkpointing():
 
     @contextmanager
     def _noop_disable_gradient_checkpointing(
-        model, gradient_checkpointing_kwargs = None,
+        model,
+        gradient_checkpointing_kwargs = None,
     ):
         yield
+
     _noop_disable_gradient_checkpointing._unsloth_noop_patched = True
 
     _tmu.disable_gradient_checkpointing = _noop_disable_gradient_checkpointing
@@ -2003,6 +2007,7 @@ def patch_trl_disable_gradient_checkpointing():
     # and any future TRL module that adds `from ...models.utils import
     # disable_gradient_checkpointing`.
     import sys as _sys
+
     for _mod_name, _mod in list(_sys.modules.items()):
         if _mod is None:
             continue
