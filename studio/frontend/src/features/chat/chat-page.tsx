@@ -634,8 +634,15 @@ print(completion.choices[0].message.content)`,
     [],
   );
 
+  // Keep endpoint state in sync whenever the dialog opens or the loaded
+  // GGUF model changes, so the status indicator in the header button
+  // reflects reality without the user having to open the dialog first.
   useEffect(() => {
-    if (!endpointDialogOpen) return;
+    if (!inferenceParams.checkpoint || !activeGgufVariant) {
+      setEndpointEnabled(false);
+      setEndpointApiKey("");
+      return;
+    }
     let cancelled = false;
     authFetch("/api/inference/access-endpoint")
       .then((res) => (res.ok ? res.json() : null))
@@ -647,7 +654,12 @@ print(completion.choices[0].message.content)`,
     return () => {
       cancelled = true;
     };
-  }, [endpointDialogOpen, applyEndpointData]);
+  }, [
+    endpointDialogOpen,
+    inferenceParams.checkpoint,
+    activeGgufVariant,
+    applyEndpointData,
+  ]);
 
   const handleToggleEndpoint = useCallback(async () => {
     setEndpointLoading(true);
@@ -1076,14 +1088,24 @@ print(completion.choices[0].message.content)`,
                 completionTokens={contextUsage.completionTokens}
               />
             ) : null}
-            {inferenceParams.checkpoint ? (
+            {inferenceParams.checkpoint && activeGgufVariant ? (
               <Button
                 type="button"
                 variant="outline"
-                className="mr-2 h-8 px-2 text-xs"
+                className="mr-2 h-8 gap-1.5 px-2 text-xs"
                 onClick={handleOpenEndpointDialog}
-                title="View OpenAI-compatible endpoint details"
+                title={
+                  endpointEnabled
+                    ? "API endpoint is running"
+                    : "API endpoint is off"
+                }
               >
+                <span
+                  className={cn(
+                    "inline-block h-2 w-2 rounded-full",
+                    endpointEnabled ? "bg-green-500" : "bg-red-500",
+                  )}
+                />
                 Access Endpoint
               </Button>
             ) : null}
