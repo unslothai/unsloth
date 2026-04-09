@@ -5,8 +5,24 @@
 Core inference backend - streamlined
 """
 
-from unsloth import FastLanguageModel, FastVisionModel
-from unsloth.chat_templates import get_chat_template
+import os as _os
+# On AMD ROCm, Unsloth's global monkey-patching of transformers model classes
+# (LlamaRotaryEmbedding, attention modules, etc.) causes HIP kernel crashes
+# (_assert_async_cuda_kernel -> HSA_STATUS_ERROR_EXCEPTION) during inference.
+# Training works because it uses different code paths, but generation triggers
+# the incompatible patched kernels.  Skip the Unsloth import entirely on ROCm
+# so transformers classes stay unmodified; the GGUF inference path (llama-server)
+# is unaffected since it never imports these Python model classes.
+_IS_ROCM_ENV = getattr(__import__("torch").version, "hip", None) is not None
+
+if _IS_ROCM_ENV:
+    FastLanguageModel = None  # Loaded on-demand only on NVIDIA
+    FastVisionModel = None
+    get_chat_template = None
+else:
+    from unsloth import FastLanguageModel, FastVisionModel
+    from unsloth.chat_templates import get_chat_template
+
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
@@ -26,6 +42,7 @@ from utils.hardware import (
     raise_if_offloaded,
     get_visible_gpu_count,
 )
+from utils.hardware import hardware as _hw_module
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -253,6 +270,15 @@ class InferenceBackend:
         """
         Load any model: base, LoRA adapter, text, or vision.
         """
+        # max_seq_length=0 means "model default" for the GGUF/llama.cpp path,
+        # but Unsloth's FastLanguageModel.from_pretrained treats 0 literally --
+        # setting the model's context to 0 tokens, which triggers an assertion
+        # crash during generation (especially on ROCm/HIP where the async
+        # assert kernel raises a hardware exception instead of a Python error).
+        # Fall back to 2048 for the Unsloth/transformers path.
+        if max_seq_length <= 0:
+            max_seq_length = 2048
+
         try:
             model_name = config.identifier
 
@@ -516,18 +542,78 @@ class InferenceBackend:
 
             else:
                 # Text model (or text LoRA adapter)
-                model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = config.path,  # Can be base model OR LoRA adapter path
-                    max_seq_length = max_seq_length,
-                    dtype = dtype,
-                    load_in_4bit = load_in_4bit,
-                    device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
-                    trust_remote_code = trust_remote_code,
-                )
+                if _hw_module.IS_ROCM:
+                    # On AMD ROCm two issues prevent the normal Unsloth path:
+                    #  1. Unsloth's patched kernels (RoPE, attention) crash on
+                    #     HIP (_assert_async_cuda_kernel -> HSA_STATUS_ERROR).
+                    #  2. bitsandbytes 4-bit matmul kernels trigger the same
+                    #     HIP assertion on MI300X (CDNA3 / gfx942).
+                    # Fall back to plain transformers + PEFT in 16-bit, which
+                    # works reliably.  AMD GPUs typically have large VRAM so
+                    # 16-bit is practical; GGUF inference remains the
+                    # recommended path for memory-constrained setups.
+                    logger.info(
+                        "ROCm detected -- loading in 16-bit with plain "
+                        "transformers (bitsandbytes 4-bit and Unsloth kernels "
+                        "are not yet compatible with HIP)"
+                    )
+                    from transformers import AutoModelForCausalLM, AutoTokenizer
+                    _load_kwargs = dict(
+                        dtype = dtype or torch.bfloat16,
+                        device_map = device_map,
+                        token = hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code = trust_remote_code,
+                    )
+                    # Skip 4-bit on ROCm: bnb matmul kernels crash on HIP.
+                    # Also resolve pre-quantized Unsloth model names (e.g.
+                    # "unsloth/xxx-bnb-4bit") to their FP16 originals since
+                    # loading a pre-quantized repo still triggers bnb codepaths.
+                    def _resolve_fp16_base(name: str) -> str:
+                        if not name:
+                            return name
+                        # Strip Unsloth quantization suffixes to get the FP16 model:
+                        # "unsloth/Foo-unsloth-bnb-4bit" -> "unsloth/Foo"
+                        # "unsloth/Foo-bnb-4bit"         -> "unsloth/Foo"
+                        # Order matters: try longer suffix first.
+                        for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+                            if name.lower().endswith(suffix):
+                                resolved = name[: -len(suffix)]
+                                logger.info(
+                                    "Resolved pre-quantized base '%s' -> '%s' for ROCm 16-bit inference",
+                                    name, resolved,
+                                )
+                                return resolved
+                        return name
 
-                # Apply inference optimization
-                FastLanguageModel.for_inference(model)
+                    if config.is_lora and config.base_model:
+                        # Load base model then apply adapter
+                        _base = _resolve_fp16_base(config.base_model)
+                        model = AutoModelForCausalLM.from_pretrained(
+                            _base, **_load_kwargs,
+                        )
+                        from peft import PeftModel
+                        model = PeftModel.from_pretrained(model, config.path)
+                        tokenizer = AutoTokenizer.from_pretrained(config.path)
+                    else:
+                        _path = _resolve_fp16_base(config.path)
+                        model = AutoModelForCausalLM.from_pretrained(
+                            _path, **_load_kwargs,
+                        )
+                        tokenizer = AutoTokenizer.from_pretrained(config.path)
+                    model.eval()
+                else:
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = config.path,  # Can be base model OR LoRA adapter path
+                        max_seq_length = max_seq_length,
+                        dtype = dtype,
+                        load_in_4bit = load_in_4bit,
+                        device_map = device_map,
+                        token = hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code = trust_remote_code,
+                    )
+
+                    # Apply inference optimization
+                    FastLanguageModel.for_inference(model)
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
@@ -950,10 +1036,13 @@ class InferenceBackend:
                 )
 
                 # This modifies the tokenizer with the correct template
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = template_name,
-                )
+                if get_chat_template is not None:
+                    tokenizer = get_chat_template(
+                        tokenizer,
+                        chat_template = template_name,
+                    )
+                else:
+                    logger.info("Skipping Unsloth chat template (ROCm fallback)")
             else:
                 logger.info(
                     f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
