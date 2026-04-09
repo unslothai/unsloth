@@ -99,7 +99,7 @@ function HighlightedSnippet({
   );
 
   return (
-    <div className="mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
+    <div className="mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!overflow-x-auto [&_code]:!whitespace-pre-wrap [&_code]:!break-all [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -623,7 +623,13 @@ print(completion.choices[0].message.content)`,
       setEndpointApiKey(data.api_key ?? "");
       setEndpointLocalUrl(data.local_url);
       setEndpointExternalUrl(data.external_url ?? null);
-      setEndpointBaseUrl(data.local_url);
+      // Default to external URL when accessing Studio remotely
+      const isRemote =
+        typeof window !== "undefined" &&
+        !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+      setEndpointBaseUrl(
+        isRemote && data.external_url ? data.external_url : data.local_url,
+      );
     },
     [],
   );
