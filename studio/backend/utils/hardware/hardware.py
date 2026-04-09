@@ -227,7 +227,11 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error(f"Error getting CUDA GPU info: {e}")
-            return {"available": False, "backend": _backend_label(device), "error": str(e)}
+            return {
+                "available": False,
+                "backend": _backend_label(device),
+                "error": str(e),
+            }
 
     # ---- XPU path (Intel GPU) ----
     if device == DeviceType.XPU:
@@ -254,7 +258,11 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error("Error getting XPU GPU info: %s", e)
-            return {"available": False, "backend": _backend_label(device), "error": str(e)}
+            return {
+                "available": False,
+                "backend": _backend_label(device),
+                "error": str(e),
+            }
 
     # ---- MLX path (Apple Silicon) ----
     if device == DeviceType.MLX:
@@ -280,7 +288,11 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error(f"Error getting MLX GPU info: {e}")
-            return {"available": False, "backend": _backend_label(device), "error": str(e)}
+            return {
+                "available": False,
+                "backend": _backend_label(device),
+                "error": str(e),
+            }
 
     # ---- CPU-only ----
     return {"available": False, "backend": "cpu"}
