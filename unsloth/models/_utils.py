@@ -65,6 +65,7 @@ __all__ = [
     "process_vision_info",
     "unsloth_compile_transformers",
     "determine_attention_implementation",
+    "DISABLE_SDPA_MODEL_NAMES",
     "_set_attn_impl",
     "patch_fast_lora",
     "validate_loftq_config",
@@ -230,10 +231,15 @@ def apply_unsloth_gradient_checkpointing(
 # Gemma3N: timm vision wrappers don't support flex_attention.
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
-# GPT-OSS: Transformers may auto-route flash_attention_2 to flash-attn3,
-# which currently errors on non-Hopper GPUs in some generation paths.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
-_EAGER_ONLY_PREFIXES = ("gemma3n", "gemma4", "gpt_oss")
+_FLASH_EXCLUDED_MODELS = _FLEX_EXCLUDED_MODELS
+_FLASH_EXCLUDED_PREFIXES = ("gemma4",)
+_EAGER_ONLY_PREFIXES = ("gemma3n",)
+# Disable some SDPA modules since they're incorrect or unstable in our paths.
+DISABLE_SDPA_MODEL_NAMES = (
+    "gemma3,",
+    "gemma3_text",
+)
 
 
 def _is_flex_excluded(model_type):
@@ -242,6 +248,17 @@ def _is_flex_excluded(model_type):
 
 def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
+
+
+def _is_flash_excluded(model_type):
+    return (
+        model_type in _FLASH_EXCLUDED_MODELS
+        or any(model_type.startswith(p) for p in _FLASH_EXCLUDED_PREFIXES)
+    )
+
+
+def _is_sdpa_disabled(model_type):
+    return any(disabled_name in model_type for disabled_name in DISABLE_SDPA_MODEL_NAMES)
 
 
 def _set_attn_impl(config, impl):
@@ -253,8 +270,19 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-def determine_attention_implementation(model_class, config):
+def determine_attention_implementation(
+    model_class,
+    config,
+    supports_sdpa: Optional[bool] = None,
+    allowed_implementations: Tuple[str, ...] = (
+        "flash_attention_2",
+        "flex_attention",
+        "sdpa",
+        "eager",
+    ),
+):
     model_type = getattr(config, "model_type", "").lower()
+    allowed_implementations = frozenset(allowed_implementations)
 
     # Eager-only models (e.g. gemma3n timm vision towers)
     if _is_eager_only(model_type):
@@ -262,7 +290,12 @@ def determine_attention_implementation(model_class, config):
         return "eager"
 
     # Flash Attention 2
-    if HAS_FLASH_ATTENTION and model_class is not None:
+    if (
+        "flash_attention_2" in allowed_implementations
+        and HAS_FLASH_ATTENTION
+        and model_class is not None
+        and not _is_flash_excluded(model_type)
+    ):
         supports_fa2 = getattr(model_class, "_supports_flash_attn_2", False) or getattr(
             model_class, "_supports_flash_attn", False
         )
@@ -271,7 +304,10 @@ def determine_attention_implementation(model_class, config):
             return "flash_attention_2"
 
     # Flex Attention
-    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0":
+    if (
+        "flex_attention" in allowed_implementations
+        and os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0"
+    ):
         try:
             from transformers.utils.import_utils import is_torch_flex_attn_available
 
@@ -289,7 +325,11 @@ def determine_attention_implementation(model_class, config):
             pass
 
     # SDPA
-    if model_class is not None and getattr(model_class, "_supports_sdpa", False):
+    if supports_sdpa is None:
+        supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
+    if _is_sdpa_disabled(model_type):
+        supports_sdpa = False
+    if "sdpa" in allowed_implementations and supports_sdpa:
         _set_attn_impl(config, "sdpa")
         return "sdpa"
 

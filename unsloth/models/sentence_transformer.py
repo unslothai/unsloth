@@ -14,8 +14,8 @@
 
 import logging
 
-from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
-from ._utils import SUPPORTS_BFLOAT16
+from .loader import FastModel
+from ._utils import SUPPORTS_BFLOAT16, determine_attention_implementation
 import inspect
 import json
 import os
@@ -1446,32 +1446,28 @@ class FastSentenceTransformer(FastModel):
             ):
                 st_device = "cuda"
 
-            # Check if model supports SDPA (Scaled Dot Product Attention) for extra speedup
-            supports_sdpa = False
+            # Reuse the shared attention policy, but constrain encoder fast path
+            # selection to SDPA or eager to preserve existing behavior.
+            model_class = None
             if config is not None:
                 try:
                     model_class = _get_model_class(
                         config, kwargs.get("auto_model", AutoModel)._model_mapping
                     )
-                    supports_sdpa = getattr(model_class, "_supports_sdpa", False)
                 except:
                     pass
 
             # Build model_kwargs for SentenceTransformer
             model_kwargs = {"torch_dtype": dtype}
 
-            # Enable SDPA if supported (1.2x extra speedup on top of torch.compile)
-            # But disable for models with known SDPA + torch.compile backward issues
-            _force_eager = False
-            for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
-                if _sdpa_model in model_type.lower():
-                    supports_sdpa = False
-                    _force_eager = True
-                    break
-            if supports_sdpa:
-                model_kwargs["attn_implementation"] = "sdpa"
-            elif _force_eager:
-                model_kwargs["attn_implementation"] = "eager"
+            attn_impl = determine_attention_implementation(
+                model_class,
+                config,
+                allowed_implementations = ("sdpa", "eager"),
+            )
+            supports_sdpa = attn_impl == "sdpa"
+            if attn_impl in ("sdpa", "eager"):
+                model_kwargs["attn_implementation"] = attn_impl
 
             # Print optimization status
             sdpa_str = " + SDPA" if supports_sdpa else ""

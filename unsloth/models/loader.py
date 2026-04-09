@@ -128,14 +128,6 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "granite,llava_next",  # Granite-vision 3
 ]
 
-global DISABLE_SDPA_MODEL_NAMES
-# Disables some SDPA modules since it's wrong
-DISABLE_SDPA_MODEL_NAMES = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
-]
-
-
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
 
@@ -1397,11 +1389,6 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
                 unsloth_force_compile = unsloth_force_compile,
             )
-        # Fix SDPA issues
-        for model_type in DISABLE_SDPA_MODEL_NAMES:
-            if model_type in model_types_all:
-                supports_sdpa = False
-
         # Check if this is local model since the tokenizer gets overwritten
         if (
             os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
