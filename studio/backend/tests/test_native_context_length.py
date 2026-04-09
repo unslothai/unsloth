@@ -450,7 +450,10 @@ class TestFitTargetSource:
     @pytest.fixture(autouse = True)
     def _load_source(self):
         backend_path = (
-            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+            Path(__file__).resolve().parent.parent
+            / "core"
+            / "inference"
+            / "llama_cpp.py"
         )
         self._source = backend_path.read_text()
 
@@ -499,22 +502,19 @@ class TestFitTargetBehavior:
             backend._n_heads = 32
             backend._embedding_length = 4096
 
-        with patch.object(
-            backend, "_find_llama_server_binary", return_value = "llama-server"
-        ), patch.object(
-            backend, "_read_gguf_metadata", side_effect = _fake_read_metadata
-        ), patch.object(
-            backend, "_get_gguf_size_bytes", return_value = 4 * 1024**3
-        ), patch.object(
-            backend, "_get_gpu_free_memory", return_value = [(0, 12000)]
-        ), patch.object(
-            backend, "_select_gpus", return_value = (None, True)
-        ), patch.object(
-            backend, "_fit_context_to_vram", return_value = 8192
-        ), patch.object(
-            backend, "_wait_for_health", return_value = True
-        ), patch(
-            "core.inference.llama_cpp.subprocess.Popen", side_effect = _DummyProc
+        with (
+            patch.object(
+                backend, "_find_llama_server_binary", return_value = "llama-server"
+            ),
+            patch.object(
+                backend, "_read_gguf_metadata", side_effect = _fake_read_metadata
+            ),
+            patch.object(backend, "_get_gguf_size_bytes", return_value = 4 * 1024**3),
+            patch.object(backend, "_get_gpu_free_memory", return_value = [(0, 12000)]),
+            patch.object(backend, "_select_gpus", return_value = (None, True)),
+            patch.object(backend, "_fit_context_to_vram", return_value = 8192),
+            patch.object(backend, "_wait_for_health", return_value = True),
+            patch("core.inference.llama_cpp.subprocess.Popen", side_effect = _DummyProc),
         ):
             ok = backend.load_model(
                 gguf_path = str(gguf_path),

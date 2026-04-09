@@ -1219,9 +1219,7 @@ class LlamaCppBackend:
                                     "using --fit with explicit fit_target"
                                 )
                             else:
-                                ranked = sorted(
-                                    gpus, key = lambda g: g[1], reverse = True
-                                )
+                                ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
                                 for n_gpus in range(1, len(ranked) + 1):
                                     subset = ranked[:n_gpus]
                                     pool_mib = sum(free for _, free in subset)
