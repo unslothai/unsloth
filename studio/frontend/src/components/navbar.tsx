@@ -6,50 +6,22 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import {
   ArrowReloadHorizontalIcon,
-  ArrowRight01Icon,
   Cancel01Icon,
-  Book03Icon,
-  BubbleChatIcon,
-  ChefHatIcon,
   Copy01Icon,
-  CursorInfo02Icon,
-  PackageIcon,
   Tick02Icon,
-  ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { usePlatformStore } from "@/config/env";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
-import { TOUR_OPEN_EVENT } from "@/features/tour";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-
-const NAV_ITEMS = [
-  { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
-  { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: true },
-  { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
-  { label: "Chat", href: "/chat", icon: BubbleChatIcon, enabled: true },
-];
 
 const STUDIO_UPDATE_CMD = "unsloth studio update";
 const STUDIO_UPDATE_FALLBACK_UNIX_CMD =
@@ -230,18 +202,7 @@ function UpdateStudioInstructions({
   );
 }
 
-function getTourId(pathname: string): "studio" | "chat" | "export" | null {
-  if (pathname === "/studio") return "studio";
-  if (pathname === "/chat") return "chat";
-  if (pathname === "/export") return "export";
-  return null;
-}
-
 export function Navbar() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [mobileUpdateOpen, setMobileUpdateOpen] = useState(false);
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -273,19 +234,10 @@ export function Navbar() {
     }
   };
 
-  const tourId = getTourId(pathname);
-
-  const openTour = () => {
-    if (!tourId) return;
-    window.dispatchEvent(
-      new CustomEvent(TOUR_OPEN_EVENT, { detail: { id: tourId } }),
-    );
-  };
-
   return (
     <>
     <header className="relative top-0 z-40 h-16 w-full">
-      <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 sm:px-6">
+      <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto] items-center px-4 sm:px-6">
         {/* Left: logo */}
         <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center gap-1.5 justify-self-start select-none">
           <img
@@ -303,132 +255,8 @@ export function Navbar() {
           </span>
         </Link>
 
-        {/* Center: pill nav */}
-        <nav
-          data-tour="navbar"
-          className="hidden items-center rounded-full border border-border bg-card p-1 ring-1 ring-foreground/5 md:flex"
-        >
-          {NAV_ITEMS.map((item) => {
-            const active =
-              pathname === item.href || pathname.startsWith(`${item.href}/`);
-            const disabledByTraining =
-              isTrainingRunning && item.href !== "/studio";
-            const disabledByDevice =
-              chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
-            if (!item.enabled || disabledByTraining || disabledByDevice) {
-              return (
-                <span
-                  key={item.href}
-                  className="relative rounded-full px-3 py-1.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
-                >
-                  {item.label}
-                </span>
-              );
-            }
-            return (
-              <Link
-                key={item.href}
-                to={item.href}
-                className={cn(
-                  "relative rounded-full px-3 py-1.5 text-sm font-medium transition-colors",
-                  active
-                    ? "text-background"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {active && (
-                  <motion.span
-                    layoutId="nav-pill"
-                    className="absolute inset-0 rounded-full bg-foreground"
-                    transition={{
-                      type: "spring",
-                      stiffness: 500,
-                      damping: 35,
-                      mass: 0.5,
-                    }}
-                  />
-                )}
-                <span className="relative z-10 flex items-center">
-                  <motion.span
-                    initial={false}
-                    animate={{
-                      width: active ? 14 : 0,
-                      marginLeft: active ? -4 : 0,
-                      marginRight: active ? 4 : 0,
-                      opacity: active ? 1 : 0,
-                    }}
-                    transition={{ duration: 0.2, ease: [0.165, 0.84, 0.44, 1] }}
-                    className="inline-flex shrink-0 items-center justify-center overflow-hidden"
-                  >
-                    <HugeiconsIcon
-                      icon={item.icon}
-                      className="size-3.5 -mt-px shrink-0"
-                    />
-                  </motion.span>
-                  {item.label}
-                </span>
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* Right: docs/tour desktop — one wrapper per control so flex gap is even (HoverCard roots can confuse flex spacing). */}
-        <div className="hidden items-center justify-self-end gap-0 md:flex">
-          <div className="flex shrink-0 items-center">
-            <AnimatedThemeToggler
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
-              title="Toggle theme"
-              aria-label="Toggle theme"
-            />
-          </div>
-          <div className="flex shrink-0 items-center">
-            <HoverCard openDelay={200} closeDelay={100}>
-              <HoverCardTrigger asChild={true}>
-                <a
-                  href="https://unsloth.ai/docs"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-emerald-600 transition-colors hover:bg-accent hover:text-emerald-700 dark:hover:text-emerald-400"
-                >
-                  <HugeiconsIcon icon={Book03Icon} className="size-4" />
-                  Learn more
-                </a>
-              </HoverCardTrigger>
-              <HoverCardContent align="end" className="w-80 p-0">
-                <a
-                  href="https://unsloth.ai/docs"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group/card flex flex-col gap-1 p-4 no-underline"
-                >
-                  <p className="text-sm font-semibold font-heading">
-                    Unsloth Documentation
-                  </p>
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Guides on fine-tuning LLMs 2x faster with 70% less memory.
-                    Covers LoRA, QLoRA, data formatting, and deployment.
-                  </p>
-                  <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
-                    Visit docs
-                    <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
-                  </span>
-                </a>
-              </HoverCardContent>
-            </HoverCard>
-          </div>
-          {tourId ? (
-            <div className="flex shrink-0 items-center">
-              <button
-                type="button"
-                onClick={openTour}
-                className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title="Tour"
-              >
-                <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-                <span className="text-sm font-medium">Tour</span>
-              </button>
-            </div>
-          ) : null}
+        {/* Right: update + shutdown */}
+        <div className="flex items-center justify-self-end gap-0">
           <div className="flex shrink-0 items-center">
             <HoverCard openDelay={200} closeDelay={100}>
               <HoverCardTrigger asChild={true}>
@@ -460,151 +288,6 @@ export function Navbar() {
               <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
             </button>
           </div>
-        </div>
-
-        {/* Right: mobile */}
-        <div className="col-start-3 flex items-center gap-2 justify-self-end md:hidden">
-          {tourId ? (
-            <button
-              type="button"
-              onClick={openTour}
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="Tour"
-            >
-              <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-            </button>
-          ) : null}
-          <Sheet
-            open={mobileOpen}
-            onOpenChange={(open) => {
-              setMobileOpen(open);
-              if (!open) setMobileUpdateOpen(false);
-            }}
-          >
-            <SheetTrigger asChild={true}>
-              <button
-                type="button"
-                className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground"
-                aria-label="Open navigation menu"
-              >
-                Menu
-              </button>
-            </SheetTrigger>
-            <SheetContent side="right" className="w-[300px] p-4">
-              <SheetHeader>
-                <SheetTitle>Navigate</SheetTitle>
-              </SheetHeader>
-              <div className="mt-6 flex max-h-[calc(100dvh-8rem)] flex-col gap-2 overflow-y-auto pr-1">
-                {NAV_ITEMS.filter((item) => item.enabled).map((item) => {
-                  const active = pathname === item.href;
-                  const disabledByTraining =
-                    isTrainingRunning && item.href !== "/studio";
-                  const disabledByDevice =
-                    chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
-                  if (disabledByTraining || disabledByDevice) {
-                    return (
-                      <span
-                        key={item.href}
-                        className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
-                      >
-                        <HugeiconsIcon icon={item.icon} className="size-4" />
-                        {item.label}
-                      </span>
-                    );
-                  }
-                  return (
-                    <Link
-                      key={item.href}
-                      to={item.href}
-                      onClick={() => setMobileOpen(false)}
-                      className={cn(
-                        "flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium",
-                        active
-                          ? "border-foreground bg-foreground text-background"
-                          : "border-border text-foreground hover:bg-accent",
-                      )}
-                    >
-                      <HugeiconsIcon icon={item.icon} className="size-4" />
-                      {item.label}
-                    </Link>
-                  );
-                })}
-                <a
-                  href="https://unsloth.ai/docs"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-3 flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  <HugeiconsIcon icon={Book03Icon} className="size-4" />
-                  Learn more (Docs)
-                </a>
-                {tourId ? (
-                  <button
-                    type="button"
-                    className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
-                    onClick={() => {
-                      openTour();
-                      setMobileOpen(false);
-                    }}
-                  >
-                    <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-                    Start tour
-                  </button>
-                ) : null}
-                <Collapsible
-                  open={mobileUpdateOpen}
-                  onOpenChange={setMobileUpdateOpen}
-                  className="rounded-md border border-border"
-                >
-                  <CollapsibleTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-foreground transition-colors hover:bg-accent"
-                      aria-label="Toggle update instructions"
-                    >
-                      <span className="flex items-center gap-2">
-                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
-                        Update Unsloth Studio
-                      </span>
-                      <HugeiconsIcon
-                        icon={ArrowRight01Icon}
-                        className={cn(
-                          "size-4 text-muted-foreground transition-transform",
-                          mobileUpdateOpen && "rotate-90",
-                        )}
-                      />
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="border-t border-border p-3 pt-2">
-                    <UpdateStudioInstructions
-                      defaultShell={defaultUpdateShell}
-                      showTitle={false}
-                    />
-                  </CollapsibleContent>
-                </Collapsible>
-                <button
-                  type="button"
-                  className="mt-3 flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    setShutdownOpen(true);
-                  }}
-                >
-                  <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
-                  Quit Unsloth Studio
-                </button>
-                <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
-                  <span className="text-sm font-medium text-foreground">Theme</span>
-                  <AnimatedThemeToggler
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
-                    title="Toggle theme"
-                    aria-label="Toggle theme"
-                  />
-                </div>
-              </div>
-            </SheetContent>
-          </Sheet>
         </div>
       </div>
     </header>

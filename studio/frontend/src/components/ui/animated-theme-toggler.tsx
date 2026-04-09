@@ -11,6 +11,68 @@ interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"butt
   duration?: number
 }
 
+export function useAnimatedThemeToggle(duration = 400) {
+  const [isDark, setIsDark] = useState(false)
+  const anchorRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    const updateTheme = () => {
+      setIsDark(document.documentElement.classList.contains("dark"))
+    }
+    updateTheme()
+    const observer = new MutationObserver(updateTheme)
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    })
+    return () => observer.disconnect()
+  }, [])
+
+  const toggleTheme = useCallback(async () => {
+    const anchor = anchorRef.current
+    const applyTheme = () => {
+      flushSync(() => {
+        const newTheme = !isDark
+        setIsDark(newTheme)
+        document.documentElement.classList.toggle("dark")
+        localStorage.setItem("theme", newTheme ? "dark" : "light")
+      })
+    }
+
+    if (!document.startViewTransition) {
+      applyTheme()
+      return
+    }
+
+    await document.startViewTransition(applyTheme).ready
+
+    if (anchor) {
+      const { top, left, width, height } = anchor.getBoundingClientRect()
+      const x = left + width / 2
+      const y = top + height / 2
+      const maxRadius = Math.hypot(
+        Math.max(left, window.innerWidth - left),
+        Math.max(top, window.innerHeight - top)
+      )
+      document.documentElement.animate(
+        {
+          clipPath: [
+            `circle(0px at ${x}px ${y}px)`,
+            `circle(${maxRadius}px at ${x}px ${y}px)`,
+          ],
+        },
+        {
+          duration,
+          easing: "ease-in-out",
+          pseudoElement: "::view-transition-new(root)",
+        }
+      )
+    }
+  }, [isDark, duration])
+
+  return { isDark, toggleTheme, anchorRef }
+}
+
 export const AnimatedThemeToggler = ({
   className,
   duration = 400,
@@ -38,14 +100,21 @@ export const AnimatedThemeToggler = ({
   const toggleTheme = useCallback(async () => {
     if (!buttonRef.current) return
 
-    await document.startViewTransition(() => {
+    const apply = () => {
       flushSync(() => {
         const newTheme = !isDark
         setIsDark(newTheme)
         document.documentElement.classList.toggle("dark")
         localStorage.setItem("theme", newTheme ? "dark" : "light")
       })
-    }).ready
+    }
+
+    if (!document.startViewTransition) {
+      apply()
+      return
+    }
+
+    await document.startViewTransition(apply).ready
 
     const { top, left, width, height } =
       buttonRef.current.getBoundingClientRect()

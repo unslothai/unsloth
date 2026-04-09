@@ -14,7 +14,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { useSidebar } from "@/components/ui/sidebar";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
@@ -61,9 +62,20 @@ export function StudioPage(): ReactElement {
         ? "configure"
         : requestedTab;
 
+  const { setPinned } = useSidebar();
+  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
+
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const tourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
+  const baseTourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
+  // Inject onEnter for navbar-targeting steps so the sidebar expands during the tour.
+  const tourSteps = useMemo(
+    () =>
+      baseTourSteps.map((step) =>
+        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
+      ),
+    [baseTourSteps, pinSidebar],
+  );
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
