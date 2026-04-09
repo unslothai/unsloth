@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
@@ -170,3 +170,30 @@ async def _get_current_subject(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired token",
         )
+
+
+# ── Dual-auth for OpenAI-compatible endpoints ───────────────────
+
+_optional_security = HTTPBearer(auto_error = False)
+
+
+async def get_current_subject_or_api_key(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_security),
+) -> str:
+    """Accept a valid JWT or the auto-generated API key for OpenAI-compatible endpoints."""
+    if credentials is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing Authorization header",
+        )
+
+    token = credentials.credentials
+
+    # Check auto-generated API key (fast path for external consumers)
+    external_key = getattr(request.app.state, "external_api_key", None)
+    if external_key and token == external_key:
+        return "__api_user__"
+
+    # Fall back to JWT validation (Studio frontend sessions)
+    return await _get_current_subject(credentials, allow_password_change = False)

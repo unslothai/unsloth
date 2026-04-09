@@ -331,6 +331,7 @@ def run_server(
     # binds (port==0) leave it unset and let request handlers fall back
     # to the ASGI request scope or request.base_url.
     app.state.server_port = port if port and port > 0 else None
+    app.state.bind_host = host
 
     # Run server in a daemon thread
     def _run():

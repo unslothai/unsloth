@@ -55,6 +55,7 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
+import { authFetch } from "@/features/auth";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
@@ -83,15 +84,7 @@ type LoraCandidate = {
   updatedAt?: number;
 };
 
-const ENDPOINT_BASE_URL_FALLBACK = "http://127.0.0.1:8001/v1";
 const SHIKI_THEME = ["github-light", "github-dark"] as ["github-light", "github-dark"];
-
-function buildDefaultEndpointBaseUrl(): string {
-  if (typeof window === "undefined") {
-    return ENDPOINT_BASE_URL_FALLBACK;
-  }
-  return `${window.location.origin}/v1`;
-}
 
 function HighlightedSnippet({
   language,
@@ -544,10 +537,10 @@ export function ChatPage(): ReactElement {
   const [view, setView] = useState<ChatView>(getInitialSingleChatView);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endpointDialogOpen, setEndpointDialogOpen] = useState(false);
-  const [endpointBaseUrl, setEndpointBaseUrl] = useState(
-    buildDefaultEndpointBaseUrl,
-  );
-  const [endpointApiKey, setEndpointApiKey] = useState("sk-no-key-required");
+  const [endpointLocalUrl, setEndpointLocalUrl] = useState("");
+  const [endpointExternalUrl, setEndpointExternalUrl] = useState<string | null>(null);
+  const [endpointBaseUrl, setEndpointBaseUrl] = useState("");
+  const [endpointApiKey, setEndpointApiKey] = useState("");
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -617,17 +610,21 @@ print(completion.choices[0].message.content)`,
   );
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    setEndpointBaseUrl((prev) =>
-      prev === ENDPOINT_BASE_URL_FALLBACK ? buildDefaultEndpointBaseUrl() : prev,
-    );
-  }, []);
-
-  useEffect(() => {
     if (!endpointDialogOpen) return;
-    setEndpointBaseUrl((prev) =>
-      prev.trim().length === 0 ? buildDefaultEndpointBaseUrl() : prev,
-    );
+    let cancelled = false;
+    authFetch("/api/inference/access-endpoint")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setEndpointApiKey(data.api_key);
+        setEndpointLocalUrl(data.local_url);
+        setEndpointExternalUrl(data.external_url ?? null);
+        setEndpointBaseUrl(data.local_url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [endpointDialogOpen]);
 
   const handleCheckpointChange = useCallback(
@@ -1101,16 +1098,47 @@ print(completion.choices[0].message.content)`,
             </DialogHeader>
             <div className="space-y-3">
               <div className="grid gap-1.5">
-                <label htmlFor="endpoint-base-url" className="text-xs font-medium">
-                  Base URL
-                </label>
-                <Input
-                  id="endpoint-base-url"
-                  value={endpointBaseUrl}
-                  onChange={(event) => setEndpointBaseUrl(event.target.value)}
-                  className="font-mono text-xs"
-                />
+                <label className="text-xs font-medium">Base URL (Local)</label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={endpointLocalUrl}
+                    readOnly
+                    className="font-mono text-xs"
+                  />
+                  {endpointBaseUrl !== endpointLocalUrl && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 text-xs"
+                      onClick={() => setEndpointBaseUrl(endpointLocalUrl)}
+                    >
+                      Use
+                    </Button>
+                  )}
+                </div>
               </div>
+              {endpointExternalUrl && (
+                <div className="grid gap-1.5">
+                  <label className="text-xs font-medium">Base URL (Network)</label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={endpointExternalUrl}
+                      readOnly
+                      className="font-mono text-xs"
+                    />
+                    {endpointBaseUrl !== endpointExternalUrl && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        onClick={() => setEndpointBaseUrl(endpointExternalUrl)}
+                      >
+                        Use
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="grid gap-1.5">
                 <label htmlFor="endpoint-api-key" className="text-xs font-medium">
                   API Key
@@ -1118,18 +1146,18 @@ print(completion.choices[0].message.content)`,
                 <Input
                   id="endpoint-api-key"
                   value={endpointApiKey}
-                  onChange={(event) => setEndpointApiKey(event.target.value)}
+                  readOnly
                   className="font-mono text-xs"
                 />
               </div>
               <div className="grid gap-1.5">
                 <label htmlFor="endpoint-model-alias" className="text-xs font-medium">
-                  Model Alias
+                  Model
                 </label>
                 <Input
                   id="endpoint-model-alias"
                   value={modelAlias}
-                  readOnly={true}
+                  readOnly
                   className="font-mono text-xs"
                 />
               </div>

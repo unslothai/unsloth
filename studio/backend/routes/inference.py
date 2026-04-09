@@ -6,6 +6,7 @@ Inference API routes for model loading and text generation.
 """
 
 import os
+import secrets as _secrets
 import sys
 import time
 import uuid
@@ -84,7 +85,7 @@ from models.inference import (
     ValidateModelRequest,
     ValidateModelResponse,
 )
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, get_current_subject_or_api_key
 
 import io
 import wave
@@ -121,6 +122,7 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
+    fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -301,6 +303,11 @@ async def load_model(
 
             inference_config = load_inference_config(config.identifier)
 
+            # Auto-generate API key for external OpenAI-compatible access
+            fastapi_request.app.state.external_api_key = (
+                f"sk-unsloth-{_secrets.token_urlsafe(32)}"
+            )
+
             return LoadResponse(
                 status = "loaded",
                 model = config.identifier,
@@ -439,6 +446,11 @@ async def load_model(
         except Exception:
             pass
 
+        # Auto-generate API key for external OpenAI-compatible access
+        fastapi_request.app.state.external_api_key = (
+            f"sk-unsloth-{_secrets.token_urlsafe(32)}"
+        )
+
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -523,6 +535,7 @@ async def validate_model(
 @router.post("/unload", response_model = UnloadResponse)
 async def unload_model(
     request: UnloadRequest,
+    fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -530,6 +543,9 @@ async def unload_model(
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
+        # Clear API key for external access
+        fastapi_request.app.state.external_api_key = None
+
         # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
@@ -883,11 +899,53 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+# ── Access Endpoint (external OpenAI-compatible access) ──────────
+
+
+@router.get("/access-endpoint")
+async def get_access_endpoint(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return API key, local/external URLs, and model info for the Access Endpoint dialog."""
+    api_key = getattr(request.app.state, "external_api_key", None)
+    if not api_key:
+        raise HTTPException(status_code = 400, detail = "No model loaded")
+
+    port = getattr(request.app.state, "server_port", None)
+    local_url = f"http://127.0.0.1:{port}/v1" if port else f"{request.base_url}v1"
+
+    # Resolve external IP when bound to all interfaces (same as startup banner)
+    external_url = None
+    bind_host = getattr(request.app.state, "bind_host", None)
+    if bind_host in ("0.0.0.0", "::") and port:
+        from run import _resolve_external_ip
+
+        ext_ip = _resolve_external_ip()
+        if ext_ip and ext_ip not in ("127.0.0.1", "0.0.0.0", "localhost"):
+            external_url = f"http://{ext_ip}:{port}/v1"
+
+    llama_backend = get_llama_cpp_backend()
+    backend = get_inference_backend()
+    model = (
+        llama_backend.model_identifier
+        if llama_backend.is_loaded
+        else (list(backend.models.keys())[0] if backend.models else "default")
+    )
+
+    return {
+        "api_key": api_key,
+        "local_url": local_url,
+        "external_url": external_url,
+        "model": model,
+    }
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(get_current_subject_or_api_key),
 ):
     """
     OpenAI-compatible chat completions endpoint.
@@ -1783,7 +1841,7 @@ async def serve_sandbox_file(
 
 @router.get("/models")
 async def openai_list_models(
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(get_current_subject_or_api_key),
 ):
     """
     OpenAI-compatible model listing endpoint.
