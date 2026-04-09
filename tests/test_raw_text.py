@@ -174,9 +174,7 @@ def test_raw_text_loader():
             )
 
         # Mixed paragraph + Unicode whitespace realistic input
-        mixed = preprocessor.clean_text(
-            "Section\u00a01\r\n\r\nBody\ftext\u202Fhere"
-        )
+        mixed = preprocessor.clean_text("Section\u00a01\r\n\r\nBody\ftext\u202fhere")
         assert mixed == "Section 1\n\nBody text here", (
             "Should preserve paragraph breaks and normalize Unicode "
             "whitespace simultaneously"
@@ -197,7 +195,7 @@ def test_raw_text_loader():
         # becomes "word1 word2" on a second call.
         assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
         assert preprocessor.clean_text("a \u00e9 b") == "a b"
-        assert preprocessor.clean_text("prefix \U0001F600 suffix") == "prefix suffix"
+        assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
 
         # Stripping a non-ASCII character adjacent to a newline must not
         # leave a stray leading/trailing space on the neighbouring line.
@@ -212,7 +210,7 @@ def test_raw_text_loader():
             "  messy   text  \n\n\n  ",
             "Line 1\r\n\r\n\r\nLine 2",
             "hello\u00a0world",
-            "Section\u00a01\r\n\r\nBody\ftext\u202Fhere",
+            "Section\u00a01\r\n\r\nBody\ftext\u202fhere",
             "word1 \u00a9 word2",
             "a \u00e9 b",
         ]
