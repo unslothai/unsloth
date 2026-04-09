@@ -855,15 +855,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_sizes_chunks = chunk_optional(image_sizes, B)
 
             temperature = self.temperature
-            # Gemma-4 multimodal configs store final_logit_softcapping on the
-            # nested text_config; fall back to it so VLM training matches HF.
-            logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
-            if logit_softcapping is None:
-                _text_cfg = getattr(model.config, "text_config", None)
-                if _text_cfg is not None:
-                    logit_softcapping = getattr(_text_cfg, "final_logit_softcapping", None)
-            if logit_softcapping is None:
-                logit_softcapping = 0
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
@@ -1010,11 +1002,25 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
+def _unsloth_get_final_logit_softcapping(config):
+    """Return final_logit_softcapping for a model config, falling back to the
+    nested ``text_config`` for multimodal models such as Gemma-4 where the
+    attribute only lives on ``config.text_config``. Returns 0 if unset.
+    """
+    softcap = getattr(config, "final_logit_softcapping", None)
+    if softcap is None:
+        text_cfg = getattr(config, "text_config", None)
+        if text_cfg is not None:
+            softcap = getattr(text_cfg, "final_logit_softcapping", None)
+    return 0 if softcap is None else softcap
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -1113,15 +1119,7 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = getattr(model.config, "final_logit_softcapping", None)  # Gemma
-        if logit_softcapping is None:
-            # Gemma-4 multimodal configs store final_logit_softcapping on the
-            # nested text_config; fall back to it so VLM training matches HF.
-            _text_cfg = getattr(model.config, "text_config", None)
-            if _text_cfg is not None:
-                logit_softcapping = getattr(_text_cfg, "final_logit_softcapping", None)
-        if logit_softcapping is None:
-            logit_softcapping = 0
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
         logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
