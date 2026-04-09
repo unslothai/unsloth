@@ -14,8 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
-import { useSidebar } from "@/components/ui/sidebar";
+import { type ReactElement, useEffect, useState } from "react";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
@@ -24,6 +23,8 @@ import { TrainingSection } from "./sections/training-section";
 import { LiveTrainingView } from "./live-training-view";
 import { HistoricalTrainingView } from "./historical-training-view";
 import { HistoryCardGrid } from "./history-card-grid";
+
+const STUDIO_TOUR_KEY = "tour:studio:v1";
 
 export function StudioPage(): ReactElement {
   useTrainingRuntimeLifecycle();
@@ -48,12 +49,7 @@ export function StudioPage(): ReactElement {
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const [requestedTab, setRequestedTab] = useState("configure");
-  const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
-  const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
-
-  useEffect(() => {
-    return () => setSelectedHistoryRunId(null);
-  }, [setSelectedHistoryRunId]);
+  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
 
   // Derive activeTab: auto-switch to "current-run" only while training is
   // genuinely running.  Once training ends, honour whatever tab the user clicks.
@@ -65,24 +61,15 @@ export function StudioPage(): ReactElement {
         ? "configure"
         : requestedTab;
 
-  const { setPinned } = useSidebar();
-  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
-
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const baseTourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
-  // Inject onEnter for navbar-targeting steps so the sidebar expands during the tour.
-  const tourSteps = useMemo(
-    () =>
-      baseTourSteps.map((step) =>
-        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
-      ),
-    [baseTourSteps, pinSidebar],
-  );
+  const tourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
     enabled: tourEnabled,
+    autoKey: isConfigTour ? STUDIO_TOUR_KEY : undefined,
+    autoWhen: isConfigTour,
   });
 
   const setTourOpen = tour.setOpen;
@@ -98,14 +85,6 @@ export function StudioPage(): ReactElement {
       setSelectedHistoryRunId(null);
     }
   }, [isTrainingRunning, requestedTab]);
-
-  // Selecting a run from the sidebar only sets selectedHistoryRunId; auto-switch
-  // to the History tab so the main panel reflects the selection.
-  useEffect(() => {
-    if (selectedHistoryRunId && requestedTab !== "history") {
-      setRequestedTab("history");
-    }
-  }, [selectedHistoryRunId, requestedTab]);
 
   useEffect(() => {
     ensureModelDefaultsLoaded();
@@ -127,8 +106,8 @@ export function StudioPage(): ReactElement {
   })();
 
   return (
-    <div className="relative min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div className="relative min-h-screen overflow-hidden bg-background">
+      <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
         <DatasetPreviewDialog
@@ -209,9 +188,6 @@ export function StudioPage(): ReactElement {
                   } else {
                     setSelectedHistoryRunId(runId);
                   }
-                }} onResumeStarted={() => {
-                  setSelectedHistoryRunId(null);
-                  handleTabChange("current-run");
                 }} />
               )}
             </TabsContent>

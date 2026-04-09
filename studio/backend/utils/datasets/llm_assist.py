@@ -26,7 +26,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_HELPER_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF"
+DEFAULT_HELPER_MODEL_REPO = "unsloth/Qwen3.5-4B-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500

@@ -6,7 +6,6 @@ import type {
   RecipeExecutionBatch,
   RecipeExecutionKind,
   RecipeExecutionRecord,
-  RecipeSourceProgress,
 } from "../execution-types";
 import {
   DATASET_PAGE_SIZE,
@@ -73,14 +72,6 @@ export function toExecutionLogLine(event: JobEvent): string | null {
   return null;
 }
 
-function normalizeSourceProgress(input: unknown): RecipeSourceProgress | null {
-  const raw = normalizeObject(input);
-  if (!raw) {
-    return null;
-  }
-  return raw as RecipeSourceProgress;
-}
-
 export function applyExecutionStatusSnapshot(
   execution: RecipeExecutionRecord,
   status: JobStatusResponse,
@@ -109,7 +100,6 @@ export function applyExecutionStatusSnapshot(
       (normalizeObject(status.column_progress) as RecipeExecutionRecord["column_progress"]) ??
       null,
     batch,
-    source_progress: normalizeSourceProgress(status.source_progress),
     model_usage: normalizeObject(status.model_usage),
     artifact_path: status.artifact_path ?? execution.artifact_path,
     error: status.error ?? null,
@@ -147,7 +137,6 @@ export function createBaseExecutionRecord(input: {
     progress: null,
     column_progress: null,
     batch: null,
-    source_progress: null,
     model_usage: null,
     lastEventId: null,
     artifact_path: null,

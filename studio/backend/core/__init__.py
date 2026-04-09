@@ -31,7 +31,6 @@ __all__ = [
     # Config
     "ModelConfig",
     "is_vision_model",
-    "scan_trained_models",
     "scan_trained_loras",
     "load_model_defaults",
     "get_base_model_from_lora",
@@ -73,7 +72,6 @@ def __getattr__(name):
     if name in (
         "is_vision_model",
         "ModelConfig",
-        "scan_trained_models",
         "scan_trained_loras",
         "load_model_defaults",
         "get_base_model_from_lora",
@@ -81,15 +79,14 @@ def __getattr__(name):
         from utils.models import (
             is_vision_model,
             ModelConfig,
-            scan_trained_models,
+            scan_trained_loras,
             load_model_defaults,
             get_base_model_from_lora,
         )
 
         globals()["is_vision_model"] = is_vision_model
         globals()["ModelConfig"] = ModelConfig
-        globals()["scan_trained_models"] = scan_trained_models
-        globals()["scan_trained_loras"] = scan_trained_models
+        globals()["scan_trained_loras"] = scan_trained_loras
         globals()["load_model_defaults"] = load_model_defaults
         globals()["get_base_model_from_lora"] = get_base_model_from_lora
         return globals()[name]

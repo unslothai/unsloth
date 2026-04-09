@@ -25,7 +25,6 @@ import textwrap
 import warnings
 import sys
 import functools
-import inspect
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -488,32 +487,6 @@ def fix_vllm_guided_decoding_params():
         vllm.sampling_params.GuidedDecodingParams = (
             vllm.sampling_params.StructuredOutputsParams
         )
-
-
-def fix_trl_vllm_ascend():
-    # transformers >= 4.48's `_is_package_available(name)` returns a tuple
-    # (bool, version_or_None). TRL caches that tuple in module-level
-    # `_*_available` flags and the matching `is_*_available()` accessors
-    # return the tuple directly. A non-empty tuple is always truthy, so
-    # `if is_X_available():` fires even when X is absent, triggering an
-    # unconditional `import X` that fails. The surfaced case is
-    # `vllm_ascend` (blocks `from trl import GRPOConfig, GRPOTrainer`
-    # outside Huawei Ascend hosts); `llm_blender`, `deepspeed`, `joblib`
-    # share the same shape. Coerce every tuple-cached flag in
-    # trl.import_utils to bool; the existing accessors that just return
-    # the cached value then naturally yield a bool.
-    if importlib.util.find_spec("trl") is None:
-        return
-    try:
-        import trl.import_utils as tiu
-    except Exception:
-        return
-    for attr in list(vars(tiu)):
-        if not (attr.startswith("_") and attr.endswith("_available")):
-            continue
-        cached = getattr(tiu, attr)
-        if isinstance(cached, tuple):
-            setattr(tiu, attr, bool(cached and cached[0]))
 
 
 def ignore_logger_messages():
@@ -1370,88 +1343,6 @@ def disable_broken_wandb():
             pass
         # Set env var as additional fallback
         os.environ["WANDB_DISABLED"] = "true"
-
-
-def patch_peft_weight_converter_compatibility():
-    """Allow PEFT converter rebuilds on legacy converter constructors."""
-    try:
-        from peft.utils import transformers_weight_conversion as twc
-    except (ImportError, AttributeError):
-        return
-
-    if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
-        return
-
-    import threading
-
-    original_build = twc.build_peft_weight_mapping
-    patch_lock = threading.RLock()
-
-    def _patch_weight_converter_ctors(weight_conversions, patched):
-        seen_classes = set()
-
-        for conversion in weight_conversions:
-            conversion_cls = conversion.__class__
-            if conversion_cls in seen_classes:
-                continue
-            seen_classes.add(conversion_cls)
-
-            original_init = conversion_cls.__init__
-            params = inspect.signature(original_init).parameters
-            supports_kwargs = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            )
-            supports_distributed = "distributed_operation" in params
-            supports_quantization = "quantization_operation" in params
-            if supports_kwargs or (supports_distributed and supports_quantization):
-                continue
-
-            def _compat_init(
-                self,
-                *args,
-                __original_init = original_init,
-                __supports_distributed = supports_distributed,
-                __supports_quantization = supports_quantization,
-                **kwargs,
-            ):
-                unsupported = {}
-                if not __supports_distributed and "distributed_operation" in kwargs:
-                    unsupported["distributed_operation"] = kwargs.pop(
-                        "distributed_operation"
-                    )
-                if not __supports_quantization and "quantization_operation" in kwargs:
-                    unsupported["quantization_operation"] = kwargs.pop(
-                        "quantization_operation"
-                    )
-                result = __original_init(self, *args, **kwargs)
-                for name, value in unsupported.items():
-                    if hasattr(self, name):
-                        setattr(self, name, value)
-                return result
-
-            conversion_cls.__init__ = _compat_init
-            patched.append((conversion_cls, original_init))
-
-    @functools.wraps(original_build)
-    def _build_peft_weight_mapping_compat(
-        weight_conversions,
-        adapter_name,
-        peft_config = None,
-    ):
-        if not weight_conversions:
-            return original_build(weight_conversions, adapter_name, peft_config)
-
-        patched_classes = []
-        with patch_lock:
-            try:
-                _patch_weight_converter_ctors(weight_conversions, patched_classes)
-                return original_build(weight_conversions, adapter_name, peft_config)
-            finally:
-                for conversion_cls, original_init in patched_classes:
-                    conversion_cls.__init__ = original_init
-
-    twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
-    twc._unsloth_weight_converter_compat_patch = True
 
 
 CAUSAL_CONV1D_BROKEN = False

@@ -27,7 +27,7 @@ model, tokenizer = FastModel.from_pretrained(
 
 print("✅ Base model loaded successfully!")
 
-### Attempting save merge
+### Attemtping save merge
 
 
 print(f"\n{'='*80}")

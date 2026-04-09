@@ -16,32 +16,19 @@ import {
   WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
-  useAuiEvent,
   useAuiState,
   useLocalRuntime,
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
-import {
-  type ReactElement,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-} from "react";
+import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
-import {
-  isChatThreadDeleted,
-  markChatThreadDeleted,
-} from "./utils/chat-thread-tombstones";
-import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
 
 const DEFAULT_SUGGESTIONS = [
   {
@@ -344,9 +331,6 @@ function fallbackTitleFromUserText(userText: string): string {
 }
 
 function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
-  if (typeof content === "string") {
-    return content;
-  }
   return Array.isArray(content)
     ? JSON.parse(JSON.stringify(content))
     : [];
@@ -396,55 +380,6 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   };
 }
 
-async function ensureThreadRecord({
-  threadId,
-  modelType,
-  pairId,
-}: {
-  threadId: string;
-  modelType: ModelType;
-  pairId?: string;
-}): Promise<void> {
-  if (isChatThreadDeleted(threadId)) {
-    return;
-  }
-  const existing = await db.threads.get(threadId);
-  if (existing) {
-    return;
-  }
-
-  const currentModelId =
-    useChatRuntimeStore.getState().params.checkpoint ?? "";
-  const record = {
-    id: threadId,
-    title: "New Chat",
-    modelType,
-    modelId: currentModelId,
-    pairId,
-    archived: false,
-    createdAt: Date.now(),
-  };
-
-  try {
-    await db.threads.add(record);
-  } catch (error) {
-    // assistant-ui can issue overlapping first-message persistence calls.
-    // If another call created the same thread while this one was waiting,
-    // treat initialization as successful and let the message write continue.
-    if (await db.threads.get(threadId)) {
-      return;
-    }
-    throw error;
-  }
-}
-
-async function deleteThreadRows(threadId: string): Promise<void> {
-  await db.transaction("rw", db.threads, db.messages, async () => {
-    await db.messages.where("threadId").equals(threadId).delete();
-    await db.threads.delete(threadId);
-  });
-}
-
 function createDexieAdapter(
   modelType: ModelType,
   pairId?: string,
@@ -480,7 +415,17 @@ function createDexieAdapter(
     },
 
     async initialize(threadId: string) {
-      await ensureThreadRecord({ threadId, modelType, pairId });
+      const currentModelId =
+        useChatRuntimeStore.getState().params.checkpoint ?? "";
+      await db.threads.add({
+        id: threadId,
+        title: "New Chat",
+        modelType,
+        modelId: currentModelId,
+        pairId,
+        archived: false,
+        createdAt: Date.now(),
+      });
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -497,8 +442,8 @@ function createDexieAdapter(
     },
 
     async delete(remoteId: string) {
-      markChatThreadDeleted(remoteId);
-      await deleteThreadRows(remoteId);
+      await db.messages.where("threadId").equals(remoteId).delete();
+      await db.threads.delete(remoteId);
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
@@ -651,10 +596,6 @@ function ThreadHistoryProvider({
 
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
-        if (isChatThreadDeleted(remoteId)) {
-          await deleteThreadRows(remoteId);
-          return;
-        }
         // Keep single-chat runtime state in sync once a new chat is first
         // persisted. Compare panes intentionally do not write global activeThreadId.
         const thread = await db.threads.get(remoteId);
@@ -737,16 +678,9 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
-      const switchResult = aui.threads().switchToThread(threadId) as unknown;
-      if (switchResult && typeof (switchResult as Promise<void>).catch === "function") {
-        void (switchResult as Promise<void>).catch(() => {
-          if (syncActiveThreadId) {
-            useChatRuntimeStore.getState().setActiveThreadId(null);
-          }
-        });
-      }
+      aui.threads().switchToThread(threadId);
     }
-  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [aui, isLoading, mainThreadId, threadId]);
 
   useEffect(() => {
     if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
@@ -793,94 +727,6 @@ function ActiveThreadSync({
   return null;
 }
 
-// Exposes the current thread's cancelRun() via the shared store so external
-// surfaces (e.g. the sidebar trash button) can stop an in-flight stream
-// before deleting the thread — mirroring the Stop → Trash sequence.
-function CancelRegistrar(): ReactElement | null {
-  const aui = useAui();
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const isRunning = useChatRuntimeStore((s) =>
-    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
-  );
-
-  useEffect(() => {
-    if (!mainThreadId || !isRunning) return;
-    const cancel = () => {
-      try {
-        aui.thread().cancelRun();
-      } catch {
-        // Run may have already ended between the caller's read and this call.
-      }
-    };
-    useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
-    return () => {
-      useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
-    };
-  }, [aui, mainThreadId, isRunning]);
-
-  return null;
-}
-
-function ThreadDexieAutosave({
-  modelType,
-  pairId,
-}: {
-  modelType: ModelType;
-  pairId?: string;
-}): ReactElement | null {
-  const aui = useAui();
-  const saveChainRef = useRef(Promise.resolve());
-
-  const saveThread = useCallback(async (threadId: string): Promise<void> => {
-    const runtime = aui.threads().__internal_getAssistantRuntime?.();
-    if (!runtime) {
-      return;
-    }
-    const exported = runtime.threads.getById(threadId).export();
-    if (exported.messages.length === 0) {
-      return;
-    }
-
-    const { remoteId } = await runtime.threads.getItemById(threadId).initialize();
-    if (isChatThreadDeleted(remoteId)) {
-      await deleteThreadRows(remoteId);
-      return;
-    }
-    await syncExportedRepositoryToDexie(remoteId, exported);
-    if (isChatThreadDeleted(remoteId)) {
-      await deleteThreadRows(remoteId);
-      return;
-    }
-
-    if (modelType === "base" && !pairId) {
-      const store = useChatRuntimeStore.getState();
-      const activeThreadId = runtime.threads.getState().mainThreadId;
-      if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
-        store.setActiveThreadId(remoteId);
-      }
-    }
-  }, [aui, modelType, pairId]);
-
-  const queueSave = useCallback((threadId: string): void => {
-    saveChainRef.current = saveChainRef.current
-      .catch(() => {})
-      .then(() => saveThread(threadId))
-      .catch((error) => {
-        console.error("Failed to autosave chat thread", error);
-      });
-  }, [saveThread]);
-
-  useAuiEvent("thread.runEnd", ({ threadId }) => {
-    queueSave(threadId);
-  });
-
-  useAuiEvent("thread.runStart", ({ threadId }) => {
-    queueSave(threadId);
-  });
-
-  return null;
-}
-
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -913,8 +759,6 @@ export function ChatRuntimeProvider({
       <ActiveThreadSync
         enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
       />
-      <ThreadDexieAutosave modelType={modelType} pairId={pairId} />
-      <CancelRegistrar />
       {initialThreadId && (
         <ThreadAutoSwitch
           threadId={initialThreadId}

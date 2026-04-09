@@ -7,12 +7,12 @@ import { motion } from "motion/react";
 
 interface SplashScreenProps {
   onStartOnboarding: () => void;
-  onSkipOnboarding: () => void;
+  onGoToStudio: () => void;
 }
 
 export function SplashScreen({
   onStartOnboarding,
-  onSkipOnboarding,
+  onGoToStudio,
 }: SplashScreenProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-b from-background via-background to-primary/5 p-6">
@@ -65,7 +65,7 @@ export function SplashScreen({
           <Button size="lg" onClick={onStartOnboarding}>
             Start Onboarding
           </Button>
-          <Button size="lg" variant="outline" onClick={onSkipOnboarding}>
+          <Button size="lg" variant="outline" onClick={onGoToStudio}>
             Skip Onboarding
           </Button>
         </motion.div>

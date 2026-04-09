@@ -27,7 +27,6 @@ import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
-from importlib.metadata import PackageNotFoundError, version as package_version
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -62,7 +61,6 @@ from routes import (
     datasets_router,
     export_router,
     inference_router,
-    inference_studio_router,
     models_router,
     training_history_router,
     training_router,
@@ -78,28 +76,6 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
-from utils.native_path_leases import native_path_leases_supported
-
-
-def get_unsloth_version() -> str:
-    try:
-        return package_version("unsloth")
-    except PackageNotFoundError:
-        pass
-
-    version_file = (
-        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    )
-    try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
-            if line.startswith("__version__ = "):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return "dev"
-
-
-UNSLOTH_VERSION = get_unsloth_version()
 
 
 @asynccontextmanager
@@ -164,7 +140,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title = "Unsloth UI Backend",
-    version = UNSLOTH_VERSION,
+    version = "1.0.0",
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
 )
@@ -181,24 +157,9 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 # CORS middleware
-_api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
-_cors_origins = ["*"]
-if _api_only:
-    _cors_origins = [
-        "tauri://localhost",  # Linux/macOS Tauri webview
-        "http://tauri.localhost",  # Windows Tauri webview
-        "http://localhost",  # dev fallback
-        "http://localhost:5173",  # Tauri dev/Vite
-        "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
-    ]
-    _cors_origin_regex = None
-else:
-    _cors_origin_regex = None
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = _cors_origins,
-    allow_origin_regex = _cors_origin_regex,
+    allow_origins = ["*"],  # In production, specify allowed origins
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -211,9 +172,6 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
-# Studio-only inference endpoints (cancel, etc.) are intentionally NOT
-# exposed on the /v1 OpenAI-compat prefix below.
-app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
 # OpenAI-compatible endpoints: mount the same inference router at /v1
 # so external tools (Open WebUI, SillyTavern, etc.) can use the
@@ -240,12 +198,8 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
-        "version": UNSLOTH_VERSION,
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
-        "desktop_protocol_version": 1,
-        "supports_desktop_auth": True,
-        "native_path_leases_supported": native_path_leases_supported(),
     }
 
 
@@ -283,7 +237,6 @@ async def get_system_info():
     import platform
     import psutil
     from utils.hardware import get_device
-    from utils.hardware.hardware import _backend_label
 
     visibility_info = get_backend_visible_gpu_info()
     gpu_info = {
@@ -297,10 +250,7 @@ async def get_system_info():
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        # Use the centralized _backend_label helper so the /api/system
-        # endpoint reports "rocm" on AMD hosts instead of "cuda", matching
-        # the /api/hardware and /api/gpu-visibility endpoints.
-        "device_backend": _backend_label(get_device()),
+        "device_backend": get_device().value,
         "cpu_count": psutil.cpu_count(),
         "memory": {
             "total_gb": round(memory.total / 1e9, 2),
@@ -399,7 +349,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
+        if full_path.startswith("api"):
             return {"error": "API endpoint not found"}
 
         file_path = (build_path / full_path).resolve()

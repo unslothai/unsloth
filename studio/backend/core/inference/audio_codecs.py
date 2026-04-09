@@ -8,7 +8,6 @@ Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 
 import io
 import re
-import subprocess
 import wave
 import structlog
 from loggers import get_logger
@@ -16,11 +15,6 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
-
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
-)
 
 logger = get_logger(__name__)
 
@@ -87,6 +81,7 @@ class AudioCodecManager:
             return
         import os
         import sys
+        import subprocess
 
         # Clone SparkAudio/Spark-TTS GitHub repo for the sparktts Python package
         # (same approach as training — the HF model repos don't contain the package)
@@ -106,8 +101,6 @@ class AudioCodecManager:
                     spark_code_dir,
                 ],
                 check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
             )
 
         if spark_code_dir not in sys.path:
@@ -126,6 +119,7 @@ class AudioCodecManager:
             return
         import os
         import sys
+        import subprocess
 
         # Clone OuteTTS repo (same pattern as Spark-TTS / BiCodec)
         # The pip package has problematic dependencies; the notebook clones and
@@ -145,8 +139,6 @@ class AudioCodecManager:
                     outetts_code_dir,
                 ],
                 check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
             )
             # Remove files that pull in heavy / incompatible dependencies
             # (matches notebook: gguf_model.py is under models/, others under outetts/)

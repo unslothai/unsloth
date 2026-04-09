@@ -64,42 +64,6 @@ class TestGetModelName(unittest.TestCase):
                 "unsloth/Ministral-3-3B-Instruct-2512",
                 True,
             ),
-            (
-                "allenai/Olmo-3-7B-Instruct",
-                True,
-                "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit",
-                True,
-            ),
-            (
-                "allenai/Olmo-3-7B-Instruct",
-                False,
-                "unsloth/Olmo-3-7B-Instruct",
-                True,
-            ),
-            (
-                "allenai/Olmo-3-7B-Think",
-                True,
-                "unsloth/Olmo-3-7B-Think-unsloth-bnb-4bit",
-                True,
-            ),
-            (
-                "allenai/Olmo-3-7B-Think",
-                False,
-                "unsloth/Olmo-3-7B-Think",
-                True,
-            ),
-            (
-                "allenai/Olmo-3-32B-Think",
-                True,
-                "unsloth/Olmo-3-32B-Think-unsloth-bnb-4bit",
-                True,
-            ),
-            (
-                "allenai/Olmo-3-32B-Think",
-                False,
-                "unsloth/Olmo-3-32B-Think",
-                True,
-            ),
             ("unsloth/Kimi-K2-Instruct", True, "unsloth/Kimi-K2-Instruct-BF16", True),
             ("unsloth/Kimi-K2-Instruct", False, "unsloth/Kimi-K2-Instruct", False),
             # Fallback-to-original behavior
@@ -148,10 +112,6 @@ class TestGetModelName(unittest.TestCase):
             (
                 "mistralai/ministral-3-3b-instruct-2512",
                 "unsloth/ministral-3-3b-instruct-2512-unsloth-bnb-4bit",
-            ),
-            (
-                "allenai/olmo-3-7b-instruct",
-                "unsloth/olmo-3-7b-instruct-unsloth-bnb-4bit",
             ),
             ("unsloth/kimi-k2-instruct", "unsloth/kimi-k2-instruct-bf16"),
         ]

@@ -7,15 +7,10 @@ import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 
-export function WizardFooter({
-  returnTo,
-  onBackToSplash,
-}: {
-  returnTo: string;
-  onBackToSplash: () => void;
-}) {
+export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void }) {
   const { currentStep, prevStep, nextStep, canProceed } = useTrainingConfigStore(
     useShallow((s) => ({
       currentStep: s.currentStep,
@@ -24,6 +19,7 @@ export function WizardFooter({
       canProceed: s.canProceed(),
     })),
   );
+  const navigate = useNavigate();
   const isFirst = currentStep === 1;
   const isLast = currentStep === STEPS.length;
 
@@ -45,7 +41,7 @@ export function WizardFooter({
               className="px-4"
               onClick={() => {
                 markOnboardingDone();
-                window.location.assign(returnTo);
+                navigate({ to: "/studio" });
               }}
             >
               Skip
@@ -55,12 +51,12 @@ export function WizardFooter({
             <Button
               onClick={() => {
                 markOnboardingDone();
-                window.location.assign(returnTo);
+                navigate({ to: "/studio" });
               }}
               disabled={!canProceed}
               className="px-4 !pr-4"
             >
-              Finish onboarding
+              Go to Studio
               <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
             </Button>
           ) : (
@@ -69,7 +65,7 @@ export function WizardFooter({
                 if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
                   sessionStorage.removeItem("unsloth_chat_only");
                   markOnboardingDone();
-                  window.location.assign("/chat");
+                  window.location.href = "/chat";
                 } else {
                   nextStep();
                 }

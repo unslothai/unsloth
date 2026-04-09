@@ -866,29 +866,12 @@ DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
 # =========================================== Gemma-4
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
 gemma4_template = \
-"""{%- macro strip_thinking(text) -%}
-    {%- set ns = namespace(result='') -%}
-    {%- for part in text.split('<channel|>') -%}
-        {%- if '<|channel>' in part -%}
-            {%- set ns.result = ns.result + part.split('<|channel>')[0] -%}
-        {%- else -%}
-            {%- set ns.result = ns.result + part -%}
-        {%- endif -%}
-    {%- endfor -%}
-    {{- ns.result | trim -}}
-{%- endmacro -%}
-{%- set thinking = enable_thinking is defined and enable_thinking -%}
-{%- set loop_messages = messages -%}
-{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
-    {{ '<|turn>system\n' }}
-    {%- if thinking -%}
-        {{ '<|think|>\n' }}
-    {%- endif -%}
-    {%- if messages[0]['role'] in ['system', 'developer'] -%}
-        {{ messages[0]['content'] | trim }}
-        {%- set loop_messages = messages[1:] -%}
-    {%- endif -%}
-    {{ '<turn|>\n' }}
+"""{%- if messages[0]['role'] == 'system' -%}
+    {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set first_user_prefix = "" -%}
+    {%- set loop_messages = messages -%}
 {%- endif -%}
 {%- for message in loop_messages -%}
     {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
@@ -899,13 +882,9 @@ gemma4_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' }}
+    {{ '<|turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
     {%- if message['content'] is string -%}
-        {%- if role == "model" -%}
-            {{ strip_thinking(message['content']) }}
-        {%- else -%}
-            {{ message['content'] | trim }}
-        {%- endif -%}
+        {{ message['content'] | trim }}
     {%- elif message['content'] is iterable -%}
         {%- for item in message['content'] -%}
             {%- if item['type'] == 'audio' -%}
@@ -915,11 +894,7 @@ gemma4_template = \
             {%- elif item['type'] == 'video' -%}
                 {{ '<|video|>' }}
             {%- elif item['type'] == 'text' -%}
-                {%- if role == "model" -%}
-                    {{ strip_thinking(item['text']) }}
-                {%- else -%}
-                    {{ item['text'] | trim }}
-                {%- endif -%}
+                {{ item['text'] | trim }}
             {%- endif -%}
         {%- endfor -%}
     {%- else -%}
@@ -943,31 +918,15 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4"] = None
 CHAT_TEMPLATES["gemma4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
 
-# Gemma-4 thinking template
+# Gemma-4 with empty thought channel (required for larger models like 31B, 26B-A4B)
+# Injects <|channel>thought\n<channel|> at the start of each model response during training
 gemma4_thinking_template = \
-"""{%- macro strip_thinking(text) -%}
-    {%- set ns = namespace(result='') -%}
-    {%- for part in text.split('<channel|>') -%}
-        {%- if '<|channel>' in part -%}
-            {%- set ns.result = ns.result + part.split('<|channel>')[0] -%}
-        {%- else -%}
-            {%- set ns.result = ns.result + part -%}
-        {%- endif -%}
-    {%- endfor -%}
-    {{- ns.result | trim -}}
-{%- endmacro -%}
-{%- set thinking = enable_thinking is defined and enable_thinking -%}
-{%- set loop_messages = messages -%}
-{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
-    {{ '<|turn>system\n' }}
-    {%- if thinking -%}
-        {{ '<|think|>\n' }}
-    {%- endif -%}
-    {%- if messages[0]['role'] in ['system', 'developer'] -%}
-        {{ messages[0]['content'] | trim }}
-        {%- set loop_messages = messages[1:] -%}
-    {%- endif -%}
-    {{ '<turn|>\n' }}
+"""{%- if messages[0]['role'] == 'system' -%}
+    {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set first_user_prefix = "" -%}
+    {%- set loop_messages = messages -%}
 {%- endif -%}
 {%- for message in loop_messages -%}
     {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
@@ -978,13 +937,12 @@ gemma4_thinking_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' }}
+    {{ '<|turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
+    {%- if role == "model" -%}
+        {{ '<|channel>thought\n<channel|>' }}
+    {%- endif -%}
     {%- if message['content'] is string -%}
-        {%- if role == "model" -%}
-            {{ strip_thinking(message['content']) }}
-        {%- else -%}
-            {{ message['content'] | trim }}
-        {%- endif -%}
+        {{ message['content'] | trim }}
     {%- elif message['content'] is iterable -%}
         {%- for item in message['content'] -%}
             {%- if item['type'] == 'audio' -%}
@@ -994,11 +952,7 @@ gemma4_thinking_template = \
             {%- elif item['type'] == 'video' -%}
                 {{ '<|video|>' }}
             {%- elif item['type'] == 'text' -%}
-                {%- if role == "model" -%}
-                    {{ strip_thinking(item['text']) }}
-                {%- else -%}
-                    {{ item['text'] | trim }}
-                {%- endif -%}
+                {{ item['text'] | trim }}
             {%- endif -%}
         {%- endfor -%}
     {%- else -%}
@@ -1008,9 +962,6 @@ gemma4_thinking_template = \
 {%- endfor -%}
 {%- if add_generation_prompt -%}
     {{'<|turn>model\n'}}
-    {%- if not thinking -%}
-        {{ '<|channel>thought\n<channel|>' }}
-    {%- endif -%}
 {%- endif -%}
 """
 
@@ -1765,8 +1716,6 @@ liquid_lfm2_template = \
 liquid_lfm2_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
 DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None # No system message in Phi-3
-CHAT_TEMPLATES["lfm-2.5"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
-DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
 # =========================================== Starling-LM

@@ -58,41 +58,16 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  type ChangeEvent,
-  type DragEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 
-const TRAINING_UPLOAD_EXTENSIONS = [
-  ".csv",
-  ".jsonl",
-  ".json",
-  ".parquet",
-  ".pdf",
-  ".docx",
-  ".txt",
-] as const;
-const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(TRAINING_UPLOAD_EXTENSIONS);
-const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
-const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
   "data-recipes:open-learning-recipes";
-
-function getFileExtension(fileName: string) {
-  const extensionStart = fileName.lastIndexOf(".");
-  return extensionStart >= 0 ? fileName.slice(extensionStart).toLowerCase() : "";
-}
 
 function isLikelyLocalDatasetRef(value: string) {
   return (
@@ -379,7 +354,6 @@ export function DatasetSection() {
   );
 
   const [isUploading, setIsUploading] = useState(false);
-  const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
   const [documentRedirectOpen, setDocumentRedirectOpen] = useState(false);
   const [redirectFileName, setRedirectFileName] = useState<string | null>(null);
 
@@ -406,15 +380,12 @@ export function DatasetSection() {
     }
   };
 
-  const handleDatasetFile = async (file: File) => {
-    const extension = getFileExtension(file.name);
-    if (!TRAINING_UPLOAD_EXTENSION_SET.has(extension)) {
-      toast.error("Unsupported file type", {
-        description: `Upload one ${TRAINING_UPLOAD_LABEL} file.`,
-      });
-      return;
-    }
+  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
 
+    const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
     if (DOCUMENT_REDIRECT_EXTENSIONS.has(extension)) {
       setRedirectFileName(file.name);
       setDocumentRedirectOpen(true);
@@ -422,44 +393,6 @@ export function DatasetSection() {
     }
 
     await handleFileUpload(file, selectLocalDataset, "Dataset uploaded");
-  };
-
-  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    await handleDatasetFile(file);
-  };
-
-  const handleDatasetDrop = (event: DragEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    setIsDatasetDragOver(false);
-    if (isUploading) return;
-
-    const files = Array.from(event.dataTransfer.files);
-    if (files.length === 0) return;
-
-    if (files.length > 1) {
-      toast.error("Upload one file at a time", {
-        description: "Training dataset upload accepts a single file.",
-      });
-      return;
-    }
-
-    void handleDatasetFile(files[0]);
-  };
-
-  const handleDatasetDragOver = (event: DragEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    if (isUploading) return;
-
-    event.dataTransfer.dropEffect = "copy";
-    setIsDatasetDragOver(true);
-  };
-
-  const handleDatasetDragLeave = () => {
-    setIsDatasetDragOver(false);
   };
 
   const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -991,7 +924,7 @@ export function DatasetSection() {
             </CollapsibleContent>
           </Collapsible>
 
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-4 pt-1">
             {selectedDatasetName ? (
               <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
                 <div className="rounded-md bg-indigo-500/10 p-1.5">
@@ -1038,32 +971,15 @@ export function DatasetSection() {
                 </Button>
               </div>
             ) : (
-              <button
-                type="button"
-                className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
-                  isDatasetDragOver
-                    ? "border-indigo-500/70 bg-indigo-500/10"
-                    : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
-                }`}
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-                onDrop={handleDatasetDrop}
-                onDragOver={handleDatasetDragOver}
-                onDragLeave={handleDatasetDragLeave}
-              >
+              <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3.5 py-3">
                 <HugeiconsIcon
-                  icon={CloudUploadIcon}
-                  className="pointer-events-none size-4 shrink-0 text-indigo-500"
+                  icon={Database02Icon}
+                  className="size-4 text-muted-foreground/40"
                 />
-                <span className="pointer-events-none min-w-0">
-                  <span className="block text-xs font-medium text-foreground">
-                    Drop 1 file here or click to upload
-                  </span>
-                  <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                    {TRAINING_UPLOAD_LABEL}
-                  </span>
+                <span className="text-xs text-muted-foreground">
+                  No dataset selected
                 </span>
-              </button>
+              </div>
             )}
 
             <div className="grid grid-cols-2 gap-2">
@@ -1096,7 +1012,7 @@ export function DatasetSection() {
           <input
             ref={fileInputRef}
             type="file"
-            accept={TRAINING_UPLOAD_ACCEPT}
+            accept=".json,.jsonl,.csv,.parquet,.pdf,.docx,.txt"
             className="hidden"
             onChange={(event) => {
               void handleDatasetFileChange(event);

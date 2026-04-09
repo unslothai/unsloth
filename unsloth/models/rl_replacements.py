@@ -30,8 +30,6 @@ from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
     chunked_selective_log_softmax,
-    _unsloth_get_mm_token_id,
-    _unsloth_fix_mm_token_type_ids,
 )
 from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
@@ -56,12 +54,6 @@ RL_PRE_ITEMS = defaultdict(list)
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
-
-_DPO_VISION_KEYS = (
-    "pixel_position_ids",
-    "image_position_ids",
-    "mm_token_type_ids",
-)
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -126,272 +118,6 @@ def dpo_trainer_fix_columns(call_args, extra_args):
 
 
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
-
-
-def dpo_trainer_fix_data_collator(call_args, extra_args):
-    if (
-        "data_collator" in call_args
-        and "train_dataset" in call_args
-        and "processing_class" in call_args
-    ):
-        fix_collator = (
-            "if hasattr(train_dataset, 'column_names'):\n"
-            "    column_names = set(train_dataset.column_names)\n"
-            "    is_dpo_dataset = ({'chosen', 'rejected'}.issubset(column_names) or\n"
-            "                      {'prompt_input_ids', 'chosen_input_ids', 'rejected_input_ids'}.issubset(column_names))\n"
-            "    if is_dpo_dataset and isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
-            "        data_collator = None\n"
-            "    del is_dpo_dataset, column_names\n"
-        )
-        return fix_collator
-    return ""
-
-
-RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_data_collator)
-
-
-def dpo_trainer_vision_process_row(
-    features,
-    processing_class,
-    max_prompt_length = None,
-    max_completion_length = None,
-    add_special_tokens = True,
-    is_chat = False,
-):
-    text = features.get("prompt", "")
-    images = features.get("images")
-    processor, tokenizer = processing_class, processing_class.tokenizer
-    processed_features = processor(
-        images = images,
-        text = text,
-        add_special_tokens = False,
-    )
-
-    prompt_input_ids = processed_features["input_ids"][0]
-    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)[
-        "input_ids"
-    ]
-    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)[
-        "input_ids"
-    ]
-
-    if add_special_tokens:
-        if tokenizer.bos_token_id is not None:
-            prompt_input_ids = [tokenizer.bos_token_id] + prompt_input_ids
-        if tokenizer.eos_token_id is not None:
-            prompt_input_ids = prompt_input_ids + [tokenizer.eos_token_id]
-    if not is_chat and tokenizer.eos_token_id is not None:
-        chosen_input_ids = chosen_input_ids + [tokenizer.eos_token_id]
-        rejected_input_ids = rejected_input_ids + [tokenizer.eos_token_id]
-
-    if max_prompt_length is not None:
-        prompt_input_ids = prompt_input_ids[-max_prompt_length:]
-    if max_completion_length is not None:
-        chosen_input_ids = chosen_input_ids[:max_completion_length]
-        rejected_input_ids = rejected_input_ids[:max_completion_length]
-
-    output = {
-        "prompt_input_ids": prompt_input_ids,
-        "chosen_input_ids": chosen_input_ids,
-        "rejected_input_ids": rejected_input_ids,
-    }
-    if "pixel_values" in processed_features:
-        output["pixel_values"] = processed_features["pixel_values"][0]
-    if "pixel_attention_mask" in processed_features:
-        output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
-    if "image_sizes" in processed_features:
-        output["image_sizes"] = processed_features["image_sizes"][0]
-    if "token_type_ids" in processed_features:
-        token_type_ids = processed_features["token_type_ids"][0]
-        if max_prompt_length is not None:
-            token_type_ids = token_type_ids[-max_prompt_length:]
-        output["token_type_ids"] = token_type_ids
-    if "pixel_position_ids" in processed_features:
-        output["pixel_position_ids"] = processed_features["pixel_position_ids"][0]
-    if "image_position_ids" in processed_features:
-        output["image_position_ids"] = processed_features["image_position_ids"][0]
-    if "mm_token_type_ids" in processed_features:
-        mm_token_type_ids = processed_features["mm_token_type_ids"][0]
-        if max_prompt_length is not None:
-            mm_token_type_ids = mm_token_type_ids[-max_prompt_length:]
-        output["mm_token_type_ids"] = mm_token_type_ids
-
-    return output
-
-
-def dpo_trainer_vision_signature_columns(function_name, function):
-    if function_name != "_set_signature_columns_if_needed":
-        return function
-
-    if all(_k in function for _k in _DPO_VISION_KEYS):
-        return function
-
-    _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
-    new_function = function.replace(
-        '                "image_sizes",\n' '                "token_type_ids",\n',
-        f'                "image_sizes",\n'
-        f"{_extra_columns}"
-        f'                "token_type_ids",\n',
-    )
-    if new_function != function:
-        return new_function
-    return function.replace(
-        '                "image_sizes",\n' '                "ref_chosen_logps",\n',
-        f'                "image_sizes",\n'
-        f"{_extra_columns}"
-        f'                "ref_chosen_logps",\n',
-    )
-
-
-def dpo_trainer_concatenated_inputs(function_name, function):
-    if function_name != "concatenated_inputs":
-        return function
-
-    if all(_k in function for _k in _DPO_VISION_KEYS):
-        return function
-
-    _extra_inputs = "".join(
-        f'        if "{_k}" in batch:\n'
-        f'            output["{_k}"] = torch.cat((batch["{_k}"], batch["{_k}"]), dim=0)\n'
-        for _k in _DPO_VISION_KEYS
-    )
-
-    image_sizes_block = (
-        '        if "image_sizes" in batch:\n'
-        '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
-    )
-    new_function = function.replace(
-        image_sizes_block + '        if "token_type_ids" in batch:\n',
-        image_sizes_block + _extra_inputs + '        if "token_type_ids" in batch:\n',
-    )
-    if new_function != function:
-        return new_function
-    if image_sizes_block in function:
-        return function.replace(image_sizes_block, image_sizes_block + _extra_inputs, 1)
-    return function
-
-
-def _dpo_trainer_extend_vision_model_kwargs(function):
-    if all(_k in function for _k in _DPO_VISION_KEYS):
-        return function
-
-    _extra_forward = "".join(
-        f'        if "{_k}" in concatenated_batch:\n'
-        f'            model_kwargs["{_k}"] = concatenated_batch["{_k}"]\n'
-        for _k in (
-            "pixel_values",
-            "pixel_attention_mask",
-            "image_sizes",
-            *_DPO_VISION_KEYS,
-        )
-    )
-
-    return function.replace(
-        '        if "pixel_values" in concatenated_batch:\n'
-        '            model_kwargs["pixel_values"] = concatenated_batch["pixel_values"]\n'
-        '        if "pixel_attention_mask" in concatenated_batch:\n'
-        '            model_kwargs["pixel_attention_mask"] = concatenated_batch["pixel_attention_mask"]\n'
-        '        if "image_sizes" in concatenated_batch:\n'
-        '            model_kwargs["image_sizes"] = concatenated_batch["image_sizes"]\n',
-        f"{_extra_forward}",
-    )
-
-
-def dpo_trainer_concatenated_forward(function_name, function):
-    if function_name != "concatenated_forward":
-        return function
-    return _dpo_trainer_extend_vision_model_kwargs(function)
-
-
-def dpo_trainer_compute_loss_liger(function_name, function):
-    if function_name != "_compute_loss_liger":
-        return function
-    return _dpo_trainer_extend_vision_model_kwargs(function)
-
-
-def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
-    if "data_collator" not in call_args:
-        return ""
-
-    _vision_keys = str(_DPO_VISION_KEYS)
-    return (
-        "from trl.trainer.dpo_trainer import DataCollatorForPreference\n"
-        "if not hasattr(DataCollatorForPreference, '_unsloth_vision_keys_patch'):\n"
-        "    _old_dpo_collator_torch_call = DataCollatorForPreference.torch_call\n"
-        "\n"
-        "    def _unsloth_dpo_torch_call(self, examples):\n"
-        "        output = _old_dpo_collator_torch_call(self, examples)\n"
-        "        import torch as _unsloth_torch\n"
-        "        try:\n"
-        "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
-        "        except Exception:\n"
-        "            _unsloth_trl_pad = None\n"
-        "        for _k in " + _vision_keys + ":\n"
-        "            if not all(_k in example for example in examples):\n"
-        "                continue\n"
-        "            _is_position_key = _k.endswith('position_ids')\n"
-        "            _padding_value = -1 if _is_position_key else 0\n"
-        "            _padding_side = 'right' if _is_position_key else 'left'\n"
-        "            _values = [_unsloth_torch.as_tensor(example[_k]) for example in examples]\n"
-        "            try:\n"
-        "                if _unsloth_trl_pad is not None:\n"
-        "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side=_padding_side)\n"
-        "                else:\n"
-        "                    from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
-        "                    output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
-        "            except Exception:\n"
-        "                from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
-        "                output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
-        "        return output\n"
-        "\n"
-        "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
-        "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
-    )
-
-
-def dpo_trainer_prepare_dataset(function_name, function):
-    if function_name != "_prepare_dataset":
-        return function
-
-    legacy_call = "self.tokenize_row if not self.is_vision_model else self.process_row"
-    if legacy_call not in function:
-        return function
-
-    function = function.replace(
-        legacy_call,
-        "self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row",
-    )
-
-    legacy_tokenize_block = (
-        "            # Tokenize the dataset\n"
-        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
-        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
-        "\n"
-        "            dataset = dataset.map(\n"
-        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
-    )
-    patched_tokenize_block = (
-        "            # Tokenize the dataset\n"
-        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
-        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
-        "            if self.is_vision_model:\n"
-        '                map_kwargs.pop("num_proc", None)\n'
-        "\n"
-        "            dataset = dataset.map(\n"
-        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
-    )
-    if legacy_tokenize_block in function:
-        function = function.replace(legacy_tokenize_block, patched_tokenize_block, 1)
-    return function
-
-
-RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
-RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
-RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
-RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
-RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
-RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
-RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
 # Fix tokenizer double BOS
@@ -596,23 +322,6 @@ def grpo_trainer__generate_single_turn(function_name, function):
         r'["\']?add_special_tokens["\']?\s*[:=]\s*False\s*,\s*\n?',
     ]:
         function = re.sub(pattern, "", function)
-
-    string_to_find = (
-        "            generate_inputs = super()._prepare_inputs(generate_inputs)"
-    )
-    replacement_string = (
-        string_to_find
-        + """
-            if "mm_token_type_ids" in generate_inputs or "image_grid_thw" in generate_inputs:
-                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
-                    self.processing_class,
-                    generate_inputs["input_ids"],
-                    generate_inputs.get("mm_token_type_ids", None),
-                )
-                if mm_token_type_ids is not None:
-                    generate_inputs["mm_token_type_ids"] = mm_token_type_ids"""
-    )
-    function = function.replace(string_to_find, replacement_string)
 
     return function
 
@@ -833,45 +542,36 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
         function = patched
 
-    _mm_alignment = """
-        if "mm_token_type_ids" in forward_kwargs or "image_grid_thw" in forward_kwargs:
-            _mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
-                self.processing_class,
-                prompt_completion_ids,
-                forward_kwargs.get("mm_token_type_ids", None),
-                completion_ids = completion_ids,
-            )
-            if _mm_token_type_ids is not None:
-                forward_kwargs["mm_token_type_ids"] = _mm_token_type_ids
-"""
-    _tool_image_marker = "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
-    if _tool_image_marker in function:
-        function = function.replace(
-            _tool_image_marker, _mm_alignment + "\n" + _tool_image_marker
-        )
-    else:
-        _tt_search = (
-            'if "token_type_ids" in forward_kwargs:\n'
-            '            token_type_ids = forward_kwargs["token_type_ids"]\n'
-            '            forward_kwargs["token_type_ids"] = torch.cat(\n'
-            "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
-            "            )"
-        )
-        function = function.replace(
-            _tt_search, _tt_search + "\n" + _mm_alignment.rstrip()
-        )
+    # Transformers 5.x: Extend mm_token_type_ids for completion tokens (Qwen3VL M-RoPE).
+    # TRL handles token_type_ids but not mm_token_type_ids.
+    _tt_search = (
+        'if "token_type_ids" in forward_kwargs:\n'
+        '            token_type_ids = forward_kwargs["token_type_ids"]\n'
+        '            forward_kwargs["token_type_ids"] = torch.cat(\n'
+        "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
+        "            )"
+    )
+    _tt_replace = (
+        _tt_search + "\n"
+        '        if "mm_token_type_ids" in forward_kwargs:\n'
+        '            mm_tti = forward_kwargs["mm_token_type_ids"]\n'
+        '            forward_kwargs["mm_token_type_ids"] = torch.cat(\n'
+        "                [mm_tti, mm_tti.new_zeros(completion_ids.shape)], dim=1\n"
+        "            )"
+    )
+    function = function.replace(_tt_search, _tt_replace)
 
+    # Save mm_token_type_ids to output dict alongside token_type_ids
     _save_search = (
         'if "token_type_ids" in forward_kwargs:\n'
         '            output["token_type_ids"] = forward_kwargs["token_type_ids"]'
     )
-    if 'output["mm_token_type_ids"]' not in function:
-        _save_replace = (
-            _save_search + "\n"
-            '        if "mm_token_type_ids" in forward_kwargs:\n'
-            '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
-        )
-        function = function.replace(_save_search, _save_replace)
+    _save_replace = (
+        _save_search + "\n"
+        '        if "mm_token_type_ids" in forward_kwargs:\n'
+        '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
+    )
+    function = function.replace(_save_search, _save_replace)
 
     return function
 
@@ -1048,10 +748,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
             token_type_ids = kwargs.get("token_type_ids", None)
             mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
-            if mm_token_type_ids is not None or image_grid_thw is not None:
-                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
-                    self.processing_class, input_ids, mm_token_type_ids
-                )
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -1159,7 +855,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_sizes_chunks = chunk_optional(image_sizes, B)
 
             temperature = self.temperature
-            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
+            logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
+            if logit_softcapping is None:
+                logit_softcapping = 0
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
@@ -1306,40 +1004,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
-
-def _unsloth_get_final_logit_softcapping(config):
-    """Return final_logit_softcapping for a model config, falling back to the
-    nested text sub-config for composite models. Handles both:
-      - Gemma-4-style configs where the attribute lives on ``config.text_config``
-      - T5Gemma-style composite configs where the text sub-config is only
-        reachable via ``config.get_text_config()``
-    Returns 0 if unset, matching the previous behaviour.
-    """
-    softcap = getattr(config, "final_logit_softcapping", None)
-    if softcap is None:
-        text_cfg = getattr(config, "text_config", None)
-        if text_cfg is None:
-            get_text_config = getattr(config, "get_text_config", None)
-            if callable(get_text_config):
-                try:
-                    text_cfg = get_text_config()
-                except (TypeError, ValueError):
-                    text_cfg = None
-        if text_cfg is not None and text_cfg is not config:
-            softcap = getattr(text_cfg, "final_logit_softcapping", None)
-    return 0 if softcap is None else softcap
-
-
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
-RL_PRE_ITEMS["grpo_trainer"].append(
-    inspect.getsource(_unsloth_get_final_logit_softcapping)
-)
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -1386,13 +1055,6 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
-        if mm_token_type_ids is not None or image_grid_thw is not None:
-            mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
-                self.processing_class,
-                input_ids,
-                mm_token_type_ids,
-                completion_ids = completion_ids,
-            )
         # attention_mask = None
         logits_to_keep = completion_ids.size(
             1
@@ -1445,7 +1107,9 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
+        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)  # Gemma
+        if logit_softcapping is None:
+            logit_softcapping = 0
         logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
@@ -1467,7 +1131,6 @@ def grpo_trainer_compute_loss(function_name, function):
                 ref_logps,
                 per_token_logps,
                 old_logps,
-                sampling_per_token_logps,
                 input_ids,
                 completion_mask,
                 self.beta,
@@ -1488,6 +1151,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
+                sampling_per_token_logps = sampling_per_token_logps,
             )
         else:
             if hasattr(self.args, "loss_type"):

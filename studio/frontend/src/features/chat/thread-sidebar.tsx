@@ -21,10 +21,48 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { db, useLiveQuery } from "./db";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import type { ChatView } from "./types";
-import { deleteChatItem, useChatSidebarItems } from "./hooks/use-chat-sidebar-items";
-import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
+import type { ChatView, ThreadRecord } from "./types";
+
+interface SidebarItem {
+  type: "single" | "compare";
+  id: string;
+  title: string;
+  createdAt: number;
+}
+
+function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
+  const items: SidebarItem[] = [];
+  const seenPairs = new Set<string>();
+
+  for (const t of threads) {
+    if (t.archived) {
+      continue;
+    }
+    if (t.pairId) {
+      if (seenPairs.has(t.pairId)) {
+        continue;
+      }
+      seenPairs.add(t.pairId);
+      items.push({
+        type: "compare",
+        id: t.pairId,
+        title: t.title,
+        createdAt: t.createdAt,
+      });
+    } else if (!t.pairId) {
+      items.push({
+        type: "single",
+        id: t.id,
+        title: t.title,
+        createdAt: t.createdAt,
+      });
+    }
+  }
+
+  return items.sort((a, b) => b.createdAt - a.createdAt);
+}
 
 export function ThreadSidebar({
   view,
@@ -39,7 +77,14 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
-  const { items } = useChatSidebarItems();
+  const allThreads = useLiveQuery(async () => {
+    const threadIdsWithMessage = new Set(
+      (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
+    );
+    const rows = await db.threads.orderBy("createdAt").reverse().toArray();
+    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
+  }, []);
+  const items = groupThreads(allThreads ?? []);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeId =
     view.mode === "single" ? (view.threadId ?? storeThreadId) : view.pairId;
@@ -51,10 +96,23 @@ export function ThreadSidebar({
   }
 
   async function handleDelete(item: SidebarItem) {
-    // Directly set a new view with a nonce rather than going through
-    // onNewThread(), which may return early if the guard sees no
-    // threadId and no activeThreadId (after we just cleared it).
-    await deleteChatItem(item, activeId ?? undefined, onSelect);
+    if (item.type === "single") {
+      await db.messages.where("threadId").equals(item.id).delete();
+      await db.threads.delete(item.id);
+    } else {
+      const paired = await db.threads.where("pairId").equals(item.id).toArray();
+      for (const t of paired) {
+        await db.messages.where("threadId").equals(t.id).delete();
+        await db.threads.delete(t.id);
+      }
+    }
+    if (activeId === item.id) {
+      // Directly set a new view with a nonce rather than going through
+      // onNewThread(), which may return early if the guard sees no
+      // threadId and no activeThreadId (after we just cleared it).
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
+    }
   }
 
   return (

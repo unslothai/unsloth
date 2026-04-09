@@ -394,11 +394,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         nextSourceType = "local";
       } else if (type === "seed_unstructured") {
         nextSourceType = "unstructured";
-      } else if (type === "seed_github") {
-        nextSourceType = "github_repo";
       }
 
-      const nextConfig: typeof existing = {
+      const nextConfig = {
         ...existing,
         seed_source_type: nextSourceType,
         hf_repo_id: "",
@@ -417,12 +415,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         seed_preview_rows: [],
         unstructured_chunk_size: "1200",
         unstructured_chunk_overlap: "200",
-        github_repo_slug: "",
-        github_token: "",
-        github_limit: "100",
-        github_item_types: ["issues", "pulls"],
-        github_include_comments: true,
-        github_max_comments_per_item: "30",
       };
       return {
         configs: {

@@ -5,15 +5,9 @@
 Export API routes: checkpoint discovery and model export operations.
 """
 
-import asyncio
-import json
 import sys
-import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
 import structlog
 from loggers import get_logger
 
@@ -103,11 +97,7 @@ async def load_checkpoint(
             logger.warning("Could not stop training: %s", e)
 
         backend = get_export_backend()
-        # load_checkpoint spawns and waits on a subprocess and can take
-        # minutes. Run it in a worker thread so the event loop stays
-        # free to serve the live log SSE stream concurrently.
-        success, message = await asyncio.to_thread(
-            backend.load_checkpoint,
+        success, message = backend.load_checkpoint(
             checkpoint_path = request.checkpoint_path,
             max_seq_length = request.max_seq_length,
             load_in_4bit = request.load_in_4bit,
@@ -139,7 +129,7 @@ async def cleanup_export_memory(
     """
     try:
         backend = get_export_backend()
-        success = await asyncio.to_thread(backend.cleanup_memory)
+        success = backend.cleanup_memory()
 
         if not success:
             raise HTTPException(
@@ -183,17 +173,6 @@ async def get_export_status(
         )
 
 
-def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Wrap the resolved on-disk export path into the details dict the
-    frontend reads to populate the Export Complete screen. Returns None
-    when the export had no local component (Hub-only push) so the
-    Pydantic field stays absent rather than ``{"output_path": null}``.
-    """
-    if not output_path:
-        return None
-    return {"output_path": output_path}
-
-
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
@@ -206,8 +185,7 @@ async def export_merged_model(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_merged_model,
+        success, message = backend.export_merged_model(
             save_directory = request.save_directory,
             format_type = request.format_type,
             push_to_hub = request.push_to_hub,
@@ -219,11 +197,7 @@ async def export_merged_model(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(
-            success = True,
-            message = message,
-            details = _export_details(output_path),
-        )
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
@@ -246,8 +220,7 @@ async def export_base_model(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_base_model,
+        success, message = backend.export_base_model(
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
@@ -259,11 +232,7 @@ async def export_base_model(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(
-            success = True,
-            message = message,
-            details = _export_details(output_path),
-        )
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
@@ -286,8 +255,7 @@ async def export_gguf(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_gguf,
+        success, message = backend.export_gguf(
             save_directory = request.save_directory,
             quantization_method = request.quantization_method,
             push_to_hub = request.push_to_hub,
@@ -298,11 +266,7 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(
-            success = True,
-            message = message,
-            details = _export_details(output_path),
-        )
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
@@ -325,8 +289,7 @@ async def export_lora_adapter(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_lora_adapter,
+        success, message = backend.export_lora_adapter(
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
@@ -337,11 +300,7 @@ async def export_lora_adapter(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(
-            success = True,
-            message = message,
-            details = _export_details(output_path),
-        )
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
@@ -350,155 +309,3 @@ async def export_lora_adapter(
             status_code = 500,
             detail = f"Failed to export LoRA adapter: {str(e)}",
         )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Live export log stream (Server-Sent Events)
-# ─────────────────────────────────────────────────────────────────────
-#
-# The export worker subprocess redirects its stdout/stderr into a pipe
-# that a reader thread forwards to the orchestrator as log entries (see
-# core/export/worker.py::_setup_log_capture and
-# core/export/orchestrator.py::_append_log). This endpoint streams
-# those entries to the browser so the export dialog can show a live
-# terminal-style output panel while load_checkpoint / export_merged /
-# export_gguf / export_lora / export_base run.
-#
-# Shape follows the training progress SSE endpoint
-# (routes/training.py::stream_training_progress): each event carries
-# `id`, `event`, and `data` fields, the stream starts with a `retry:`
-# directive, and `Last-Event-ID` is honored on reconnect.
-
-
-def _format_sse(data: str, event: str, event_id: Optional[int] = None) -> str:
-    """Format a single SSE message with id/event/data fields."""
-    lines = []
-    if event_id is not None:
-        lines.append(f"id: {event_id}")
-    lines.append(f"event: {event}")
-    lines.append(f"data: {data}")
-    lines.append("")
-    lines.append("")
-    return "\n".join(lines)
-
-
-@router.get("/logs/stream")
-async def stream_export_logs(
-    request: Request,
-    since: Optional[int] = Query(
-        None,
-        description = "Return log entries with seq strictly greater than this cursor.",
-    ),
-    current_subject: str = Depends(get_current_subject),
-):
-    """
-    Stream live stdout/stderr output from the export worker subprocess
-    as Server-Sent Events.
-
-    Events:
-      - `log`      : a single log line (data: {"stream","line","ts"})
-      - `heartbeat`: periodic keepalive when no new lines are available
-      - `complete` : emitted once the export worker is idle and no new
-                     lines arrived for ~1 second. Clients should close.
-      - `error`    : unrecoverable server-side error
-
-    The `id:` field on each event is the log entry's monotonic seq
-    number so the browser can resume via `Last-Event-ID` on reconnect.
-    """
-    backend = get_export_backend()
-
-    # Determine starting cursor. Explicit `since` wins, then
-    # Last-Event-ID header on reconnect, otherwise start from the
-    # run-start snapshot captured by clear_logs() so the client sees
-    # every line emitted since the current run began -- even if the
-    # SSE connection opened after the POST that kicked off the export.
-    # Using get_current_log_seq() here would lose the early bootstrap
-    # lines that arrive in the gap between POST and SSE connect.
-    last_event_id = request.headers.get("last-event-id")
-    if since is None and last_event_id is not None:
-        try:
-            since = int(last_event_id)
-        except ValueError:
-            pass
-
-    if since is None:
-        cursor = backend.get_run_start_seq()
-    else:
-        cursor = max(0, int(since))
-
-    async def event_generator() -> AsyncGenerator[str, None]:
-        nonlocal cursor
-        # Tell the browser to reconnect after 3 seconds if the
-        # connection drops mid-export.
-        yield "retry: 3000\n\n"
-
-        last_yield = time.monotonic()
-        idle_since: Optional[float] = None
-        try:
-            while True:
-                if await request.is_disconnected():
-                    return
-
-                entries, new_cursor = backend.get_logs_since(cursor)
-                if entries:
-                    for entry in entries:
-                        payload = json.dumps(
-                            {
-                                "stream": entry.get("stream", "stdout"),
-                                "line": entry.get("line", ""),
-                                "ts": entry.get("ts"),
-                            }
-                        )
-                        yield _format_sse(
-                            payload,
-                            event = "log",
-                            event_id = int(entry.get("seq", 0)),
-                        )
-                    cursor = new_cursor
-                    last_yield = time.monotonic()
-                    idle_since = None
-                else:
-                    now = time.monotonic()
-                    if now - last_yield > 10.0:
-                        yield _format_sse("{}", event = "heartbeat")
-                        last_yield = now
-                    if not backend.is_export_active():
-                        # Give the reader thread a moment to drain any
-                        # trailing lines the worker process printed
-                        # just before signalling done.
-                        if idle_since is None:
-                            idle_since = now
-                        elif now - idle_since > 1.0:
-                            yield _format_sse(
-                                "{}",
-                                event = "complete",
-                                event_id = cursor,
-                            )
-                            return
-                    else:
-                        idle_since = None
-
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            # Client disconnected mid-yield. Don't re-raise, just end
-            # the generator cleanly so StreamingResponse finalizes.
-            return
-        except Exception as exc:
-            logger.error("Export log stream failed: %s", exc, exc_info = True)
-            try:
-                yield _format_sse(
-                    json.dumps({"error": str(exc)}),
-                    event = "error",
-                )
-            except Exception:
-                pass
-
-    return StreamingResponse(
-        event_generator(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )

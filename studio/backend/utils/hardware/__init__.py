@@ -5,7 +5,6 @@
 Hardware detection and GPU utilities
 """
 
-from . import hardware as _hardware
 from .hardware import (
     DeviceType,
     DEVICE,
@@ -50,7 +49,6 @@ __all__ = [
     "DeviceType",
     "DEVICE",
     "CHAT_ONLY",
-    "IS_ROCM",
     "detect_hardware",
     "get_device",
     "is_apple_silicon",
@@ -83,11 +81,3 @@ __all__ = [
     "extract_arch_config",
     "estimate_training_vram",
 ]
-
-
-def __getattr__(name: str):
-    """Resolve IS_ROCM at access time so callers always see the live value
-    after detect_hardware() runs (it flips the flag in hardware.py)."""
-    if name == "IS_ROCM":
-        return getattr(_hardware, "IS_ROCM")
-    raise AttributeError(name)

@@ -10,7 +10,7 @@ import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { WizardStepItem } from "./wizard-step-item";
 
-export function WizardSidebar({ returnTo }: { returnTo: string }) {
+export function WizardSidebar() {
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
 
@@ -38,10 +38,10 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
         className="mt-2 w-full md:hidden"
         onClick={() => {
           markOnboardingDone();
-          window.location.assign(returnTo);
+          window.location.href = "/chat";
         }}
       >
-        Skip onboarding
+        Skip to Chat
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
@@ -54,10 +54,10 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
         className="mt-3 hidden w-full md:flex"
         onClick={() => {
           markOnboardingDone();
-          window.location.assign(returnTo);
+          window.location.href = "/chat";
         }}
       >
-        Skip onboarding
+        Skip to Chat
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
     </aside>

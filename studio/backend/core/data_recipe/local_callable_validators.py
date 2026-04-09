@@ -33,12 +33,6 @@ _OXC_TOOL_DIR = Path(__file__).resolve().parent / "oxc-validator"
 _OXC_RUNNER_PATH = _OXC_TOOL_DIR / "validate.mjs"
 
 
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
-)
-
-
 @dataclass(frozen = True)
 class OxcLocalCallableValidatorSpec:
     name: str
@@ -249,7 +243,7 @@ def _run_oxc_batch(
     }
     try:
         tmp_dir = ensure_dir(oxc_validator_tmp_root())
-        env = child_env_without_native_path_secret()
+        env = dict(os.environ)
         tmp_dir_str = str(tmp_dir)
         env["TMPDIR"] = tmp_dir_str
         env["TMP"] = tmp_dir_str
@@ -262,7 +256,6 @@ def _run_oxc_batch(
             capture_output = True,
             check = False,
             env = env,
-            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, ValueError) as exc:
         logger.warning("OXC subprocess launch failed: %s", exc)

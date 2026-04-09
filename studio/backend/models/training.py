@@ -127,9 +127,6 @@ class TrainingStartRequest(BaseModel):
     wandb_project: Optional[str] = Field(None, description = "W&B project name")
     enable_tensorboard: bool = Field(False, description = "Enable TensorBoard logging")
     tensorboard_dir: Optional[str] = Field(None, description = "TensorBoard directory")
-    resume_from_checkpoint: Optional[str] = Field(
-        None, description = "Saved training output directory to resume from"
-    )
 
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(
@@ -223,8 +220,6 @@ class TrainingRunSummary(BaseModel):
     duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
-    can_resume: bool = False
-    resumed_later: bool = False
 
 
 class TrainingRunListResponse(BaseModel):

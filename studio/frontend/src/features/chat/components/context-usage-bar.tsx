@@ -104,13 +104,6 @@ export const ContextUsageBar: FC<{
               {formatTokenCountFull(used)} / {formatTokenCountFull(total)}
             </span>
           </div>
-          {percent > 85 && (
-            <div className="mt-1 max-w-64 text-[11px] leading-snug text-muted-foreground/90">
-              Close to the context limit. Generation will stop at 100%.
-              Increase <span className="font-medium">Context Length</span> in
-              the chat Settings panel to keep going.
-            </div>
-          )}
         </div>
       </TooltipContent>
     </Tooltip>

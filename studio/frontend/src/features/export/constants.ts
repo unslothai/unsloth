@@ -36,14 +36,14 @@ export const EXPORT_METHODS: {
 ];
 
 export const QUANT_OPTIONS = [
-  { value: "q2_k_l", label: "Q2_K_L", size: "~2.9 GB" },
   { value: "q3_k_m", label: "Q3_K_M", size: "~3.5 GB" },
+  { value: "q4_0", label: "Q4_0", size: "~4.1 GB" },
   { value: "q4_k_m", label: "Q4_K_M", size: "~4.8 GB", recommended: true },
+  { value: "q5_0", label: "Q5_0", size: "~5.0 GB" },
   { value: "q5_k_m", label: "Q5_K_M", size: "~5.6 GB" },
-  { value: "q6_k", label: "Q6_K", size: "~6.6 GB" },
   { value: "q8_0", label: "Q8_0", size: "~8.2 GB" },
-  { value: "bf16", label: "BF16", size: "~14.2 GB" },
   { value: "f16", label: "F16", size: "~14.2 GB" },
+  { value: "f32", label: "F32", size: "~28.4 GB" },
 ];
 
 export function getEstimatedSize(

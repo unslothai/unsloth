@@ -215,21 +215,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "google/gemma-3n-E2B-it",
         "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
     ),
-    "gemma-4": (
-        "unsloth/gemma-4-E2B-it",
-        "google/gemma-4-E2B-it",
-        "unsloth/gemma-4-E4B-it",
-        "google/gemma-4-E4B-it",
-        "unsloth/gemma-4-E2B-it-unsloth-bnb-4bit",
-        "unsloth/gemma-4-E4B-it-unsloth-bnb-4bit",
-    ),
-    "gemma-4-thinking": (
-        "unsloth/gemma-4-26B-A4B-it",
-        "google/gemma-4-26B-A4B-it",
-        "unsloth/gemma-4-31B-it",
-        "unsloth/gemma-4-31B-it-unsloth-bnb-4bit",
-        "google/gemma-4-31B-it",
-    ),
     "qwen2.5": (
         "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
         "unsloth/Qwen2.5-0.5B-Instruct",
@@ -364,16 +349,11 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
         "unsloth/Qwen3-30B-A3B-Thinking-2507",
         "Qwen/Qwen3-30B-A3B-Thinking-2507",
-        "Qwen/Qwen3.6-35B-A3B",
-        "unsloth/Qwen3.6-35B-A3B",
-        "Qwen/Qwen3.6-27B",
-        "unsloth/Qwen3.6-27B",
     ),
     "qwen3.5": (
         "unsloth/Qwen3.5-0.8B",
         "unsloth/Qwen3.5-2B",
         "unsloth/Qwen3.5-4B",
-        "unsloth/Qwen3.5-9B",
         "unsloth/Qwen3.5-27B",
         "unsloth/Qwen3.5-35B-A3B",
     ),
@@ -419,15 +399,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "THUDM/GLM-4.7-Flash",
         "unsloth/GLM-4.7-Flash-bnb-4bit",
     ),
-    "lfm-2": (
-        "unsloth/LFM2-1.2B",
-        "LiquidAI/LFM2-1.2B",
-        "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
-    ),
-    "lfm-2.5": (
-        "unsloth/LFM2.5-1.2B-Instruct",
-        "LiquidAI/LFM2.5-1.2B-Instruct",
-    ),
 }
 
 MODEL_TO_TEMPLATE_MAPPER = {}
@@ -443,14 +414,6 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
 
 
 TEMPLATE_TO_RESPONSES_MAPPER = {
-    "gemma-4-thinking": {
-        "instruction": "<|turn>user\n",
-        "response": "<|turn>model\n",
-    },
-    "gemma-4": {
-        "instruction": "<|turn>user\n",
-        "response": "<|turn>model\n",
-    },
     "gemma-3": {
         "instruction": "<start_of_turn>user\n",
         "response": "<start_of_turn>model\n",
@@ -548,10 +511,6 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "response": "<|start|>assistant<|channel|>final<|message|>",
     },
     "lfm-2": {
-        "instruction": "<|im_start|>user\n",
-        "response": "<|im_start|>assistant\n",
-    },
-    "lfm-2.5": {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },

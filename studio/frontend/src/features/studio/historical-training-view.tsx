@@ -60,7 +60,6 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     currentGradNorm: metrics.grad_norm_history.at(-1) ?? null,
     currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
-    outputDir: run.output_dir ?? null,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100

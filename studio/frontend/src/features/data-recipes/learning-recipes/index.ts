@@ -19,10 +19,6 @@ const ocrDocumentExtractionUrl = new URL(
   "./ocr-document-extraction.json",
   import.meta.url,
 ).href;
-const githubSupportBotUrl = new URL(
-  "./github-support-bot.json",
-  import.meta.url,
-).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -140,12 +136,5 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Use image context to generate OCR-style document extraction output.",
     loadPayload: () => loadPayloadFromUrl(ocrDocumentExtractionUrl),
-  },
-  {
-    id: "github-support-bot",
-    title: "GitHub Crawler",
-    description:
-      "Crawl real GitHub issues and PRs and turn each thread into a {User, Assistant} training pair.",
-    loadPayload: () => loadPayloadFromUrl(githubSupportBotUrl),
   },
 ];

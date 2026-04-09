@@ -1,43 +1,28 @@
 <h1 align="center" style="margin:0;">
   <a href="https://unsloth.ai/docs"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png">
-    <img alt="Unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png" height="80" style="max-width:100%;">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/STUDIO%20WHITE%20LOGO.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/STUDIO%20BLACK%20LOGO.png">
+    <img alt="Unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/STUDIO%20BLACK%20LOGO.png" height="60" style="max-width:100%;">
   </picture></a>
 </h1>
 <h3 align="center" style="margin: 0; margin-top: 0;">
-Unsloth Studio lets you run and train models locally.
+Run and train AI models with a unified local interface.
 </h3>
 
 <p align="center">
   <a href="#-features">Features</a> •
-  <a href="#-install">Quickstart</a> •
+  <a href="#-quickstart">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
-  <a href="https://unsloth.ai/docs">Documentation</a>
+  <a href="https://unsloth.ai/docs">Documentation</a> •
+  <a href="https://www.reddit.com/r/unsloth/">Reddit</a>
 </p>
-<br>
-<a href="https://unsloth.ai/docs/new/studio">
-<img alt="unsloth studio ui homepage" src="https://github.com/user-attachments/assets/53ae17a9-d975-44ef-9686-efb4ebd0454d" style="max-width: 100%; margin-bottom: 0;"></a>
+ <a href="https://unsloth.ai/docs/new/studio">
+<img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
-## ⚡ Get started
-
-#### macOS, Linux, WSL:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | sh
-```
-#### Windows:
-```powershell
-irm https://unsloth.ai/install.ps1 | iex
-```
-#### Community:
-
-- [Discord](https://discord.gg/unsloth)
-- [𝕏 (Twitter)](https://x.com/UnslothAI)
-- [Reddit](https://reddit.com/r/unsloth)
-
-## ⭐ Features
 Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
+## ⭐ Features
+Unsloth provides several key features for both inference and training:
 ### Inference
 * **Search + download + run models** including GGUF, LoRA adapters, safetensors
 * **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
@@ -55,7 +40,7 @@ Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/do
 * **Observability**: Monitor training live, track loss and GPU usage and customize graphs.
 * [Multi-GPU](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth) training is supported, with major improvements coming soon.
 
-## 📥 Install
+## ⚡ Quickstart
 Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
 
 ### Unsloth Studio (web UI)
@@ -79,9 +64,8 @@ irm https://unsloth.ai/install.ps1 | iex
 
 #### Launch
 ```bash
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-> For cloud VMs or LAN access, add `-H 0.0.0.0` to bind on all interfaces.
 
 #### Update
 To update, use the same install commands as above. Or run (does not work on Windows):
@@ -149,8 +133,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
 
 ## 🦥 Unsloth News
-- **Qwen3.6**: Qwen3.6-35B-A3B can now be trained and run in Unsloth Studio. [Blog](https://unsloth.ai/docs/models/qwen3.6)
-- **Gemma 4**: Run and train Google’s new models directly in Unsloth. [Blog](https://unsloth.ai/docs/models/gemma-4)
+- **Gemma 4**: Run and train Google’s new models directly in Unsloth Studio! [Blog](https://unsloth.ai/docs/models/gemma-4)
 - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
 - **Qwen3.5** - 0.8B, 2B, 4B, 9B, 27B, 35-A3B, 112B-A10B are now supported. [Guide + notebooks](https://unsloth.ai/docs/models/qwen3.5/fine-tune)
 - Train **MoE LLMs 12x faster** with 35% less VRAM - DeepSeek, GLM, Qwen and gpt-oss. [Blog](https://unsloth.ai/docs/new/faster-moe)
@@ -168,7 +151,7 @@ The below advanced instructions are for Unsloth Studio. For Unsloth Core advance
 git clone https://github.com/unslothai/unsloth
 cd unsloth
 ./install.sh --local
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to update :
 ```bash
@@ -181,7 +164,7 @@ git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to update :
 ```bash
@@ -194,11 +177,11 @@ git clone https://github.com/unslothai/unsloth
 cd unsloth
 git checkout nightly
 ./install.sh --local
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
 ```bash
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Nightly: Windows:
@@ -209,11 +192,11 @@ cd unsloth
 git checkout nightly
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
 ```bash
-unsloth studio -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Uninstall

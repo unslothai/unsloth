@@ -73,109 +73,7 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    # Merge: venv Scripts (if active) > Machine > User > current $env:Path. Dedup raw+expanded.
-    $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
-    $sources = @()
-    if ($venvScripts) { $sources += $venvScripts }
-    $sources += @($machinePath, $userPath, $env:Path)
-    $merged = ($sources | Where-Object { $_ }) -join ';'
-    $seen = @{}
-    $unique = New-Object System.Collections.Generic.List[string]
-    foreach ($p in $merged -split ";") {
-        $rawKey = $p.Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
-        $expKey = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
-        if ($rawKey -and -not $seen.ContainsKey($rawKey) -and -not $seen.ContainsKey($expKey)) {
-            $seen[$rawKey] = $true
-            if ($expKey -and $expKey -ne $rawKey) { $seen[$expKey] = $true }
-            $unique.Add($p)
-        }
-    }
-    $env:Path = $unique -join ";"
-}
-
-# ── Helper: safely add a directory to the persistent User PATH ──
-# Direct registry access preserves REG_EXPAND_SZ (avoids dotnet/runtime#1442).
-# Append (default) keeps existing tools first; Prepend for must-win entries.
-function Add-ToUserPath {
-    param(
-        [Parameter(Mandatory = $true)][string]$Directory,
-        [ValidateSet('Append','Prepend')]
-        [string]$Position = 'Append'
-    )
-    try {
-        $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
-        try {
-            $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-            [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() } # string[] prevents scalar collapse
-            $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
-            $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
-            $kept = New-Object System.Collections.Generic.List[string]
-            $matchIndices = New-Object System.Collections.Generic.List[int]
-            for ($i = 0; $i -lt $entries.Count; $i++) {
-                $stripped = $entries[$i].Trim().Trim('"')
-                $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
-                $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
-                $isMatch = ($rawNorm -and ($rawNorm -eq $normalDir -or $rawNorm -eq $expNormalDir)) -or
-                           ($expNorm -and ($expNorm -eq $normalDir -or $expNorm -eq $expNormalDir))
-                if ($isMatch) {
-                    $matchIndices.Add($i)
-                    continue
-                }
-                $kept.Add($entries[$i])
-            }
-            $alreadyPresent = $matchIndices.Count -gt 0
-            if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
-                return $false
-            }
-            if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front
-                $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
-                return $false
-            }
-            # One-time backup under HKCU\Software\Unsloth\PathBackup
-            if ($rawPath) {
-                try {
-                    $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
-                    try {
-                        $existingBackup = $backupKey.GetValue('PathBackup', $null)
-                        if (-not $existingBackup) {
-                            $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                        }
-                    } finally {
-                        $backupKey.Close()
-                    }
-                } catch { }
-            }
-            if (-not $rawPath) {
-                Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
-            }
-            $newPath = if ($rawPath) {
-                if ($Position -eq 'Prepend') {
-                    (@($Directory) + $kept) -join ';'
-                } else {
-                    ($kept + @($Directory)) -join ';'
-                }
-            } else {
-                $Directory
-            }
-            if ($newPath -ceq $rawPath) { # no actual change
-                return $false
-            }
-            $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-            # Broadcast WM_SETTINGCHANGE via dummy env-var roundtrip.
-            # [NullString]::Value avoids PS 7.5+/.NET 9 $null-to-"" coercion.
-            try {
-                $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
-                [Environment]::SetEnvironmentVariable($d, '1', 'User')
-                [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
-            } catch { }
-            return $true
-        } finally {
-            $regKey.Close()
-        }
-    } catch {
-        Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
-        return $false
-    }
+    $env:Path = "$machinePath;$userPath"
 }
 
 # PowerShell 5.1 compatibility helper: avoid relying on New-TemporaryFile.
@@ -595,31 +493,6 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
-# Back up User PATH under HKCU\Software\Unsloth before any modifications.
-try {
-    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
-    if ($envKey) {
-        try {
-            $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        } finally {
-            $envKey.Close()
-        }
-        if ($rawPath) {
-            $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
-            try {
-                $existingBackup = $backupKey.GetValue('PathBackup', $null)
-                if (-not $existingBackup) {
-                    $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                }
-            } finally {
-                $backupKey.Close()
-            }
-        }
-    }
-} catch {
-    Write-Host "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
-}
-
 # ==========================================================================
 #  PHASE 1: System-level prerequisites (winget installs, env vars)
 #  All heavy system tool installs happen here BEFORE touching Python.
@@ -753,8 +626,11 @@ if (-not $HasCmake) {
         foreach ($d in $cmakeDefaults) {
             if (Test-Path (Join-Path $d "cmake.exe")) {
                 $env:Path = "$d;$env:Path"
-                # Persist to user PATH (Prepend so this cmake wins over older ones).
-                Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
+                # Persist to user PATH so Refresh-Environment does not drop it later
+                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+                if (-not $userPath -or $userPath -notlike "*$d*") {
+                    [Environment]::SetEnvironmentVariable('Path', "$d;$userPath", 'User')
+                }
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
                     Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
@@ -1020,8 +896,14 @@ $nvccBinDir = Split-Path $NvccPath -Parent
 if ($env:PATH -notlike "*$nvccBinDir*") {
     [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
 }
-# Persist nvcc bin dir (Prepend so the driver-compatible toolkit wins).
-if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
+# Persist nvcc bin dir to User PATH so it works in new terminals
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
+    if ($userPath) {
+        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir;$userPath", 'User')
+    } else {
+        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
+    }
     substep "Persisted CUDA bin dir to user PATH"
 }
 
@@ -1077,13 +959,10 @@ if (-not $CudaArch) {
 }
 
 # ============================================
-# 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
+# 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
 # ============================================
-$SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
 if ($IsPipInstall) {
     step "frontend" "bundled (pip install)"
-} elseif ($SkipFrontend) {
-    step "frontend" "bundled (Tauri)"
 } else {
     # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
     # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
@@ -1145,58 +1024,28 @@ if ($IsPipInstall) {
     }
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
+# ============================================
+# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
+# ============================================
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-$PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
-$DetectedPyVer = $null
 
-if ($PyLauncher) {
-    foreach ($minor in @("3.13", "3.12", "3.11")) {
-        try {
-            $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
-            if ($out -match 'Python (3\.\d+\.\d+)') {
-                $DetectedPyVer = $Matches[1]
-                # Make `python` resolvable for the rest of setup. Without this,
-                # py-launcher-only installs (no python.exe on PATH) pass the gate
-                # and then crash on the first bare `python` call below.
-                try {
-                    $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
-                        $resolvedDir = Split-Path -Parent $resolvedExe
-                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
-                        if (-not $alreadyOnPath) {
-                            $env:PATH = "$resolvedDir;$env:PATH"
-                        }
-                        $HasPython = $true
-                    }
-                } catch { }
-                $PythonOk = $true
-                break
-            }
-        } catch { }
-    }
-}
-
-if (-not $PythonOk -and $HasPython) {
+if ($HasPython) {
     $PyVer = python --version 2>&1
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            $DetectedPyVer = "$PyMajor.$PyMinor"
+            substep "Python $PyVer"
             $PythonOk = $true
+        } else {
+            Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
+            Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+            exit 1
         }
     }
-}
-
-if ($PythonOk) {
-    substep "Python $DetectedPyVer"
-} elseif (-not $HasPython) {
-    # No `python` on PATH (and py.exe either absent or only had unsupported
-    # minors). Try winget as before -- gating on $HasPython alone, not also
-    # on $PyLauncher, so a launcher-only install with just 3.14 still gets
-    # an automatic 3.12 install instead of a hard error.
-    Write-Host "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+} else {
+    # No Python at all -- install 3.12
+    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
@@ -1210,20 +1059,17 @@ if ($PythonOk) {
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
-} else {
-    # python.exe is on PATH but its version is unsupported, and py.exe (if
-    # present) had no supported minor either.
-    Write-Host "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
-    Write-Host "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
-    Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-    exit 1
 }
 
-# Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
-$ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
+# Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
+$ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
-    # Append (not Prepend) -- this dir has other pip scripts; shim handles unsloth.
-    if (Add-ToUserPath -Directory $ScriptsDir) {
+    $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $UserPathEntries = if ($UserPath) { $UserPath.Split(';') } else { @() }
+    if (-not ($UserPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
+        $newUserPath = if ($UserPath) { "$ScriptsDir;$UserPath" } else { $ScriptsDir }
+        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+
         # Also add to current process so it's available immediately
         $ProcessPathEntries = $env:PATH.Split(';')
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
@@ -1247,9 +1093,6 @@ $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
     step "frontend" "bundled (pip install)"
-} elseif ($SkipFrontend) {
-    $NeedFrontendBuild = $false
-    step "frontend" "bundled (Tauri)"
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null
@@ -1497,14 +1340,8 @@ substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
-# matches the current machine, repair according to invocation context.
-# - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
-#   to the installer-level rollback that restores the previous environment.
-# - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
-# In no-torch mode, a missing torch package is expected.
-$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
-$InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
-if ((Test-Path $VenvDir -PathType Container) -and -not $NoTorchMode) {
+# matches the current machine, wipe it so we get a clean install.
+if (Test-Path $VenvDir -PathType Container) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
@@ -1551,12 +1388,6 @@ if ((Test-Path $VenvDir -PathType Container) -and -not $NoTorchMode) {
 
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
-        if ($InstallerManagedSetup) {
-            substep "Stale venv detected ($reason)." "Yellow"
-            Write-Host "   [ERROR] The existing Studio environment needs repair." -ForegroundColor Red
-            Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
-            exit 1
-        }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         try {
             Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
@@ -1594,7 +1425,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        Invoke-SetupCommand { Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1") } | Out-Null
+        Invoke-SetupCommand { powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" } | Out-Null
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
@@ -1686,16 +1517,14 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
-$PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-
 if ($CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
+        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -1707,11 +1536,11 @@ if ($CuTag -eq "cpu") {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag"
+        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {

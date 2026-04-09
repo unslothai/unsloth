@@ -90,9 +90,8 @@ def export(
     typer.echo(message)
 
     typer.echo(f"Exporting as {format}...")
-    output_path: Optional[str] = None
     if format == "merged-16bit":
-        success, message, output_path = backend.export_merged_model(
+        success, message = backend.export_merged_model(
             save_directory = str(output_dir),
             format_type = "16-bit (FP16)",
             push_to_hub = push_to_hub,
@@ -101,7 +100,7 @@ def export(
             private = private,
         )
     elif format == "merged-4bit":
-        success, message, output_path = backend.export_merged_model(
+        success, message = backend.export_merged_model(
             save_directory = str(output_dir),
             format_type = "4-bit (FP4)",
             push_to_hub = push_to_hub,
@@ -110,7 +109,7 @@ def export(
             private = private,
         )
     elif format == "gguf":
-        success, message, output_path = backend.export_gguf(
+        success, message = backend.export_gguf(
             save_directory = str(output_dir),
             quantization_method = quantization.upper(),
             push_to_hub = push_to_hub,
@@ -118,7 +117,7 @@ def export(
             hf_token = hf_token,
         )
     elif format == "lora":
-        success, message, output_path = backend.export_lora_adapter(
+        success, message = backend.export_lora_adapter(
             save_directory = str(output_dir),
             push_to_hub = push_to_hub,
             repo_id = repo_id,
@@ -131,5 +130,3 @@ def export(
         raise typer.Exit(code = 1)
 
     typer.echo(message)
-    if output_path:
-        typer.echo(f"Saved to: {output_path}")

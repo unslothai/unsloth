@@ -44,8 +44,8 @@ function CopyBtn({ text }: { text: string }) {
     };
   }, []);
 
-  const copy = useCallback(async () => {
-    if (await copyToClipboard(text)) {
+  const copy = useCallback(() => {
+    if (copyToClipboard(text)) {
       setCopied(true);
       if (timer.current) {
         clearTimeout(timer.current);

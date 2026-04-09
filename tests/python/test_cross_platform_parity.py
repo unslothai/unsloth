@@ -135,19 +135,3 @@ class TestCudaMappingParity:
             f"  install.sh:  {sh_thresholds}\n"
             f"  install.ps1: {ps1_thresholds}"
         )
-
-
-class TestPyTorchMirrorEnvVar:
-    """Both install scripts must support the UNSLOTH_PYTORCH_MIRROR env var."""
-
-    def test_install_sh_has_mirror_var(self):
-        text = INSTALL_SH.read_text()
-        assert (
-            "UNSLOTH_PYTORCH_MIRROR" in text
-        ), "install.sh should reference UNSLOTH_PYTORCH_MIRROR"
-
-    def test_install_ps1_has_mirror_var(self):
-        text = INSTALL_PS1.read_text()
-        assert (
-            "UNSLOTH_PYTORCH_MIRROR" in text
-        ), "install.ps1 should reference UNSLOTH_PYTORCH_MIRROR"

@@ -253,13 +253,8 @@ function ValidationResultPanel({
           ))}
         </div>
       )}
-      {validateResult.rawDetail && (
-        <p
-          className={cn(
-            "break-words text-xs",
-            validateResult.valid ? "text-muted-foreground" : "text-destructive",
-          )}
-        >
+      {!validateResult.valid && validateResult.rawDetail && (
+        <p className="break-words text-xs text-destructive">
           {validateResult.rawDetail}
         </p>
       )}

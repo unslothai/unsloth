@@ -191,14 +191,8 @@ class TestGetGpuMemoryInfo:
         assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
-        # The backend field uses _backend_label, which swaps "cuda" for
-        # "rocm" when running on an AMD host (IS_ROCM=True) so the UI
-        # can render the correct label. On CUDA / XPU / MLX / CPU hosts
-        # it is equivalent to `get_device().value`.
-        from utils.hardware.hardware import _backend_label
-
         result = get_gpu_memory_info()
-        assert result["backend"] == _backend_label(get_device())
+        assert result["backend"] == get_device().value
 
     # --- When a GPU IS available ---
 

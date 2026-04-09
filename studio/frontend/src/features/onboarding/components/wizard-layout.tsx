@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Card } from "@/components/ui/card";
-import { Route as OnboardingRoute } from "@/app/routes/onboarding";
+import { useNavigate } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
@@ -19,23 +19,13 @@ const Confetti = lazy(() =>
   import("@/components/ui/confetti").then((m) => ({ default: m.Confetti })),
 );
 
-function sanitizeRedirectTarget(value: string | undefined): string {
-  if (!value) return "/chat";
-  if (!value.startsWith("/")) return "/chat";
-  if (value.startsWith("//")) return "/chat";
-  if (value.includes("\\")) return "/chat";
-  return value;
-}
-
 export function WizardLayout() {
-  const search = OnboardingRoute.useSearch();
+  const navigate = useNavigate();
   const [showSplash, setShowSplash] = useState(true);
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const confettiRef = useRef<ConfettiRef>(null);
   const hasFiredRef = useRef(false);
   const isFinalStep = currentStep === STEPS.length;
-  const returnTo = sanitizeRedirectTarget(search.redirectTo);
-  const exitToReturnTo = () => window.location.assign(returnTo);
 
   // Only redirect on initial mount — not on re-renders after markOnboardingDone()
   // which would override explicit /chat navigation from skip buttons.
@@ -44,10 +34,10 @@ export function WizardLayout() {
     if (!checkedRef.current) {
       checkedRef.current = true;
       if (isOnboardingDone()) {
-        exitToReturnTo();
+        navigate({ to: "/studio" });
       }
     }
-  }, [returnTo]);
+  }, [navigate]);
 
   useEffect(() => {
     if (isFinalStep && !hasFiredRef.current) {
@@ -73,13 +63,13 @@ export function WizardLayout() {
   }, [isFinalStep]);
 
   return (
-    <div className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] items-center justify-center overflow-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
-          onSkipOnboarding={() => {
+          onGoToStudio={() => {
             markOnboardingDone();
-            exitToReturnTo();
+            window.location.href = "/studio";
           }}
         />
       )}
@@ -101,10 +91,10 @@ export function WizardLayout() {
           }}
         >
           <Card className="relative z-10 w-full !gap-0 !m-0 !p-0 flex min-h-[560px] flex-col overflow-hidden shadow-border ring-1 ring-border md:min-h-[620px] md:flex-row lg:h-[660px]">
-            <WizardSidebar returnTo={returnTo} />
+            <WizardSidebar />
             <div className="flex-1 flex flex-col">
               <WizardContent />
-              <WizardFooter returnTo={returnTo} onBackToSplash={() => setShowSplash(true)} />
+              <WizardFooter onBackToSplash={() => setShowSplash(true)} />
             </div>
           </Card>
         </motion.div>

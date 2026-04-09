@@ -244,12 +244,10 @@ _shutdown_event = None
 
 
 def run_server(
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
-    api_only: bool = False,
-    llama_parallel_slots: int = 1,
 ):
     """
     Start the FastAPI server.
@@ -259,8 +257,6 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
-        api_only: Run API server only, no frontend serving (for Tauri desktop app)
-        llama_parallel_slots: Number of parallel slots for llama-server
 
     Note:
         Signal handlers are NOT registered here so that embedders
@@ -276,10 +272,6 @@ def run_server(
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
-
-    # Set env var BEFORE importing main so CORS middleware picks it up
-    if api_only:
-        os.environ["UNSLOTH_API_ONLY"] = "1"
 
     import nest_asyncio
 
@@ -316,12 +308,8 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Output port for Tauri to parse when in api-only mode
-    if api_only:
-        print(f"TAURI_PORT={port}", flush = True)
-
-    # Setup frontend if path provided (skip in api-only mode)
-    if frontend_path and not api_only:
+    # Setup frontend if path provided
+    if frontend_path:
         if setup_frontend(app, frontend_path):
             if not silent:
                 print(f"[OK] Frontend loaded from {frontend_path}")
@@ -343,7 +331,6 @@ def run_server(
     # binds (port==0) leave it unset and let request handlers fall back
     # to the ASGI request scope or request.base_url.
     app.state.server_port = port if port and port > 0 else None
-    app.state.llama_parallel_slots = llama_parallel_slots
 
     # Run server in a daemon thread
     def _run():
@@ -392,11 +379,7 @@ if __name__ == "__main__":
             pass
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
-    parser.add_argument(
-        "--host",
-        default = "127.0.0.1",
-        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
-    )
+    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
@@ -405,17 +388,10 @@ if __name__ == "__main__":
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
-    parser.add_argument(
-        "--api-only",
-        action = "store_true",
-        help = "API server only, no frontend (for Tauri)",
-    )
 
     args = parser.parse_args()
 
-    kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
-    )
+    kwargs = dict(host = args.host, port = args.port, silent = args.silent)
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
 

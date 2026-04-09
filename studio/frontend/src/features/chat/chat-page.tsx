@@ -2,30 +2,41 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  type DeletedModelRef,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
-import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
-import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
-import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
-import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
-import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
-import { isTauri } from "@/lib/api-base";
-import { cn } from "@/lib/utils";
-import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { useSidebar } from "@/components/ui/sidebar";
-import { Settings05Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Button } from "@/components/ui/button";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { cn } from "@/lib/utils";
+import {
+  ColumnInsertIcon,
+  PencilEdit02Icon,
+  Settings04Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  type CSSProperties,
   type ReactElement,
+  type ReactNode,
   memo,
   useCallback,
   useEffect,
@@ -34,7 +45,6 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
@@ -48,12 +58,12 @@ import {
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
-  type CompareHandles,
   CompareHandlesProvider,
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { ThreadSidebar } from "./thread-sidebar";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 
@@ -61,7 +71,6 @@ type LoraCandidate = {
   id: string;
   baseModel: string;
   updatedAt?: number;
-  exportType?: "lora" | "merged" | "gguf";
 };
 
 function normalizeModelRef(value: string | null | undefined): string {
@@ -72,13 +81,12 @@ function pickBestLoraForBase(
   loras: LoraCandidate[],
   baseModel: string | null,
 ): LoraCandidate | null {
-  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
-  if (adapterOnly.length === 0) return null;
-  const sorted = [...adapterOnly].sort(
+  if (loras.length === 0) return null;
+  const sorted = [...loras].sort(
     (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
   );
   const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0] ?? null;
+  if (!normalizedBase) return sorted[0];
 
   const exact = sorted.find(
     (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
@@ -93,7 +101,7 @@ function pickBestLoraForBase(
       normalizedBase.includes(normalizedLoraBase)
     );
   });
-  return partial ?? sorted[0] ?? null;
+  return partial ?? sorted[0];
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -125,8 +133,8 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
     >
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+      <div className="min-h-0 flex-1">
+        <Thread />
       </div>
     </ChatRuntimeProvider>
   );
@@ -138,17 +146,6 @@ type CompareModelSelection = {
   ggufVariant?: string;
 };
 
-function modelMatchesDeleted(
-  model: { id: string; ggufVariant?: string | null },
-  deletedModel?: DeletedModelRef,
-): boolean {
-  if (!deletedModel || model.id !== deletedModel.id) return false;
-  return (
-    deletedModel.ggufVariant == null ||
-    (model.ggufVariant ?? null) === deletedModel.ggufVariant
-  );
-}
-
 /**
  * Detect if this is a LoRA base-vs-fine-tuned compare.
  * Returns true when the loaded checkpoint is a LoRA — in that case
@@ -157,8 +154,7 @@ function modelMatchesDeleted(
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
     const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
+    return cp ? s.loras.some((l) => l.id === cp) : false;
   });
 }
 
@@ -167,15 +163,11 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   onFoldersChange,
-  onModelsChange,
-  deleteDisabled,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
-  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
-  deleteDisabled?: boolean;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
@@ -187,101 +179,9 @@ const CompareContent = memo(function CompareContent({
       models={models}
       loraModels={loraModels}
       onFoldersChange={onFoldersChange}
-      onModelsChange={onModelsChange}
-      deleteDisabled={deleteDisabled}
     />
   );
 });
-
-/**
- * A single column in the compare layout. Hosts one ChatRuntimeProvider
- * and one Thread rendered with hideComposer — the composer is shared
- * across both panes and rendered outside the pane flex.
- *
- * Each pane is a flex item with `flex-1 basis-0 min-h-0 min-w-0` so on
- * mobile (flex-col) they share height equally, and on desktop (flex-row)
- * they share width equally. The `min-*` constraints are required for
- * the inner viewport to scroll internally instead of spilling into the
- * page.
- */
-function ComparePane({
-  modelType,
-  pairId,
-  initialThreadId,
-  handleName,
-  header,
-  borderClassName,
-}: {
-  modelType: "base" | "lora" | "model1" | "model2";
-  pairId: string;
-  initialThreadId: string | undefined;
-  handleName: string;
-  header: ReactElement;
-  borderClassName?: string;
-}): ReactElement {
-  return (
-    <div
-      className={cn(
-        "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
-        borderClassName,
-      )}
-    >
-      {header}
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
-        <ChatRuntimeProvider
-          modelType={modelType}
-          pairId={pairId}
-          initialThreadId={initialThreadId}
-          syncActiveThreadId={false}
-        >
-          <RegisterCompareHandle name={handleName} />
-          <Thread hideComposer={true} hideWelcome={true} />
-        </ChatRuntimeProvider>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Shared shell for both compare variants. A vertical flex column with
- * the two panes as siblings and the shared composer docked at the
- * bottom. On mobile the panes stack (flex-col); on desktop they sit
- * side by side (md:flex-row).
- *
- * Flex is used rather than CSS grid for the pane container so that
- * viewport sizing stays stable across viewport-size transitions. Grid
- * rows with 1fr were triggering resize thrash in assistant-ui's
- * autoscroll hook on breakpoint crossings, leaving it stuck in a
- * scroll-to-bottom loop.
- */
-function CompareShell({
-  handlesRef,
-  children,
-  composer,
-}: {
-  handlesRef: CompareHandles;
-  children: ReactElement;
-  composer: ReactElement;
-}): ReactElement {
-  return (
-    <CompareHandlesProvider handlesRef={handlesRef}>
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
-        <div
-          data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col md:flex-row"
-        >
-          {children}
-        </div>
-        <div className="shrink-0 bg-background px-5 pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[44rem]">{composer}</div>
-          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-            LLMs can make mistakes. Double-check all responses.
-          </p>
-        </div>
-      </div>
-    </CompareHandlesProvider>
-  );
-}
 
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
@@ -308,92 +208,56 @@ const LoraCompareContent = memo(function LoraCompareContent({
   }, [pairId]);
 
   return (
-    <CompareShell
-      handlesRef={handlesRef}
-      composer={<SharedComposer handlesRef={handlesRef} />}
-    >
-      <>
-        <ComparePane
-          modelType="base"
-          pairId={pairId}
-          initialThreadId={baseThreadId}
-          handleName="base"
-          header={
-            <div className="shrink-0 px-3 py-1.5">
+    <CompareHandlesProvider handlesRef={handlesRef}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div
+          data-tour="chat-compare-view"
+          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
+        >
+          <div className="flex min-h-0 flex-col">
+            <div className="px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
             </div>
-          }
-        />
-        <ComparePane
-          modelType="lora"
-          pairId={pairId}
-          initialThreadId={loraThreadId}
-          handleName="lora"
-          borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
-          header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
+            <div className="min-h-0 flex-1">
+              <ChatRuntimeProvider
+                modelType="base"
+                pairId={pairId}
+                initialThreadId={baseThreadId}
+                syncActiveThreadId={false}
+              >
+                <RegisterCompareHandle name="base" />
+                <Thread hideComposer={true} hideWelcome={true} />
+              </ChatRuntimeProvider>
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
+            <div className="px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Fine-tuned
+                Fine-tuned (LoRA)
               </span>
             </div>
-          }
-        />
-      </>
-    </CompareShell>
+            <div className="min-h-0 flex-1">
+              <ChatRuntimeProvider
+                modelType="lora"
+                pairId={pairId}
+                initialThreadId={loraThreadId}
+                syncActiveThreadId={false}
+              >
+                <RegisterCompareHandle name="lora" />
+                <Thread hideComposer={true} hideWelcome={true} />
+              </ChatRuntimeProvider>
+            </div>
+          </div>
+        </div>
+        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+          <SharedComposer handlesRef={handlesRef} />
+        </div>
+      </div>
+    </CompareHandlesProvider>
   );
 });
-
-/**
- * Per-pane header rendered inside GeneralCompareContent. Contains the
- * model selector aligned with the global topbar height. The left pane
- * reserves room for the mobile sidebar trigger; the right pane reserves
- * room for the global settings button.
- */
-function GeneralCompareHeader({
-  models,
-  loraModels,
-  value,
-  onValueChange,
-  onFoldersChange,
-  onModelsChange,
-  deleteDisabled,
-  side,
-}: {
-  models: ModelOption[];
-  loraModels: LoraModelOption[];
-  value: string;
-  onValueChange: (
-    id: string,
-    meta: { isLora: boolean; ggufVariant?: string },
-  ) => void;
-  onFoldersChange?: () => void;
-  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
-  deleteDisabled?: boolean;
-  side: "left" | "right";
-}): ReactElement {
-  return (
-    <div
-      className={cn(
-        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
-        side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
-      )}
-    >
-      <ModelSelector
-        models={models}
-        loraModels={loraModels}
-        value={value}
-        onValueChange={onValueChange}
-        onFoldersChange={onFoldersChange}
-        onModelsChange={onModelsChange}
-        deleteDisabled={deleteDisabled}
-        variant="ghost"
-        className="max-w-[80%] !h-[34px]"
-      />
-    </div>
-  );
-}
 
 /** General path: any two models, sequential load → generate. */
 const GeneralCompareContent = memo(function GeneralCompareContent({
@@ -401,15 +265,11 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models,
   loraModels,
   onFoldersChange,
-  onModelsChange,
-  deleteDisabled,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
-  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
-  deleteDisabled?: boolean;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -426,19 +286,6 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
-
-  const handleModelsChange = useCallback(
-    (deletedModel?: DeletedModelRef) => {
-      if (modelMatchesDeleted(model1, deletedModel)) {
-        setModel1({ id: "", isLora: false });
-      }
-      if (modelMatchesDeleted(model2, deletedModel)) {
-        setModel2({ id: "", isLora: false });
-      }
-      onModelsChange?.(deletedModel);
-    },
-    [model1, model2, onModelsChange],
-  );
 
   useEffect(() => {
     let isActive = true;
@@ -465,111 +312,197 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   }, [pairId]);
 
   return (
-    <CompareShell
-      handlesRef={handlesRef}
-      composer={
-        <SharedComposer
-          handlesRef={handlesRef}
-          model1={model1}
-          model2={model2}
-        />
-      }
-    >
-      <>
-        <ComparePane
-          modelType="model1"
-          pairId={pairId}
-          initialThreadId={model1ThreadId}
-          handleName="model1"
-          header={
-            <GeneralCompareHeader
-              side="left"
-              models={models}
-              loraModels={loraModels}
-              value={model1.id}
-              onValueChange={(id, meta) =>
-                setModel1({
-                  id,
-                  isLora: meta.isLora,
-                  ggufVariant: meta.ggufVariant,
-                })
-              }
-              onFoldersChange={onFoldersChange}
-              onModelsChange={handleModelsChange}
-              deleteDisabled={deleteDisabled}
-            />
-          }
-        />
-        <ComparePane
-          modelType="model2"
-          pairId={pairId}
-          initialThreadId={model2ThreadId}
-          handleName="model2"
-          borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
-          header={
-            <GeneralCompareHeader
-              side="right"
-              models={models}
-              loraModels={loraModels}
-              value={model2.id}
-              onValueChange={(id, meta) =>
-                setModel2({
-                  id,
-                  isLora: meta.isLora,
-                  ggufVariant: meta.ggufVariant,
-                })
-              }
-              onFoldersChange={onFoldersChange}
-              onModelsChange={handleModelsChange}
-              deleteDisabled={deleteDisabled}
-            />
-          }
-        />
-      </>
-    </CompareShell>
+    <CompareHandlesProvider handlesRef={handlesRef}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div
+          data-tour="chat-compare-view"
+          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
+        >
+          <div className="flex min-h-0 flex-col">
+            <div className="flex items-center gap-2 px-3 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Model 1
+              </span>
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                value={model1.id}
+                onValueChange={(id, meta) =>
+                  setModel1({
+                    id,
+                    isLora: meta.isLora,
+                    ggufVariant: meta.ggufVariant,
+                  })
+                }
+                onFoldersChange={onFoldersChange}
+                variant="ghost"
+                size="sm"
+                className="max-w-[50%]"
+              />
+            </div>
+            <div className="min-h-0 flex-1">
+              <ChatRuntimeProvider
+                modelType="model1"
+                pairId={pairId}
+                initialThreadId={model1ThreadId}
+                syncActiveThreadId={false}
+              >
+                <RegisterCompareHandle name="model1" />
+                <Thread hideComposer={true} hideWelcome={true} />
+              </ChatRuntimeProvider>
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
+            <div className="flex items-center gap-2 px-3 py-1.5 md:justify-end">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+                Model 2
+              </span>
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                value={model2.id}
+                onValueChange={(id, meta) =>
+                  setModel2({
+                    id,
+                    isLora: meta.isLora,
+                    ggufVariant: meta.ggufVariant,
+                  })
+                }
+                onFoldersChange={onFoldersChange}
+                variant="ghost"
+                size="sm"
+                className="max-w-[50%]"
+              />
+            </div>
+            <div className="min-h-0 flex-1">
+              <ChatRuntimeProvider
+                modelType="model2"
+                pairId={pairId}
+                initialThreadId={model2ThreadId}
+                syncActiveThreadId={false}
+              >
+                <RegisterCompareHandle name="model2" />
+                <Thread hideComposer={true} hideWelcome={true} />
+              </ChatRuntimeProvider>
+            </div>
+          </div>
+        </div>
+        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+          <SharedComposer
+            handlesRef={handlesRef}
+            model1={model1}
+            model2={model2}
+          />
+        </div>
+      </div>
+    </CompareHandlesProvider>
   );
 });
 
+function InlineSidebar({
+  children,
+  side = "left",
+}: {
+  children: ReactNode;
+  side?: "left" | "right";
+}) {
+  const { state, isMobile, openMobile, setOpenMobile } = useSidebar();
+  const collapsed = state === "collapsed";
+
+  if (isMobile) {
+    return (
+      <Sheet open={openMobile} onOpenChange={setOpenMobile}>
+        <SheetContent side={side} className="w-[18rem] p-0">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Chat sidebar</SheetTitle>
+            <SheetDescription>Chat threads and actions</SheetDescription>
+          </SheetHeader>
+          <div className="h-full overflow-auto">{children}</div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
+  return (
+    <div
+      className="group shrink-0 h-full pb-3.5"
+      data-state={state}
+      data-collapsible={collapsed ? "offcanvas" : ""}
+      data-side={side}
+    >
+      <aside
+        data-sidebar="sidebar"
+        className={cn(
+          "bg-muted/70 text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
+          !collapsed && side === "right" && "border-l border-sidebar-border/70",
+          collapsed ? "w-0" : "w-(--sidebar-width)",
+        )}
+      >
+        <div className="flex h-full w-(--sidebar-width) flex-col">
+          {children}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function TopBarActions({
+  onNewThread,
+  onNewCompare,
+  showCompare,
+}: {
+  onNewThread: () => void;
+  onNewCompare: () => void;
+  showCompare: boolean;
+}) {
+  const { state } = useSidebar();
+  if (state !== "collapsed") {
+    return null;
+  }
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <Button variant="ghost" size="icon-sm" onClick={onNewThread}>
+            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">New Chat</TooltipContent>
+      </Tooltip>
+      {showCompare ? (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
+              <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Compare</TooltipContent>
+        </Tooltip>
+      ) : null}
+    </>
+  );
+}
+
+function getInitialSingleChatView(): ChatView {
+  const id = useChatRuntimeStore.getState().activeThreadId;
+  if (typeof id === "string" && id.length > 0 && !id.startsWith("__LOCALID_")) {
+    return { mode: "single", threadId: id };
+  }
+  return { mode: "single" };
+}
+
 export function ChatPage(): ReactElement {
-  const search = useSearch({ from: "/chat" });
-  const navigate = useNavigate();
-
-  const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
-  const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
-
-  useEffect(() => {
-    const threadId = search.thread;
-    if (!threadId) return;
-
-    let canceled = false;
-    void db.threads
-      .get(threadId)
-      .then((thread) => {
-        if (canceled || thread) return;
-        useChatRuntimeStore.getState().setActiveThreadId(null);
-        toast.info("Chat not found", {
-          description: "That thread no longer exists, so we opened a new chat.",
-        });
-        navigate({
-          to: "/chat",
-          search: { new: crypto.randomUUID() },
-          replace: true,
-        });
-      })
-      .catch(() => {
-        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
-          useChatRuntimeStore.getState().setActiveThreadId(null);
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [navigate, search.thread]);
-
+  // Do not set newThreadNonce here: each /chat mount would run ThreadNewChatSwitch
+  // and create spurious threads when navigating (e.g. Recipes / Export). New Chat
+  // explicitly sets a nonce in handleNewThread.
+  const [view, setView] = useState<ChatView>(getInitialSingleChatView);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
-  const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
+    null,
+  );
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -579,14 +512,12 @@ export function ChatPage(): ReactElement {
     (state) => state.ggufContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
-  const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  const modelOperationInProgress = useChatRuntimeStore(
-    (state) => state.modelLoading,
-  );
   const {
     refresh,
     selectModel,
@@ -596,8 +527,6 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
-  const pendingNativeModelIntent = useNativeIntentStore((state) => state.pendingModelIntent);
-  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -608,80 +537,6 @@ export function ChatPage(): ReactElement {
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint);
   }, [inferenceParams.checkpoint]);
-
-  // Derive view from URL search params
-  const view = useMemo<ChatView>(() => {
-    if (search.compare) {
-      return {
-        mode: "compare",
-        pairId: search.compare,
-      };
-    }
-    if (search.thread) {
-      return { mode: "single", threadId: search.thread };
-    }
-    if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
-      return { mode: "single", threadId: activeThreadId };
-    }
-    if (search.new) {
-      return { mode: "single", newThreadNonce: search.new };
-    }
-    return { mode: "single" };
-  }, [search.thread, search.compare, search.new, activeThreadId]);
-
-  const hasActiveModel = Boolean(inferenceParams.checkpoint);
-  const loadNativeModelIntent = useCallback(
-    async (intent: NativeIntent, loadingDescription: string) => {
-      const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
-      await selectModel({
-        id: label,
-        nativePathToken: intent.path.token,
-        isDownloaded: true,
-        loadingDescription,
-        forceReload: true,
-        throwOnError: true,
-      });
-      useNativeIntentStore.getState().clearModelIntent(intent.id);
-    },
-    [selectModel],
-  );
-  const handleNativeModelDropAutoLoad = useCallback(
-    (intent: NativeIntent) =>
-      loadNativeModelIntent(
-        intent,
-        hasActiveModel
-          ? "Replacing with dropped local GGUF model."
-          : "Loading dropped local GGUF model.",
-      ),
-    [hasActiveModel, loadNativeModelIntent],
-  );
-  const handleNativeModelPickerAutoLoad = useCallback(
-    (intent: NativeIntent) =>
-      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
-    [loadNativeModelIntent],
-  );
-  const canAutoLoadPickedNativeModel = useCallback(() => {
-    const store = useChatRuntimeStore.getState();
-    return (
-      view.mode === "single" &&
-      nativePathLeasesSupported &&
-      !loadingModel &&
-      !modelLoading &&
-      !store.modelLoading &&
-      !store.params.checkpoint
-    );
-  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
-  const chooseNativeModel = useChooseNativeModel({
-    shouldAutoLoad: canAutoLoadPickedNativeModel,
-    onAutoLoad: handleNativeModelPickerAutoLoad,
-  });
-  const nativeModelDropState = useNativeModelDrop({
-    enabled: view.mode === "single",
-    nativePathLeasesSupported,
-    hasActiveModel,
-    isModelLoading: Boolean(loadingModel) || modelLoading,
-    onAutoLoad: handleNativeModelDropAutoLoad,
-  });
 
   const handleCheckpointChange = useCallback(
     (
@@ -743,6 +598,28 @@ export function ChatPage(): ReactElement {
   const handleEject = useCallback(() => {
     void ejectModel();
   }, [ejectModel]);
+  const handleNewThread = useCallback(() => {
+    // Skip if we are already on a fresh unsaved draft with no messages sent.
+    // Once the user sends a message, append() sets activeThreadId in the store,
+    // so we check the store to know whether the current draft has been sent.
+    if (
+      view.mode === "single" &&
+      !view.threadId &&
+      !useChatRuntimeStore.getState().activeThreadId
+    ) {
+      return;
+    }
+
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }, [view]);
+  const handleNewCompare = useCallback(() => {
+    setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    useChatRuntimeStore.getState().setContextUsage(null);
+  }, []);
 
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
@@ -761,32 +638,30 @@ export function ChatPage(): ReactElement {
     },
     [modelSelectorLocked],
   );
-  const openSettings = useCallback(
-    () => setSettingsOpen(true),
-    [setSettingsOpen],
-  );
-  const closeSettings = useCallback(
-    () => setSettingsOpen(false),
-    [setSettingsOpen],
-  );
-  const { setPinned, isMobile } = useSidebar();
-  const openSidebar = useCallback(() => setPinned(true), [setPinned]);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
 
   const enterCompare = useCallback(() => {
-    viewBeforeCompareRef.current = { ...search };
+    setViewBeforeCompare((prev) => prev ?? view);
+    setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-  }, [navigate, search]);
+  }, [view]);
 
   const exitCompare = useCallback(() => {
-    const saved = viewBeforeCompareRef.current;
-    if (!saved) return;
-    viewBeforeCompareRef.current = null;
-    navigate({ to: "/chat", search: saved });
+    if (!viewBeforeCompare) return;
+    setView(viewBeforeCompare);
+    setViewBeforeCompare(null);
     // Restore context usage from the active thread's last assistant message.
+    // Use the thread ID from the saved view rather than the store, because
+    // activeThreadId may have been cleared on compare entry.
+    const store = useChatRuntimeStore.getState();
     const threadId =
-      saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
+      ("threadId" in viewBeforeCompare ? viewBeforeCompare.threadId : null) ??
+      store.activeThreadId;
     if (threadId) {
       void db.messages
         .where("threadId")
@@ -794,14 +669,18 @@ export function ChatPage(): ReactElement {
         .reverse()
         .first()
         .then((msg) => {
-          const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as ReturnType<
-            typeof useChatRuntimeStore.getState
-          >["contextUsage"];
-          if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
+          const saved = msg?.metadata as Record<string, unknown> | undefined;
+          const usage = saved?.contextUsage as
+            | typeof store.contextUsage
+            | undefined;
+          if (usage) store.setContextUsage(usage);
         });
     }
-  }, [navigate]);
+  }, [viewBeforeCompare]);
+
+  const handleThreadSelect = useCallback((nextView: ChatView) => {
+    setView(nextView);
+  }, []);
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -809,7 +688,6 @@ export function ChatPage(): ReactElement {
         id: model.id,
         name: model.name,
         description: model.description,
-        isGguf: model.isGguf,
       })),
     [modelsFromStore],
   );
@@ -845,22 +723,7 @@ export function ChatPage(): ReactElement {
         );
       })
       .catch(() => {});
-  }, [navigate]);
-
-  const refreshModelLists = useCallback((deletedModel?: DeletedModelRef) => {
-    const { checkpoint } = useChatRuntimeStore.getState().params;
-    const activeGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
-    if (
-      modelMatchesDeleted(
-        { id: checkpoint, ggufVariant: activeGgufVariant },
-        deletedModel,
-      )
-    ) {
-      useChatRuntimeStore.getState().clearCheckpoint();
-    }
-    void refresh();
-    refreshLocalModels();
-  }, [refresh, refreshLocalModels]);
+  }, []);
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({
@@ -904,9 +767,9 @@ export function ChatPage(): ReactElement {
           });
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
+          setView({ mode: "compare", pairId: crypto.randomUUID() });
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
-          navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
           return;
@@ -984,20 +847,39 @@ export function ChatPage(): ReactElement {
   }, [modelSelectorLocked, tour.open]);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
+    <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <NativeModelDropOverlay state={nativeModelDropState} />
-        <div
-          className={cn(
-            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
-            isMobile ? "pl-12 pr-1.5" : "pl-2",
-            view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
-          )}
-        >
-          <div className="flex items-center gap-1">
-            {view.mode !== "compare" && (
+      <SidebarProvider
+        defaultOpen={true}
+        open={sidebarOpen}
+        onOpenChange={setSidebarOpen}
+        className="!min-h-0 h-full w-full max-w-7xl mx-auto px-2 sm:px-4"
+        style={
+          {
+            "--sidebar-width": "14rem",
+            "--sidebar-width-icon": "3rem",
+          } as CSSProperties
+        }
+      >
+        <InlineSidebar>
+          <ThreadSidebar
+            view={view}
+            onSelect={handleThreadSelect}
+            onNewThread={handleNewThread}
+            onNewCompare={handleNewCompare}
+            showCompare={canCompare}
+          />
+        </InlineSidebar>
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
+            <div className="flex items-center gap-1">
+              <SidebarTrigger />
+              <TopBarActions
+                onNewThread={handleNewThread}
+                onNewCompare={handleNewCompare}
+                showCompare={canCompare}
+              />
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -1006,57 +888,41 @@ export function ChatPage(): ReactElement {
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
-                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
-                onModelsChange={refreshModelLists}
-                deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
+                className="max-w-[62vw] sm:max-w-none"
               />
-            )}
-            {pendingNativeModelIntent && view.mode !== "compare" ? (
-              <NativeModelChip
-                intent={pendingNativeModelIntent}
-                nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={(selection) => selectModel(selection)}
-              />
-            ) : null}
-            {loadingModel && loadToastDismissed ? (
-              <ModelLoadInlineStatus
-                label={
-                  loadProgress?.phase === "starting"
-                    ? "Starting model…"
-                    : loadingModel.isDownloaded || loadingModel.isCachedLora
-                      ? "Loading model…"
-                      : "Downloading model…"
-                }
-                title={
-                  loadingModel.isDownloaded
-                    ? `Loading ${loadingModel.displayName} from cache.`
-                    : loadingModel.isCachedLora
-                      ? `Loading ${loadingModel.displayName} into memory.`
-                      : `Loading ${loadingModel.displayName}. This may include downloading.`
-                }
-                progressPercent={loadProgress?.percent}
-                progressLabel={loadProgress?.label}
-                onStop={cancelLoading}
-              />
-            ) : null}
-            {!loadingModel && modelsError ? (
-              <div
-                className="relative top-0.5 max-w-[28rem] truncate pl-0.5 text-xs text-destructive"
-                title={modelsError}
-                role="status"
-                aria-live="polite"
-              >
+              {loadingModel && loadToastDismissed ? (
+                <ModelLoadInlineStatus
+                  label={
+                    loadProgress?.phase === "starting"
+                      ? "Starting model…"
+                      : loadingModel.isDownloaded || loadingModel.isCachedLora
+                        ? "Loading model…"
+                        : "Downloading model…"
+                  }
+                  title={
+                    loadingModel.isDownloaded
+                      ? `Loading ${loadingModel.displayName} from cache.`
+                      : loadingModel.isCachedLora
+                        ? `Loading ${loadingModel.displayName} into memory.`
+                        : `Loading ${loadingModel.displayName}. This may include downloading.`
+                  }
+                  progressPercent={loadProgress?.percent}
+                  progressLabel={loadProgress?.label}
+                  onStop={cancelLoading}
+                />
+              ) : null}
+            </div>
+            {modelsError && (
+              <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
                 {modelsError}
               </div>
-            ) : null}
-          </div>
-          <div className="ml-auto flex items-center gap-2">
+            )}
+            <div className="flex-1" />
             {view.mode === "single" && ggufContextLength && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
@@ -1064,67 +930,57 @@ export function ChatPage(): ReactElement {
                 cached={contextUsage.cachedTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
-                className="h-[34px]"
               />
             ) : null}
-            {!settingsOpen && (
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Open configuration"
-                    data-tour="chat-settings"
-                  >
-                    <HugeiconsIcon icon={Settings05Icon} className="size-5" />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent side="bottom" sideOffset={6}>
-                  Open configuration
-                </TooltipContent>
-              </Tooltip>
-            )}
+            <button
+              type="button"
+              onClick={() => setSettingsOpen((o) => !o)}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Inference settings"
+              data-tour="chat-settings"
+            >
+              <HugeiconsIcon icon={Settings04Icon} className="size-5" />
+            </button>
           </div>
+
+          {view.mode === "single" ? (
+            <SingleContent
+              key={view.threadId ?? "single"}
+              threadId={view.threadId}
+              newThreadNonce={view.newThreadNonce}
+            />
+          ) : (
+            <CompareContent
+              key={view.pairId}
+              pairId={view.pairId}
+              models={models}
+              loraModels={loraModels}
+              onFoldersChange={refreshLocalModels}
+            />
+          )}
         </div>
 
-        {view.mode === "single" ? (
-          <SingleContent
-            key={view.threadId ?? "single"}
-            threadId={view.threadId}
-            newThreadNonce={view.newThreadNonce}
-          />
-        ) : (
-          <CompareContent
-            key={view.pairId}
-            pairId={view.pairId}
-            models={models}
-            loraModels={loraModels}
-            onFoldersChange={refreshLocalModels}
-            onModelsChange={refreshModelLists}
-            deleteDisabled={modelOperationInProgress}
-          />
-        )}
-      </div>
-
-      <ChatSettingsPanel
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        params={inferenceParams}
-        onParamsChange={setInferenceParams}
-        onReloadModel={() => {
-          const state = useChatRuntimeStore.getState();
-          if (state.params.checkpoint) {
-            selectModel({
-              id: state.params.checkpoint,
-              ggufVariant: state.activeGgufVariant ?? undefined,
-              forceReload: true,
-              isDownloaded: true,
-              loadingDescription: "Reloading with updated chat template.",
-            });
-          }
-        }}
-      />
+        <ChatSettingsPanel
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          params={inferenceParams}
+          onParamsChange={setInferenceParams}
+          autoTitle={autoTitle}
+          onAutoTitleChange={setAutoTitle}
+          onReloadModel={() => {
+            const state = useChatRuntimeStore.getState();
+            if (state.params.checkpoint) {
+              selectModel({
+                id: state.params.checkpoint,
+                ggufVariant: state.activeGgufVariant ?? undefined,
+                forceReload: true,
+                isDownloaded: true,
+                loadingDescription: "Reloading with updated chat template.",
+              });
+            }
+          }}
+        />
+      </SidebarProvider>
     </div>
   );
 }

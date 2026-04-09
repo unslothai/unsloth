@@ -49,7 +49,6 @@ from unsloth.chat_templates import get_chat_template
 import json
 import threading
 import math
-import subprocess
 import structlog
 from loggers import get_logger
 import time
@@ -69,11 +68,6 @@ from utils.paths import (
     resolve_tensorboard_dir,
 )
 from trl import SFTTrainer, SFTConfig
-
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
-)
 
 logger = get_logger(__name__)
 
@@ -377,7 +371,6 @@ class UnslothTrainer:
     def _finalize_training(self, output_dir, label = ""):
         """Save model after training and update progress. Used by all training branches."""
         if self.should_stop and self.save_on_stop:
-            self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
@@ -1772,8 +1765,6 @@ class UnslothTrainer:
                     spark_code_dir,
                 ],
                 check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
             )
 
         if spark_code_dir not in sys.path:
@@ -1991,6 +1982,8 @@ class UnslothTrainer:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Clone OuteTTS repo (same as audio_codecs._load_dac)
+        import subprocess
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
         outetts_code_dir = os.path.join(base_dir, "inference", "OuteTTS")
         outetts_pkg = os.path.join(outetts_code_dir, "outetts")
@@ -2007,8 +2000,6 @@ class UnslothTrainer:
                     outetts_code_dir,
                 ],
                 check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
             )
             for fpath in [
                 os.path.join(outetts_pkg, "models", "gguf_model.py"),
@@ -2832,9 +2823,7 @@ class UnslothTrainer:
                     total_steps = total, status_message = "Starting CSM training..."
                 )
                 logger.info(f"CSM training config: {config}\n")
-                self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
-                )
+                self.trainer.train()
                 self._finalize_training(output_dir, "CSM")
                 return
 
@@ -2873,9 +2862,7 @@ class UnslothTrainer:
                     total_steps = total, status_message = "Starting SNAC training..."
                 )
                 logger.info(f"SNAC training config: {config}\n")
-                self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
-                )
+                self.trainer.train()
                 self._finalize_training(output_dir, "SNAC")
                 return
 
@@ -2921,9 +2908,7 @@ class UnslothTrainer:
                     total_steps = total, status_message = "Starting Whisper training..."
                 )
                 logger.info(f"Whisper training config: {config}\n")
-                self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
-                )
+                self.trainer.train()
                 self._finalize_training(output_dir, "Whisper")
                 return
 
@@ -3418,9 +3403,7 @@ class UnslothTrainer:
             # ========== START TRAINING ==========
             self._update_progress(status_message = "Starting training...")
             logger.info("Starting training...\n")
-            self.trainer.train(
-                resume_from_checkpoint = training_args.get("resume_from_checkpoint")
-            )
+            self.trainer.train()
 
             # ========== SAVE MODEL ==========
             self._finalize_training(output_dir)
