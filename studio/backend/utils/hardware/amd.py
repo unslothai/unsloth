@@ -120,18 +120,16 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     else:
         gpu_util = _parse_numeric(usage)
 
-    # Temperature
+    # Temperature -- try multiple keys in priority order.
+    # dict.get() returns "N/A" strings rather than falling through,
+    # so we must try each key and check if it parses to a real number.
     temp_data = gpu_data.get("temperature", {})
+    temp = None
     if isinstance(temp_data, dict):
-        temp = _parse_numeric(
-            temp_data.get(
-                "edge",
-                temp_data.get(
-                    "temperature_edge",
-                    temp_data.get("hotspot", temp_data.get("temperature_hotspot")),
-                ),
-            )
-        )
+        for temp_key in ("edge", "temperature_edge", "hotspot", "temperature_hotspot"):
+            temp = _parse_numeric(temp_data.get(temp_key))
+            if temp is not None:
+                break
     else:
         temp = _parse_numeric(temp_data)
 
@@ -153,13 +151,18 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
 
     # VRAM -- unit-aware parsing to handle varying amd-smi output formats.
     # Newer amd-smi versions may return {"value": 192, "unit": "GiB"}.
-    vram_data = gpu_data.get("vram", gpu_data.get("fb_memory_usage", {}))
+    # Newer amd-smi uses "mem_usage" with "total_vram" / "used_vram" keys;
+    # older versions use "vram" or "fb_memory_usage" with "used" / "total".
+    vram_data = gpu_data.get(
+        "mem_usage",
+        gpu_data.get("vram", gpu_data.get("fb_memory_usage", {})),
+    )
     if isinstance(vram_data, dict):
         vram_used_mb = _parse_memory_mb(
-            vram_data.get("vram_used", vram_data.get("used"))
+            vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
         )
         vram_total_mb = _parse_memory_mb(
-            vram_data.get("vram_total", vram_data.get("total"))
+            vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
         )
     else:
         vram_used_mb = None
@@ -262,7 +265,12 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     if data is None:
         return {"available": False}
 
-    # amd-smi may return a list with one entry or a dict
+    # amd-smi may return:
+    #   - a list of GPU dicts (older versions)
+    #   - a dict with a "gpu_data" key wrapping a list (newer versions)
+    #   - a single GPU dict (rare)
+    if isinstance(data, dict) and "gpu_data" in data:
+        data = data["gpu_data"]
     if isinstance(data, list):
         if len(data) == 0:
             return {"available": False}
@@ -313,7 +321,8 @@ def get_visible_gpu_utilization(
     if isinstance(data, list):
         gpu_list = data
     elif isinstance(data, dict):
-        gpu_list = data.get("gpus", data.get("gpu", [data]))
+        # Newer amd-smi wraps output in {"gpu_data": [...]}
+        gpu_list = data.get("gpu_data", data.get("gpus", data.get("gpu", [data])))
     else:
         gpu_list = [data]
     visible_set = set(parent_visible_ids)
