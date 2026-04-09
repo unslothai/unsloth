@@ -172,12 +172,16 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     )
     vram_util = (
         round((vram_used_mb / vram_total_mb) * 100, 1)
-        if vram_used_mb is not None and vram_total_mb and vram_total_mb > 0
+        if vram_used_mb is not None
+        and vram_total_mb is not None
+        and vram_total_mb > 0
         else None
     )
     power_util = (
         round((power_draw / power_limit) * 100, 1)
-        if power_draw is not None and power_limit and power_limit > 0
+        if power_draw is not None
+        and power_limit is not None
+        and power_limit > 0
         else None
     )
 
@@ -212,7 +216,11 @@ def get_physical_gpu_count() -> Optional[int]:
         return None
     if isinstance(data, list):
         return len(data)
-    # Some versions return a dict with a "gpu" key
+    # Some versions return a dict with a "gpu" / "gpus" key. Guard the
+    # .get() access with an isinstance check so a malformed scalar /
+    # string response from amd-smi cannot raise AttributeError.
+    if not isinstance(data, dict):
+        return None
     gpus = data.get("gpu", data.get("gpus", []))
     if isinstance(gpus, list):
         return len(gpus)
@@ -301,25 +309,35 @@ def get_visible_gpu_utilization(
             "index_kind": "physical",
         }
 
-    gpu_list = (
-        data if isinstance(data, list) else data.get("gpus", data.get("gpu", [data]))
-    )
+    # Extract a device list from amd-smi's envelope. Newer versions return
+    # a JSON array directly, older versions return a dict with a "gpus" /
+    # "gpu" key wrapping the list. Guard non-dict / non-list envelopes
+    # (scalar / string fallbacks from malformed output) so the .get()
+    # access cannot raise AttributeError on an unexpected shape.
+    if isinstance(data, list):
+        gpu_list = data
+    elif isinstance(data, dict):
+        gpu_list = data.get("gpus", data.get("gpu", [data]))
+    else:
+        gpu_list = [data]
     visible_set = set(parent_visible_ids)
     ordinal_map = {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
     devices = []
     for fallback_idx, gpu_data in enumerate(gpu_list):
+        # Skip non-dict entries defensively: if amd-smi ever ships a
+        # scalar inside its "gpus" array (observed on some malformed
+        # output), _extract_gpu_metrics would raise AttributeError on
+        # the first .get() call.
+        if not isinstance(gpu_data, dict):
+            continue
         # Use AMD-reported GPU ID when available, fall back to enumeration
         # index. Newer amd-smi versions wrap scalars as ``{"value": 0,
         # "unit": "none"}``, so route raw_id through ``_parse_numeric``
         # which already handles bare ints, floats, strings, and that
         # dict shape uniformly.
-        raw_id = (
-            gpu_data.get(
-                "gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))
-            )
-            if isinstance(gpu_data, dict)
-            else fallback_idx
+        raw_id = gpu_data.get(
+            "gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))
         )
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:

@@ -1068,13 +1068,23 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*) echo "$_base/cpu"; return ;;
             esac
-            # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds (<2.11.0).
-            # Fall back to rocm7.1 index which has torch 2.10.0.
-            # TODO: uncomment the next line when torch upper bound is bumped to >=2.11.0
-            # echo "$_base/$_rocm_tag"; return
+            # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds
+            # (<2.11.0).  Fall back to rocm7.1 index which has torch 2.10.0.
+            # Enumerate explicit versions rather than matching rocm6.* so
+            # a host on ROCm 6.5 or 6.6 (no PyTorch wheels published) is
+            # clipped down to the last supported 6.x (rocm6.4) instead of
+            # constructing https://download.pytorch.org/whl/rocm6.5 which
+            # returns HTTP 403. PyTorch only ships: rocm5.7, 6.0, 6.1, 6.2,
+            # 6.3, 6.4, 7.0, 7.1, 7.2 (and 5.7 is below our minimum).
+            # TODO: uncomment rocm7.2 when the torch upper bound is bumped
+            # to >=2.11.0.
             case "$_rocm_tag" in
-                rocm6.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*)
+                rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*)
                     echo "$_base/$_rocm_tag" ;;
+                rocm6.*)
+                    # ROCm 6.5+ (no published PyTorch wheels): clip down
+                    # to the last supported 6.x wheel set.
+                    echo "$_base/rocm6.4" ;;
                 *)
                     # ROCm 7.2+ (including future 10.x+): cap to rocm7.1
                     echo "$_base/rocm7.1" ;;
