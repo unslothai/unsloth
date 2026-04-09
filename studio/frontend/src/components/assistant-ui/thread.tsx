@@ -92,14 +92,27 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className={cn(
-          "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible pb-4 md:pb-4",
-          hideComposer ? "bg-background" : "relative bg-transparent",
-        )}>
+        <ThreadPrimitive.ViewportFooter
+          className={cn(
+            "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
+            hideComposer ? "gap-2" : "gap-4",
+            // Compare: pointer-events pass-through so messages behind footer stay clickable
+            hideComposer
+              ? "pointer-events-none pb-3"
+              : "relative pb-4",
+          )}
+        >
           {!hideComposer && (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-background" aria-hidden />
           )}
-          <ThreadScrollToBottom />
+          <div
+            className={cn(
+              "flex justify-center",
+              hideComposer && "pointer-events-auto",
+            )}
+          >
+            <ThreadScrollToBottom />
+          </div>
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
@@ -115,7 +128,7 @@ const ThreadScrollToBottom: FC = () => {
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
+        className="aui-thread-scroll-to-bottom absolute -top-6 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
       >
         <ArrowDownIcon />
       </TooltipIconButton>

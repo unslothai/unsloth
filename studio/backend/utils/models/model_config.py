@@ -493,8 +493,9 @@ _VLM_MODEL_TYPES = {
     "minicpmv",
 }
 
-# Pre-computed .venv_t5 path and backend dir for subprocess version switching.
-_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
+# Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
+# Vision check uses 5.5.0 (newest, recognizes all architectures).
+_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # Inline script executed in a subprocess with transformers 5.x activated.
@@ -1130,6 +1131,26 @@ def list_gguf_variants(
     return variants, has_vision
 
 
+def _resolve_gguf_dir(p: Path) -> Optional[Path]:
+    """Resolve a path to the directory containing GGUF variants.
+
+    If *p* is already a directory, returns it directly.  If *p* is a ``.gguf``
+    file whose parent directory has model metadata (``config.json`` or
+    ``adapter_config.json``), returns the parent -- all GGUFs in that
+    directory belong to the same model.  Returns ``None`` for loose standalone
+    GGUFs (no config) to avoid cross-wiring unrelated models.
+    """
+    if p.is_dir():
+        return p
+    if p.is_file() and p.suffix.lower() == ".gguf":
+        parent = p.parent
+        if (parent / "config.json").exists() or (
+            parent / "adapter_config.json"
+        ).exists():
+            return parent
+    return None
+
+
 def list_local_gguf_variants(
     directory: str,
 ) -> tuple[list[GgufVariantInfo], bool]:
@@ -1142,8 +1163,8 @@ def list_local_gguf_variants(
     Returns:
         (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
     """
-    p = Path(directory)
-    if not p.is_dir():
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
         return [], False
 
     quant_totals: dict[str, int] = {}
@@ -1183,8 +1204,8 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     Returns the resolved absolute path, or ``None`` if no match.
     """
-    p = Path(directory)
-    if not p.is_dir():
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
         return None
 
     matches = sorted(
