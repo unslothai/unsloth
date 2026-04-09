@@ -1986,7 +1986,7 @@ def patch_trl_disable_gradient_checkpointing():
         return
 
     @contextmanager
-    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs=None):
+    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs = None):
         yield
 
     _noop_disable_gradient_checkpointing._unsloth_noop_patched = True

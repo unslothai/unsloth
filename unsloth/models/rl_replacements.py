@@ -1002,6 +1002,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
+
 def _unsloth_get_final_logit_softcapping(config):
     """Return final_logit_softcapping for a model config, falling back to the
     nested text sub-config for composite models. Handles both:
@@ -1030,7 +1031,9 @@ grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_unsloth_get_final_logit_softcapping)
+)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
