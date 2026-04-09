@@ -161,9 +161,9 @@ _api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
 _cors_origins = ["*"]
 if _api_only:
     _cors_origins = [
-        "tauri://localhost",           # Linux/macOS Tauri webview
-        "http://tauri.localhost",      # Windows Tauri webview
-        "http://localhost",            # dev fallback
+        "tauri://localhost",  # Linux/macOS Tauri webview
+        "http://tauri.localhost",  # Windows Tauri webview
+        "http://localhost",  # dev fallback
     ]
     _cors_origin_regex = r"^https?://localhost(:\d+)?$"
 else:

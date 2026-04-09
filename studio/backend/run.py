@@ -316,7 +316,7 @@ def run_server(
 
     # Output port for Tauri to parse when in api-only mode
     if api_only:
-        print(f"TAURI_PORT={port}", flush=True)
+        print(f"TAURI_PORT={port}", flush = True)
 
     # Setup frontend if path provided (skip in api-only mode)
     if frontend_path and not api_only:
@@ -390,11 +390,17 @@ if __name__ == "__main__":
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
-    parser.add_argument("--api-only", action = "store_true", help = "API server only, no frontend (for Tauri)")
+    parser.add_argument(
+        "--api-only",
+        action = "store_true",
+        help = "API server only, no frontend (for Tauri)",
+    )
 
     args = parser.parse_args()
 
-    kwargs = dict(host = args.host, port = args.port, silent = args.silent, api_only = args.api_only)
+    kwargs = dict(
+        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+    )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
 
