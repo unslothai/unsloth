@@ -295,6 +295,7 @@ def _ensure_rocm_torch() -> None:
             "bitsandbytes (AMD)",
             "--force-reinstall",
             "--no-cache-dir",
+            "--no-deps",
             "bitsandbytes>=0.49.1",
             constrain = False,
         )
@@ -688,9 +689,10 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
-    # ROCm torch check step (Linux only, non-macOS, non-no-torch)
+    # ROCm torch check steps (Linux only, non-macOS, non-no-torch):
+    # one early check (step 2b) and one final repair (step 13).
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        base_total += 1
+        base_total += 2
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -974,7 +976,16 @@ def install_python_stack() -> int:
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 13. Final check (silent; third-party conflicts are expected)
+    # 13. AMD ROCm: final torch repair.  Multiple install steps above can
+    #     pull in CUDA torch from PyPI (base packages, extras, overrides,
+    #     studio deps, etc.).  Running the repair as the very last step
+    #     ensures ROCm torch is in place at runtime, regardless of which
+    #     intermediate step clobbered it.
+    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+        _progress("ROCm torch (final)")
+        _ensure_rocm_torch()
+
+    # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
         [sys.executable, "-m", "pip", "check"],
         stdout = subprocess.DEVNULL,

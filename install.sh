@@ -1297,7 +1297,16 @@ if [ "$_MIGRATED" = true ]; then
         case "$TORCH_INDEX_URL" in
             */rocm*)
                 substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir "bitsandbytes>=0.49.1"
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+                # Repair ROCm torch if overwritten during migrated install
+                _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
+                if [ -z "$_has_hip" ]; then
+                    substep "repairing ROCm torch (overwritten by dependency resolution)..."
+                    run_install_cmd "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                        "$TORCH_CONSTRAINT" torchvision torchaudio \
+                        --index-url "$TORCH_INDEX_URL" \
+                        --force-reinstall
+                fi
                 ;;
         esac
     fi
@@ -1429,7 +1438,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         case "$TORCH_INDEX_URL" in
             */rocm*)
                 substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir "bitsandbytes>=0.49.1"
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
                 ;;
         esac
     fi
@@ -1457,6 +1466,22 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "$PACKAGE_NAME"
+    fi
+    # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
+    # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
+    if [ "$SKIP_TORCH" = false ]; then
+        case "$TORCH_INDEX_URL" in
+            */rocm*)
+                _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
+                if [ -z "$_has_hip" ]; then
+                    substep "repairing ROCm torch (overwritten by dependency resolution)..."
+                    run_install_cmd "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                        "$TORCH_CONSTRAINT" torchvision torchaudio \
+                        --index-url "$TORCH_INDEX_URL" \
+                        --force-reinstall
+                fi
+                ;;
+        esac
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
