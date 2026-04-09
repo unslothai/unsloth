@@ -949,15 +949,13 @@ async def enable_access_endpoint(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Enable external API access: restart llama-server with --parallel 2 and generate an API key."""
+    """Enable external API access: generate an API key for the running llama-server."""
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         raise HTTPException(status_code = 400, detail = "No GGUF model loaded")
 
-    # Restart with --parallel 2 for concurrent Studio + external access
-    await asyncio.to_thread(llama_backend.set_parallel, 2)
-
-    # Generate API key
+    # llama-server is already running with --parallel 4, so concurrent Studio
+    # chat + external API is supported without a restart. We just mint a key.
     api_key = f"sk-unsloth-{_secrets.token_urlsafe(32)}"
     request.app.state.external_api_key = api_key
 
@@ -976,13 +974,8 @@ async def disable_access_endpoint(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Disable external API access: restart llama-server with --parallel 1 and clear the API key."""
+    """Disable external API access: clear the API key. llama-server keeps running with --parallel 4."""
     request.app.state.external_api_key = None
-
-    llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded:
-        await asyncio.to_thread(llama_backend.set_parallel, 1)
-
     return {"enabled": False}
 
 

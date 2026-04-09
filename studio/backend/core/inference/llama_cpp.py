@@ -1285,7 +1285,7 @@ class LlamaCppBackend:
                 "-c",
                 str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
-                "1",  # Single-user studio, saves VRAM
+                "4",  # Match LM Studio default: supports concurrent Studio chat + external API access
                 "--flash-attn",
                 "on",  # Force flash attention for speed
             ]
