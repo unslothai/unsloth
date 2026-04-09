@@ -647,6 +647,7 @@ export function ChatSettingsPanel({
                       <SelectItem value="128">128</SelectItem>
                       <SelectItem value="256">256</SelectItem>
                       <SelectItem value="512">512</SelectItem>
+                      <SelectItem value="1024">1024</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
