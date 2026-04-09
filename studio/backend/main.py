@@ -131,6 +131,27 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    # Restore access endpoint API key from disk (if one was left enabled).
+    # Persisted at ~/.unsloth/studio/auth/access_endpoint.json so the key
+    # survives backend restarts and external clients don't need to re-fetch
+    # it every time Studio is restarted.
+    try:
+        from routes.inference import _read_endpoint_state
+
+        _ep_state = _read_endpoint_state()
+        if _ep_state and _ep_state["enabled"]:
+            app.state.external_api_key = _ep_state["api_key"]
+        else:
+            app.state.external_api_key = None
+    except Exception as exc:
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "Failed to restore access endpoint state: %s", exc
+        )
+        app.state.external_api_key = None
+
     yield
     # Cleanup
     _hw_module.DEVICE = None

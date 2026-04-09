@@ -692,6 +692,28 @@ print(completion.choices[0].message.content)`,
     }
   }, [endpointEnabled, applyEndpointData]);
 
+  const handleRegenerateKey = useCallback(async () => {
+    setEndpointLoading(true);
+    try {
+      const res = await authFetch(
+        "/api/inference/access-endpoint/regenerate",
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        toast.error(err?.detail ?? "Failed to regenerate API key");
+        return;
+      }
+      const data = await res.json();
+      applyEndpointData(data);
+      toast.success("API key regenerated");
+    } catch {
+      toast.error("Failed to regenerate API key");
+    } finally {
+      setEndpointLoading(false);
+    }
+  }, [applyEndpointData]);
+
   const handleCheckpointChange = useCallback(
     (
       value: string,
@@ -1247,12 +1269,24 @@ print(completion.choices[0].message.content)`,
                     <label htmlFor="endpoint-api-key" className="text-xs font-medium">
                       API Key
                     </label>
-                    <Input
-                      id="endpoint-api-key"
-                      value={endpointApiKey}
-                      readOnly
-                      className="font-mono text-xs"
-                    />
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="endpoint-api-key"
+                        value={endpointApiKey}
+                        readOnly
+                        className="font-mono text-xs"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        onClick={handleRegenerateKey}
+                        disabled={endpointLoading}
+                        title="Generate a new API key. The previous key will stop working."
+                      >
+                        Regenerate
+                      </Button>
+                    </div>
                   </div>
                   <div className="grid gap-1.5">
                     <label htmlFor="endpoint-model-alias" className="text-xs font-medium">

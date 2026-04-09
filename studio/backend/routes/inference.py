@@ -303,9 +303,6 @@ async def load_model(
 
             inference_config = load_inference_config(config.identifier)
 
-            # Clear any previous API key — user must explicitly enable endpoint
-            fastapi_request.app.state.external_api_key = None
-
             return LoadResponse(
                 status = "loaded",
                 model = config.identifier,
@@ -444,9 +441,6 @@ async def load_model(
         except Exception:
             pass
 
-        # Clear any previous API key — user must explicitly enable endpoint
-        fastapi_request.app.state.external_api_key = None
-
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -539,9 +533,6 @@ async def unload_model(
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
-        # Clear API key for external access
-        fastapi_request.app.state.external_api_key = None
-
         # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
@@ -926,6 +917,41 @@ def _get_loaded_model_name():
     return "default"
 
 
+def _read_endpoint_state() -> dict | None:
+    """Return {'api_key': str, 'enabled': bool} or None if file is missing/corrupt."""
+    from utils.paths.storage_roots import access_endpoint_state_path
+
+    path = access_endpoint_state_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and isinstance(data.get("api_key"), str):
+            return {
+                "api_key": data["api_key"],
+                "enabled": bool(data.get("enabled", False)),
+            }
+    except Exception as exc:
+        logger.warning("Failed to read access_endpoint.json: %s", exc)
+    return None
+
+
+def _write_endpoint_state(api_key: str, enabled: bool) -> None:
+    """Atomically persist the endpoint state with 0600 perms."""
+    from utils.paths.storage_roots import access_endpoint_state_path, ensure_dir
+
+    path = access_endpoint_state_path()
+    ensure_dir(path.parent)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"api_key": api_key, "enabled": enabled}))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)  # atomic on POSIX
+
+
+def _mint_api_key() -> str:
+    return f"sk-unsloth-{_secrets.token_urlsafe(32)}"
+
+
 @router.get("/access-endpoint")
 async def get_access_endpoint(
     request: Request,
@@ -949,14 +975,20 @@ async def enable_access_endpoint(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Enable external API access: generate an API key for the running llama-server."""
+    """Enable external API access.
+
+    Reuses the persisted API key if one already exists on disk; only mints a
+    new one on the very first enable or after the file has been removed.
+    llama-server is already running with --parallel 4, so concurrent Studio
+    chat + external API is supported without a restart.
+    """
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         raise HTTPException(status_code = 400, detail = "No GGUF model loaded")
 
-    # llama-server is already running with --parallel 4, so concurrent Studio
-    # chat + external API is supported without a restart. We just mint a key.
-    api_key = f"sk-unsloth-{_secrets.token_urlsafe(32)}"
+    state = _read_endpoint_state()
+    api_key = state["api_key"] if state else _mint_api_key()
+    _write_endpoint_state(api_key, enabled = True)
     request.app.state.external_api_key = api_key
 
     local_url, external_url = _build_endpoint_urls(request)
@@ -974,9 +1006,49 @@ async def disable_access_endpoint(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Disable external API access: clear the API key. llama-server keeps running with --parallel 4."""
+    """Disable external API access.
+
+    Preserves the key on disk (so the next Enable brings the same key back)
+    but clears it from in-memory app.state, which causes the dual-auth check
+    to reject the key on subsequent requests.
+    """
+    state = _read_endpoint_state()
+    if state:
+        _write_endpoint_state(state["api_key"], enabled = False)
     request.app.state.external_api_key = None
     return {"enabled": False}
+
+
+@router.post("/access-endpoint/regenerate")
+async def regenerate_access_endpoint(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Mint a fresh API key, invalidating the previous one.
+
+    JWT-only (deliberately not dual-auth) so a leaked external API key
+    cannot rotate itself. Only legal while the endpoint is currently enabled
+    and a GGUF model is loaded.
+    """
+    if getattr(request.app.state, "external_api_key", None) is None:
+        raise HTTPException(status_code = 400, detail = "Endpoint is not enabled")
+
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(status_code = 400, detail = "No GGUF model loaded")
+
+    api_key = _mint_api_key()
+    _write_endpoint_state(api_key, enabled = True)
+    request.app.state.external_api_key = api_key
+
+    local_url, external_url = _build_endpoint_urls(request)
+    return {
+        "enabled": True,
+        "api_key": api_key,
+        "local_url": local_url,
+        "external_url": external_url,
+        "model": _get_loaded_model_name(),
+    }
 
 
 @router.post("/chat/completions")

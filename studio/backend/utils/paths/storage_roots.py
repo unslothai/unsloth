@@ -50,6 +50,10 @@ def auth_db_path() -> Path:
     return auth_root() / "auth.db"
 
 
+def access_endpoint_state_path() -> Path:
+    return auth_root() / "access_endpoint.json"
+
+
 def studio_db_path() -> Path:
     return studio_root() / "studio.db"
 
