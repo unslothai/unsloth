@@ -149,6 +149,77 @@ def test_raw_text_loader():
         preprocessor = TextPreprocessor()
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
         assert "messy text" in clean_text, "Should clean text properly"
+        paragraph_text = preprocessor.clean_text("Line 1\r\n\r\n\r\nLine 2")
+        assert (
+            paragraph_text == "Line 1\n\nLine 2"
+        ), "Should preserve paragraph breaks while normalizing newlines"
+
+        # Non-ASCII horizontal whitespace separators (NBSP, thin space,
+        # ideographic space, narrow NBSP, em space, vertical tab, form feed)
+        # should be normalized to a single ASCII space, not deleted, otherwise
+        # adjacent words get silently fused together on HTML/PDF/OCR inputs.
+        unicode_whitespace_cases = [
+            ("hello\u00a0world", "hello world"),
+            ("hello\u202fworld", "hello world"),
+            ("hello\u2009world", "hello world"),
+            ("hello\u3000world", "hello world"),
+            ("hello\u2002world", "hello world"),
+            ("hello\x0bworld", "hello world"),
+            ("hello\x0cworld", "hello world"),
+        ]
+        for raw, expected in unicode_whitespace_cases:
+            assert preprocessor.clean_text(raw) == expected, (
+                f"Should normalize Unicode/control whitespace to a single space "
+                f"for {raw!r}"
+            )
+
+        # Mixed paragraph + Unicode whitespace realistic input
+        mixed = preprocessor.clean_text(
+            "Section\u00a01\r\n\r\nBody\ftext\u202Fhere"
+        )
+        assert mixed == "Section 1\n\nBody text here", (
+            "Should preserve paragraph breaks and normalize Unicode "
+            "whitespace simultaneously"
+        )
+
+        # Tabs should collapse to a single space
+        assert preprocessor.clean_text("a\tb") == "a b"
+        assert preprocessor.clean_text("a\t\tb") == "a b"
+
+        # Spaces around newlines should be trimmed on both sides, even with
+        # multiple consecutive newlines
+        assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
+
+        # Non-whitespace non-ASCII characters sitting between spaces should
+        # not leave an interior double space after being stripped. This
+        # guards the idempotence invariant too: without the extra collapse
+        # pass, "word1 (c) word2" first reduces to "word1  word2" and only
+        # becomes "word1 word2" on a second call.
+        assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
+        assert preprocessor.clean_text("a \u00e9 b") == "a b"
+        assert preprocessor.clean_text("prefix \U0001F600 suffix") == "prefix suffix"
+
+        # Stripping a non-ASCII character adjacent to a newline must not
+        # leave a stray leading/trailing space on the neighbouring line.
+        assert preprocessor.clean_text("foo \u00e9\nbar") == "foo\nbar"
+        assert preprocessor.clean_text("foo\n\u00e9 bar") == "foo\nbar"
+        # The double-space collapse pass must not swallow a legitimate
+        # paragraph break when a non-ASCII char sits near it.
+        assert preprocessor.clean_text("a \u00a9\n\nb") == "a\n\nb"
+
+        # Idempotence: running clean_text twice should give the same result
+        idempotent_inputs = [
+            "  messy   text  \n\n\n  ",
+            "Line 1\r\n\r\n\r\nLine 2",
+            "hello\u00a0world",
+            "Section\u00a01\r\n\r\nBody\ftext\u202Fhere",
+            "word1 \u00a9 word2",
+            "a \u00e9 b",
+        ]
+        for raw in idempotent_inputs:
+            once = preprocessor.clean_text(raw)
+            twice = preprocessor.clean_text(once)
+            assert once == twice, f"clean_text should be idempotent for {raw!r}"
 
         # Test validation
         stats = preprocessor.validate_dataset(text_dataset)
