@@ -640,7 +640,7 @@ export function ChatSettingsPanel({
           <div className="space-y-1.5">
             <div ref={presetControlRowRef} className="w-full min-w-0">
               <DropdownMenu>
-                <InputGroup className="!h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 has-[>[data-align=inline-end]]:[&>input]:pr-1 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
+                <InputGroup className="!h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
                   <InputGroupInput
                     id="inference-preset-name"
                     value={presetNameInput}
@@ -654,7 +654,7 @@ export function ChatSettingsPanel({
                     placeholder="Preset name"
                     maxLength={80}
                     autoComplete="off"
-                    className="h-full min-h-8 min-w-0 self-stretch pl-3 pr-2 text-xs"
+                    className="h-full min-h-8 min-w-0 self-stretch !px-2 text-xs"
                     aria-label="Inference preset name"
                   />
                   <InputGroupAddon
@@ -666,7 +666,7 @@ export function ChatSettingsPanel({
                         type="button"
                         variant="ghost"
                         size="icon-sm"
-                        className="h-full min-h-8 shrink-0 rounded-none rounded-r-2xl border-l border-border px-2 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
+                        className="h-full min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
                         title="Choose a preset"
                         aria-label="Open preset list"
                       >
@@ -702,29 +702,33 @@ export function ChatSettingsPanel({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
                 disabled={presetNameInput.trim().length === 0}
-                className="flex h-8 items-center justify-center gap-1.5 rounded-4xl border px-3 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-0 rounded-4xl border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                 title="Save current settings under this name"
               >
-                <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+                <span className="inline-flex shrink-0 items-center pr-1.5">
+                  <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+                </span>
                 Save
               </button>
               <button
                 type="button"
                 onClick={() => deletePreset(activePreset)}
                 disabled={isBuiltinPreset}
-                className="flex h-8 items-center justify-center gap-1.5 rounded-4xl border px-3 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-0 rounded-4xl border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                 title={
                   isBuiltinPreset
                     ? "Built-in presets cannot be deleted"
                     : "Delete selected preset"
                 }
               >
-                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                <span className="inline-flex shrink-0 items-center pr-1.5">
+                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                </span>
                 Delete
               </button>
             </div>
