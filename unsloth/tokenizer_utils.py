@@ -95,6 +95,8 @@ def try_fix_tokenizer(tokenizer, prepend = True):
         if token is None:
             continue
         token_id = getattr(tokenizer, token_name + "_id", None)
+        if token_id is None:
+            continue
 
         # Locate the token's id mapping in the string
         find_text = f'"id":{token_id},"content":"'
@@ -103,6 +105,8 @@ def try_fix_tokenizer(tokenizer, prepend = True):
             continue
         start = find_pos + len(find_text)
         end = tokenizer_string.find('",', start)
+        if end == -1:
+            continue
 
         bad_token = tokenizer_string[start:end]
         # Check if token is the actual same one - if not, edit it
