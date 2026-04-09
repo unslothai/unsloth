@@ -5,8 +5,6 @@
 Core inference backend - streamlined
 """
 
-import os as _os
-
 # On AMD ROCm, Unsloth's global monkey-patching of transformers model classes
 # (LlamaRotaryEmbedding, attention modules, etc.) causes HIP kernel crashes
 # (_assert_async_cuda_kernel -> HSA_STATUS_ERROR_EXCEPTION) during inference.
@@ -313,6 +311,12 @@ class InferenceBackend:
             }
 
             # ── Audio model loading path ──────────────────────────
+            if (config.is_audio or config.is_vision) and _IS_ROCM_ENV:
+                raise RuntimeError(
+                    f"Audio and vision model inference via Unsloth is not "
+                    f"yet supported on AMD ROCm.  Use GGUF inference instead."
+                )
+
             if config.is_audio:
                 audio_type = config.audio_type
                 adapter_info = " (LoRA adapter)" if config.is_lora else ""
