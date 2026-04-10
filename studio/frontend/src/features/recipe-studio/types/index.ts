@@ -252,6 +252,8 @@ export type ModelProviderConfig = {
   extra_headers?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   extra_body?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  is_local?: boolean;
 };
 
 export type ModelConfig = {

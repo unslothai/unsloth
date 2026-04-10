@@ -1579,54 +1579,103 @@ if ($stackExit -ne 0) {
     exit 1
 }
 
-# ── Pre-install transformers 5.x into .venv_t5/ ──
-# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-# at runtime (slow, ~10-15s), we pre-install into a separate directory.
-# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-Write-Host ""
-substep "pre-installing transformers 5.x for newer model support..."
-$VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
-if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
-New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
-$prevEAP_t5 = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        exit 1
-    }
-}
-# tiktoken is needed by Qwen-family tokenizers -- install with deps since
-# regex/requests may be missing on Windows
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5Dir tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
-} else {
-    $output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
-}
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" "Yellow"
-}
-$ErrorActionPreference = $prevEAP_t5
-step "transformers" "5.x pre-installed"
-
 } else {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
 }
+
+# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# Runs outside the deps fast-path gate so that upgrades from the legacy
+# single .venv_t5 are always migrated to the tiered layout.
+$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
+$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
+$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+
+$_NeedT5Install = $false
+if (Test-Path $VenvT5Legacy) {
+    Remove-Item -Recurse -Force $VenvT5Legacy
+    $_NeedT5Install = $true
+}
+if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
+# Also reinstall when python deps were updated
+if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
+
+if ($_NeedT5Install) {
+Write-Host ""
+
+$prevEAP_t5 = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
+# --- .venv_t5_530 (transformers 5.3.0) ---
+substep "pre-installing transformers 5.3.0 for newer model support..."
+if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
+New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
+foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_530Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_530Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_530Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_530Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_530/ -- Qwen tokenizers may fail" "Yellow"
+}
+step "transformers" "5.3.0 pre-installed"
+
+# --- .venv_t5_550 (transformers 5.5.0) ---
+substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
+if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
+New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
+foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_550Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_550Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_550Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_550Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
+}
+$ErrorActionPreference = $prevEAP_t5
+step "transformers" "5.5.0 pre-installed"
+
+} # end $_NeedT5Install
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build

@@ -1030,6 +1030,7 @@ def LlamaModel_fast_forward(
     if (
         getattr(self, "_has_no_labels", False) is True
         and (attention_mask is not None)
+        and attention_mask.ndim == 2
         and (past_key_values is None)
         and (not train_embed_tokens)
         and self.training

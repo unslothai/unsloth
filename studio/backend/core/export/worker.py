@@ -30,37 +30,15 @@ logger = get_logger(__name__)
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
-    """
+    """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -77,6 +55,19 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     trust_remote_code = cmd.get("trust_remote_code", False)
+
+    # Auto-enable trust_remote_code for NemotronH/Nano models.
+    if not trust_remote_code:
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+        _cp_lower = checkpoint_path.lower()
+        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
+        ):
+            trust_remote_code = True
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s",
+                checkpoint_path,
+            )
 
     try:
         _send_response(
