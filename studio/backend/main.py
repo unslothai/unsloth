@@ -237,6 +237,7 @@ async def get_system_info():
     import platform
     import psutil
     from utils.hardware import get_device
+    from utils.hardware.hardware import _backend_label
 
     visibility_info = get_backend_visible_gpu_info()
     gpu_info = {
@@ -250,7 +251,10 @@ async def get_system_info():
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        "device_backend": get_device().value,
+        # Use the centralized _backend_label helper so the /api/system
+        # endpoint reports "rocm" on AMD hosts instead of "cuda", matching
+        # the /api/hardware and /api/gpu-visibility endpoints.
+        "device_backend": _backend_label(get_device()),
         "cpu_count": psutil.cpu_count(),
         "memory": {
             "total_gb": round(memory.total / 1e9, 2),
