@@ -984,7 +984,7 @@ _find_no_torch_runtime() {
 # amd-smi list for GPU data rows (excludes header-only output).
 _has_amd_rocm_gpu() {
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/ && !/Name:[[:space:]]*gfx000/{found=1} END{exit !found}'; then
         return 0
     elif command -v amd-smi >/dev/null 2>&1 && \
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
