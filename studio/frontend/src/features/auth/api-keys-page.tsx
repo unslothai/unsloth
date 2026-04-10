@@ -280,7 +280,9 @@ function KeysTable({
 }
 
 function UsageExamples() {
-  const curlExample = `curl http://localhost:8888/v1/chat/completions \\
+  const base = window.location.origin;
+
+  const curlExample = `curl ${base}/v1/chat/completions \\
   -H "Authorization: Bearer sk-unsloth-YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -291,7 +293,7 @@ function UsageExamples() {
   const pythonExample = `from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8888/v1",
+    base_url="${base}/v1",
     api_key="sk-unsloth-YOUR_KEY",
 )
 
@@ -303,7 +305,7 @@ response = client.chat.completions.create(
 for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")`;
 
-  const toolsExample = `curl http://localhost:8888/v1/chat/completions \\
+  const toolsExample = `curl ${base}/v1/chat/completions \\
   -H "Authorization: Bearer sk-unsloth-YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
