@@ -93,6 +93,18 @@ jobs:
           cargo install trusted-signing-cli
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # ── Windows: verify signing CLI is accessible ──
+      - name: Verify trusted-signing-cli
+        if: matrix.platform == 'windows-latest'
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          Write-Output "PATH: $env:PATH"
+          Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
+          trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
+
       # ── Build + sign + notarize + upload ──
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -128,4 +140,4 @@ jobs:
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
-          args: ${{ matrix.args }}
+          args: -v ${{ matrix.args }}
