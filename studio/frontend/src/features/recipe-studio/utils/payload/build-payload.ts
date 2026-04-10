@@ -104,6 +104,7 @@ export function buildRecipePayload(
   const columns: Record<string, unknown>[] = [];
   const modelAliases = new Set<string>();
   const modelProviderNames = new Set<string>();
+  const localProviderNames = new Set<string>();
   const modelProviders: Record<string, unknown>[] = [];
   const mcpProviders: Record<string, unknown>[] = [];
   const modelConfigs: Record<string, unknown>[] = [];
@@ -200,6 +201,9 @@ export function buildRecipePayload(
     }
     if (config.kind === "model_provider") {
       modelProviderNames.add(config.name);
+      if (config.is_local) {
+        localProviderNames.add(config.name);
+      }
       modelProviders.push(buildModelProvider(config, errors));
       modelProviderConfigs.push(config);
       continue;
@@ -240,6 +244,7 @@ export function buildRecipePayload(
     modelConfigConfigs,
     modelAliases,
     modelProviderNames,
+    localProviderNames,
     errors,
   );
   validateUsedProviders(modelProviderConfigs, modelConfigConfigs, errors);
