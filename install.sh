@@ -114,7 +114,12 @@ _install_bnb_rocm() {
     esac
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        if run_install_cmd "$_label (pre-release)" uv pip install --python "$_venv_py" \
+        # uv destroys bitsandbytes, use pip instead
+        # Ensure pip is installed, then use it for this install.
+        if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
+            uv pip install --python "$_venv_py" pip >/dev/null 2>&1 || true
+        fi
+        if run_install_cmd "$_label (pre-release)" "$_venv_py" -m pip install \
             --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
