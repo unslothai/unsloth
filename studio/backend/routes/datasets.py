@@ -334,7 +334,9 @@ def get_splits(
         for config in configs:
             try:
                 split_names = get_dataset_split_names(
-                    request.dataset, config_name = config, token = token,
+                    request.dataset,
+                    config_name = config,
+                    token = token,
                 )
             except Exception:
                 split_names = ["train"]
