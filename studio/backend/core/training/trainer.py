@@ -3408,7 +3408,7 @@ class UnslothTrainer:
 
             max_steps_value = training_args.get("max_steps")
             max_steps = 0 if max_steps_value is None else int(max_steps_value)
-            
+
             if is_streaming_dataset and max_steps <= 0:
                 raise ValueError(
                     "Streaming mode requires max_steps > 0 because the training dataset has no length."
