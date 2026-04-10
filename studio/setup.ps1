@@ -266,6 +266,83 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
+# ─────────────────────────────────────────────
+# AMD Windows ROCm helpers (self-contained copy -- kept in sync with
+# install.ps1; do not dot-source install.ps1 because setup.ps1 is also
+# invoked standalone from "unsloth studio update").
+# ─────────────────────────────────────────────
+
+# Detect AMD HIP SDK 7.1.x / 7.2.x on Windows. Returns
+# @{ Major = 7; Minor = 2; Path = "C:\Program Files\AMD\ROCm\7.2" }
+# or $null when not installed / unreadable.
+function Get-HipSdkVersion {
+    $parseComponent = {
+        param($name)
+        if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+        $m = [regex]::Match($name.Trim(), '^(\d+)\.(\d+)')
+        if ($m.Success) {
+            return @{ Major = [int]$m.Groups[1].Value; Minor = [int]$m.Groups[2].Value }
+        }
+        return $null
+    }
+
+    $hipPath = $env:HIP_PATH
+    if ($hipPath) {
+        $trimmed = $hipPath.TrimEnd('\','/')
+        if (Test-Path (Join-Path $trimmed 'bin')) {
+            $parsed = & $parseComponent (Split-Path $trimmed -Leaf)
+            if ($parsed) {
+                $parsed.Path = $trimmed
+                return $parsed
+            }
+        }
+    }
+
+    $rocmRoot = Join-Path $env:ProgramFiles 'AMD\ROCm'
+    if (Test-Path $rocmRoot) {
+        $best = $null
+        try {
+            $dirs = Get-ChildItem -Path $rocmRoot -Directory -ErrorAction SilentlyContinue
+        } catch { $dirs = @() }
+        foreach ($d in $dirs) {
+            if (-not (Test-Path (Join-Path $d.FullName 'bin'))) { continue }
+            $parsed = & $parseComponent $d.Name
+            if ($null -eq $parsed) { continue }
+            if ($null -eq $best -or
+                $parsed.Major -gt $best.Major -or
+                ($parsed.Major -eq $best.Major -and $parsed.Minor -gt $best.Minor)) {
+                $parsed.Path = $d.FullName
+                $best = $parsed
+            }
+        }
+        if ($best) { return $best }
+    }
+    return $null
+}
+
+# Map a detected HIP SDK version to Radeon's Windows torch wheels.
+# Returns @{ Torch = ...; Torchvision = ...; Torchaudio = ... } or $null.
+function Get-RocmWheelUrls {
+    param([Parameter(Mandatory = $true)]$Version)
+    $base721 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/'
+    $base711 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/'
+    if ($Version.Major -eq 7 -and $Version.Minor -eq 2) {
+        return @{
+            Torch       = $base721 + 'torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+            Torchvision = $base721 + 'torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+            Torchaudio  = $base721 + 'torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+        }
+    }
+    if ($Version.Major -eq 7 -and $Version.Minor -eq 1) {
+        return @{
+            Torch       = $base711 + 'torch-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+            Torchvision = $base711 + 'torchvision-0.24.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+            Torchaudio  = $base711 + 'torchaudio-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+        }
+    }
+    return $null
+}
+
 # Find Visual Studio Build Tools for cmake -G flag.
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
@@ -534,13 +611,42 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
-if (-not $HasNvidiaSmi) {
+# AMD GPU presence via WMI -- always available on Windows, no elevation,
+# no dependency on HIP SDK. NVIDIA wins on mixed systems, matching Linux
+# install.sh behaviour.
+$HasAmdGpu = $false
+try {
+    $videoControllers = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+    if ($videoControllers) {
+        $amdMatches = @($videoControllers | Where-Object { $_.Name -match 'AMD|Radeon' })
+        if ($amdMatches.Count -gt 0) { $HasAmdGpu = $true }
+    }
+} catch {}
+if ($HasNvidiaSmi) { $HasAmdGpu = $false }
+
+# Resolve HIP SDK when taking the AMD path.
+$HipSdkVersion = $null
+if ($HasAmdGpu) {
+    $HipSdkVersion = Get-HipSdkVersion
+}
+
+if ($HasNvidiaSmi) {
+    step "gpu" "NVIDIA GPU detected"
+} elseif ($HasAmdGpu) {
+    if ($HipSdkVersion) {
+        step "gpu" ("AMD GPU detected (HIP SDK {0}.{1})" -f $HipSdkVersion.Major, $HipSdkVersion.Minor)
+    } else {
+        Write-Host ""
+        step "gpu" "AMD GPU detected (HIP SDK missing)" "Yellow"
+        substep "Install HIP SDK from https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html" "Yellow"
+        substep "and re-run this installer." "Yellow"
+        Write-Host ""
+    }
+} else {
     Write-Host ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+    substep "Training and GPU inference require an NVIDIA or AMD GPU with drivers installed." "Yellow"
     Write-Host ""
-} else {
-    step "gpu" "NVIDIA GPU detected"
 }
 
 # ============================================
@@ -1359,7 +1465,13 @@ if (Test-Path $VenvDir -PathType Container) {
             $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
             $finished = $proc.WaitForExit(30000)
             if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
-                if ($torchVer -match '\+(cu\d+)') {
+                # ROCm wheels ship with either "+rocm<ver>" (Radeon 7.2.x) or
+                # "+rocmsdk<date>" (Radeon 7.1.x). A single "rocm" prefix
+                # match covers both so a ROCm minor update does not trigger
+                # a pointless venv rebuild.
+                if ($torchVer -match '\+rocm') {
+                    $installedTorchTag = "rocm"
+                } elseif ($torchVer -match '\+(cu\d+)') {
                     $installedTorchTag = $Matches[1]
                 } elseif ($torchVer -match '\+cpu') {
                     $installedTorchTag = "cpu"
@@ -1380,7 +1492,13 @@ if (Test-Path $VenvDir -PathType Container) {
     }
 
     if (-not $shouldRebuild) {
-        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        if ($HasNvidiaSmi) {
+            $expectedTorchTag = Get-PytorchCudaTag
+        } elseif ($HasAmdGpu) {
+            $expectedTorchTag = "rocm"
+        } else {
+            $expectedTorchTag = "cpu"
+        }
         if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
             $shouldRebuild = $true
         }
@@ -1513,11 +1631,56 @@ substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} elseif ($HasAmdGpu) {
+    $CuTag = "rocm"
 } else {
     $CuTag = "cpu"
 }
 
-if ($CuTag -eq "cpu") {
+if ($CuTag -eq "rocm") {
+    if (-not $HipSdkVersion) {
+        Write-Host "[FAILED] AMD GPU detected but HIP SDK is not installed." -ForegroundColor Red
+        Write-Host "         Download it from https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html" -ForegroundColor Yellow
+        Write-Host "         and re-run this setup." -ForegroundColor Yellow
+        exit 1
+    }
+    $RocmWheelUrls = Get-RocmWheelUrls -Version $HipSdkVersion
+    if (-not $RocmWheelUrls) {
+        Write-Host "[FAILED] AMD HIP SDK $($HipSdkVersion.Major).$($HipSdkVersion.Minor) is not supported." -ForegroundColor Red
+        Write-Host "         Unsloth on Windows requires HIP SDK 7.1 or later. Please update from" -ForegroundColor Yellow
+        Write-Host "         https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html" -ForegroundColor Yellow
+        exit 1
+    }
+    # Radeon wheels are cp312 only. Warn loudly when the venv's Python is
+    # a different minor version so the pip error makes sense. We do not
+    # exit here because setup.ps1 is also invoked as "unsloth studio update"
+    # inside a venv the user may have created manually.
+    try {
+        $venvPyVer = (& python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Out-String).Trim()
+    } catch { $venvPyVer = "" }
+    if ($venvPyVer -and $venvPyVer -ne "3.12") {
+        substep "Warning: Radeon Windows ROCm wheels require Python 3.12, venv has $venvPyVer." "Yellow"
+        substep "Re-create the venv with Python 3.12 from https://python.org if pip fails below." "Yellow"
+    }
+    substep "installing PyTorch ROCm wheels from repo.radeon.com..."
+    substep "(first wheel is ~780 MB; download may take a few minutes)"
+    if ($script:UnslothVerbose) {
+        Fast-Install $RocmWheelUrls.Torch $RocmWheelUrls.Torchvision $RocmWheelUrls.Torchaudio
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install $RocmWheelUrls.Torch $RocmWheelUrls.Torchvision $RocmWheelUrls.Torchaudio | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[FAILED] PyTorch ROCm install failed (exit code $torchInstallExit)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        exit 1
+    }
+    # Triton has no Windows ROCm build; skip the Triton-for-Windows step so
+    # we do not poison the venv with a package that only targets CUDA.
+    substep "Triton skipped on Windows AMD (no ROCm build available)" "DarkGray"
+} elseif ($CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu"
