@@ -29,6 +29,7 @@ import {
   ChefHatIcon,
   Copy01Icon,
   CursorInfo02Icon,
+  Key01Icon,
   PackageIcon,
   Tick02Icon,
   ZapIcon,
@@ -416,6 +417,20 @@ export function Navbar() {
               </HoverCardContent>
             </HoverCard>
           </div>
+          <div className="flex shrink-0 items-center">
+            <Link
+              to="/api-keys"
+              className={cn(
+                "flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors hover:bg-accent",
+                pathname === "/api-keys"
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <HugeiconsIcon icon={Key01Icon} className="size-4" />
+              API Keys
+            </Link>
+          </div>
           {tourId ? (
             <div className="flex shrink-0 items-center">
               <button
@@ -529,11 +544,24 @@ export function Navbar() {
                     </Link>
                   );
                 })}
+                <Link
+                  to="/api-keys"
+                  onClick={() => setMobileOpen(false)}
+                  className={cn(
+                    "mt-3 flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium",
+                    pathname === "/api-keys"
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-border text-foreground hover:bg-accent",
+                  )}
+                >
+                  <HugeiconsIcon icon={Key01Icon} className="size-4" />
+                  API Keys
+                </Link>
                 <a
                   href="https://unsloth.ai/docs"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="mt-3 flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                   onClick={() => setMobileOpen(false)}
                 >
                   <HugeiconsIcon icon={Book03Icon} className="size-4" />

@@ -103,6 +103,21 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash   TEXT NOT NULL UNIQUE,
+            name       TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            expires_at TEXT,
+            is_active  INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -355,5 +370,109 @@ def revoke_user_refresh_tokens(username: str) -> None:
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# API key management
+# ---------------------------------------------------------------------------
+
+API_KEY_PREFIX = "sk-unsloth-"
+
+
+def create_api_key(
+    username: str,
+    name: str,
+    expires_at: Optional[str] = None,
+) -> Tuple[str, dict]:
+    """Create a new API key for *username*.
+
+    Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
+    exactly once.  The database only stores the SHA-256 hash.
+    """
+    raw_key = API_KEY_PREFIX + secrets.token_hex(16)
+    key_hash = _hash_token(raw_key)
+    key_prefix = raw_key[len(API_KEY_PREFIX): len(API_KEY_PREFIX) + 8]
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (username, key_prefix, key_hash, name, now, expires_at),
+        )
+        conn.commit()
+        cur = conn.execute(
+            "SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)
+        )
+        row = cur.fetchone()
+        return raw_key, dict(row)
+    finally:
+        conn.close()
+
+
+def list_api_keys(username: str) -> list:
+    """Return all API keys for *username* (never exposes ``key_hash``)."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, username, key_prefix, name, created_at, last_used_at, expires_at, is_active
+            FROM api_keys
+            WHERE username = ?
+            ORDER BY created_at DESC
+            """,
+            (username,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def revoke_api_key(username: str, key_id: int) -> bool:
+    """Soft-delete an API key.  Returns True if a matching row was found."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND username = ?",
+            (key_id, username),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def validate_api_key(raw_key: str) -> Optional[str]:
+    """Validate *raw_key* and return the owning username, or ``None``.
+
+    Also updates ``last_used_at`` on success.
+    """
+    key_hash = _hash_token(raw_key)
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
+            (key_hash,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        if not row["is_active"]:
+            return None
+        if row["expires_at"] is not None:
+            expires = datetime.fromisoformat(row["expires_at"])
+            if datetime.now(timezone.utc) > expires:
+                return None
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), row["id"]),
+        )
+        conn.commit()
+        return row["username"]
     finally:
         conn.close()
