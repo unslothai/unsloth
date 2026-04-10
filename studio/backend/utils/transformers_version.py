@@ -52,7 +52,6 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "qwen3.5",  # Qwen3.5 family (35B-A3B, etc.)
     "qwen3-next",  # Qwen3-Next and variants
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
-    "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
 # Lowercase substrings for models that require transformers 5.5.0 (checked first).
