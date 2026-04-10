@@ -132,29 +132,17 @@ step "install" "installing mlx, mlx-lm..."
 uv pip install --python "$_VENV_PY" -q mlx mlx-lm 2>/dev/null
 substep "done"
 
-TRANSFORMERS_WHL="transformers-5.5.0-py3-none-any.whl"
-TRANSFORMERS_GH="git+https://github.com/huggingface/transformers.git@v5.5-release"
-
 step "install" "installing transformers>=5.5.0..."
-if uv pip install --python "$_VENV_PY" -q "$TRANSFORMERS_GH" 2>/dev/null; then
-    substep "installed from huggingface/transformers v5.5-release"
-elif uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null; then
+if uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null; then
     substep "installed from PyPI"
 else
-    substep "not on PyPI, trying unsloth branch..."
-    _whl_tmp=$(mktemp -d)/"${TRANSFORMERS_WHL}"
-    if curl -fsSL "${REPO_URL}/${TRANSFORMERS_WHL}" -o "$_whl_tmp" 2>/dev/null && \
-       uv pip install --python "$_VENV_PY" -q "$_whl_tmp" 2>/dev/null; then
-        substep "installed from branch ${BRANCH}"
-    elif [ -f "./${TRANSFORMERS_WHL}" ]; then
-        substep "using local ./${TRANSFORMERS_WHL}"
-        uv pip install --python "$_VENV_PY" -q "./${TRANSFORMERS_WHL}"
+    substep "PyPI install failed (Python <3.10?), trying GitHub..."
+    if uv pip install --python "$_VENV_PY" -q "git+https://github.com/huggingface/transformers.git@v5.5-release" 2>/dev/null; then
+        substep "installed from huggingface/transformers v5.5-release"
     else
-        rm -f "$_whl_tmp" 2>/dev/null
-        step "install" "skipping transformers — could not find >=5.5.0" "$C_WARN"
-        substep "tried: huggingface/transformers v5.5-release, PyPI, branch ${BRANCH}, local ./${TRANSFORMERS_WHL}"
+        step "warning" "could not install transformers>=5.5.0" "$C_WARN"
+        substep "tried: PyPI, huggingface/transformers v5.5-release"
     fi
-    rm -f "$_whl_tmp" 2>/dev/null
 fi
 
 # ── Find mlx-lm models directory ─────────────────────────────
@@ -198,15 +186,15 @@ echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Gemma 4 MLX installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
-step "available models" "unsloth/gemma-4-E2B-it-MLX-4bit (/BF16)"
-substep "unsloth/gemma-4-E4B-it-MLX-4bit (/BF16)"
+step "available models" "unsloth/gemma-4-E2B-it-UD-MLX-4bit (/BF16)"
+substep "unsloth/gemma-4-E4B-it-UD-MLX-4bit (/BF16)"
 echo ""
 step "venv activate" "source ${VENV_DIR}/bin/activate"
 echo ""
-step "quick start" "python -m mlx_lm chat --model unsloth/gemma-4-E2B-it-MLX-4bit --max-tokens 200"
+step "quick start" "python -m mlx_lm chat --model unsloth/gemma-4-E2B-it-UD-MLX-4bit --max-tokens 200"
 echo ""
 step "python API" "from mlx_lm import load, generate"
-substep "model, tokenizer = load('unsloth/gemma-4-E2B-it-MLX-4bit')"
+substep "model, tokenizer = load('unsloth/gemma-4-E2B-it-UD-MLX-4bit')"
 substep "messages = [{'role': 'user', 'content': 'Hello!'}]"
 substep "prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)"
 substep "print(generate(model, tokenizer, prompt=prompt, max_tokens=200))"

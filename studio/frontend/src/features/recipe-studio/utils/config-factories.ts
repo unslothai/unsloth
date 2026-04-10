@@ -240,6 +240,8 @@ export function makeModelProviderConfig(
     extra_headers: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     extra_body: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    is_local: false,
   };
 }
 

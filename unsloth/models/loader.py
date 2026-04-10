@@ -49,7 +49,6 @@ except:
     except:
         # For older versions of huggingface_hub
         from huggingface_hub.utils._token import get_token
-from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -108,12 +107,21 @@ FORCE_FLOAT32 = [
     "gemma3n",
     "gpt_oss",
     "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
-    "gemma4,",  # Add comma bc gemma4 will match gemma4_text
-    "gemma4_text",
 ]
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
+
+
+def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
+    """Remove Unsloth 4bit suffixes without lowercasing (HF cache dirs are case-sensitive)."""
+    s = model_name
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(s) >= len(suffix) and s.lower().endswith(suffix.lower()):
+            s = s[: -len(suffix)]
+    return s
+
+
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
@@ -404,8 +412,7 @@ class FastLanguageModel(FastLlamaModel):
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
-            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.lower().removesuffix("-bnb-4bit")
+            model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # Change -BF16 to all False for 4bit, 8bit etc
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
@@ -498,7 +505,7 @@ class FastLanguageModel(FastLlamaModel):
             model_type = model_types
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -507,14 +514,10 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -551,8 +554,7 @@ class FastLanguageModel(FastLlamaModel):
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
-                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.lower().removesuffix("-bnb-4bit")
+                model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # Change -BF16 to all False for 4bit, 8bit etc
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
@@ -1019,8 +1021,7 @@ class FastModel(FastBaseModel):
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
-            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.lower().removesuffix("-bnb-4bit")
+            model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # Change -BF16 to all False for 4bit, 8bit etc
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
@@ -1274,7 +1275,7 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -1283,13 +1284,10 @@ class FastModel(FastBaseModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # Both AutoConfig and PeftConfig loaded successfully from this
+                # remote repo, so both config.json and adapter_config.json
+                # definitely exist -- no need for an extra HfFileSystem network call.
+                both_exist = True
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -1320,8 +1318,7 @@ class FastModel(FastBaseModel):
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
-                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.lower().removesuffix("-bnb-4bit")
+                model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # Change -BF16 to all False for 4bit, 8bit etc
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
@@ -1533,14 +1530,72 @@ class FastModel(FastBaseModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model = PeftModel.from_pretrained(
-                model,
-                old_model_name,
-                token = token,
-                revision = revision,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
-            )
+
+            # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA
+            # on it directly.  Monkey-patch PEFT to target the inner .linear
+            # child instead (same patch as vision.py training path).
+            # See https://github.com/huggingface/peft/issues/3129
+            _clippable_linear_cls = None
+            try:
+                from transformers.models.gemma4.modeling_gemma4 import (
+                    Gemma4ClippableLinear as _clippable_linear_cls,
+                )
+            except ImportError:
+                pass
+
+            if _clippable_linear_cls is not None:
+                from peft.tuners.lora.model import LoraModel as _LoraModel
+
+                _original_car = _LoraModel._create_and_replace
+
+                def _patched_car(
+                    self,
+                    peft_config,
+                    adapter_name,
+                    target,
+                    target_name,
+                    parent,
+                    current_key = None,
+                    **kwargs,
+                ):
+                    if isinstance(target, _clippable_linear_cls):
+                        return _original_car(
+                            self,
+                            peft_config,
+                            adapter_name,
+                            target.linear,
+                            "linear",
+                            target,
+                            current_key = current_key,
+                            **kwargs,
+                        )
+                    return _original_car(
+                        self,
+                        peft_config,
+                        adapter_name,
+                        target,
+                        target_name,
+                        parent,
+                        current_key = current_key,
+                        **kwargs,
+                    )
+
+                _LoraModel._create_and_replace = _patched_car
+
+            try:
+                model = PeftModel.from_pretrained(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    is_trainable = True,
+                    trust_remote_code = trust_remote_code,
+                )
+            finally:
+                # Always restore original PEFT method, even if loading fails
+                if _clippable_linear_cls is not None:
+                    _LoraModel._create_and_replace = _original_car
+
             # Patch it as well!
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code

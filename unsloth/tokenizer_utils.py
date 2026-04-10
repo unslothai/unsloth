@@ -95,13 +95,18 @@ def try_fix_tokenizer(tokenizer, prepend = True):
         if token is None:
             continue
         token_id = getattr(tokenizer, token_name + "_id", None)
+        if token_id is None:
+            continue
 
         # Locate the token's id mapping in the string
         find_text = f'"id":{token_id},"content":"'
-        start = tokenizer_string.find(find_text) + len(find_text)
-        if start == -1:
+        find_pos = tokenizer_string.find(find_text)
+        if find_pos == -1:
             continue
+        start = find_pos + len(find_text)
         end = tokenizer_string.find('",', start)
+        if end == -1:
+            continue
 
         bad_token = tokenizer_string[start:end]
         # Check if token is the actual same one - if not, edit it
@@ -1103,7 +1108,16 @@ def patch_sft_trainer_tokenizer():
             "    a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"
             "except:\n"
             "    if not torch.cuda.is_available():\n"
-            "        raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"
+            "        raise RuntimeError('Unsloth: No GPU detected. AMD ROCm users: install ROCm-enabled PyTorch -- see https://docs.unsloth.ai/get-started/install-and-update/amd')\n"
+            "    # nvidia-smi unavailable but torch.cuda IS available -- we are on\n"
+            "    # a ROCm host (ROCm reuses the torch.cuda.* API surface, so\n"
+            "    # device_count() is authoritative) or on a CUDA host without\n"
+            "    # the CLI installed. Use the device count directly as a\n"
+            "    # conservative multi-GPU signal: any configuration with more\n"
+            "    # than one visible device is flagged as unsupported, matching\n"
+            "    # the spirit of the per-device memory check used on CUDA.\n"
+            "    if torch.cuda.device_count() > 1:\n"
+            "        raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')\n"
             "if ((a - PRE_CHECK) >= 1).sum() > 1:\n"
             "    raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')\n"
             "for _ in range(3):\n"

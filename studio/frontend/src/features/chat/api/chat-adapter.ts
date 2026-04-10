@@ -421,6 +421,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       let runtime = useChatRuntimeStore.getState();
+      // Capture the thread ID once at the start so it stays stable even if
+      // the user switches chats while waiting for model load / auto-load.
+      const resolvedThreadId =
+        (unstable_threadId ?? runtime.activeThreadId) || undefined;
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -473,14 +477,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(unstable_threadId);
+      const useAdapter = await resolveUseAdapter(resolvedThreadId);
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = unstable_threadId || "__default";
+        const threadKey = resolvedThreadId || "__default";
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -527,7 +531,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         return;
       }
 
-      const threadKey = unstable_threadId || "__default";
+      const threadKey = resolvedThreadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
@@ -600,7 +604,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
-                  session_id: unstable_threadId || undefined,
+                  session_id: resolvedThreadId,
                 }
               : {}),
           },
@@ -641,7 +645,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 let parsedResult: string | { text: string; images: string[]; sessionId: string };
                 if (imgIdx !== -1) {
                   const text = rawResult.slice(0, imgIdx);
-                  const sessionId = unstable_threadId || "";
+                  // Fall back to "_default" to match the backend sandbox directory
+                  // used when no session_id is provided (see tools.py _get_workdir).
+                  const sessionId = resolvedThreadId || "_default";
                   try {
                     const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
                     parsedResult = { text, images, sessionId };

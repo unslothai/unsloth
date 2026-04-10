@@ -596,6 +596,15 @@ function ThreadHistoryProvider({
 
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
+        // Keep single-chat runtime state in sync once a new chat is first
+        // persisted. Compare panes intentionally do not write global activeThreadId.
+        const thread = await db.threads.get(remoteId);
+        if (thread?.modelType === "base" && !thread.pairId) {
+          const store = useChatRuntimeStore.getState();
+          if (store.activeThreadId !== remoteId) {
+            store.setActiveThreadId(remoteId);
+          }
+        }
         const content = cloneContent(message.content);
         const attachments =
           message.role === "user" ? cloneAttachments(message.attachments) : [];
@@ -658,7 +667,11 @@ function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
 
 function ThreadAutoSwitch({
   threadId,
-}: { threadId: string }): ReactElement | null {
+  syncActiveThreadId = true,
+}: {
+  threadId: string;
+  syncActiveThreadId?: boolean;
+}): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -668,6 +681,13 @@ function ThreadAutoSwitch({
       aui.threads().switchToThread(threadId);
     }
   }, [aui, isLoading, mainThreadId, threadId]);
+
+  useEffect(() => {
+    if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
+      return;
+    }
+    useChatRuntimeStore.getState().setActiveThreadId(threadId);
+  }, [isLoading, mainThreadId, syncActiveThreadId, threadId]);
 
   return null;
 }
@@ -679,9 +699,13 @@ function ThreadNewChatSwitch({
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
 
   useEffect(() => {
-    if (!isLoading) {
-      aui.threads().switchToNewThread();
+    if (isLoading) {
+      return;
     }
+    // Switch to a fresh local thread without persisting it yet.
+    // Persistence still happens on first message append.
+    void aui.threads().switchToNewThread();
+    useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
 
   return null;
@@ -709,12 +733,14 @@ export function ChatRuntimeProvider({
   pairId,
   initialThreadId,
   newThreadNonce,
+  syncActiveThreadId = true,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
   initialThreadId?: string;
   newThreadNonce?: string;
+  syncActiveThreadId?: boolean;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
@@ -730,8 +756,15 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      <ActiveThreadSync enabled={modelType === "base" && !pairId} />
-      {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
+      <ActiveThreadSync
+        enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
+      />
+      {initialThreadId && (
+        <ThreadAutoSwitch
+          threadId={initialThreadId}
+          syncActiveThreadId={syncActiveThreadId}
+        />
+      )}
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />
       )}

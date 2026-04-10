@@ -225,6 +225,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 modelType="base"
                 pairId={pairId}
                 initialThreadId={baseThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="base" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -242,6 +243,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 modelType="lora"
                 pairId={pairId}
                 initialThreadId={loraThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="lora" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -249,7 +251,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             </div>
           </div>
         </div>
-        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
           <SharedComposer handlesRef={handlesRef} />
         </div>
       </div>
@@ -343,6 +345,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 modelType="model1"
                 pairId={pairId}
                 initialThreadId={model1ThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model1" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -376,6 +379,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 modelType="model2"
                 pairId={pairId}
                 initialThreadId={model2ThreadId}
+                syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model2" />
                 <Thread hideComposer={true} hideWelcome={true} />
@@ -383,7 +387,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             </div>
           </div>
         </div>
-        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
           <SharedComposer
             handlesRef={handlesRef}
             model1={model1}
@@ -479,11 +483,19 @@ function TopBarActions({
   );
 }
 
+function getInitialSingleChatView(): ChatView {
+  const id = useChatRuntimeStore.getState().activeThreadId;
+  if (typeof id === "string" && id.length > 0 && !id.startsWith("__LOCALID_")) {
+    return { mode: "single", threadId: id };
+  }
+  return { mode: "single" };
+}
+
 export function ChatPage(): ReactElement {
-  const [view, setView] = useState<ChatView>({
-    mode: "single",
-    newThreadNonce: crypto.randomUUID(),
-  });
+  // Do not set newThreadNonce here: each /chat mount would run ThreadNewChatSwitch
+  // and create spurious threads when navigating (e.g. Recipes / Export). New Chat
+  // explicitly sets a nonce in handleNewThread.
+  const [view, setView] = useState<ChatView>(getInitialSingleChatView);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
@@ -587,11 +599,25 @@ export function ChatPage(): ReactElement {
     void ejectModel();
   }, [ejectModel]);
   const handleNewThread = useCallback(() => {
+    // Skip if we are already on a fresh unsaved draft with no messages sent.
+    // Once the user sends a message, append() sets activeThreadId in the store,
+    // so we check the store to know whether the current draft has been sent.
+    if (
+      view.mode === "single" &&
+      !view.threadId &&
+      !useChatRuntimeStore.getState().activeThreadId
+    ) {
+      return;
+    }
+
     useChatRuntimeStore.getState().setActiveThreadId(null);
     setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
-  }, []);
+  }, [view]);
   const handleNewCompare = useCallback(() => {
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, []);
 
@@ -619,6 +645,9 @@ export function ChatPage(): ReactElement {
   const enterCompare = useCallback(() => {
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, [view]);
 
@@ -626,9 +655,13 @@ export function ChatPage(): ReactElement {
     if (!viewBeforeCompare) return;
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
-    // Restore context usage from the active thread's last assistant message
+    // Restore context usage from the active thread's last assistant message.
+    // Use the thread ID from the saved view rather than the store, because
+    // activeThreadId may have been cleared on compare entry.
     const store = useChatRuntimeStore.getState();
-    const threadId = store.activeThreadId;
+    const threadId =
+      ("threadId" in viewBeforeCompare ? viewBeforeCompare.threadId : null) ??
+      store.activeThreadId;
     if (threadId) {
       void db.messages
         .where("threadId")
@@ -735,6 +768,7 @@ export function ChatPage(): ReactElement {
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
           setView({ mode: "compare", pairId: crypto.randomUUID() });
+          useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
@@ -911,7 +945,7 @@ export function ChatPage(): ReactElement {
 
           {view.mode === "single" ? (
             <SingleContent
-              key={view.threadId ?? view.newThreadNonce ?? "new"}
+              key={view.threadId ?? "single"}
               threadId={view.threadId}
               newThreadNonce={view.newThreadNonce}
             />
