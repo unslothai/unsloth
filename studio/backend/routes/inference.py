@@ -1853,9 +1853,12 @@ async def openai_completions(
     is_stream = body.get("stream", False)
 
     if is_stream:
+
         async def _stream():
             async with httpx.AsyncClient() as client:
-                async with client.stream("POST", target_url, json = body, timeout = 600) as resp:
+                async with client.stream(
+                    "POST", target_url, json = body, timeout = 600
+                ) as resp:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
 
@@ -1923,6 +1926,7 @@ class _ResponsesInputMessage(BaseModel):
 
 class ResponsesRequest(BaseModel):
     """Minimal OpenAI Responses API request."""
+
     model: str = "default"
     input: Union[str, list[_ResponsesInputMessage]] = []
     instructions: Optional[str] = None
