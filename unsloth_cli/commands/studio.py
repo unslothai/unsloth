@@ -140,9 +140,7 @@ def _load_model_via_http(
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")
-        raise RuntimeError(
-            f"Model load failed (HTTP {exc.code}): {body}"
-        ) from exc
+        raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
 
 
 # ── unsloth studio (server) ──────────────────────────────────────────
@@ -280,15 +278,24 @@ def run(
         # Re-exec into the studio venv via its `unsloth` entry point
         studio_bin = studio_python.parent / "unsloth"
         if not studio_bin.is_file():
-            typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
+            typer.echo(
+                "Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup"
+            )
             raise typer.Exit(1)
         args = [
-            str(studio_bin), "studio", "run",
-            "--model", model,
-            "--max-seq-length", str(max_seq_length),
-            "--api-key-name", api_key_name,
-            "--port", str(port),
-            "--host", host,
+            str(studio_bin),
+            "studio",
+            "run",
+            "--model",
+            model,
+            "--max-seq-length",
+            str(max_seq_length),
+            "--api-key-name",
+            api_key_name,
+            "--port",
+            str(port),
+            "--host",
+            host,
         ]
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
