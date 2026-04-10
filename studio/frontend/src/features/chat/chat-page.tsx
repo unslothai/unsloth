@@ -94,17 +94,32 @@ function HighlightedSnippet({
   language: "python" | "bash";
   source: string;
 }) {
+  const [copied, setCopied] = useState(false);
   const markdown = useMemo(
     () => `\`\`\`${language}\n${source}\n\`\`\``,
     [language, source],
   );
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(source).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [source]);
 
   // Streamdown memoizes/diffs markdown blocks and can hold onto previously
   // highlighted content when only an inline value inside the code fence
   // changes (e.g. the API key). Forcing a remount keyed on the source string
   // guarantees the displayed snippet always matches the latest props.
   return (
-    <div className="mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!overflow-x-auto [&_code]:!whitespace-pre-wrap [&_code]:!break-all [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
+    <div className="relative mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!overflow-x-auto [&_code]:!whitespace-pre-wrap [&_code]:!break-all [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground transition-colors"
+      >
+        {copied ? "Copied!" : "Copy"}
+      </button>
       <Streamdown
         key={markdown}
         mode="static"
