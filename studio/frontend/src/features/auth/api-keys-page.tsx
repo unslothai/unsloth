@@ -14,7 +14,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { copyToClipboardAsync } from "@/lib/copy-to-clipboard";
 import {
   AlertCircleIcon,
   Copy01Icon,
@@ -96,7 +95,6 @@ function formatDate(iso: string | null): string {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const [copying, setCopying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -106,37 +104,32 @@ function CopyButton({ text }: { text: string }) {
   }, []);
 
   const handleCopy = async () => {
-    if (copying) return;
-    setCopying(true);
     try {
-      const ok = await copyToClipboardAsync(text);
-      if (!ok) return;
-      setCopied(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 2000);
-    } finally {
-      setCopying(false);
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
     }
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
+    <button
+      type="button"
       onClick={handleCopy}
-      disabled={copying}
       className={cn(
-        "shrink-0 rounded-md text-muted-foreground hover:text-foreground",
+        "shrink-0 cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:text-foreground",
         copied && "text-emerald-600 hover:text-emerald-600",
       )}
-      aria-label={copied ? "Copied API key" : "Copy API key"}
+      aria-label={copied ? "Copied" : "Copy"}
       title={copied ? "Copied" : "Copy"}
     >
       <HugeiconsIcon
         icon={copied ? Tick02Icon : Copy01Icon}
         className="size-4"
       />
-    </Button>
+    </button>
   );
 }
 

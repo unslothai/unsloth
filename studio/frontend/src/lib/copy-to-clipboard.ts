@@ -8,7 +8,6 @@
  */
 function copyWithExecCommand(text: string): boolean {
   if (typeof document === "undefined") return false;
-  if (document.queryCommandSupported?.("copy") === false) return false;
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -55,14 +54,19 @@ export async function copyToClipboardAsync(text: string): Promise<boolean> {
     return false;
   }
 
+  // Try execCommand first so it runs inside the user-gesture stack (Safari).
+  if (copyWithExecCommand(text)) return true;
+
+  // Fallback to async clipboard API (works in focus-trapped dialogs where
+  // execCommand can't grab selection).
   if (typeof navigator?.clipboard?.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Fall back to execCommand below.
+      return false;
     }
   }
 
-  return copyWithExecCommand(text);
+  return false;
 }
