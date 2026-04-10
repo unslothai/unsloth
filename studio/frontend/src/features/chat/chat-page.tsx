@@ -100,26 +100,37 @@ function HighlightedSnippet({
     [language, source],
   );
 
-  const handleCopy = useCallback(() => {
-    // navigator.clipboard requires HTTPS or localhost — Studio is often
-    // served over plain HTTP on a LAN IP, so fall back to execCommand.
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(source);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = source;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+  const handleCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Always use the textarea/execCommand approach — it works on plain HTTP
+      // inside a synchronous user-gesture handler. navigator.clipboard is
+      // HTTPS-only on non-localhost origins and silently fails.
+      const ta = document.createElement("textarea");
+      ta.value = source;
+      // Must be visible (off-screen but not display:none) for execCommand to work
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "-9999px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      // setSelectionRange needed for iOS
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+
+      if (ok) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
       }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* ignore */ }
-  }, [source]);
+    },
+    [source],
+  );
 
   // Streamdown memoizes/diffs markdown blocks and can hold onto previously
   // highlighted content when only an inline value inside the code fence
