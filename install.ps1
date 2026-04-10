@@ -116,6 +116,47 @@ function Install-UnslothStudio {
         $env:Path = $unique -join ";"
     }
 
+    # ── Helper: safely add a directory to the persistent User PATH ──
+    # Uses direct registry access to preserve REG_EXPAND_SZ type
+    # (avoids .NET SetEnvironmentVariable bug that converts to REG_SZ).
+    function Add-ToUserPath {
+        param(
+            [Parameter(Mandatory = $true)][string]$Directory
+        )
+        try {
+            $regKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+            if (-not $regKey) {
+                Write-Host "[WARN] Could not open HKCU\Environment registry key" -ForegroundColor Yellow
+                return $false
+            }
+            try {
+                $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+                $normalDir = $Directory.TrimEnd('\').ToLowerInvariant()
+                foreach ($entry in $entries) {
+                    if ($entry.TrimEnd('\').ToLowerInvariant() -eq $normalDir) {
+                        return $false  # already present
+                    }
+                }
+                if (-not $rawPath) {
+                    Write-Host "[WARN] User PATH is empty — initializing with $Directory" -ForegroundColor Yellow
+                }
+                $newPath = if ($rawPath) { "$Directory;$rawPath" } else { $Directory }
+                $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                # Broadcast WM_SETTINGCHANGE so other processes pick up the change
+                $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                [Environment]::SetEnvironmentVariable($d, $null, 'User')
+                return $true
+            } finally {
+                $regKey.Close()
+            }
+        } catch {
+            Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+            return $false
+        }
+    }
+
     function step {
         param(
             [Parameter(Mandatory = $true)][string]$Label,
@@ -947,13 +988,7 @@ shell.Run cmd, 0, False
 
     # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
     $ScriptsDir = Join-Path $VenvDir "Scripts"
-    $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
-        if ($UserPath) {
-            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir;$UserPath", "User")
-        } else {
-            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
-        }
+    if (Add-ToUserPath -Directory $ScriptsDir) {
         Refresh-SessionPath
         step "path" "added unsloth to PATH"
     }

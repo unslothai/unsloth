@@ -73,7 +73,58 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path = "$machinePath;$userPath"
+    $merged = "$machinePath;$userPath;$env:Path"
+    $seen = @{}
+    $unique = @()
+    foreach ($p in $merged -split ";") {
+        $key = $p.TrimEnd("\").ToLowerInvariant()
+        if ($key -and -not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $unique += $p
+        }
+    }
+    $env:Path = $unique -join ";"
+}
+
+# ── Helper: safely add a directory to the persistent User PATH ──
+# Uses direct registry access to preserve REG_EXPAND_SZ type
+# (avoids .NET SetEnvironmentVariable bug that converts to REG_SZ).
+function Add-ToUserPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+    try {
+        $regKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        if (-not $regKey) {
+            Write-Host "[WARN] Could not open HKCU\Environment registry key" -ForegroundColor Yellow
+            return $false
+        }
+        try {
+            $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+            $normalDir = $Directory.TrimEnd('\').ToLowerInvariant()
+            foreach ($entry in $entries) {
+                if ($entry.TrimEnd('\').ToLowerInvariant() -eq $normalDir) {
+                    return $false  # already present
+                }
+            }
+            if (-not $rawPath) {
+                Write-Host "[WARN] User PATH is empty — initializing with $Directory" -ForegroundColor Yellow
+            }
+            $newPath = if ($rawPath) { "$Directory;$rawPath" } else { $Directory }
+            $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            # Broadcast WM_SETTINGCHANGE so other processes pick up the change
+            $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+            [Environment]::SetEnvironmentVariable($d, '1', 'User')
+            [Environment]::SetEnvironmentVariable($d, $null, 'User')
+            return $true
+        } finally {
+            $regKey.Close()
+        }
+    } catch {
+        Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
 }
 
 # PowerShell 5.1 compatibility helper: avoid relying on New-TemporaryFile.
@@ -493,6 +544,21 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
+# Back up User PATH before any modifications for recovery
+try {
+    $regKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if ($regKey) {
+        $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $existingBackup = $regKey.GetValue('UNSLOTH_PATH_BACKUP', $null)
+        if ($rawPath -and -not $existingBackup) {
+            $regKey.SetValue('UNSLOTH_PATH_BACKUP', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        }
+        $regKey.Close()
+    }
+} catch {
+    Write-Host "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
+}
+
 # ==========================================================================
 #  PHASE 1: System-level prerequisites (winget installs, env vars)
 #  All heavy system tool installs happen here BEFORE touching Python.
@@ -627,10 +693,7 @@ if (-not $HasCmake) {
             if (Test-Path (Join-Path $d "cmake.exe")) {
                 $env:Path = "$d;$env:Path"
                 # Persist to user PATH so Refresh-Environment does not drop it later
-                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-                if (-not $userPath -or $userPath -notlike "*$d*") {
-                    [Environment]::SetEnvironmentVariable('Path', "$d;$userPath", 'User')
-                }
+                Add-ToUserPath -Directory $d | Out-Null
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
                     Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
@@ -897,13 +960,7 @@ if ($env:PATH -notlike "*$nvccBinDir*") {
     [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
 }
 # Persist nvcc bin dir to User PATH so it works in new terminals
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
-    if ($userPath) {
-        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir;$userPath", 'User')
-    } else {
-        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
-    }
+if (Add-ToUserPath -Directory $nvccBinDir) {
     substep "Persisted CUDA bin dir to user PATH"
 }
 
@@ -1064,12 +1121,7 @@ if ($HasPython) {
 # Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
 $ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
-    $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $UserPathEntries = if ($UserPath) { $UserPath.Split(';') } else { @() }
-    if (-not ($UserPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
-        $newUserPath = if ($UserPath) { "$ScriptsDir;$UserPath" } else { $ScriptsDir }
-        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
-
+    if (Add-ToUserPath -Directory $ScriptsDir) {
         # Also add to current process so it's available immediately
         $ProcessPathEntries = $env:PATH.Split(';')
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
