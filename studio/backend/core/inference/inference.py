@@ -39,30 +39,10 @@ logger = get_logger(__name__)
 
 @functools.cache
 def _bnb_rocm_4bit_ok() -> bool:
-    """Return True when the installed bitsandbytes contains the ROCm 4-bit
-    GEMV fix (bnb commit 713a3b8 / PR #1887 / shipped in 0.50.0.dev0+).
-
-    bitsandbytes <= 0.49.2 on ROCm produces NaN at decode shape (seq_len=1)
-    on every AMD target -- CDNA (gfx90a/gfx942/gfx950) via a broken
-    blocksize=32/64 warp64 GEMV kernel, RDNA3/3.5 (gfx1100-1103/
-    gfx1150-1152) via a compile-time warp-size dispatch bug. That breaks
-    autoregressive generation (greedy decode degrades to gibberish,
-    sampling hits a hard HSA_STATUS_ERROR_EXCEPTION in torch.multinomial)
-    even though training works fine.
-
-    New installs pick up the fix automatically via the bnb continuous-
-    release_main wheel pinned in install.sh / install_python_stack.py.
-    This helper exists as a runtime safety net for (a) existing installs
-    that have not yet upgraded bnb and (b) offline/firewalled installs
-    where the pre-release URL is unreachable and the installer fell back
-    to PyPI >=0.49.1. In both cases we force load_in_4bit=False so
-    inference falls through to 16-bit on the broken bnb version.
-
-    NVIDIA / CPU / Mac paths are always OK -- the bug is HIP-specific.
-
-    Result is cached with ``functools.cache`` because load_model() can
-    be called many times in a single session and the answer cannot
-    change at runtime (bnb and hardware are pinned for the process).
+    """True when installed bitsandbytes has the ROCm 4-bit GEMV fix
+    (bnb PR #1887, shipped in 0.50.0.dev0+). bnb <= 0.49.2 NaNs at
+    decode shape on every AMD GPU, breaking autoregressive inference.
+    Cached because load_model() is called many times per session.
     """
     if not _hw_module.IS_ROCM:
         return True
@@ -72,8 +52,6 @@ def _bnb_rocm_4bit_ok() -> bool:
 
         return Version(bitsandbytes.__version__) >= Version("0.50.0.dev0")
     except Exception:
-        # bnb not installed, version parse failure, or packaging missing:
-        # assume the fix is not present and fall back to 16-bit.
         return False
 
 
@@ -337,12 +315,8 @@ class InferenceBackend:
             }
 
             # ── Audio model loading path ──────────────────────────
-            # Audio and vision Unsloth inference on ROCm has not been
-            # validated (the crash we hit was bnb 4-bit GEMV, fixed in
-            # bnb 0.50; but vision/audio go through different kernel
-            # paths -- FastVisionModel, CSM codecs -- that we have not
-            # separately tested on HIP). Keep the guard until someone
-            # validates those specific paths.
+            # Audio / vision Unsloth inference on ROCm is not yet validated
+            # (separate kernel paths from bnb 4-bit). Keep the guard.
             if (config.is_audio or config.is_vision) and _hw_module.IS_ROCM:
                 raise RuntimeError(
                     f"Audio and vision model inference via Unsloth is not "
@@ -579,21 +553,10 @@ class InferenceBackend:
 
             else:
                 # Text model (or text LoRA adapter).
-                # Safety net for old bnb on ROCm: bnb <= 0.49.2 has a
-                # broken 4-bit GEMV kernel that NaNs at decode shape on
-                # every AMD GPU. New installs pin bnb to continuous-
-                # release_main via install.sh / install_python_stack.py
-                # so _bnb_rocm_4bit_ok() returns True and this block is
-                # a no-op. It only triggers on existing installs that
-                # have not yet upgraded bnb, or offline installs that
-                # fell back to the PyPI pin. Force 16-bit there and
-                # strip any `-bnb-4bit` suffix from config.path so a
-                # pre-quantized repo is resolved to its FP16 sibling
-                # (the pre-quantized config.json otherwise forces bnb
-                # regardless of load_in_4bit=False). LoRA adapters with
-                # a pre-quantized base repo on old bnb will still crash
-                # inside Unsloth's loader -- the only real fix there is
-                # `unsloth studio update` to pick up bnb >= 0.50.
+                # Safety net for old bnb on ROCm (< 0.50): force 16-bit
+                # and strip any -bnb-4bit suffix so pre-quantized repos
+                # resolve to their FP16 sibling. No-op on new installs
+                # where install.sh pins bnb >= 0.50.
                 _load_path = config.path
                 if not _bnb_rocm_4bit_ok() and load_in_4bit:
                     logger.warning(

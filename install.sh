@@ -94,17 +94,10 @@ run_install_cmd() {
     return $_rc
 }
 
-# Install bitsandbytes on AMD ROCm hosts. Prefers the continuous-release_main
-# wheel from the bnb GitHub release so we pick up the CDNA/RDNA 4-bit GEMV
-# fix in PR #1887 (merged 2026-03-09, post-0.49.2). The GEMV kernel in
-# bitsandbytes <= 0.49.2 produces NaN at decode-shape (seq_len=1) on every
-# ROCm target -- CDNA (gfx90a/gfx942/gfx950 = MI210/MI300X/MI350) via a
-# broken blocksize=32/64 warp64 kernel, RDNA (gfx1100-1103/gfx1150-1152)
-# via a compile-time warp-size dispatch bug -- so autoregressive generation
-# is broken even though training passes. Falls back to PyPI >=0.49.1 when
-# the pre-release URL is unreachable (offline installs, firewalled hosts,
-# unknown architectures). Drop the pre-release pin once bnb cuts a 0.50+
-# tag on PyPI.
+# Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
+# wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
+# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
+# pre-release URL is unreachable. Drop the pin once bnb 0.50+ ships on PyPI.
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
@@ -120,12 +113,12 @@ _install_bnb_rocm() {
             ;;
     esac
     if [ -n "$_bnb_whl_url" ]; then
-        substep "installing bitsandbytes for AMD ROCm (pre-release main, bnb PR #1887 GEMV fix)..."
+        substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
         if run_install_cmd "$_label (pre-release)" uv pip install --python "$_venv_py" \
             --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
-        substep "[WARN] bnb pre-release wheel unreachable; falling back to PyPI >=0.49.1 (4-bit decode will be broken on ROCm -- use 16-bit instead)" "$C_WARN"
+        substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
     run_install_cmd "$_label (pypi fallback)" uv pip install --python "$_venv_py" \
         --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
