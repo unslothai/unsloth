@@ -409,6 +409,30 @@ def _deactivate_5x() -> None:
     logger.info("Reverted to transformers %s", transformers.__version__)
 
 
+def activate_transformers_for_subprocess(model_name: str) -> None:
+    """Activate the correct transformers version for subprocess workers.
+
+    Call this BEFORE any ML imports in worker subprocesses (training,
+    inference, export). For models that require transformers 5.x, this
+    prepends ``.venv_t5`` to ``sys.path`` and propagates that path via
+    ``PYTHONPATH`` so child processes (e.g. GGUF converter) inherit it.
+    """
+    resolved = _resolve_base_model(model_name)
+    if needs_transformers_5(resolved):
+        if not _ensure_venv_t5_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
+            )
+        if _VENV_T5_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_DIR)
+        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
+        # Propagate to child subprocesses (e.g. GGUF converter)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
+    else:
+        logger.info("Using default transformers (4.57.x) for %s", model_name)
+
+
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is active for *model_name*.
 
