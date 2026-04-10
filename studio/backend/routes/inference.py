@@ -85,6 +85,17 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    TextContentPart,
+    ImageContentPart,
+    ImageUrl,
+    ResponsesRequest,
+    ResponsesInputMessage,
+    ResponsesInputTextPart,
+    ResponsesInputImagePart,
+    ResponsesOutputTextContent,
+    ResponsesOutputMessage,
+    ResponsesUsage,
+    ResponsesResponse,
 )
 from auth.authentication import get_current_subject
 
@@ -1915,25 +1926,244 @@ async def openai_embeddings(
 # =====================================================================
 
 
-from pydantic import BaseModel
-from typing import Union
+def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
+    """Convert a ResponsesRequest into a list of ChatMessage for the completions backend."""
+    messages: list[ChatMessage] = []
+
+    # System / developer instructions
+    if payload.instructions:
+        messages.append(ChatMessage(role = "system", content = payload.instructions))
+
+    # Simple string input
+    if isinstance(payload.input, str):
+        if payload.input:
+            messages.append(ChatMessage(role = "user", content = payload.input))
+        return messages
+
+    # List of ResponsesInputMessage
+    for msg in payload.input:
+        role = "system" if msg.role == "developer" else msg.role
+
+        if isinstance(msg.content, str):
+            messages.append(ChatMessage(role = role, content = msg.content))
+        else:
+            # Convert Responses content parts -> Chat content parts
+            parts = []
+            for part in msg.content:
+                if isinstance(part, ResponsesInputTextPart):
+                    parts.append(TextContentPart(type = "text", text = part.text))
+                elif isinstance(part, ResponsesInputImagePart):
+                    parts.append(ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = part.image_url, detail = part.detail),
+                    ))
+            messages.append(ChatMessage(role = role, content = parts if parts else ""))
+
+    return messages
 
 
-class _ResponsesInputMessage(BaseModel):
-    role: str
-    content: str
+def _build_chat_request(payload: ResponsesRequest, messages: list[ChatMessage], stream: bool) -> ChatCompletionRequest:
+    """Build a ChatCompletionRequest from a ResponsesRequest."""
+    chat_kwargs = dict(
+        model = payload.model,
+        messages = messages,
+        stream = stream,
+    )
+    if payload.temperature is not None:
+        chat_kwargs["temperature"] = payload.temperature
+    if payload.top_p is not None:
+        chat_kwargs["top_p"] = payload.top_p
+    if payload.max_output_tokens is not None:
+        chat_kwargs["max_tokens"] = payload.max_output_tokens
+    return ChatCompletionRequest(**chat_kwargs)
 
 
-class ResponsesRequest(BaseModel):
-    """Minimal OpenAI Responses API request."""
+async def _responses_non_streaming(
+    payload: ResponsesRequest,
+    messages: list[ChatMessage],
+    request: Request,
+) -> JSONResponse:
+    """Handle a non-streaming Responses API call."""
+    chat_req = _build_chat_request(payload, messages, stream = False)
+    result = await openai_chat_completions(chat_req, request)
 
-    model: str = "default"
-    input: Union[str, list[_ResponsesInputMessage]] = []
-    instructions: Optional[str] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    max_output_tokens: Optional[int] = None
-    stream: bool = False
+    # openai_chat_completions returns a JSONResponse for non-streaming
+    if isinstance(result, JSONResponse):
+        body = json.loads(result.body.decode())
+    elif isinstance(result, Response):
+        body = json.loads(result.body.decode())
+    else:
+        body = result
+
+    # Extract content and usage from the Chat Completions response
+    choices = body.get("choices", [])
+    text = ""
+    if choices:
+        msg = choices[0].get("message", {})
+        text = msg.get("content", "") or ""
+
+    usage_data = body.get("usage", {})
+    input_tokens = usage_data.get("prompt_tokens", 0)
+    output_tokens = usage_data.get("completion_tokens", 0)
+
+    resp_id = f"resp_{uuid.uuid4().hex[:12]}"
+    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+
+    response = ResponsesResponse(
+        id = resp_id,
+        created_at = int(time.time()),
+        status = "completed",
+        model = body.get("model", payload.model),
+        output = [
+            ResponsesOutputMessage(
+                id = msg_id,
+                status = "completed",
+                role = "assistant",
+                content = [
+                    ResponsesOutputTextContent(text = text),
+                ],
+            ),
+        ],
+        usage = ResponsesUsage(
+            input_tokens = input_tokens,
+            output_tokens = output_tokens,
+            total_tokens = input_tokens + output_tokens,
+        ),
+        temperature = payload.temperature,
+        top_p = payload.top_p,
+        max_output_tokens = payload.max_output_tokens,
+        instructions = payload.instructions,
+    )
+    return JSONResponse(content = response.model_dump())
+
+
+async def _responses_stream(
+    payload: ResponsesRequest,
+    messages: list[ChatMessage],
+    request: Request,
+):
+    """Handle a streaming Responses API call, emitting named SSE events."""
+    resp_id = f"resp_{uuid.uuid4().hex[:12]}"
+    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+    item_id = f"item_{uuid.uuid4().hex[:12]}"
+    created_at = int(time.time())
+
+    chat_req = _build_chat_request(payload, messages, stream = True)
+    result = await openai_chat_completions(chat_req, request)
+
+    async def event_generator():
+        full_text = ""
+        input_tokens = 0
+        output_tokens = 0
+
+        # ── Preamble events ──
+        yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'in_progress', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
+
+        # output_item.added
+        output_item = {
+            "type": "message",
+            "id": msg_id,
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [],
+        }
+        yield f"event: response.output_item.added\ndata: {json.dumps({'type': 'response.output_item.added', 'output_index': 0, 'item': output_item})}\n\n"
+
+        # content_part.added
+        content_part = {"type": "output_text", "text": "", "annotations": []}
+        yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
+
+        # ── Stream delta events from the inner chat completions stream ──
+        if isinstance(result, StreamingResponse):
+            async for raw_chunk in result.body_iterator:
+                if isinstance(raw_chunk, bytes):
+                    raw_chunk = raw_chunk.decode("utf-8", errors = "replace")
+
+                for line in raw_chunk.split("\n"):
+                    line = line.strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        continue
+                    try:
+                        chunk_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = chunk_data.get("choices", [])
+                    if not choices:
+                        # Check for usage in final chunk
+                        usage = chunk_data.get("usage")
+                        if usage:
+                            input_tokens = usage.get("prompt_tokens", input_tokens)
+                            output_tokens = usage.get("completion_tokens", output_tokens)
+                        continue
+
+                    delta = choices[0].get("delta", {})
+                    content = delta.get("content")
+                    if content:
+                        full_text += content
+                        delta_event = {
+                            "type": "response.output_text.delta",
+                            "item_id": msg_id,
+                            "output_index": 0,
+                            "content_index": 0,
+                            "delta": content,
+                        }
+                        yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+
+                    # Check for usage in chunk
+                    usage = chunk_data.get("usage")
+                    if usage:
+                        input_tokens = usage.get("prompt_tokens", input_tokens)
+                        output_tokens = usage.get("completion_tokens", output_tokens)
+
+        # ── Closing events ──
+        # output_text.done
+        yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"
+
+        # content_part.done
+        yield f"event: response.content_part.done\ndata: {json.dumps({'type': 'response.content_part.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': {'type': 'output_text', 'text': full_text, 'annotations': []}})}\n\n"
+
+        # output_item.done
+        yield f"event: response.output_item.done\ndata: {json.dumps({'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'message', 'id': msg_id, 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]}})}\n\n"
+
+        # response.completed
+        total_tokens = input_tokens + output_tokens
+        completed_response = {
+            "type": "response.completed",
+            "response": {
+                "id": resp_id,
+                "object": "response",
+                "created_at": created_at,
+                "status": "completed",
+                "model": payload.model,
+                "output": [{
+                    "type": "message",
+                    "id": msg_id,
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": full_text, "annotations": []}],
+                }],
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                },
+            },
+        }
+        yield f"event: response.completed\ndata: {json.dumps(completed_response)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/responses")
@@ -1945,39 +2175,15 @@ async def openai_responses(
     """
     OpenAI Responses API endpoint.
 
-    Converts the Responses-format request into a ChatCompletionRequest
-    and delegates to the existing chat completions handler. Works with
-    both GGUF and non-GGUF backends.
+    Accepts the Responses-format request, converts it to a
+    ChatCompletionRequest internally, and returns a response
+    matching the OpenAI Responses API schema (output array,
+    input_tokens/output_tokens, named SSE events for streaming).
     """
-    # Build messages list from the Responses API input format
-    messages: list[ChatMessage] = []
-
-    # System message from instructions
-    if payload.instructions:
-        messages.append(ChatMessage(role = "system", content = payload.instructions))
-
-    # Convert input to messages
-    if isinstance(payload.input, str):
-        messages.append(ChatMessage(role = "user", content = payload.input))
-    else:
-        for msg in payload.input:
-            messages.append(ChatMessage(role = msg.role, content = msg.content))
-
+    messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
 
-    # Build a ChatCompletionRequest and delegate
-    chat_kwargs = dict(
-        model = payload.model,
-        messages = messages,
-        stream = payload.stream,
-    )
-    if payload.temperature is not None:
-        chat_kwargs["temperature"] = payload.temperature
-    if payload.top_p is not None:
-        chat_kwargs["top_p"] = payload.top_p
-    if payload.max_output_tokens is not None:
-        chat_kwargs["max_tokens"] = payload.max_output_tokens
-
-    chat_request = ChatCompletionRequest(**chat_kwargs)
-    return await openai_chat_completions(chat_request, request)
+    if payload.stream:
+        return await _responses_stream(payload, messages, request)
+    return await _responses_non_streaming(payload, messages, request)
