@@ -97,3 +97,20 @@ class LocalDatasetItem(BaseModel):
 
 class LocalDatasetsResponse(BaseModel):
     datasets: List[LocalDatasetItem] = Field(default_factory = list)
+
+
+class DatasetSplitsRequest(BaseModel):
+    """Request for fetching dataset splits (subsets and split names)."""
+
+    dataset_name: str
+    hf_token: Optional[str] = None
+
+
+class SplitEntry(BaseModel):
+    dataset: str
+    config: str
+    split: str
+
+
+class DatasetSplitsResponse(BaseModel):
+    splits: List[SplitEntry] = Field(default_factory = list)

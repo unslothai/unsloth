@@ -33,8 +33,11 @@ from models.datasets import (
     AiAssistMappingResponse,
     CheckFormatRequest,
     CheckFormatResponse,
+    DatasetSplitsRequest,
+    DatasetSplitsResponse,
     LocalDatasetItem,
     LocalDatasetsResponse,
+    SplitEntry,
     UploadDatasetResponse,
 )
 from utils.paths import (
@@ -306,6 +309,58 @@ def list_local_datasets(
     current_subject: str = Depends(get_current_subject),
 ) -> LocalDatasetsResponse:
     return LocalDatasetsResponse(datasets = _build_local_dataset_items())
+
+
+@router.post("/splits", response_model = DatasetSplitsResponse)
+def get_dataset_splits(
+    request: DatasetSplitsRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Fetch available configs (subsets) and splits for a HuggingFace dataset.
+
+    Routes the request through the backend so that the HF token is sent
+    server-side (avoids browser CORS / token-exposure issues with the
+    datasets-server API for private datasets).
+    """
+    try:
+        from datasets import get_dataset_config_names, get_dataset_split_names
+
+        dataset_name = request.dataset_name
+        token = request.hf_token or None
+
+        logger.info(f"Fetching splits for dataset: {dataset_name}")
+
+        configs = get_dataset_config_names(dataset_name, token = token)
+
+        all_splits: list[SplitEntry] = []
+        for config in configs:
+            try:
+                split_names = get_dataset_split_names(
+                    dataset_name, config_name = config, token = token,
+                )
+                for split_name in split_names:
+                    all_splits.append(
+                        SplitEntry(
+                            dataset = dataset_name,
+                            config = config,
+                            split = split_name,
+                        )
+                    )
+            except Exception as config_err:
+                logger.warning(
+                    f"Could not fetch splits for config '{config}': {config_err}"
+                )
+                continue
+
+        return DatasetSplitsResponse(splits = all_splits)
+
+    except Exception as e:
+        logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to fetch dataset splits: {str(e)}",
+        )
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
