@@ -3406,13 +3406,16 @@ class UnslothTrainer:
             )
             is_streaming_dataset = isinstance(train_dataset_obj, IterableDataset)
 
-            if is_streaming_dataset and training_args.get("max_steps", 0) <= 0:
+            max_steps_value = training_args.get("max_steps")
+            max_steps = 0 if max_steps_value is None else int(max_steps_value)
+            
+            if is_streaming_dataset and max_steps <= 0:
                 raise ValueError(
                     "Streaming mode requires max_steps > 0 because the training dataset has no length."
                 )
 
             if is_streaming_dataset:
-                total_steps = training_args.get("max_steps", 0)
+                total_steps = max_steps
             else:
                 num_samples = len(train_dataset_obj)
                 batch_size = training_args.get("batch_size", 2)
@@ -3421,7 +3424,7 @@ class UnslothTrainer:
                     batch_size,
                     training_args.get("gradient_accumulation_steps", 4),
                     training_args.get("num_epochs", 3),
-                    training_args.get("max_steps", 0),
+                    max_steps,
                 )
 
             self._update_progress(total_steps = total_steps)
