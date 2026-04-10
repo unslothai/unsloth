@@ -542,16 +542,22 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
-# Back up User PATH before any modifications for recovery
+# Back up User PATH before any modifications for recovery.
+# Stored under HKCU\Software\Unsloth (not HKCU\Environment) to avoid
+# polluting the process environment block with a multi-KB variable.
 try {
-    $regKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-    if ($regKey) {
-        $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        $existingBackup = $regKey.GetValue('UNSLOTH_PATH_BACKUP', $null)
-        if ($rawPath -and -not $existingBackup) {
-            $regKey.SetValue('UNSLOTH_PATH_BACKUP', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    if ($envKey) {
+        $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $envKey.Close()
+        if ($rawPath) {
+            $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+            $existingBackup = $backupKey.GetValue('PathBackup', $null)
+            if (-not $existingBackup) {
+                $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            }
+            $backupKey.Close()
         }
-        $regKey.Close()
     }
 } catch {
     Write-Host "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
