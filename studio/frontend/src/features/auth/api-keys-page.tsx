@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { copyToClipboardAsync } from "@/lib/copy-to-clipboard";
 import {
   AlertCircleIcon,
   Copy01Icon,
@@ -96,6 +96,7 @@ function formatDate(iso: string | null): string {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -104,20 +105,37 @@ function CopyButton({ text }: { text: string }) {
     };
   }, []);
 
-  const handleCopy = () => {
-    if (!copyToClipboard(text)) return;
-    setCopied(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    if (copying) return;
+    setCopying(true);
+    try {
+      const ok = await copyToClipboardAsync(text);
+      if (!ok) return;
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 2000);
+    } finally {
+      setCopying(false);
+    }
   };
 
   return (
-    <Button variant="outline" size="sm" onClick={handleCopy} className="shrink-0">
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      onClick={handleCopy}
+      disabled={copying}
+      className={cn(
+        "shrink-0 rounded-md text-muted-foreground hover:text-foreground",
+        copied && "text-emerald-600 hover:text-emerald-600",
+      )}
+      aria-label={copied ? "Copied API key" : "Copy API key"}
+      title={copied ? "Copied" : "Copy"}
+    >
       <HugeiconsIcon
         icon={copied ? Tick02Icon : Copy01Icon}
-        className={cn("size-3.5 mr-1.5", copied && "text-emerald-600")}
+        className="size-4"
       />
-      {copied ? "Copied" : "Copy"}
     </Button>
   );
 }
