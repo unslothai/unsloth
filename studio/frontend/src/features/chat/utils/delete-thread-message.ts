@@ -79,9 +79,11 @@ async function syncExportedRepositoryToDexie(
     await Promise.all(
       existing.filter((m) => !keepIds.has(m.id)).map((m) => db.messages.delete(m.id)),
     );
-    for (const { message, parentId } of exp.messages) {
-      await db.messages.put(exportedItemToRecord(remoteId, parentId, message));
-    }
+    await Promise.all(
+      exp.messages.map(({ message, parentId }) =>
+        db.messages.put(exportedItemToRecord(remoteId, parentId, message)),
+      ),
+    );
   });
 }
 
