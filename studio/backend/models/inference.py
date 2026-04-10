@@ -315,7 +315,7 @@ class ChatCompletionRequest(BaseModel):
         description = "Model identifier (informational; the active model is used)",
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
-    stream: bool = Field(True, description = "Whether to stream the response via SSE")
+    stream: bool = Field(False, description = "Whether to stream the response via SSE")
     temperature: float = Field(0.6, ge = 0.0, le = 2.0)
     top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
@@ -444,3 +444,64 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+
+
+# ── OpenAI Responses API (/v1/responses) ──────────────────────
+
+
+class ResponsesContentPart(BaseModel):
+    """A content part in the Responses API input/output."""
+
+    type: str  # "input_text" for input, "output_text" for output
+    text: str
+
+
+class ResponsesInputMessage(BaseModel):
+    """A single message in the Responses API ``input`` array."""
+
+    role: str = "user"
+    content: Union[str, list[ResponsesContentPart]]
+    type: str = "message"
+
+
+class ResponsesRequest(BaseModel):
+    """OpenAI Responses API request."""
+
+    model: str = Field("default", description = "Model identifier (informational)")
+    input: Union[str, list[ResponsesInputMessage]] = Field(
+        ..., description = "Plain text or array of message objects"
+    )
+    stream: bool = Field(False, description = "Whether to stream the response via SSE")
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0)
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0)
+    max_output_tokens: Optional[int] = Field(
+        None, ge = 1, description = "Maximum tokens to generate"
+    )
+
+
+class ResponsesOutputContent(BaseModel):
+    type: Literal["output_text"] = "output_text"
+    text: str
+
+
+class ResponsesOutputMessage(BaseModel):
+    type: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
+    content: list[ResponsesOutputContent]
+
+
+class ResponsesUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+class ResponsesResponse(BaseModel):
+    """Non-streaming Responses API response."""
+
+    id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
+    object: Literal["response"] = "response"
+    created_at: int = Field(default_factory = lambda: int(time.time()))
+    model: str = "default"
+    output: list[ResponsesOutputMessage]
+    usage: ResponsesUsage = Field(default_factory = ResponsesUsage)

@@ -84,6 +84,13 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    ResponsesRequest,
+    ResponsesResponse,
+    ResponsesOutputMessage,
+    ResponsesOutputContent,
+    ResponsesUsage,
+    ResponsesInputMessage,
+    ResponsesContentPart,
 )
 from auth.authentication import get_current_subject, get_current_subject_or_api_key
 
@@ -1708,10 +1715,21 @@ async def openai_chat_completions(
         else:
             try:
                 full_text = ""
+                _ns_usage = None
                 for token in gguf_generate():
                     if isinstance(token, dict):
-                        continue  # skip metadata dict in non-streaming path
+                        if token.get("type") == "metadata":
+                            _ns_usage = token.get("usage")
+                        continue
                     full_text = token
+
+                usage_obj = None
+                if _ns_usage:
+                    usage_obj = CompletionUsage(
+                        prompt_tokens = _ns_usage.get("prompt_tokens", 0),
+                        completion_tokens = _ns_usage.get("completion_tokens", 0),
+                        total_tokens = _ns_usage.get("total_tokens", 0),
+                    )
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -1723,6 +1741,7 @@ async def openai_chat_completions(
                             finish_reason = "stop",
                         )
                     ],
+                    usage = usage_obj,
                 )
                 return JSONResponse(content = response.model_dump())
 
@@ -2002,6 +2021,205 @@ async def serve_sandbox_file(
 
 
 # =====================================================================
+# =====================================================================
+# OpenAI Responses API  (/responses → /v1/responses)
+# =====================================================================
+
+
+def _responses_input_to_messages(
+    input_data: str | list[ResponsesInputMessage],
+) -> list[dict]:
+    """Convert Responses API ``input`` to OpenAI-style message dicts for llama-server."""
+    if isinstance(input_data, str):
+        return [{"role": "user", "content": input_data}]
+
+    messages: list[dict] = []
+    for item in input_data:
+        if isinstance(item.content, str):
+            messages.append({"role": item.role, "content": item.content})
+        elif isinstance(item.content, list):
+            # Flatten typed content parts into plain text
+            parts = []
+            for part in item.content:
+                if hasattr(part, "text"):
+                    parts.append(part.text)
+            messages.append({"role": item.role, "content": " ".join(parts)})
+    return messages
+
+
+@router.post("/responses")
+async def openai_responses(
+    payload: ResponsesRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_or_api_key),
+):
+    """
+    OpenAI Responses API endpoint.
+
+    Accepts the Responses API ``input`` format and returns a Response object.
+    Translates internally to the GGUF chat completion path. Only GGUF models
+    are supported (same as ``/chat/completions`` for external API access).
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 400,
+            detail = "No GGUF model loaded. The Responses API requires a GGUF model.",
+        )
+
+    model_name = llama_backend.model_identifier or payload.model
+    messages = _responses_input_to_messages(payload.input)
+    cancel_event = threading.Event()
+    response_id = f"resp_{uuid.uuid4().hex[:12]}"
+    created_at = int(time.time())
+
+    def responses_generate():
+        return llama_backend.generate_chat_completion(
+            messages = messages,
+            image_b64 = None,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = 40,
+            min_p = 0.0,
+            max_tokens = payload.max_output_tokens,
+            repetition_penalty = 1.0,
+            presence_penalty = 0.0,
+            cancel_event = cancel_event,
+            enable_thinking = False,
+        )
+
+    if payload.stream:
+
+        async def responses_stream_events():
+            try:
+                # response.created event
+                created_event = {
+                    "type": "response.created",
+                    "response": {
+                        "id": response_id,
+                        "object": "response",
+                        "created_at": created_at,
+                        "model": model_name,
+                        "output": [],
+                        "usage": None,
+                    },
+                }
+                yield f"event: response.created\ndata: {json.dumps(created_event)}\n\n"
+
+                _sentinel = object()
+                gen = responses_generate()
+                prev_text = ""
+                _usage = None
+                output_index = 0
+                content_index = 0
+
+                while True:
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                    if cumulative is _sentinel:
+                        break
+                    if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "metadata":
+                            _usage = cumulative.get("usage")
+                        continue
+                    new_text = cumulative[len(prev_text):]
+                    prev_text = cumulative
+                    if not new_text:
+                        continue
+                    delta_event = {
+                        "type": "response.output_text.delta",
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "delta": new_text,
+                    }
+                    yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+
+                # response.completed event
+                usage_data = None
+                if _usage:
+                    usage_data = {
+                        "input_tokens": _usage.get("prompt_tokens", 0),
+                        "output_tokens": _usage.get("completion_tokens", 0),
+                        "total_tokens": _usage.get("total_tokens", 0),
+                    }
+                completed_event = {
+                    "type": "response.completed",
+                    "response": {
+                        "id": response_id,
+                        "object": "response",
+                        "created_at": created_at,
+                        "model": model_name,
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": prev_text}],
+                            }
+                        ],
+                        "usage": usage_data,
+                    },
+                }
+                yield f"event: response.completed\ndata: {json.dumps(completed_event)}\n\n"
+
+            except asyncio.CancelledError:
+                cancel_event.set()
+                raise
+            except Exception as e:
+                logger.error(f"Error during Responses API streaming: {e}", exc_info = True)
+                error_event = {
+                    "type": "error",
+                    "error": {"message": _friendly_error(e), "type": "server_error"},
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+
+        return StreamingResponse(
+            responses_stream_events(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    else:
+        try:
+            full_text = ""
+            _usage = None
+            for token in responses_generate():
+                if isinstance(token, dict):
+                    if token.get("type") == "metadata":
+                        _usage = token.get("usage")
+                    continue
+                full_text = token
+
+            usage_obj = ResponsesUsage()
+            if _usage:
+                usage_obj = ResponsesUsage(
+                    input_tokens = _usage.get("prompt_tokens", 0),
+                    output_tokens = _usage.get("completion_tokens", 0),
+                    total_tokens = _usage.get("total_tokens", 0),
+                )
+
+            response = ResponsesResponse(
+                id = response_id,
+                created_at = created_at,
+                model = model_name,
+                output = [
+                    ResponsesOutputMessage(
+                        content = [ResponsesOutputContent(text = full_text)]
+                    )
+                ],
+                usage = usage_obj,
+            )
+            return JSONResponse(content = response.model_dump())
+
+        except Exception as e:
+            logger.error(f"Error during Responses API completion: {e}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = _friendly_error(e))
+
+
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
