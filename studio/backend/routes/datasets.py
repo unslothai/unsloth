@@ -325,6 +325,7 @@ def get_dataset_splits(
     """
     try:
         from datasets import get_dataset_config_names, get_dataset_split_names
+        from huggingface_hub.utils import HfHubHTTPError
 
         dataset_name = request.dataset_name
         token = request.hf_token or None
@@ -334,6 +335,7 @@ def get_dataset_splits(
         configs = get_dataset_config_names(dataset_name, token = token)
 
         all_splits: list[SplitEntry] = []
+        last_config_error: str | None = None
         for config in configs:
             try:
                 split_names = get_dataset_split_names(
@@ -353,10 +355,32 @@ def get_dataset_splits(
                 logger.warning(
                     f"Could not fetch splits for config '{config}': {config_err}"
                 )
+                last_config_error = str(config_err)
                 continue
+
+        # If configs were found but every single one failed, surface the
+        # error so the UI can show an actionable message instead of a
+        # misleading empty-success response.
+        if configs and not all_splits and last_config_error:
+            raise HTTPException(
+                status_code = 500,
+                detail = (
+                    f"Failed to fetch splits for any config of '{dataset_name}'. "
+                    f"Last error: {last_config_error}"
+                ),
+            )
 
         return DatasetSplitsResponse(splits = all_splits)
 
+    except HTTPException:
+        raise
+    except HfHubHTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 500
+        logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = status_code,
+            detail = f"Failed to fetch dataset splits: {str(e)}",
+        )
     except Exception as e:
         logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
         raise HTTPException(
