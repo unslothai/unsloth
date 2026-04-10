@@ -10,6 +10,7 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
+import functools
 import json
 import sys
 import torch
@@ -36,6 +37,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+@functools.cache
 def _bnb_rocm_4bit_ok() -> bool:
     """Return True when the installed bitsandbytes contains the ROCm 4-bit
     GEMV fix (bnb commit 713a3b8 / PR #1887 / shipped in 0.50.0.dev0+).
@@ -57,6 +59,10 @@ def _bnb_rocm_4bit_ok() -> bool:
     inference falls through to 16-bit on the broken bnb version.
 
     NVIDIA / CPU / Mac paths are always OK -- the bug is HIP-specific.
+
+    Result is cached with ``functools.cache`` because load_model() can
+    be called many times in a single session and the answer cannot
+    change at runtime (bnb and hardware are pinned for the process).
     """
     if not _hw_module.IS_ROCM:
         return True
