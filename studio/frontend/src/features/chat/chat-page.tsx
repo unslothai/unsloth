@@ -112,23 +112,25 @@ function HighlightedSnippet({
   // changes (e.g. the API key). Forcing a remount keyed on the source string
   // guarantees the displayed snippet always matches the latest props.
   return (
-    <div className="relative mt-2 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!overflow-x-auto [&_code]:!whitespace-pre-wrap [&_code]:!break-all [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
+    <div className="relative mt-2">
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground transition-colors"
+        className="absolute top-1.5 right-1.5 z-10 rounded bg-muted-foreground/10 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted-foreground/20 hover:text-foreground transition-colors"
       >
         {copied ? "Copied!" : "Copy"}
       </button>
-      <Streamdown
-        key={markdown}
-        mode="static"
-        plugins={{ code: codePlugin }}
-        controls={{ code: false }}
-        shikiTheme={SHIKI_THEME}
-      >
-        {markdown}
-      </Streamdown>
+      <div className="overflow-x-auto rounded bg-muted p-2 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!overflow-x-auto [&_code]:!whitespace-pre-wrap [&_code]:!break-all [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!p-0">
+        <Streamdown
+          key={markdown}
+          mode="static"
+          plugins={{ code: codePlugin }}
+          controls={{ code: false }}
+          shikiTheme={SHIKI_THEME}
+        >
+          {markdown}
+        </Streamdown>
+      </div>
     </div>
   );
 }
