@@ -55,6 +55,7 @@
       "icons/icon.icns"
     ],
     "windows": {
+      "signCommand": "trusted-signing-cli -e %AZURE_CODE_SIGNING_ENDPOINT% -a %AZURE_CODE_SIGNING_ACCOUNT% -c %AZURE_CODE_SIGNING_PROFILE% -d \"Unsloth Studio\" %1",
       "nsis": {
         "installerHooks": "./windows/hooks.nsh"
       }
