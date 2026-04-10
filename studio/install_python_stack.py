@@ -326,10 +326,12 @@ def _ensure_rocm_torch() -> None:
                 constrain = False,
             )
             if not _bnb_installed:
-                print(_red(
-                    "   bnb pre-release unreachable; falling back to PyPI "
-                    "(4-bit decode will be broken on ROCm)"
-                ))
+                print(
+                    _red(
+                        "   bnb pre-release unreachable; falling back to PyPI "
+                        "(4-bit decode will be broken on ROCm)"
+                    )
+                )
         if not _bnb_installed:
             pip_install(
                 "bitsandbytes (AMD)",
