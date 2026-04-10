@@ -926,11 +926,16 @@ else
                 if command -v rocminfo &>/dev/null; then
                     _gfx_list=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]{2,4}[a-z]?' | sort -u || true)
                     _valid_gfx=""
+                    # Pre-compute once: is any specific gfx11xx target present?
+                    _has_specific_gfx11=$(echo "$_gfx_list" | grep -E 'gfx11[0-9][0-9a-z]?' || true)
                     for _gfx in $_gfx_list; do
                         if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
-                            # Filter out gfx11 (RDNA1) if we have RDNA2/RDNA3
-                            if [ "$_gfx" = "gfx11" ] && echo "$_gfx_list" | grep -qE 'gfx9[0-9a-z]|gfx11[1-9][0-9a-z]?'; then
-                                continue  # Skip gfx11 if newer RDNA GPUs detected
+                            # Filter out generic gfx11 family target when a specific gfx11xx
+                            # architecture is also present (rocminfo on ROCm 6.1+ emits both
+                            # e.g. gfx1100 and gfx11-generic; passing bare gfx11 to
+                            # GPU_TARGETS breaks the HIP/llama.cpp build)
+                            if [ "$_gfx" = "gfx11" ] && [ -n "$_has_specific_gfx11" ]; then
+                                continue
                             fi
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
