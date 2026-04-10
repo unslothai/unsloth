@@ -94,6 +94,36 @@ run_install_cmd() {
     return $_rc
 }
 
+# Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
+# wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
+# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
+# pre-release URL is unreachable. Drop the pin once bnb 0.50+ ships on PyPI.
+_install_bnb_rocm() {
+    _label="$1"
+    _venv_py="$2"
+    case "$_ARCH" in
+        x86_64|amd64)
+            _bnb_whl_url="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl"
+            ;;
+        aarch64|arm64)
+            _bnb_whl_url="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
+            ;;
+        *)
+            _bnb_whl_url=""
+            ;;
+    esac
+    if [ -n "$_bnb_whl_url" ]; then
+        substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
+        if run_install_cmd "$_label (pre-release)" uv pip install --python "$_venv_py" \
+            --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
+            return 0
+        fi
+        substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+    fi
+    run_install_cmd "$_label (pypi fallback)" uv pip install --python "$_venv_py" \
+        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+}
+
 if [ "$_next_is_package" = true ]; then
     echo "❌ ERROR: --package requires an argument." >&2
     exit 1
@@ -1296,8 +1326,7 @@ if [ "$_MIGRATED" = true ]; then
     if [ "$SKIP_TORCH" = false ]; then
         case "$TORCH_INDEX_URL" in
             */rocm*)
-                substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+                _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
                 # Repair ROCm torch if overwritten during migrated install
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
@@ -1437,8 +1466,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     if [ "$SKIP_TORCH" = false ]; then
         case "$TORCH_INDEX_URL" in
             */rocm*)
-                substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+                _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
                 ;;
         esac
     fi
