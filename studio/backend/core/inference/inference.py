@@ -26,7 +26,6 @@ from utils.hardware import (
     raise_if_offloaded,
     get_visible_gpu_count,
 )
-from utils.hardware import hardware as _hw_module
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -296,14 +295,6 @@ class InferenceBackend:
             }
 
             # ── Audio model loading path ──────────────────────────
-            # Audio / vision Unsloth inference on ROCm is not yet validated
-            # (separate kernel paths from bnb 4-bit). Keep the guard.
-            if (config.is_audio or config.is_vision) and _hw_module.IS_ROCM:
-                raise RuntimeError(
-                    f"Audio and vision model inference via Unsloth is not "
-                    f"yet supported on AMD ROCm.  Use GGUF inference instead."
-                )
-
             if config.is_audio:
                 audio_type = config.audio_type
                 adapter_info = " (LoRA adapter)" if config.is_lora else ""
@@ -535,7 +526,7 @@ class InferenceBackend:
             else:
                 # Text model (or text LoRA adapter)
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = config.path,  # base model OR LoRA adapter path
+                    model_name = config.path,  # Can be base model OR LoRA adapter path
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
