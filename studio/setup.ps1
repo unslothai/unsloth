@@ -75,12 +75,12 @@ function Refresh-Environment {
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
     $merged = "$machinePath;$userPath;$env:Path"
     $seen = @{}
-    $unique = @()
+    $unique = New-Object System.Collections.Generic.List[string]
     foreach ($p in $merged -split ";") {
         $key = $p.TrimEnd("\").ToLowerInvariant()
         if ($key -and -not $seen.ContainsKey($key)) {
             $seen[$key] = $true
-            $unique += $p
+            $unique.Add($p)
         }
     }
     $env:Path = $unique -join ";"
@@ -104,7 +104,9 @@ function Add-ToUserPath {
             $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
             $normalDir = $Directory.TrimEnd('\').ToLowerInvariant()
             foreach ($entry in $entries) {
-                if ($entry.TrimEnd('\').ToLowerInvariant() -eq $normalDir) {
+                $rawNorm = $entry.TrimEnd('\').ToLowerInvariant()
+                $expNorm = [Environment]::ExpandEnvironmentVariables($entry).TrimEnd('\').ToLowerInvariant()
+                if ($rawNorm -eq $normalDir -or $expNorm -eq $normalDir) {
                     return $false  # already present
                 }
             }
