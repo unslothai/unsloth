@@ -68,7 +68,9 @@ class ApiKeyResponse(BaseModel):
 
     id: int
     name: str
-    key_prefix: str = Field(..., description = "First 8 characters after sk-unsloth- for display")
+    key_prefix: str = Field(
+        ..., description = "First 8 characters after sk-unsloth- for display"
+    )
     created_at: str
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None

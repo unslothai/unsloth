@@ -393,7 +393,7 @@ def create_api_key(
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _hash_token(raw_key)
-    key_prefix = raw_key[len(API_KEY_PREFIX): len(API_KEY_PREFIX) + 8]
+    key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
     now = datetime.now(timezone.utc).isoformat()
 
     conn = get_connection()
@@ -406,9 +406,7 @@ def create_api_key(
             (username, key_prefix, key_hash, name, now, expires_at),
         )
         conn.commit()
-        cur = conn.execute(
-            "SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)
-        )
+        cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
         row = cur.fetchone()
         return raw_key, dict(row)
     finally:
