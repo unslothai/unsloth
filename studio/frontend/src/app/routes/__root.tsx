@@ -47,24 +47,22 @@ function RootLayout() {
           <Outlet />
         </main>
       ) : (
-        <>
-          <Navbar />
-          <SidebarProvider
-            pinned={pinned}
-            setPinned={setPinned}
-            togglePinned={togglePinned}
-            hovered={hovered}
-            setHovered={setHovered}
-            className="mx-auto max-w-7xl !min-h-0 h-[calc(100dvh-4rem)] px-2 sm:px-4"
-          >
-            <AppSidebar />
-            <SidebarInset className="overflow-hidden">
-              <main className="flex-1 overflow-auto">
-                <Outlet />
-              </main>
-            </SidebarInset>
-          </SidebarProvider>
-        </>
+        <SidebarProvider
+          pinned={pinned}
+          setPinned={setPinned}
+          togglePinned={togglePinned}
+          hovered={hovered}
+          setHovered={setHovered}
+          className="mx-auto max-w-7xl !min-h-0 h-dvh px-2 sm:px-4"
+        >
+          <AppSidebar />
+          <SidebarInset className="overflow-hidden">
+            <Navbar />
+            <main className="flex-1 overflow-auto">
+              <Outlet />
+            </main>
+          </SidebarInset>
+        </SidebarProvider>
       )}
     </AppProvider>
   );

@@ -50,7 +50,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronsUpDown, Moon, Sun } from "lucide-react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { usePlatformStore } from "@/config/env";
@@ -215,6 +215,39 @@ export function AppSidebar() {
           </button>
         </div>
 
+        {/* Logo */}
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              asChild
+              className="data-[slot=sidebar-menu-button]:!p-1.5"
+              tooltip="Unsloth"
+            >
+              <Link to={chatOnly ? "/chat" : "/studio"} className="select-none">
+                {/* Collapsed: sticker icon */}
+                <img
+                  src="/sticker.png"
+                  alt="Unsloth"
+                  className="size-5 group-data-[collapsible=icon]:block hidden"
+                />
+                {/* Expanded: full logo */}
+                <img
+                  src="/blacklogo.png"
+                  alt="Unsloth"
+                  className="h-7 w-auto dark:hidden group-data-[collapsible=icon]:hidden"
+                />
+                <img
+                  src="/whitelogo.png"
+                  alt="Unsloth"
+                  className="hidden h-7 w-auto dark:block group-data-[collapsible=icon]:!hidden"
+                />
+                <span className="text-[10px] font-extrabold leading-none tracking-[0.12em] text-primary group-data-[collapsible=icon]:hidden">
+                  BETA
+                </span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
 
       <SidebarContent>

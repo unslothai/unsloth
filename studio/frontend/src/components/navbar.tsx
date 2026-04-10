@@ -17,7 +17,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { usePlatformStore } from "@/config/env";
-import { Link } from "@tanstack/react-router";
+
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -206,7 +206,6 @@ export function Navbar() {
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const defaultUpdateShell = getDefaultUpdateShell(deviceType);
 
   // Warn before closing the tab only when training is running (data loss risk).
@@ -236,27 +235,10 @@ export function Navbar() {
 
   return (
     <>
-    <header className="relative top-0 z-40 h-16 w-full">
-      <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto] items-center px-4 sm:px-6">
-        {/* Left: logo */}
-        <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center gap-1.5 justify-self-start select-none">
-          <img
-            src="/blacklogo.png"
-            alt="Unsloth"
-            className="h-9 w-auto dark:hidden"
-          />
-          <img
-            src="/whitelogo.png"
-            alt="Unsloth"
-            className="hidden h-9 w-auto dark:block"
-          />
-          <span className="relative -top-[1px] inline-flex items-center text-[10px] font-extrabold leading-none tracking-[0.12em] text-primary">
-            BETA
-          </span>
-        </Link>
-
+    <header className="absolute top-0 right-0 z-40 h-11 pointer-events-none">
+      <div className="flex h-full items-center justify-end pr-12 pointer-events-auto">
         {/* Right: update + shutdown */}
-        <div className="flex items-center justify-self-end gap-0">
+        <div className="flex items-center gap-0">
           <div className="flex shrink-0 items-center">
             <HoverCard openDelay={200} closeDelay={100}>
               <HoverCardTrigger asChild={true}>

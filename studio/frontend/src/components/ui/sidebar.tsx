@@ -296,8 +296,8 @@ function Sidebar({
         className={cn(
           hasPinMode
             ? cn(
-                // Pin mode: always push content, inset from top/bottom for rounded appearance.
-                "absolute top-1.5 bottom-1.5 hidden w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 md:flex",
+                // Pin mode: always push content, full height.
+                "absolute top-0 bottom-0 hidden w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 md:flex",
                 "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
               )
             : cn(
