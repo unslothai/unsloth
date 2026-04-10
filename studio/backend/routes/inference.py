@@ -2264,7 +2264,7 @@ async def anthropic_messages(
             detail = "No GGUF model loaded. The Messages API requires a GGUF model.",
         )
 
-    base_url = llama_backend._base_url
+    base_url = llama_backend.base_url
     if not base_url:
         raise HTTPException(status_code = 503, detail = "llama-server is not running")
 
