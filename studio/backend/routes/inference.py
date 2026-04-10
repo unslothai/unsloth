@@ -2028,23 +2028,38 @@ async def serve_sandbox_file(
 
 def _responses_input_to_messages(
     input_data: str | list[ResponsesInputMessage],
-) -> list[dict]:
-    """Convert Responses API ``input`` to OpenAI-style message dicts for llama-server."""
+) -> tuple[list[dict], str | None]:
+    """Convert Responses API ``input`` to OpenAI-style message dicts.
+
+    Returns:
+        messages:   List of ``{"role": ..., "content": ...}`` dicts.
+        image_b64:  Base64 data of the first ``input_image`` found, or ``None``.
+    """
     if isinstance(input_data, str):
-        return [{"role": "user", "content": input_data}]
+        return [{"role": "user", "content": input_data}], None
 
     messages: list[dict] = []
+    first_image_b64: str | None = None
     for item in input_data:
         if isinstance(item.content, str):
             messages.append({"role": item.role, "content": item.content})
         elif isinstance(item.content, list):
-            # Flatten typed content parts into plain text
-            parts = []
+            text_parts: list[str] = []
             for part in item.content:
-                if hasattr(part, "text"):
-                    parts.append(part.text)
-            messages.append({"role": item.role, "content": " ".join(parts)})
-    return messages
+                if part.type == "input_text" and part.text:
+                    text_parts.append(part.text)
+                elif part.type == "input_image" and part.image_url and first_image_b64 is None:
+                    url = part.image_url
+                    if url.startswith("data:"):
+                        first_image_b64 = url.split(",", 1)[1] if "," in url else None
+                    else:
+                        logger.warning(
+                            "Remote image URLs not yet supported in /responses: %s...",
+                            url[:80],
+                        )
+            combined_text = "\n".join(text_parts) if text_parts else ""
+            messages.append({"role": item.role, "content": combined_text})
+    return messages, first_image_b64
 
 
 @router.post("/responses")
@@ -2068,7 +2083,7 @@ async def openai_responses(
         )
 
     model_name = llama_backend.model_identifier or payload.model
-    messages = _responses_input_to_messages(payload.input)
+    messages, image_b64 = _responses_input_to_messages(payload.input)
     cancel_event = threading.Event()
     response_id = f"resp_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
@@ -2076,7 +2091,7 @@ async def openai_responses(
     def responses_generate():
         return llama_backend.generate_chat_completion(
             messages = messages,
-            image_b64 = None,
+            image_b64 = image_b64,
             temperature = payload.temperature,
             top_p = payload.top_p,
             top_k = 40,

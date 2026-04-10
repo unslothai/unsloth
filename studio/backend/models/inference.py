@@ -450,10 +450,17 @@ class ChatCompletion(BaseModel):
 
 
 class ResponsesContentPart(BaseModel):
-    """A content part in the Responses API input/output."""
+    """A content part in the Responses API input/output.
 
-    type: str  # "input_text" for input, "output_text" for output
-    text: str
+    Supports:
+    - ``{"type": "input_text", "text": "..."}`` — text input
+    - ``{"type": "input_image", "image_url": "data:image/...;base64,..."}`` — image input
+    - ``{"type": "output_text", "text": "..."}`` — text output
+    """
+
+    type: str
+    text: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class ResponsesInputMessage(BaseModel):
