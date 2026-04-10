@@ -101,10 +101,24 @@ function HighlightedSnippet({
   );
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(source).then(() => {
+    // navigator.clipboard requires HTTPS or localhost — Studio is often
+    // served over plain HTTP on a LAN IP, so fall back to execCommand.
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(source);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = source;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    } catch { /* ignore */ }
   }, [source]);
 
   // Streamdown memoizes/diffs markdown blocks and can hold onto previously
