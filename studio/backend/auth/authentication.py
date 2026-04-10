@@ -197,3 +197,34 @@ async def get_current_subject_or_api_key(
 
     # Fall back to JWT validation (Studio frontend sessions)
     return await _get_current_subject(credentials, allow_password_change = False)
+
+
+async def get_current_subject_or_api_key_anthropic(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_security),
+) -> str:
+    """Accept x-api-key header, Authorization: Bearer, or JWT.
+
+    The Anthropic SDK sends ``x-api-key: <key>`` instead of
+    ``Authorization: Bearer <key>``. This dependency checks both so that
+    the ``/v1/messages`` endpoint works with both Anthropic and OpenAI SDKs.
+    """
+    external_key = getattr(request.app.state, "external_api_key", None)
+
+    # Check x-api-key header first (Anthropic SDK default)
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key and external_key and x_api_key == external_key:
+        return "__api_user__"
+
+    # Fall through to standard Bearer / JWT check
+    if credentials is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing Authorization or x-api-key header",
+        )
+
+    token = credentials.credentials
+    if external_key and token == external_key:
+        return "__api_user__"
+
+    return await _get_current_subject(credentials, allow_password_change = False)

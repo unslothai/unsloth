@@ -690,7 +690,35 @@ print(response.output[0].content[0].text)`,
   }'`,
     [endpointApiKey, endpointBaseUrl, modelAlias],
   );
-  const [endpointApiTab, setEndpointApiTab] = useState<"completions" | "responses">("completions");
+  const anthropicPythonSnippet = useMemo(
+    () => `from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="${endpointBaseUrl}",
+    api_key="${endpointApiKey}",
+)
+
+message = client.messages.create(
+    model="${modelAlias}",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+)
+
+print(message.content[0].text)`,
+    [endpointApiKey, endpointBaseUrl, modelAlias],
+  );
+  const anthropicCurlSnippet = useMemo(
+    () => `curl ${endpointBaseUrl}/messages \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: ${endpointApiKey}" \\
+  -d '{
+    "model": "${modelAlias}",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "What is 2+2?"}]
+  }'`,
+    [endpointApiKey, endpointBaseUrl, modelAlias],
+  );
+  const [endpointApiTab, setEndpointApiTab] = useState<"completions" | "responses" | "messages">("completions");
 
   const applyEndpointData = useCallback(
     (data: {
@@ -1422,8 +1450,19 @@ print(response.output[0].content[0].text)`,
                     >
                       Responses
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setEndpointApiTab("messages")}
+                      className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                        endpointApiTab === "messages"
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Messages
+                    </button>
                   </div>
-                  {endpointApiTab === "completions" ? (
+                  {endpointApiTab === "completions" && (
                     <div className="space-y-2">
                       <details className="rounded-md border p-2" open>
                         <summary className="cursor-pointer text-xs font-medium">
@@ -1441,7 +1480,8 @@ print(response.output[0].content[0].text)`,
                         <HighlightedSnippet language="bash" source={endpointCurlSnippet} />
                       </details>
                     </div>
-                  ) : (
+                  )}
+                  {endpointApiTab === "responses" && (
                     <div className="space-y-2">
                       <details className="rounded-md border p-2" open>
                         <summary className="cursor-pointer text-xs font-medium">
@@ -1457,6 +1497,25 @@ print(response.output[0].content[0].text)`,
                           cURL
                         </summary>
                         <HighlightedSnippet language="bash" source={responsesCurlSnippet} />
+                      </details>
+                    </div>
+                  )}
+                  {endpointApiTab === "messages" && (
+                    <div className="space-y-2">
+                      <details className="rounded-md border p-2" open>
+                        <summary className="cursor-pointer text-xs font-medium">
+                          Python (Anthropic SDK)
+                        </summary>
+                        <HighlightedSnippet
+                          language="python"
+                          source={anthropicPythonSnippet}
+                        />
+                      </details>
+                      <details className="rounded-md border p-2">
+                        <summary className="cursor-pointer text-xs font-medium">
+                          cURL
+                        </summary>
+                        <HighlightedSnippet language="bash" source={anthropicCurlSnippet} />
                       </details>
                     </div>
                   )}

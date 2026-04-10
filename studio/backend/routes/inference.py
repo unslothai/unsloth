@@ -92,7 +92,7 @@ from models.inference import (
     ResponsesInputMessage,
     ResponsesContentPart,
 )
-from auth.authentication import get_current_subject, get_current_subject_or_api_key
+from auth.authentication import get_current_subject, get_current_subject_or_api_key, get_current_subject_or_api_key_anthropic
 
 import io
 import wave
@@ -2233,6 +2233,83 @@ async def openai_responses(
         except Exception as e:
             logger.error(f"Error during Responses API completion: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = _friendly_error(e))
+
+
+# =====================================================================
+# Anthropic Messages API  (/messages → /v1/messages)
+# =====================================================================
+
+
+@router.post("/messages")
+async def anthropic_messages(
+    request: Request,
+    current_subject: str = Depends(get_current_subject_or_api_key_anthropic),
+):
+    """
+    Anthropic-compatible Messages API endpoint.
+
+    Proxies the request directly to llama-server's native ``/v1/messages``
+    handler, which supports the full Anthropic Messages format including
+    streaming (``message_start``, ``content_block_delta``, etc.).
+
+    Accepts auth via ``x-api-key`` header (Anthropic SDK) or
+    ``Authorization: Bearer`` (OpenAI SDK / general).
+    """
+    import httpx
+
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 400,
+            detail = "No GGUF model loaded. The Messages API requires a GGUF model.",
+        )
+
+    base_url = llama_backend._base_url
+    if not base_url:
+        raise HTTPException(status_code = 503, detail = "llama-server is not running")
+
+    body = await request.body()
+    # Detect streaming from the JSON body
+    try:
+        payload = json.loads(body)
+        is_stream = payload.get("stream", False)
+    except Exception:
+        is_stream = False
+
+    target_url = f"{base_url}/v1/messages"
+
+    if is_stream:
+
+        async def proxy_stream():
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    target_url,
+                    content = body,
+                    headers = {"Content-Type": "application/json"},
+                    timeout = 300.0,
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+
+        return StreamingResponse(
+            proxy_stream(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    else:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                target_url,
+                content = body,
+                headers = {"Content-Type": "application/json"},
+                timeout = 300.0,
+            )
+        return JSONResponse(content = resp.json(), status_code = resp.status_code)
 
 
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
