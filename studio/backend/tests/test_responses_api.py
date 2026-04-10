@@ -38,6 +38,7 @@ from models.inference import (
 # pulls in heavy dependencies (structlog/twisted/torch). This is a
 # direct copy of the function for testing purposes.
 
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list:
     """Convert a ResponsesRequest into a list of ChatMessage for the completions backend."""
     messages = []
@@ -65,10 +66,12 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list:
                 if isinstance(part, ResponsesInputTextPart):
                     parts.append(TextContentPart(type = "text", text = part.text))
                 elif isinstance(part, ResponsesInputImagePart):
-                    parts.append(ImageContentPart(
-                        type = "image_url",
-                        image_url = ImageUrl(url = part.image_url, detail = part.detail),
-                    ))
+                    parts.append(
+                        ImageContentPart(
+                            type = "image_url",
+                            image_url = ImageUrl(url = part.image_url, detail = part.detail),
+                        )
+                    )
             messages.append(ChatMessage(role = role, content = parts if parts else ""))
 
     return messages
@@ -106,7 +109,10 @@ class TestResponsesRequest:
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": "What is in this image?"},
-                        {"type": "input_image", "image_url": "https://example.com/img.png"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/img.png",
+                        },
                     ],
                 },
             ],
@@ -270,7 +276,10 @@ class TestNormaliseResponsesInput:
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": "Describe this:"},
-                        {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,abc",
+                        },
                     ],
                 },
             ],
@@ -315,4 +324,5 @@ class TestNormaliseResponsesInput:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

@@ -456,12 +456,14 @@ class ChatCompletion(BaseModel):
 
 class ResponsesInputTextPart(BaseModel):
     """Text content part in a Responses API message (type=input_text)."""
+
     type: Literal["input_text"]
     text: str
 
 
 class ResponsesInputImagePart(BaseModel):
     """Image content part in a Responses API message (type=input_image)."""
+
     type: Literal["input_image"]
     image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
@@ -472,12 +474,14 @@ ResponsesContentPart = Union[ResponsesInputTextPart, ResponsesInputImagePart]
 
 class ResponsesInputMessage(BaseModel):
     """A single message in the Responses API input array."""
+
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
 
 
 class ResponsesRequest(BaseModel):
     """OpenAI Responses API request."""
+
     model: str = Field("default", description = "Model identifier")
     input: Union[str, list[ResponsesInputMessage]] = Field(
         default = [],
@@ -510,6 +514,7 @@ class ResponsesRequest(BaseModel):
 
 class ResponsesOutputTextContent(BaseModel):
     """A text content block inside an output message."""
+
     type: Literal["output_text"] = "output_text"
     text: str
     annotations: list = Field(default_factory = list)
@@ -517,6 +522,7 @@ class ResponsesOutputTextContent(BaseModel):
 
 class ResponsesOutputMessage(BaseModel):
     """An output message in the Responses API response."""
+
     type: Literal["message"] = "message"
     id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
     status: Literal["completed", "in_progress"] = "completed"
@@ -526,6 +532,7 @@ class ResponsesOutputMessage(BaseModel):
 
 class ResponsesUsage(BaseModel):
     """Token usage for a Responses API response (input_tokens, not prompt_tokens)."""
+
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -533,6 +540,7 @@ class ResponsesUsage(BaseModel):
 
 class ResponsesResponse(BaseModel):
     """Top-level Responses API response object."""
+
     id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
     object: Literal["response"] = "response"
     created_at: int = Field(default_factory = lambda: int(time.time()))

@@ -1953,16 +1953,20 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                 if isinstance(part, ResponsesInputTextPart):
                     parts.append(TextContentPart(type = "text", text = part.text))
                 elif isinstance(part, ResponsesInputImagePart):
-                    parts.append(ImageContentPart(
-                        type = "image_url",
-                        image_url = ImageUrl(url = part.image_url, detail = part.detail),
-                    ))
+                    parts.append(
+                        ImageContentPart(
+                            type = "image_url",
+                            image_url = ImageUrl(url = part.image_url, detail = part.detail),
+                        )
+                    )
             messages.append(ChatMessage(role = role, content = parts if parts else ""))
 
     return messages
 
 
-def _build_chat_request(payload: ResponsesRequest, messages: list[ChatMessage], stream: bool) -> ChatCompletionRequest:
+def _build_chat_request(
+    payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
+) -> ChatCompletionRequest:
     """Build a ChatCompletionRequest from a ResponsesRequest."""
     chat_kwargs = dict(
         model = payload.model,
@@ -2097,7 +2101,9 @@ async def _responses_stream(
                         usage = chunk_data.get("usage")
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
-                            output_tokens = usage.get("completion_tokens", output_tokens)
+                            output_tokens = usage.get(
+                                "completion_tokens", output_tokens
+                            )
                         continue
 
                     delta = choices[0].get("delta", {})
@@ -2139,13 +2145,21 @@ async def _responses_stream(
                 "created_at": created_at,
                 "status": "completed",
                 "model": payload.model,
-                "output": [{
-                    "type": "message",
-                    "id": msg_id,
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": full_text, "annotations": []}],
-                }],
+                "output": [
+                    {
+                        "type": "message",
+                        "id": msg_id,
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": full_text,
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
