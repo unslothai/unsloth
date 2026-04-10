@@ -215,9 +215,7 @@ async def shutdown_server(
 
     Only the admin account is permitted to initiate a shutdown.
     """
-    from auth.storage import DEFAULT_ADMIN_USERNAME
-
-    if current_subject != DEFAULT_ADMIN_USERNAME:
+    if current_subject != storage.DEFAULT_ADMIN_USERNAME:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Only the admin account may shut down the server",
