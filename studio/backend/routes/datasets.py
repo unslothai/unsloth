@@ -337,7 +337,9 @@ def get_dataset_splits(
         for config in configs:
             try:
                 split_names = get_dataset_split_names(
-                    dataset_name, config_name = config, token = token,
+                    dataset_name,
+                    config_name = config,
+                    token = token,
                 )
                 for split_name in split_names:
                     all_splits.append(
