@@ -43,6 +43,32 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
 }
 _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 
+# bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
+# (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
+# AMD GPU. Drop the pin once bnb 0.50+ ships on PyPI.
+_BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
+    "x86_64": (
+        "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
+        "download/continuous-release_main/"
+        "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl"
+    ),
+    "aarch64": (
+        "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
+        "download/continuous-release_main/"
+        "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
+    ),
+}
+_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.49.1"
+
+
+def _bnb_rocm_prerelease_url() -> str | None:
+    """Return the continuous-release_main bnb wheel URL for the current
+    architecture, or None when no pre-release wheel is available.
+    """
+    arch = platform.machine().lower()
+    arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch)
+    return _BNB_ROCM_PRERELEASE_URLS.get(arch)
+
 
 def _detect_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm stack, or None."""
@@ -284,21 +310,37 @@ def _ensure_rocm_torch() -> None:
             )
             rocm_torch_ready = True
 
-    # Install bitsandbytes only when the venv has a ROCm-compatible torch
-    # (either already present or just installed). Avoids leaving an AMD
-    # bitsandbytes on top of a CPU/CUDA torch on hosts where the ROCm
-    # runtime is older than any published torch wheel. Uses
-    # --force-reinstall so an existing CPU/CUDA bitsandbytes is replaced
-    # by the AMD build during upgrades.
+    # Install bitsandbytes only when torch links against ROCm. Prefers the
+    # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix) and falls
+    # back to PyPI when the pre-release URL is unreachable.
     if rocm_torch_ready:
-        pip_install(
-            "bitsandbytes (AMD)",
-            "--force-reinstall",
-            "--no-cache-dir",
-            "--no-deps",
-            "bitsandbytes>=0.49.1",
-            constrain = False,
-        )
+        _bnb_url = _bnb_rocm_prerelease_url()
+        _bnb_installed = False
+        if _bnb_url is not None:
+            _bnb_installed = pip_install_try(
+                "bitsandbytes (AMD, pre-release main)",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                _bnb_url,
+                constrain = False,
+            )
+            if not _bnb_installed:
+                print(
+                    _red(
+                        "   bnb pre-release unreachable; falling back to PyPI "
+                        "(4-bit decode will be broken on ROCm)"
+                    )
+                )
+        if not _bnb_installed:
+            pip_install(
+                "bitsandbytes (AMD)",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                _BNB_ROCM_PYPI_FALLBACK,
+                constrain = False,
+            )
 
 
 def _infer_no_torch() -> bool:
@@ -591,6 +633,37 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     if _tb:
         cmd.append(f"--torch-backend={_tb}")
     return cmd
+
+
+def pip_install_try(
+    label: str,
+    *args: str,
+    constrain: bool = True,
+) -> bool:
+    """Like pip_install but returns False on failure instead of exiting.
+    For optional installs with a follow-up fallback.
+    """
+    constraint_args: list[str] = []
+    if constrain and CONSTRAINTS.is_file():
+        constraint_args = ["-c", str(CONSTRAINTS)]
+
+    if USE_UV:
+        cmd = _build_uv_cmd(args) + constraint_args
+    else:
+        cmd = _build_pip_cmd(args) + constraint_args
+
+    if VERBOSE:
+        _step(_LABEL, f"{label}...", _dim)
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+    )
+    if result.returncode == 0:
+        return True
+    if VERBOSE and result.stdout:
+        print(result.stdout.decode(errors = "replace"))
+    return False
 
 
 def pip_install(
