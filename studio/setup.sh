@@ -928,6 +928,10 @@ else
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
                         if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            # Filter out gfx11 (RDNA1) if we have RDNA2/RDNA3
+                            if [ "$_gfx" = "gfx11" ] && echo "$_gfx_list" | grep -qE 'gfx9[0-9a-z]|gfx11[1-9][0-9a-z]?'; then
+                                continue  # Skip gfx11 if newer RDNA GPUs detected
+                            fi
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done
