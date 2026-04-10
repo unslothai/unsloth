@@ -235,7 +235,7 @@ export function Navbar() {
 
   return (
     <>
-    <header className="absolute top-0 right-0 z-40 h-11 pointer-events-none">
+    <header className="absolute top-2 right-0 z-40 h-11 pointer-events-none hidden">
       <div className="flex h-full items-center justify-end pr-12 pointer-events-auto">
         {/* Right: update + shutdown */}
         <div className="flex items-center gap-0">

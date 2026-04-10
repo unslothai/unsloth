@@ -53,14 +53,16 @@ function RootLayout() {
           togglePinned={togglePinned}
           hovered={hovered}
           setHovered={setHovered}
-          className="mx-auto max-w-7xl !min-h-0 h-dvh px-2 sm:px-4"
+          className="!min-h-0 h-dvh"
         >
           <AppSidebar />
           <SidebarInset className="overflow-hidden">
-            <Navbar />
-            <main className="flex-1 overflow-auto">
-              <Outlet />
-            </main>
+            <div className="flex flex-col flex-1 min-h-0 w-full pt-2">
+              <Navbar />
+              <main className="flex-1 overflow-auto">
+                <Outlet />
+              </main>
+            </div>
           </SidebarInset>
         </SidebarProvider>
       )}

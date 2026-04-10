@@ -102,7 +102,7 @@ function NavItem({
           disabled={disabled}
           onClick={onClick}
           isActive={active}
-          className="rounded-l-none group-data-[collapsible=icon]:rounded-l-lg"
+          className="rounded-none pr-0 pl-4"
         >
           <HugeiconsIcon icon={icon} className="size-5" />
           <span>{label}</span>
@@ -228,7 +228,7 @@ export function AppSidebar() {
                 <img
                   src="/sticker.png"
                   alt="Unsloth"
-                  className="size-5 group-data-[collapsible=icon]:block hidden"
+                  className="!size-7 group-data-[collapsible=icon]:block hidden"
                 />
                 {/* Expanded: full logo */}
                 <img
@@ -252,10 +252,18 @@ export function AppSidebar() {
 
       <SidebarContent>
         {/* Navigation */}
-        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0">
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-0">
+          <SidebarGroupLabel className="pl-4">Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
+              <NavItem
+                icon={PencilEdit02Icon}
+                label="New Chat"
+                active={isChatRoute}
+                disabled={chatDisabled}
+                onClick={() => { if (!chatDisabled) navigate({ to: "/chat", search: { new: crypto.randomUUID() } }); }}
+              />
+
               <NavItem
                 icon={ZapIcon}
                 label="Studio"
@@ -264,40 +272,12 @@ export function AppSidebar() {
                 onClick={() => { if (!chatOnly) navigate({ to: "/studio" }); }}
               />
 
-              {/* Recipes — collapsible */}
-              <Collapsible open={recipesOpen} onOpenChange={setRecipesOpen}>
-                <NavItem
-                  icon={ChefHatIcon}
-                  label="Recipes"
-                  active={isRecipesRoute}
-                  onClick={() => { setRecipesOpen((o) => !o); navigate({ to: "/data-recipes" }); }}
-                >
-                  <CollapsibleContent>
-                    <SidebarMenuSub className="max-h-[60vh] overflow-y-auto">
-                      <SidebarMenuSubItem>
-                        <SidebarMenuSubButton
-                          onClick={() => navigate({ to: "/data-recipes" })}
-                        >
-                          <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
-                          <span>New Recipe</span>
-                        </SidebarMenuSubButton>
-                      </SidebarMenuSubItem>
-                      {recipeItems.map((recipe) => (
-                        <SidebarMenuSubItem key={recipe.id}>
-                          <SidebarMenuSubButton
-                            isActive={activeRecipeId === recipe.id}
-                            onClick={() =>
-                              navigate({ to: `/data-recipes/${recipe.id}` })
-                            }
-                          >
-                            <span className="truncate">{recipe.name}</span>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      ))}
-                    </SidebarMenuSub>
-                  </CollapsibleContent>
-                </NavItem>
-              </Collapsible>
+              <NavItem
+                icon={ChefHatIcon}
+                label="Recipes"
+                active={isRecipesRoute}
+                onClick={() => navigate({ to: "/data-recipes" })}
+              />
 
               <NavItem
                 icon={PackageIcon}
@@ -306,98 +286,50 @@ export function AppSidebar() {
                 disabled={chatOnly}
                 onClick={() => { if (!chatOnly) navigate({ to: "/export" }); }}
               />
-
-              {/* Chat — collapsible */}
-              <Collapsible open={chatOpen} onOpenChange={setChatOpen}>
-                <NavItem
-                  icon={BubbleChatIcon}
-                  label="Chat"
-                  active={isChatRoute}
-                  disabled={chatDisabled}
-                  onClick={() => { if (!chatDisabled) { setChatOpen((o) => !o); navigate({ to: "/chat" }); } }}
-                >
-                  <CollapsibleContent>
-                    <div
-                      className="relative max-h-[60vh] overflow-y-auto"
-                      style={{
-                        WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 2rem), transparent 100%)",
-                        maskImage: "linear-gradient(to bottom, black calc(100% - 2rem), transparent 100%)",
-                      }}
-                    >
-                    <SidebarMenuSub>
-                      <SidebarMenuSubItem>
-                        <SidebarMenuSubButton
-                          onClick={() =>
-                            navigate({
-                              to: "/chat",
-                              search: { new: crypto.randomUUID() },
-                            })
-                          }
-                        >
-                          <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
-                          <span>New Chat</span>
-                        </SidebarMenuSubButton>
-                      </SidebarMenuSubItem>
-
-                      {canCompare && (
-                        <SidebarMenuSubItem>
-                          <SidebarMenuSubButton
-                            data-tour="chat-compare"
-                            onClick={() =>
-                              navigate({
-                                to: "/chat",
-                                search: { compare: crypto.randomUUID() },
-                              })
-                            }
-                          >
-                            <HugeiconsIcon icon={ColumnInsertIcon} className="size-3.5" />
-                            <span>Compare</span>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      )}
-
-                      {chatItems.length > 0 && (
-                        <>
-                          {chatItems.map((item) => (
-                            <SidebarMenuSubItem key={item.id}>
-                              <SidebarMenuSubButton
-                                isActive={activeThreadId === item.id}
-                                className="group-hover/menu-sub-item:pr-6"
-                                onClick={() =>
-                                  navigate({
-                                    to: "/chat",
-                                    search:
-                                      item.type === "single"
-                                        ? { thread: item.id }
-                                        : { compare: item.id },
-                                  })
-                                }
-                              >
-                                <span className="truncate">{item.title}</span>
-                              </SidebarMenuSubButton>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteThread(item);
-                                }}
-                                title="Delete"
-                                className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/menu-sub-item:opacity-100"
-                              >
-                                <HugeiconsIcon icon={Delete02Icon} className="size-3" />
-                              </button>
-                            </SidebarMenuSubItem>
-                          ))}
-                        </>
-                      )}
-                    </SidebarMenuSub>
-                    </div>
-                  </CollapsibleContent>
-                </NavItem>
-              </Collapsible>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Recents */}
+        {chatItems.length > 0 && (
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden flex-1 overflow-hidden">
+            <SidebarGroupLabel>Recents</SidebarGroupLabel>
+            <SidebarGroupContent className="overflow-y-auto">
+              <SidebarMenu>
+                {(isChatRoute ? chatItems : chatItems.slice(0, 1)).map((item) => (
+                  <SidebarMenuItem key={item.id} className="group/recent-item relative">
+                    <SidebarMenuButton
+                      isActive={activeThreadId === item.id}
+                      className=""
+                      onClick={() =>
+                        navigate({
+                          to: "/chat",
+                          search:
+                            item.type === "single"
+                              ? { thread: item.id }
+                              : { compare: item.id },
+                        })
+                      }
+                    >
+                      <span className="truncate">{item.title}</span>
+                    </SidebarMenuButton>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteThread(item);
+                      }}
+                      title="Delete"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/recent-item:opacity-100"
+                    >
+                      <HugeiconsIcon icon={Delete02Icon} className="size-3" />
+                    </button>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
       <SidebarFooter>
