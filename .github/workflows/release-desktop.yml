@@ -17,15 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            label: macOS (Apple Silicon)
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-            label: macOS (Intel)
-          - platform: ubuntu-22.04
-            args: ''
-            label: Linux (x64)
+          # - platform: macos-latest
+          #   args: '--target aarch64-apple-darwin'
+          #   label: macOS (Apple Silicon)
+          # - platform: macos-latest
+          #   args: '--target x86_64-apple-darwin'
+          #   label: macOS (Intel)
+          # - platform: ubuntu-22.04
+          #   args: ''
+          #   label: Linux (x64)
           - platform: windows-latest
             args: ''
             label: Windows (x64)
@@ -89,7 +89,9 @@ jobs:
       # ── Windows: install Azure Trusted Signing CLI ──
       - name: Install trusted-signing-cli
         if: matrix.platform == 'windows-latest'
-        run: cargo install trusted-signing-cli
+        run: |
+          cargo install trusted-signing-cli
+          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Build + sign + notarize + upload ──
       - uses: tauri-apps/tauri-action@v0
