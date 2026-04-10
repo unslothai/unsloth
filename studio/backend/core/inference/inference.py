@@ -5,23 +5,8 @@
 Core inference backend - streamlined
 """
 
-# On AMD ROCm, Unsloth's global monkey-patching of transformers model classes
-# (LlamaRotaryEmbedding, attention modules, etc.) causes HIP kernel crashes
-# (_assert_async_cuda_kernel -> HSA_STATUS_ERROR_EXCEPTION) during inference.
-# Training works because it uses different code paths, but generation triggers
-# the incompatible patched kernels.  Skip the Unsloth import entirely on ROCm
-# so transformers classes stay unmodified; the GGUF inference path (llama-server)
-# is unaffected since it never imports these Python model classes.
-_IS_ROCM_ENV = getattr(__import__("torch").version, "hip", None) is not None
-
-if _IS_ROCM_ENV:
-    FastLanguageModel = None  # Loaded on-demand only on NVIDIA
-    FastVisionModel = None
-    get_chat_template = None
-else:
-    from unsloth import FastLanguageModel, FastVisionModel
-    from unsloth.chat_templates import get_chat_template
-
+from unsloth import FastLanguageModel, FastVisionModel
+from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
@@ -49,6 +34,41 @@ from loggers import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _bnb_rocm_4bit_ok() -> bool:
+    """Return True when the installed bitsandbytes contains the ROCm 4-bit
+    GEMV fix (bnb commit 713a3b8 / PR #1887 / shipped in 0.50.0.dev0+).
+
+    bitsandbytes <= 0.49.2 on ROCm produces NaN at decode shape (seq_len=1)
+    on every AMD target -- CDNA (gfx90a/gfx942/gfx950) via a broken
+    blocksize=32/64 warp64 GEMV kernel, RDNA3/3.5 (gfx1100-1103/
+    gfx1150-1152) via a compile-time warp-size dispatch bug. That breaks
+    autoregressive generation (greedy decode degrades to gibberish,
+    sampling hits a hard HSA_STATUS_ERROR_EXCEPTION in torch.multinomial)
+    even though training works fine.
+
+    New installs pick up the fix automatically via the bnb continuous-
+    release_main wheel pinned in install.sh / install_python_stack.py.
+    This helper exists as a runtime safety net for (a) existing installs
+    that have not yet upgraded bnb and (b) offline/firewalled installs
+    where the pre-release URL is unreachable and the installer fell back
+    to PyPI >=0.49.1. In both cases we force load_in_4bit=False so
+    inference falls through to 16-bit on the broken bnb version.
+
+    NVIDIA / CPU / Mac paths are always OK -- the bug is HIP-specific.
+    """
+    if not _hw_module.IS_ROCM:
+        return True
+    try:
+        import bitsandbytes
+        from packaging.version import Version
+
+        return Version(bitsandbytes.__version__) >= Version("0.50.0.dev0")
+    except Exception:
+        # bnb not installed, version parse failure, or packaging missing:
+        # assume the fix is not present and fall back to 16-bit.
+        return False
 
 
 class HarmonyTextStreamer:
@@ -311,7 +331,13 @@ class InferenceBackend:
             }
 
             # ── Audio model loading path ──────────────────────────
-            if (config.is_audio or config.is_vision) and _IS_ROCM_ENV:
+            # Audio and vision Unsloth inference on ROCm has not been
+            # validated (the crash we hit was bnb 4-bit GEMV, fixed in
+            # bnb 0.50; but vision/audio go through different kernel
+            # paths -- FastVisionModel, CSM codecs -- that we have not
+            # separately tested on HIP). Keep the guard until someone
+            # validates those specific paths.
+            if (config.is_audio or config.is_vision) and _hw_module.IS_ROCM:
                 raise RuntimeError(
                     f"Audio and vision model inference via Unsloth is not "
                     f"yet supported on AMD ROCm.  Use GGUF inference instead."
@@ -546,85 +572,48 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                # Text model (or text LoRA adapter)
-                if _hw_module.IS_ROCM:
-                    # On AMD ROCm two issues prevent the normal Unsloth path:
-                    #  1. Unsloth's patched kernels (RoPE, attention) crash on
-                    #     HIP (_assert_async_cuda_kernel -> HSA_STATUS_ERROR).
-                    #  2. bitsandbytes 4-bit matmul kernels trigger the same
-                    #     HIP assertion on MI300X (CDNA3 / gfx942).
-                    # Fall back to plain transformers + PEFT in 16-bit, which
-                    # works reliably.  AMD GPUs typically have large VRAM so
-                    # 16-bit is practical; GGUF inference remains the
-                    # recommended path for memory-constrained setups.
-                    logger.info(
-                        "ROCm detected -- loading in 16-bit with plain "
-                        "transformers (bitsandbytes 4-bit and Unsloth kernels "
-                        "are not yet compatible with HIP)"
+                # Text model (or text LoRA adapter).
+                # Safety net for old bnb on ROCm: bnb <= 0.49.2 has a
+                # broken 4-bit GEMV kernel that NaNs at decode shape on
+                # every AMD GPU. New installs pin bnb to continuous-
+                # release_main via install.sh / install_python_stack.py
+                # so _bnb_rocm_4bit_ok() returns True and this block is
+                # a no-op. It only triggers on existing installs that
+                # have not yet upgraded bnb, or offline installs that
+                # fell back to the PyPI pin. Force 16-bit there and
+                # strip any `-bnb-4bit` suffix from config.path so a
+                # pre-quantized repo is resolved to its FP16 sibling
+                # (the pre-quantized config.json otherwise forces bnb
+                # regardless of load_in_4bit=False). LoRA adapters with
+                # a pre-quantized base repo on old bnb will still crash
+                # inside Unsloth's loader -- the only real fix there is
+                # `unsloth studio update` to pick up bnb >= 0.50.
+                _load_path = config.path
+                if not _bnb_rocm_4bit_ok() and load_in_4bit:
+                    logger.warning(
+                        "ROCm + bitsandbytes < 0.50: 4-bit GEMV decode "
+                        "is broken. Forcing 16-bit inference. Run "
+                        "`unsloth studio update` to upgrade bnb and "
+                        "re-enable 4-bit."
                     )
-                    from transformers import AutoModelForCausalLM, AutoTokenizer
+                    load_in_4bit = False
+                    for _suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+                        if _load_path.lower().endswith(_suffix):
+                            _load_path = _load_path[: -len(_suffix)]
+                            break
 
-                    _load_kwargs = dict(
-                        dtype = dtype or torch.bfloat16,
-                        device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
-                        trust_remote_code = trust_remote_code,
-                    )
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name = _load_path,  # base model OR LoRA adapter path
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    token = hf_token if hf_token and hf_token.strip() else None,
+                    trust_remote_code = trust_remote_code,
+                )
 
-                    # Skip 4-bit on ROCm: bnb matmul kernels crash on HIP.
-                    # Also resolve pre-quantized Unsloth model names (e.g.
-                    # "unsloth/xxx-bnb-4bit") to their FP16 originals since
-                    # loading a pre-quantized repo still triggers bnb codepaths.
-                    def _resolve_fp16_base(name: str) -> str:
-                        if not name:
-                            return name
-                        # Strip Unsloth quantization suffixes to get the FP16 model:
-                        # "unsloth/Foo-unsloth-bnb-4bit" -> "unsloth/Foo"
-                        # "unsloth/Foo-bnb-4bit"         -> "unsloth/Foo"
-                        # Order matters: try longer suffix first.
-                        for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
-                            if name.lower().endswith(suffix):
-                                resolved = name[: -len(suffix)]
-                                logger.info(
-                                    "Resolved pre-quantized base '%s' -> '%s' for ROCm 16-bit inference",
-                                    name,
-                                    resolved,
-                                )
-                                return resolved
-                        return name
-
-                    if config.is_lora and config.base_model:
-                        # Load base model then apply adapter
-                        _base = _resolve_fp16_base(config.base_model)
-                        model = AutoModelForCausalLM.from_pretrained(
-                            _base,
-                            **_load_kwargs,
-                        )
-                        from peft import PeftModel
-
-                        model = PeftModel.from_pretrained(model, config.path)
-                        tokenizer = AutoTokenizer.from_pretrained(config.path)
-                    else:
-                        _path = _resolve_fp16_base(config.path)
-                        model = AutoModelForCausalLM.from_pretrained(
-                            _path,
-                            **_load_kwargs,
-                        )
-                        tokenizer = AutoTokenizer.from_pretrained(config.path)
-                    model.eval()
-                else:
-                    model, tokenizer = FastLanguageModel.from_pretrained(
-                        model_name = config.path,  # Can be base model OR LoRA adapter path
-                        max_seq_length = max_seq_length,
-                        dtype = dtype,
-                        load_in_4bit = load_in_4bit,
-                        device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
-                        trust_remote_code = trust_remote_code,
-                    )
-
-                    # Apply inference optimization
-                    FastLanguageModel.for_inference(model)
+                # Apply inference optimization
+                FastLanguageModel.for_inference(model)
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
@@ -1047,13 +1036,10 @@ class InferenceBackend:
                 )
 
                 # This modifies the tokenizer with the correct template
-                if get_chat_template is not None:
-                    tokenizer = get_chat_template(
-                        tokenizer,
-                        chat_template = template_name,
-                    )
-                else:
-                    logger.info("Skipping Unsloth chat template (ROCm fallback)")
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template = template_name,
+                )
             else:
                 logger.info(
                     f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
