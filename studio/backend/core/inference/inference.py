@@ -10,7 +10,6 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
-import functools
 import json
 import sys
 import torch
@@ -35,24 +34,6 @@ from loggers import get_logger
 
 
 logger = get_logger(__name__)
-
-
-@functools.cache
-def _bnb_rocm_4bit_ok() -> bool:
-    """True when installed bitsandbytes has the ROCm 4-bit GEMV fix
-    (bnb PR #1887, shipped in 0.50.0.dev0+). bnb <= 0.49.2 NaNs at
-    decode shape on every AMD GPU, breaking autoregressive inference.
-    Cached because load_model() is called many times per session.
-    """
-    if not _hw_module.IS_ROCM:
-        return True
-    try:
-        import bitsandbytes
-        from packaging.version import Version
-
-        return Version(bitsandbytes.__version__) >= Version("0.50.0.dev0")
-    except Exception:
-        return False
 
 
 class HarmonyTextStreamer:
@@ -552,27 +533,9 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                # Text model (or text LoRA adapter).
-                # Safety net for old bnb on ROCm (< 0.50): force 16-bit
-                # and strip any -bnb-4bit suffix so pre-quantized repos
-                # resolve to their FP16 sibling. No-op on new installs
-                # where install.sh pins bnb >= 0.50.
-                _load_path = config.path
-                if not _bnb_rocm_4bit_ok() and load_in_4bit:
-                    logger.warning(
-                        "ROCm + bitsandbytes < 0.50: 4-bit GEMV decode "
-                        "is broken. Forcing 16-bit inference. Run "
-                        "`unsloth studio update` to upgrade bnb and "
-                        "re-enable 4-bit."
-                    )
-                    load_in_4bit = False
-                    for _suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
-                        if _load_path.lower().endswith(_suffix):
-                            _load_path = _load_path[: -len(_suffix)]
-                            break
-
+                # Text model (or text LoRA adapter)
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = _load_path,  # base model OR LoRA adapter path
+                    model_name = config.path,  # base model OR LoRA adapter path
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
