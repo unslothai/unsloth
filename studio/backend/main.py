@@ -47,7 +47,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -212,7 +212,17 @@ async def shutdown_server(
 
     Called by the frontend quit dialog so users can stop the server from the UI
     without needing to use the CLI or kill the process manually.
+
+    Only the admin account is permitted to initiate a shutdown.
     """
+    from auth.storage import DEFAULT_ADMIN_USERNAME
+
+    if current_subject != DEFAULT_ADMIN_USERNAME:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Only the admin account may shut down the server",
+        )
+
     import asyncio
 
     async def _delayed_shutdown():
