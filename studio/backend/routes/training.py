@@ -166,6 +166,7 @@ async def start_training(
             "format_type": request.format_type,
             "subset": request.subset,
             "train_split": request.train_split,
+            "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
             "dataset_slice_start": request.dataset_slice_start,

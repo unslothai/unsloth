@@ -146,6 +146,7 @@ class TrainingBackend:
             "train_split": kwargs.get("train_split", "train"),
             "eval_split": kwargs.get("eval_split"),
             "eval_steps": kwargs.get("eval_steps", 0.00),
+            "dataset_streaming": kwargs.get("dataset_streaming", False),
             "dataset_slice_start": kwargs.get("dataset_slice_start"),
             "dataset_slice_end": kwargs.get("dataset_slice_end"),
             "custom_format_mapping": kwargs.get("custom_format_mapping"),

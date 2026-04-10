@@ -65,6 +65,7 @@ const initialState: TrainingConfigState = {
   datasetSubset: null,
   datasetSplit: null,
   datasetEvalSplit: null,
+  datasetStreaming: false,
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",
   datasetUserTemplate: "",
@@ -518,6 +519,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             evalSteps: datasetEvalSplit ? 0.1 : 0,
           });
         },
+        setDatasetStreaming: (datasetStreaming) => set({datasetStreaming}),
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
         setDatasetAdvisorFields: (fields) =>
@@ -629,7 +631,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 9,
+      version: 10,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -664,6 +666,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (s.weightDecay === 0.01) {
             s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
           }
+        }
+        if (version < 10) {
+          s.datasetStreaming 
         }
         return s as unknown as TrainingConfigStore;
       },
