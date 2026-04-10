@@ -14,8 +14,8 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 import structlog
+import requests as http_requests
 from loggers import get_logger
-from datasets import get_dataset_config_names, get_dataset_split_names
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
@@ -313,6 +313,9 @@ def list_local_datasets(
     return LocalDatasetsResponse(datasets = _build_local_dataset_items())
 
 
+_HF_SPLITS_API = "https://datasets-server.huggingface.co/splits"
+
+
 @router.post("/splits", response_model = SplitsResponse)
 def get_splits(
     request: SplitsRequest,
@@ -324,36 +327,44 @@ def get_splits(
     Proxied through the backend so the server-side ``HF_TOKEN`` environment
     variable is used as a fallback when the caller does not supply a token,
     which fixes private/gated dataset metadata loading.
+
+    Uses the HuggingFace datasets-server ``/splits`` endpoint which returns
+    all configs and splits in a single request.
     """
     token = (request.hf_token or "").strip() or os.environ.get("HF_TOKEN") or None
 
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
     try:
-        configs = get_dataset_config_names(request.dataset, token = token)
+        resp = http_requests.get(
+            _HF_SPLITS_API,
+            params = {"dataset": request.dataset},
+            headers = headers,
+            timeout = 30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-        entries: list[SplitEntry] = []
-        for config in configs:
-            try:
-                split_names = get_dataset_split_names(
-                    request.dataset,
-                    config_name = config,
-                    token = token,
-                )
-            except Exception:
-                split_names = ["train"]
-
-            for split in split_names:
-                entries.append(
-                    SplitEntry(dataset = request.dataset, config = config, split = split)
-                )
-
+        entries = [
+            SplitEntry(dataset = s["dataset"], config = s["config"], split = s["split"])
+            for s in data.get("splits", [])
+        ]
         return SplitsResponse(splits = entries)
+
+    except http_requests.HTTPError as e:
+        detail = str(e)
+        try:
+            detail = e.response.json().get("error", detail)
+        except Exception:
+            pass
+        logger.warning(f"Failed to fetch splits for {request.dataset}: {detail}")
+        raise HTTPException(status_code = e.response.status_code, detail = detail)
 
     except Exception as e:
         logger.warning(f"Failed to fetch splits for {request.dataset}: {e}")
-        raise HTTPException(
-            status_code = 400,
-            detail = str(e),
-        )
+        raise HTTPException(status_code = 502, detail = str(e))
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
