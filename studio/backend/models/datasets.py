@@ -97,3 +97,22 @@ class LocalDatasetItem(BaseModel):
 
 class LocalDatasetsResponse(BaseModel):
     datasets: List[LocalDatasetItem] = Field(default_factory = list)
+
+
+class SplitsRequest(BaseModel):
+    """Request for fetching dataset splits from HuggingFace."""
+
+    dataset: str
+    hf_token: Optional[str] = None
+
+
+class SplitEntry(BaseModel):
+    dataset: str
+    config: str
+    split: str
+
+
+class SplitsResponse(BaseModel):
+    """Response containing available splits for a HuggingFace dataset."""
+
+    splits: List[SplitEntry] = Field(default_factory = list)
