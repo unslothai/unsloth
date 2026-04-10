@@ -94,11 +94,7 @@ function Add-ToUserPath {
         [Parameter(Mandatory = $true)][string]$Directory
     )
     try {
-        $regKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-        if (-not $regKey) {
-            Write-Host "[WARN] Could not open HKCU\Environment registry key" -ForegroundColor Yellow
-            return $false
-        }
+        $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
             $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
