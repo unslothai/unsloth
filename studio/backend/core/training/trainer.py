@@ -2321,19 +2321,19 @@ class UnslothTrainer:
         raise ValueError(f"Unsupported dataset format: {files[0]}")
 
     def load_and_format_dataset(
-    self,
-    dataset_source: Optional[str],
-    format_type: str = "auto",
-    local_datasets: Optional[List[str]] = None,
-    local_eval_datasets: Optional[List[str]] = None,
-    custom_format_mapping: Optional[Dict[str, Any]] = None,
-    subset: Optional[str] = None,
-    train_split: str = "train",
-    eval_split: Optional[str] = None,
-    dataset_streaming: bool = False,
-    eval_steps: float = 0.00,
-    dataset_slice_start: Optional[int] = None,
-    dataset_slice_end: Optional[int] = None,
+        self,
+        dataset_source: Optional[str],
+        format_type: str = "auto",
+        local_datasets: Optional[List[str]] = None,
+        local_eval_datasets: Optional[List[str]] = None,
+        custom_format_mapping: Optional[Dict[str, Any]] = None,
+        subset: Optional[str] = None,
+        train_split: str = "train",
+        eval_split: Optional[str] = None,
+        dataset_streaming: bool = False,
+        eval_steps: float = 0.00,
+        dataset_slice_start: Optional[int] = None,
+        dataset_slice_end: Optional[int] = None,
     ) -> Optional[tuple]:
         """
         Load and prepare dataset for training.
@@ -2417,9 +2417,7 @@ class UnslothTrainer:
                     logger.info(
                         f"Loaded Hugging Face dataset in streaming mode: {dataset_source}\n"
                     )
-                    self._update_progress(
-                        status_message = f"Streaming {dataset_source}"
-                    )
+                    self._update_progress(status_message = f"Streaming {dataset_source}")
                 else:
                     self._update_progress(
                         status_message = f"Downloading dataset: {dataset_source}..."
@@ -2449,7 +2447,9 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
 
                         if dataset_streaming:
-                            eval_dataset = load_dataset(**eval_load_kwargs, streaming = True)
+                            eval_dataset = load_dataset(
+                                **eval_load_kwargs, streaming = True
+                            )
                         else:
                             eval_dataset = load_dataset(**eval_load_kwargs)
 
@@ -2607,7 +2607,9 @@ class UnslothTrainer:
                 )
                 eval_dataset = eval_info["dataset"]
                 logger.info("Eval dataset formatted successfully\n")
-            elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
+            elif (
+                eval_enabled and not has_separate_eval_source and not dataset_streaming
+            ):
                 # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
                 split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
@@ -2621,7 +2623,7 @@ class UnslothTrainer:
             logger.error(f"Error loading dataset: {e}")
             self._update_progress(error = str(e))
             return None
-    
+
     def _auto_detect_eval_split_from_hf(
         self, dataset_source: str, subset: str
     ) -> Optional[Dataset]:
@@ -3383,7 +3385,9 @@ class UnslothTrainer:
                                 f"({drop_pct}%) were dropped (all labels "
                                 f"masked). {filtered_len} samples remain.\n"
                             )
-                        logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
+                        logger.info(
+                            f"Post-filter dataset size: {filtered_len} samples\n"
+                        )
 
                 except Exception as e:
                     logger.warning(f"Failed to apply train on responses only: {e}")
@@ -3397,7 +3401,9 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset
+            train_dataset_obj = (
+                dataset["dataset"] if isinstance(dataset, dict) else dataset
+            )
             is_streaming_dataset = isinstance(train_dataset_obj, IterableDataset)
 
             if is_streaming_dataset and training_args.get("max_steps", 0) <= 0:
