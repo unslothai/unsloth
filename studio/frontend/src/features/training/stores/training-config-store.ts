@@ -668,7 +668,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
         }
         if (version < 10) {
-          s.datasetStreaming 
+          s.datasetStreaming ??= false;
         }
         return s as unknown as TrainingConfigStore;
       },
