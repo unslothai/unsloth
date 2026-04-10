@@ -640,7 +640,7 @@ export function ChatSettingsPanel({
           <div className="space-y-1.5">
             <div ref={presetControlRowRef} className="w-full min-w-0">
               <DropdownMenu>
-                <InputGroup className="!h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
+                <InputGroup className="!h-8 min-h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
                   <InputGroupInput
                     id="inference-preset-name"
                     value={presetNameInput}
@@ -654,7 +654,7 @@ export function ChatSettingsPanel({
                     placeholder="Preset name"
                     maxLength={80}
                     autoComplete="off"
-                    className="h-full min-h-8 min-w-0 self-stretch !px-2 text-xs"
+                    className="!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm"
                     aria-label="Inference preset name"
                   />
                   <InputGroupAddon
@@ -666,7 +666,7 @@ export function ChatSettingsPanel({
                         type="button"
                         variant="ghost"
                         size="icon-sm"
-                        className="h-full min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
+                        className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
                         title="Choose a preset"
                         aria-label="Open preset list"
                       >
