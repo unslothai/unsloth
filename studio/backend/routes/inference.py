@@ -11,9 +11,10 @@ import time
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from typing import Optional
 import json
+import httpx
 import structlog
 from loggers import get_logger
 import asyncio
@@ -76,6 +77,7 @@ from models.inference import (
     ChatCompletionRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ChatMessage,
     ChunkChoice,
     ChoiceDelta,
     CompletionChoice,
@@ -121,6 +123,7 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
+    fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -252,6 +255,8 @@ async def load_model(
             # Run in a thread so the event loop stays free for progress
             # polling and other requests during the (potentially long)
             # GGUF download + llama-server startup.
+            _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
+
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
                 success = await asyncio.to_thread(
@@ -265,6 +270,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    n_parallel = _n_parallel,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -278,6 +284,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    n_parallel = _n_parallel,
                 )
 
             if not success:
@@ -1816,3 +1823,157 @@ async def openai_list_models(
         )
 
     return {"object": "list", "data": models}
+
+
+# =====================================================================
+# OpenAI-Compatible Completions Proxy  (/completions → /v1/completions)
+# =====================================================================
+
+
+@router.post("/completions")
+async def openai_completions(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    OpenAI-compatible text completions endpoint (non-chat).
+
+    Transparently proxies to the running llama-server's ``/v1/completions``.
+    Only available when a GGUF model is loaded.
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = "No GGUF model loaded. Load a GGUF model first.",
+        )
+
+    body = await request.json()
+    target_url = f"{llama_backend.base_url}/v1/completions"
+    is_stream = body.get("stream", False)
+
+    if is_stream:
+        async def _stream():
+            async with httpx.AsyncClient() as client:
+                async with client.stream("POST", target_url, json = body, timeout = 600) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+
+        return StreamingResponse(_stream(), media_type = "text/event-stream")
+    else:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(target_url, json = body, timeout = 600)
+        return Response(
+            content = resp.content,
+            status_code = resp.status_code,
+            media_type = "application/json",
+        )
+
+
+# =====================================================================
+# OpenAI-Compatible Embeddings Proxy  (/embeddings → /v1/embeddings)
+# =====================================================================
+
+
+@router.post("/embeddings")
+async def openai_embeddings(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    OpenAI-compatible embeddings endpoint.
+
+    Transparently proxies to the running llama-server's ``/v1/embeddings``.
+    Only available when a GGUF model is loaded.
+    Note: the loaded model must support pooling; otherwise llama-server
+    will return an error (expected).
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = "No GGUF model loaded. Load a GGUF model first.",
+        )
+
+    body = await request.json()
+    target_url = f"{llama_backend.base_url}/v1/embeddings"
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(target_url, json = body, timeout = 600)
+    return Response(
+        content = resp.content,
+        status_code = resp.status_code,
+        media_type = "application/json",
+    )
+
+
+# =====================================================================
+# OpenAI Responses API  (/responses → /v1/responses)
+# =====================================================================
+
+
+from pydantic import BaseModel
+from typing import Union
+
+
+class _ResponsesInputMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ResponsesRequest(BaseModel):
+    """Minimal OpenAI Responses API request."""
+    model: str = "default"
+    input: Union[str, list[_ResponsesInputMessage]] = []
+    instructions: Optional[str] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_output_tokens: Optional[int] = None
+    stream: bool = False
+
+
+@router.post("/responses")
+async def openai_responses(
+    payload: ResponsesRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    OpenAI Responses API endpoint.
+
+    Converts the Responses-format request into a ChatCompletionRequest
+    and delegates to the existing chat completions handler. Works with
+    both GGUF and non-GGUF backends.
+    """
+    # Build messages list from the Responses API input format
+    messages: list[ChatMessage] = []
+
+    # System message from instructions
+    if payload.instructions:
+        messages.append(ChatMessage(role = "system", content = payload.instructions))
+
+    # Convert input to messages
+    if isinstance(payload.input, str):
+        messages.append(ChatMessage(role = "user", content = payload.input))
+    else:
+        for msg in payload.input:
+            messages.append(ChatMessage(role = msg.role, content = msg.content))
+
+    if not messages:
+        raise HTTPException(status_code = 400, detail = "No input provided.")
+
+    # Build a ChatCompletionRequest and delegate
+    chat_kwargs = dict(
+        model = payload.model,
+        messages = messages,
+        stream = payload.stream,
+    )
+    if payload.temperature is not None:
+        chat_kwargs["temperature"] = payload.temperature
+    if payload.top_p is not None:
+        chat_kwargs["top_p"] = payload.top_p
+    if payload.max_output_tokens is not None:
+        chat_kwargs["max_tokens"] = payload.max_output_tokens
+
+    chat_request = ChatCompletionRequest(**chat_kwargs)
+    return await openai_chat_completions(chat_request, request)

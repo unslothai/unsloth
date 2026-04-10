@@ -319,7 +319,7 @@ def run(
     # ── 2. Start server (always suppress built-in banner) ─────────────
     from studio.backend.run import run_server, _resolve_external_ip
 
-    run_kwargs = dict(host = host, port = port, silent = True)
+    run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = 4)
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
