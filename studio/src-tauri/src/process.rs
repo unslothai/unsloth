@@ -265,10 +265,8 @@ pub fn start_backend(
         // Keep the backend tree in a process group on Unix for cleanup.
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(ProcessGroup::leader());
-        let child = wrap
-            .spawn()
-            .map_err(|e| format!("Failed to spawn backend: {}", e))?;
-        Box::new(child)
+        wrap.spawn()
+            .map_err(|e| format!("Failed to spawn backend: {}", e))?
     };
 
     let stdout = child.stdout().take();

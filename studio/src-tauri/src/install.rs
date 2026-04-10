@@ -180,10 +180,8 @@ fn spawn_script(
         // Keep the whole installer tree in a process group on Unix.
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(ProcessGroup::leader());
-        let child = wrap
-            .spawn()
-            .map_err(|e| format!("Failed to spawn install script: {}", e))?;
-        Box::new(child)
+        wrap.spawn()
+            .map_err(|e| format!("Failed to spawn install script: {}", e))?
     };
 
     let stdout = child.stdout().take();

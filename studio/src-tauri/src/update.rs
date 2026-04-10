@@ -73,10 +73,8 @@ fn spawn_update(
     let mut child: Box<dyn ChildWrapper + Send> = {
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(ProcessGroup::leader());
-        let child = wrap
-            .spawn()
-            .map_err(|e| format!("Failed to spawn update: {}", e))?;
-        Box::new(child)
+        wrap.spawn()
+            .map_err(|e| format!("Failed to spawn update: {}", e))?
     };
 
     let stdout = child.stdout().take();
