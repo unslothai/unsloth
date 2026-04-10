@@ -253,12 +253,7 @@ class InferenceBackend:
         """
         Load any model: base, LoRA adapter, text, or vision.
         """
-        # max_seq_length=0 means "model default" for the GGUF/llama.cpp path,
-        # but Unsloth's FastLanguageModel.from_pretrained treats 0 literally --
-        # setting the model's context to 0 tokens, which triggers an assertion
-        # crash during generation (especially on ROCm/HIP where the async
-        # assert kernel raises a hardware exception instead of a Python error).
-        # Fall back to 2048 for the Unsloth/transformers path.
+        # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
         if max_seq_length <= 0:
             max_seq_length = 2048
 
