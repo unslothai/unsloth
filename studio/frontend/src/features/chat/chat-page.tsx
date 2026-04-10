@@ -658,6 +658,39 @@ print(completion.choices[0].message.content)`,
   }'`,
     [endpointApiKey, endpointBaseUrl, modelAlias],
   );
+  const responsesPythonSnippet = useMemo(
+    () => `from openai import OpenAI
+
+client = OpenAI(
+    base_url="${endpointBaseUrl}",
+    api_key="${endpointApiKey}",
+)
+
+response = client.responses.create(
+    model="${modelAlias}",
+    input=[{
+        "role": "user",
+        "content": [{"type": "input_text", "text": "What is 2+2?"}],
+    }],
+)
+
+print(response.output[0].content[0].text)`,
+    [endpointApiKey, endpointBaseUrl, modelAlias],
+  );
+  const responsesCurlSnippet = useMemo(
+    () => `curl ${endpointBaseUrl}/responses \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${endpointApiKey}" \\
+  -d '{
+    "model": "${modelAlias}",
+    "input": [{
+      "role": "user",
+      "content": [{"type": "input_text", "text": "What is 2+2?"}]
+    }]
+  }'`,
+    [endpointApiKey, endpointBaseUrl, modelAlias],
+  );
+  const [endpointApiTab, setEndpointApiTab] = useState<"completions" | "responses">("completions");
 
   const applyEndpointData = useCallback(
     (data: {
@@ -1366,21 +1399,67 @@ print(completion.choices[0].message.content)`,
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <details className="rounded-md border p-2">
-                    <summary className="cursor-pointer text-xs font-medium">
-                      Python (OpenAI SDK)
-                    </summary>
-                    <HighlightedSnippet
-                      language="python"
-                      source={endpointPythonSnippet}
-                    />
-                  </details>
-                  <details className="rounded-md border p-2">
-                    <summary className="cursor-pointer text-xs font-medium">
-                      cURL
-                    </summary>
-                    <HighlightedSnippet language="bash" source={endpointCurlSnippet} />
-                  </details>
+                  <div className="flex gap-1 rounded-md bg-muted p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setEndpointApiTab("completions")}
+                      className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                        endpointApiTab === "completions"
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Chat Completions
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEndpointApiTab("responses")}
+                      className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                        endpointApiTab === "responses"
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Responses
+                    </button>
+                  </div>
+                  {endpointApiTab === "completions" ? (
+                    <div className="space-y-2">
+                      <details className="rounded-md border p-2" open>
+                        <summary className="cursor-pointer text-xs font-medium">
+                          Python (OpenAI SDK)
+                        </summary>
+                        <HighlightedSnippet
+                          language="python"
+                          source={endpointPythonSnippet}
+                        />
+                      </details>
+                      <details className="rounded-md border p-2">
+                        <summary className="cursor-pointer text-xs font-medium">
+                          cURL
+                        </summary>
+                        <HighlightedSnippet language="bash" source={endpointCurlSnippet} />
+                      </details>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <details className="rounded-md border p-2" open>
+                        <summary className="cursor-pointer text-xs font-medium">
+                          Python (OpenAI SDK)
+                        </summary>
+                        <HighlightedSnippet
+                          language="python"
+                          source={responsesPythonSnippet}
+                        />
+                      </details>
+                      <details className="rounded-md border p-2">
+                        <summary className="cursor-pointer text-xs font-medium">
+                          cURL
+                        </summary>
+                        <HighlightedSnippet language="bash" source={responsesCurlSnippet} />
+                      </details>
+                    </div>
+                  )}
                 </div>
               </>
             )}
