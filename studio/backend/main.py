@@ -93,6 +93,12 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
+    # Generate RSA key pair for encrypted access endpoint reveal.
+    # Lives in memory only — regenerated on each restart.
+    from core.inference.key_exchange import init_key_pair
+
+    init_key_pair()
+
     from storage.studio_db import cleanup_orphaned_runs
 
     try:

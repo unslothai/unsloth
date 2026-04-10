@@ -957,13 +957,17 @@ async def get_access_endpoint(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Return endpoint state, API key, URLs, and model info."""
+    """Return endpoint state, URLs, and model info.
+
+    The API key itself is NOT returned here — the frontend must fetch it via
+    the encrypted POST /access-endpoint/reveal flow so it never travels as
+    plaintext over the wire.
+    """
     api_key = getattr(request.app.state, "external_api_key", None)
     local_url, external_url = _build_endpoint_urls(request)
 
     return {
         "enabled": api_key is not None,
-        "api_key": api_key,
         "local_url": local_url,
         "external_url": external_url,
         "model": _get_loaded_model_name(),
@@ -994,7 +998,6 @@ async def enable_access_endpoint(
     local_url, external_url = _build_endpoint_urls(request)
     return {
         "enabled": True,
-        "api_key": api_key,
         "local_url": local_url,
         "external_url": external_url,
         "model": _get_loaded_model_name(),
@@ -1044,11 +1047,65 @@ async def regenerate_access_endpoint(
     local_url, external_url = _build_endpoint_urls(request)
     return {
         "enabled": True,
-        "api_key": api_key,
         "local_url": local_url,
         "external_url": external_url,
         "model": _get_loaded_model_name(),
     }
+
+
+@router.get("/access-endpoint/public-key")
+async def access_endpoint_public_key(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the server's RSA public key (PEM) for the reveal handshake.
+
+    JWT-protected so only authenticated Studio sessions can start the
+    reveal flow.
+    """
+    from core.inference.key_exchange import get_public_key_pem
+
+    return {"public_key": get_public_key_pem()}
+
+
+@router.post("/access-endpoint/reveal")
+async def access_endpoint_reveal(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the live API key, AES-GCM encrypted with a client-supplied session key.
+
+    Request body:
+        { "encrypted_session_key": "<base64 RSA-OAEP-SHA256 ciphertext>" }
+
+    Response body:
+        { "iv": "<base64>", "ciphertext": "<base64 AES-GCM ciphertext+tag>" }
+
+    The plaintext inside the ciphertext is the API key string. If the endpoint
+    is disabled, returns 404 so the UI can hide the field rather than reveal
+    an inactive key.
+    """
+    from core.inference.key_exchange import encrypt_payload
+
+    api_key = getattr(request.app.state, "external_api_key", None)
+    if not api_key:
+        raise HTTPException(status_code = 404, detail = "Endpoint is not enabled")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code = 400, detail = "Invalid JSON body")
+
+    encrypted_session_key = body.get("encrypted_session_key") if isinstance(body, dict) else None
+    if not isinstance(encrypted_session_key, str) or not encrypted_session_key:
+        raise HTTPException(
+            status_code = 400, detail = "Missing encrypted_session_key"
+        )
+
+    try:
+        return encrypt_payload(encrypted_session_key, api_key)
+    except Exception as exc:
+        logger.warning("Access endpoint reveal failed: %s", exc)
+        raise HTTPException(status_code = 400, detail = "Failed to decrypt session key")
 
 
 @router.post("/chat/completions")

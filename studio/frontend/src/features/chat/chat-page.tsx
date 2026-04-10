@@ -56,6 +56,7 @@ import {
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
 import { authFetch } from "@/features/auth";
+import { revealAccessEndpointKey } from "./api/access-endpoint-crypto";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
@@ -619,13 +620,14 @@ print(completion.choices[0].message.content)`,
   const applyEndpointData = useCallback(
     (data: {
       enabled: boolean;
-      api_key: string | null;
       local_url: string;
       external_url: string | null;
       model: string;
     }) => {
       setEndpointEnabled(data.enabled);
-      setEndpointApiKey(data.api_key ?? "");
+      if (!data.enabled) {
+        setEndpointApiKey("");
+      }
       setEndpointLocalUrl(data.local_url);
       setEndpointExternalUrl(data.external_url ?? null);
       // Default to external URL when accessing Studio remotely
@@ -639,6 +641,19 @@ print(completion.choices[0].message.content)`,
     [],
   );
 
+  // Fetch the API key via the encrypted reveal handshake. Called after any
+  // endpoint state change that leaves the endpoint enabled (open dialog,
+  // enable, regenerate). The plaintext key only lives in React state.
+  const revealAndSetApiKey = useCallback(async () => {
+    try {
+      const key = await revealAccessEndpointKey();
+      setEndpointApiKey(key ?? "");
+    } catch {
+      setEndpointApiKey("");
+      toast.error("Failed to fetch API key");
+    }
+  }, []);
+
   // Keep endpoint state in sync whenever the dialog opens or the loaded
   // GGUF model changes, so the status indicator in the header button
   // reflects reality without the user having to open the dialog first.
@@ -651,9 +666,13 @@ print(completion.choices[0].message.content)`,
     let cancelled = false;
     authFetch("/api/inference/access-endpoint")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled || !data) return;
         applyEndpointData(data);
+        if (data.enabled) {
+          const key = await revealAccessEndpointKey().catch(() => null);
+          if (!cancelled) setEndpointApiKey(key ?? "");
+        }
       })
       .catch(() => {});
     return () => {
@@ -680,6 +699,9 @@ print(completion.choices[0].message.content)`,
       }
       const data = await res.json();
       applyEndpointData(data);
+      if (data.enabled) {
+        await revealAndSetApiKey();
+      }
       toast.success(
         data.enabled
           ? "API endpoint enabled"
@@ -690,7 +712,7 @@ print(completion.choices[0].message.content)`,
     } finally {
       setEndpointLoading(false);
     }
-  }, [endpointEnabled, applyEndpointData]);
+  }, [endpointEnabled, applyEndpointData, revealAndSetApiKey]);
 
   const handleRegenerateKey = useCallback(async () => {
     setEndpointLoading(true);
@@ -706,13 +728,14 @@ print(completion.choices[0].message.content)`,
       }
       const data = await res.json();
       applyEndpointData(data);
+      await revealAndSetApiKey();
       toast.success("API key regenerated");
     } catch {
       toast.error("Failed to regenerate API key");
     } finally {
       setEndpointLoading(false);
     }
-  }, [applyEndpointData]);
+  }, [applyEndpointData, revealAndSetApiKey]);
 
   const handleCheckpointChange = useCallback(
     (
