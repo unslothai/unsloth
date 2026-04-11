@@ -672,42 +672,63 @@ def _fix_chat_template(chat_template):
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
 
-    elif (
-        after_endfor.strip() == ""
-        and "<|im_start|>" in chat_template
-        and "<|im_end|>" in chat_template
-        and "add_generation_prompt" not in chat_template
-    ):
+    elif after_endfor.strip() == "":
         # GH#4150: ChatML-style templates (Hermes, Magnum, Phi-4, etc.) that
         # end with {% endfor %} and have no add_generation_prompt block.
-        # Infer the model-specific separator after "assistant" from the
-        # template itself. Prefer an explicit assistant literal
-        # (`'<|im_start|>assistant<sep>'`), then role-concatenation in either
-        # quote style and with either `message['role']` or `message.role`
-        # access, then fall back to the common ChatML newline separator.
-        assistant_match = re.search(
-            r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
-            chat_template,
-        )
-        role_match = re.search(
-            r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
-            chat_template,
-        )
-        if assistant_match is not None:
-            separator = assistant_match.group(2)
-        elif role_match is not None:
-            separator = role_match.group(2)
-        else:
-            separator = "\\n"
-        # Use a double-quoted Jinja string literal so a single quote in the
-        # separator (should one ever appear) cannot break the generated block.
-        assistant_prefix = "<|im_start|>assistant" + separator
-        generation_block = (
-            "{%" + dash + " if add_generation_prompt %}"
-            '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
-            "{%" + dash + " endif %}"
-        )
-        chat_template = chat_template[: where + len(chosen_end)] + generation_block
+        # Strip Jinja `{# ... #}` comments before any regex / substring check
+        # so that neither the guard nor the separator inference can be fooled
+        # by ChatML tokens or `add_generation_prompt` mentions that appear
+        # only inside a comment.
+        scrubbed = re.sub(r"\{#.*?#\}", "", chat_template, flags=re.DOTALL)
+        if (
+            "<|im_start|>" in scrubbed
+            and "<|im_end|>" in scrubbed
+            and "add_generation_prompt" not in scrubbed
+        ):
+            # Infer the model-specific separator after "assistant" from the
+            # template itself. Strategy:
+            #   1. Prefer an explicit assistant literal
+            #      ('<|im_start|>assistant<sep>') if the template contains one.
+            #   2. Otherwise scan all role-concatenation separators
+            #      (message['role'] + '<sep>'). If they all agree, use that
+            #      single separator.
+            #   3. If multiple different role separators are present (e.g. a
+            #      Phi-4-mini style template that uses '\n' for system and
+            #      '<|im_sep|>' for user/assistant), prefer '<|im_sep|>' when
+            #      it appears in the template, otherwise fall back to the
+            #      ChatML newline default.
+            assistant_match = re.search(
+                r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
+                scrubbed,
+            )
+            role_seps = [
+                m.group(2)
+                for m in re.finditer(
+                    r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
+                    scrubbed,
+                )
+            ]
+            unique_role_seps = list(dict.fromkeys(role_seps))  # preserves order
+            if assistant_match is not None:
+                separator = assistant_match.group(2)
+            elif len(unique_role_seps) == 1:
+                separator = unique_role_seps[0]
+            elif "<|im_sep|>" in scrubbed:
+                separator = "<|im_sep|>"
+            else:
+                separator = "\\n"
+            # Use a double-quoted Jinja string literal so a single quote in
+            # the separator (should one ever appear) cannot break the
+            # generated block.
+            assistant_prefix = "<|im_start|>assistant" + separator
+            generation_block = (
+                "{%" + dash + " if add_generation_prompt %}"
+                '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
+                "{%" + dash + " endif %}"
+            )
+            chat_template = (
+                chat_template[: where + len(chosen_end)] + generation_block
+            )
 
     return chat_template
 
