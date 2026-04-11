@@ -1349,8 +1349,14 @@ def save_to_gguf(
                         )
         print("Unsloth: Model files cleanup...")
         if quants_created:
-            all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink(missing_ok = True)
+            # Only delete the base GGUF (first_conversion) if the user did NOT
+            # explicitly request it as one of the output quantization methods.
+            # For example, when quantization_method=["q4_k_m", "q6_k", "bf16"]
+            # and first_conversion="bf16", the bf16 file is both the intermediate
+            # format AND a user-requested output, so it must be preserved.
+            if first_conversion not in frozenset(quantization_method):
+                all_saved_locations.remove(base_gguf)
+                Path(base_gguf).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()

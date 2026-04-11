@@ -1,6 +1,0 @@
-ci:
-  autofix_prs: true
-  autofix_prs_limit: 5
-  autoupdate_schedule: monthly
-  autoupdate_commit_msg: "chore: pre-commit autoupdate"
-  skip: []
