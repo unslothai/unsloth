@@ -97,8 +97,7 @@ _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
             "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl"
         ),
         "sdk_tarball": (
-            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
-            "rocm-7.2.1.tar.gz"
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" "rocm-7.2.1.tar.gz"
         ),
         # Step 2: torch wheels
         "torch": (
@@ -152,9 +151,7 @@ _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
 # only need a recent AMD graphics driver and Python 3.12 -- the HIP SDK
 # developer toolkit is NOT required for running torch.
 _DEFAULT_WINDOWS_ROCM_VERSION: tuple[int, int] = (7, 2)
-_AMD_RADEON_DRIVER_URL = (
-    "https://www.amd.com/en/support/download/drivers.html"
-)
+_AMD_RADEON_DRIVER_URL = "https://www.amd.com/en/support/download/drivers.html"
 _HIP_SDK_DOWNLOAD_URL = (
     "https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html"
 )
