@@ -97,9 +97,8 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             # Upgrade the fallback when a later candidate looks more
             # plausible than the currently stored one, so probe order does
             # not silently discard a better match.
-            if (
-                all_corrupt_fallback is None
-                or not all_corrupt_fallback.get("has_plausible_turns")
+            if all_corrupt_fallback is None or not all_corrupt_fallback.get(
+                "has_plausible_turns"
             ):
                 has_plausible_turns = False
                 for i in range(min(len(dataset), 100)):
@@ -191,7 +190,8 @@ def is_none_or_empty(value) -> bool:
             if isinstance(item, dict) and item.get("type") == "text"
         ]
         if text_values and all(
-            t is None or (
+            t is None
+            or (
                 isinstance(t, str)
                 and not t.strip().strip("\ufeff\u200b\u200c\u200d\u2060")
             )
@@ -572,11 +572,13 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     _dict_types = []
     try:
         from datasets import DatasetDict as _DatasetDict
+
         _dict_types.append(_DatasetDict)
     except ImportError:
         pass
     try:
         from datasets import IterableDatasetDict as _IterableDatasetDict
+
         _dict_types.append(_IterableDatasetDict)
     except ImportError:
         pass
@@ -591,6 +593,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # instead, matching the DatasetDict guard style above.
     try:
         from datasets import IterableDataset as _IterableDataset
+
         if isinstance(dataset, _IterableDataset):
             raise ValueError(
                 "scan_dataset requires a materialized Dataset, not an IterableDataset. "
@@ -646,9 +649,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # would bypass that rule and silently report 0 bad rows when the
     # canonical column is broken.
     use_probed_col = (
-        conv_info is not None
-        and fmt not in ("alpaca", "gptoss")
-        and was_auto
+        conv_info is not None and fmt not in ("alpaca", "gptoss") and was_auto
     )
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])
@@ -786,6 +787,7 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
         elif col:
             conversation = row[col]
             if isinstance(conversation, list):
+
                 def _is_bad_turn(t):
                     if not isinstance(t, dict):
                         return True
@@ -796,6 +798,7 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     if is_none_or_empty(c) and not t.get("tool_calls"):
                         return True
                     return False
+
                 none_count = sum(1 for t in conversation if _is_bad_turn(t))
                 print(f"  {col}: {len(conversation)} turns ({none_count} None)")
                 print(f"  {'-' * 60}")
