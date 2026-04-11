@@ -67,13 +67,13 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 }) => {
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root @container flex h-full flex-col "
+      className="aui-root aui-thread-root @container flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       style={{
         ["--thread-max-width" as string]: "44rem",
       }}
     >
       <ThreadPrimitive.Viewport
-        className="aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
+        className="aui-thread-viewport relative flex h-0 min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
       >
         {!hideWelcome && (
           <AuiIf condition={({ thread }) => thread.isEmpty}>
@@ -89,6 +89,9 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
+        {/* Extra scroll space so last message action buttons aren't clipped by composer */}
+        <div className="shrink-0 h-8" aria-hidden />
+
         <ThreadPrimitive.ViewportFooter
           className={cn(
             "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
@@ -96,11 +99,11 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
             // Compare: pointer-events pass-through so messages behind footer stay clickable
             hideComposer
               ? "pointer-events-none pb-3"
-              : "relative pb-4",
+              : "pb-4",
           )}
         >
           {!hideComposer && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-background" aria-hidden />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background to-transparent" aria-hidden />
           )}
           <div
             className={cn(
@@ -663,9 +666,9 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      autohide="not-last"
+      autohide="always"
       autohideFloat="single-branch"
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-floating:absolute data-floating:rounded-md data-floating:border data-floating:bg-background data-floating:p-1 data-floating:shadow-sm"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-floating:absolute"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
@@ -739,7 +742,7 @@ const UserMessage: FC = () => {
 const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
-      autohide="not-last"
+      autohide="always"
       className="aui-user-action-bar-root flex items-center"
     >
       <CopyButton />

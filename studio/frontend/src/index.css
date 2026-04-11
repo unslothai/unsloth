@@ -269,8 +269,11 @@
     letter-spacing: var(--tracking-normal);
   }
   html {
-    @apply font-sans;
+    @apply font-sans h-full;
     scrollbar-gutter: stable;
+  }
+  body, #root {
+    @apply h-full;
   }
   body[data-scroll-locked] {
     margin-right: 0 !important;

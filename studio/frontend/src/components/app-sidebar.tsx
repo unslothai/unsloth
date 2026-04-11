@@ -20,6 +20,7 @@ import {
 import {
   Collapsible,
   CollapsibleContent,
+  CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
   DropdownMenu,
@@ -49,8 +50,8 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronsUpDown, Moon, Sun } from "lucide-react";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
+import { Link, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { usePlatformStore } from "@/config/env";
@@ -122,6 +123,7 @@ export function AppSidebar() {
     }),
   });
   const { pinned, togglePinned, setHovered } = useSidebar();
+  const router = useRouter();
   const navigate = useNavigate();
 
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
@@ -184,7 +186,7 @@ export function AppSidebar() {
           <div className="flex items-center gap-0.5">
             <button
               type="button"
-              onClick={() => window.history.back()}
+              onClick={() => router.history.back()}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               title="Go back"
               aria-label="Go back"
@@ -193,7 +195,7 @@ export function AppSidebar() {
             </button>
             <button
               type="button"
-              onClick={() => window.history.forward()}
+              onClick={() => router.history.forward()}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               title="Go forward"
               aria-label="Go forward"
@@ -292,8 +294,19 @@ export function AppSidebar() {
 
         {/* Recents */}
         {chatItems.length > 0 && (
+          <Collapsible open={isChatRoute ? chatOpen : true} onOpenChange={setChatOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden flex-1 overflow-hidden">
-            <SidebarGroupLabel>Recents</SidebarGroupLabel>
+            <SidebarGroupLabel asChild>
+              {isChatRoute ? (
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                  Recents
+                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                </CollapsibleTrigger>
+              ) : (
+                <span>Recents</span>
+              )}
+            </SidebarGroupLabel>
+            <CollapsibleContent>
             <SidebarGroupContent className="overflow-y-auto">
               <SidebarMenu>
                 {(isChatRoute ? chatItems : chatItems.slice(0, 1)).map((item) => (
@@ -328,7 +341,9 @@ export function AppSidebar() {
                 ))}
               </SidebarMenu>
             </SidebarGroupContent>
+            </CollapsibleContent>
           </SidebarGroup>
+          </Collapsible>
         )}
       </SidebarContent>
 

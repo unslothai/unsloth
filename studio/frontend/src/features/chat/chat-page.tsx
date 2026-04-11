@@ -112,7 +112,7 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
     >
-      <div className="min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread />
       </div>
     </ChatRuntimeProvider>
@@ -753,9 +753,9 @@ export function ChatPage(): ReactElement {
   }, [modelSelectorLocked, tour.open]);
 
   return (
-    <div className="flex h-full bg-background overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col h-full">
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
           <div className="flex items-center gap-1">
             <ModelSelector
