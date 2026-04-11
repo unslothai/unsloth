@@ -26,6 +26,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from utils.hardware import clear_gpu_cache
+
 logger = get_logger(__name__)
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
@@ -1512,9 +1514,20 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            # Pin to selected GPU(s) via the backend-appropriate visibility
+            # env var: CUDA_VISIBLE_DEVICES on NVIDIA/ROCm, ZE_AFFINITY_MASK
+            # on Intel XPU (llama-server's SYCL build reads ZE_AFFINITY_MASK,
+            # not CUDA_VISIBLE_DEVICES).
             if gpu_indices is not None:
-                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                from utils.hardware import get_device
+                from utils.hardware.hardware import DeviceType
+
+                mask = ",".join(str(i) for i in gpu_indices)
+                if get_device() == DeviceType.XPU:
+                    env["ZE_AFFINITY_MASK"] = mask
+                    env.pop("CUDA_VISIBLE_DEVICES", None)
+                else:
+                    env["CUDA_VISIBLE_DEVICES"] = mask
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -1625,10 +1638,7 @@ class LlamaCppBackend:
             if LlamaCppBackend._codec_mgr is not None:
                 LlamaCppBackend._codec_mgr.unload()
                 LlamaCppBackend._codec_mgr = None
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                clear_gpu_cache()
             return True
 
     def _kill_process(self):
@@ -3261,6 +3271,11 @@ class LlamaCppBackend:
         if LlamaCppBackend._codec_mgr is None:
             LlamaCppBackend._codec_mgr = AudioCodecManager()
 
+        # Preserve the pre-PR CPU fallback on non-CUDA hosts: the SNAC /
+        # BiCodec / DAC codecs are not yet validated on Intel XPU, so
+        # only promote to a GPU device when CUDA is actually available.
+        # A follow-up can extend this once an XPU-specific codec path is
+        # added.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_repo_path = None
 
@@ -3333,6 +3348,8 @@ class LlamaCppBackend:
             else None
         )
 
+        # Match init_audio_codec: stay on CPU for non-CUDA hosts until the
+        # codec path is validated on XPU.
         import torch
 
         device = "cuda" if torch.cuda.is_available() else "cpu"

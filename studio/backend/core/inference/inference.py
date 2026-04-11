@@ -10,6 +10,7 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
+import contextlib
 import json
 import sys
 import torch
@@ -1646,8 +1647,30 @@ class InferenceBackend:
             + text
             + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
         )
+
         with torch.inference_mode():
-            with torch.amp.autocast("cuda", dtype = model.dtype):
+            # Derive the autocast device from the loaded model, not from the
+            # global backend: a CPU-fallback DAC on an XPU/CUDA host must not
+            # open a GPU autocast context around CPU tensors.
+            device_type = (
+                model.device.type
+                if hasattr(model.device, "type")
+                else str(model.device).split(":", 1)[0]
+            )
+            # Clamp to autocast-supported backends so exotic devices
+            # (e.g. "meta" during accelerate offloaded loading) do not raise.
+            # MPS is autocast-supported since torch 2.3, keep it in the set.
+            if device_type not in ("cuda", "xpu", "mps", "cpu"):
+                device_type = "cpu"
+            # CPU and XPU autocast only accept bfloat16/float16. For a
+            # float32 model, skip autocast entirely to avoid raising or
+            # producing a warning on every generate call.
+            autocast_dtype_supported = model.dtype in (torch.bfloat16, torch.float16)
+            if device_type in ("cpu", "xpu") and not autocast_dtype_supported:
+                autocast_ctx = contextlib.nullcontext()
+            else:
+                autocast_ctx = torch.amp.autocast(device_type, dtype = model.dtype)
+            with autocast_ctx:
                 inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
                 generated = model.generate(
                     **inputs,
