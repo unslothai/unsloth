@@ -672,19 +672,39 @@ def _fix_chat_template(chat_template):
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
 
-    elif after_endfor.strip() == "" and "<|im_start|>" in chat_template:
-        # GH#4150: ChatML-style templates (Hermes, etc.) that end with
-        # {% endfor %} and have no add_generation_prompt block.
-        # Extract the model-specific separator after role (e.g. '\n' for
-        # Hermes, '<|im_sep|>' for Phi-4) to avoid hard-coding.
-        import re
-
-        sep_match = re.search(r"message\['role'\]\s*\+\s*'([^']*)'", chat_template)
-        separator = sep_match.group(1) if sep_match else "\\n"
+    elif (
+        after_endfor.strip() == ""
+        and "<|im_start|>" in chat_template
+        and "<|im_end|>" in chat_template
+        and "add_generation_prompt" not in chat_template
+    ):
+        # GH#4150: ChatML-style templates (Hermes, Magnum, Phi-4, etc.) that
+        # end with {% endfor %} and have no add_generation_prompt block.
+        # Infer the model-specific separator after "assistant" from the
+        # template itself. Prefer an explicit assistant literal
+        # (`'<|im_start|>assistant<sep>'`), then role-concatenation in either
+        # quote style and with either `message['role']` or `message.role`
+        # access, then fall back to the common ChatML newline separator.
+        assistant_match = re.search(
+            r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
+            chat_template,
+        )
+        role_match = re.search(
+            r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
+            chat_template,
+        )
+        if assistant_match is not None:
+            separator = assistant_match.group(2)
+        elif role_match is not None:
+            separator = role_match.group(2)
+        else:
+            separator = "\\n"
+        # Use a double-quoted Jinja string literal so a single quote in the
+        # separator (should one ever appear) cannot break the generated block.
         assistant_prefix = "<|im_start|>assistant" + separator
         generation_block = (
             "{%" + dash + " if add_generation_prompt %}"
-            "{{ '" + assistant_prefix + "' }}"
+            '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
             "{%" + dash + " endif %}"
         )
         chat_template = chat_template[: where + len(chosen_end)] + generation_block
