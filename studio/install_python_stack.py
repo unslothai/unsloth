@@ -45,10 +45,26 @@ _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 
 # Windows AMD ROCm torch wheels live at repo.radeon.com, not download.pytorch.org.
 # Keyed by HIP SDK (major, minor). Wheels are cp312 only and require the HIP SDK
-# to be pre-installed. Older releases (rocm-rel-6.4.4) use a nested layout and
-# alpha version strings that are fragile to match on, so only 7.1.x / 7.2.x are
-# supported here -- older HIP SDKs fall through with a pointer to the download
-# page.
+# to be pre-installed.
+#
+# As of 2026-04, repo.radeon.com/rocm/windows/ contains four release dirs:
+#   rocm-rel-6.4.4/  -- PEP 503 simple index (torch/, torchvision/, torchaudio/
+#                       sub-indexes; wheels themselves live at the top of the
+#                       release dir). Wheels carry alpha + git-hash build tags
+#                       like torch-2.8.0a0+gitfc14c65-cp312-cp312-win_amd64.whl,
+#                       so the filename changes whenever AMD rebuilds and we
+#                       cannot hardcode a URL for it. Supporting 6.4.4 would
+#                       require parsing the PEP 503 index at install time --
+#                       out of scope here; users on that SDK get a "please
+#                       upgrade to 7.1+" error.
+#   rocm-rel-7.1.1/  -- flat layout, stable `+rocmsdk20251116` date tag.
+#   rocm-rel-7.2/    -- flat layout, stable `+rocmsdk20260116` date tag.
+#   rocm-rel-7.2.1/  -- flat layout, stable `+rocm7.2.1` version tag. Newest
+#                       7.2.x release as of writing; superset of rocm-rel-7.2.
+#
+# The map below routes HIP SDK 7.2.x -> rocm-rel-7.2.1 wheels (newer, bug
+# fixes) rather than rocm-rel-7.2; torch bundles its own ROCm runtime so the
+# host SDK point version does not need to match the wheel tag exactly.
 _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
     (7, 2): {
         "torch": (
