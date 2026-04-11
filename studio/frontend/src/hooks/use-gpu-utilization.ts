@@ -171,14 +171,22 @@ function normalizeGpuUtilization(payload: unknown): GpuUtilization {
   return normalized;
 }
 
+interface FetchGpuUtilizationResult {
+  status: number;
+  payload: GpuUtilization | null;
+}
+
 async function fetchGpuUtilization(
   endpoint: string,
-): Promise<GpuUtilization | null> {
+): Promise<FetchGpuUtilizationResult> {
   const response = await authFetch(endpoint);
   if (!response.ok) {
-    return null;
+    return { status: response.status, payload: null };
   }
-  return normalizeGpuUtilization(await response.json());
+  return {
+    status: response.status,
+    payload: normalizeGpuUtilization(await response.json()),
+  };
 }
 
 /**
@@ -193,6 +201,7 @@ export function useGpuUtilization(
 ): GpuUtilization {
   const [data, setData] = useState<GpuUtilization>(DEFAULT);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const visibleEndpointMissingRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) {
@@ -203,9 +212,25 @@ export function useGpuUtilization(
 
     async function poll() {
       try {
-        const payload =
-          (await fetchGpuUtilization("/api/train/hardware/visible")) ??
-          (await fetchGpuUtilization("/api/train/hardware"));
+        let payload: GpuUtilization | null = null;
+
+        if (!visibleEndpointMissingRef.current) {
+          const visibleResult = await fetchGpuUtilization(
+            "/api/train/hardware/visible",
+          );
+          payload = visibleResult.payload;
+          if (
+            !payload &&
+            [404, 405, 501].includes(visibleResult.status)
+          ) {
+            visibleEndpointMissingRef.current = true;
+          }
+        }
+
+        if (!payload) {
+          payload = (await fetchGpuUtilization("/api/train/hardware")).payload;
+        }
+
         if (!cancelled && payload) {
           setData(payload);
         }
