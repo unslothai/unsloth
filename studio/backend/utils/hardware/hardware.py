@@ -605,9 +605,7 @@ def _get_xpu_utilization() -> Dict[str, Any]:
         else None
     )
 
-    has_any = any(
-        v is not None for v in [gpu_util, temp, vram_used_gb, power_w]
-    )
+    has_any = any(v is not None for v in [gpu_util, temp, vram_used_gb, power_w])
     if not has_any:
         return {"available": False, "backend": "xpu"}
 
