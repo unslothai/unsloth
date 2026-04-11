@@ -28,6 +28,7 @@ import {
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
+import type { GpuUtilizationDevice } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
@@ -113,10 +114,7 @@ export function ProgressSection({
     data.totalSteps > 0
       ? Math.min(
           100,
-          Math.max(
-            0,
-            Math.round((data.currentStep / data.totalSteps) * 100),
-          ),
+          Math.max(0, Math.round((data.currentStep / data.totalSteps) * 100)),
         )
       : Math.round(data.progressPercent);
 
@@ -129,8 +127,7 @@ export function ProgressSection({
 
   const stepsPerSecond =
     elapsed != null && elapsed > 0 ? data.currentStep / elapsed : null;
-  const showHalfwayHint =
-    data.phase === "training" && pct >= 50 && pct < 100;
+  const showHalfwayHint = data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
   const handleCompareInChat = async () => {
     setTrainingCompareHandoff(data.modelName);
@@ -152,16 +149,32 @@ export function ProgressSection({
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
   const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
+  const cfgBatchSize = isHistorical
+    ? configOverride?.batchSize
+    : config.batchSize;
+  const cfgLearningRate = isHistorical
+    ? configOverride?.learningRate
+    : config.learningRate;
   const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
+  const cfgContextLength = isHistorical
+    ? configOverride?.contextLength
+    : config.contextLength;
+  const cfgWarmupSteps = isHistorical
+    ? configOverride?.warmupSteps
+    : config.warmupSteps;
+  const cfgOptimizerType = isHistorical
+    ? configOverride?.optimizerType
+    : config.optimizerType;
   const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  const cfgLoraAlpha = isHistorical
+    ? configOverride?.loraAlpha
+    : config.loraAlpha;
+  const cfgLoraDropout = isHistorical
+    ? configOverride?.loraDropout
+    : config.loraDropout;
+  const cfgLoraVariant = isHistorical
+    ? configOverride?.loraVariant
+    : config.loraVariant;
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
@@ -264,7 +277,9 @@ export function ProgressSection({
             >
               {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
             </MetricStat>
-            <MetricStat label="LR">{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
+            <MetricStat label="LR">
+              {stoppedLr != null ? stoppedLr.toExponential(2) : "--"}
+            </MetricStat>
             <MetricStat label="Grad Norm">
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
@@ -272,7 +287,11 @@ export function ProgressSection({
               {data.modelName || "--"}
             </MetricStat>
             <MetricStat label="Method">
-              {data.trainingMethod === "qlora" ? "QLoRA" : data.trainingMethod === "lora" ? "LoRA" : "Full"}
+              {data.trainingMethod === "qlora"
+                ? "QLoRA"
+                : data.trainingMethod === "lora"
+                  ? "LoRA"
+                  : "Full"}
             </MetricStat>
           </div>
 
@@ -304,65 +323,42 @@ function LiveGpuPanel({
   isTrainingRunning: boolean;
 }): ReactElement {
   const gpu = useGpuUtilization(isTrainingRunning);
+  const gpuEntries = gpu.devices;
+  const gpuCountLabel =
+    gpuEntries.length > 0
+      ? `${gpuEntries.length} visible GPU${gpuEntries.length === 1 ? "" : "s"}`
+      : "No visible GPU";
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-medium text-muted-foreground">
-          GPU Monitor
-        </p>
-        <span className="text-[11px] text-muted-foreground">Live</span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">GPU Monitor</p>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <span>{gpuCountLabel}</span>
+          <span>Live</span>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-2.5">
-        <GpuStat
-          label="Utilization"
-          icon={
-            <HugeiconsIcon
-              icon={DashboardSpeed01Icon}
-              className="size-3.5"
+      {gpuEntries.length > 0 ? (
+        <div
+          className={cn(
+            "grid gap-3",
+            gpuEntries.length > 1
+              ? "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3"
+              : "grid-cols-1",
+          )}
+        >
+          {gpuEntries.map((entry) => (
+            <GpuMonitorCard
+              key={`${entry.index}-${entry.visible_ordinal ?? "na"}`}
+              gpu={entry}
             />
-          }
-          value={
-            gpu.gpu_utilization_pct != null
-              ? `${gpu.gpu_utilization_pct}%`
-              : "--"
-          }
-          pct={gpu.gpu_utilization_pct ?? 0}
-        />
-        <GpuStat
-          label="Temperature"
-          icon={
-            <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
-          }
-          value={
-            gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"
-          }
-          pct={gpu.temperature_c ?? 0}
-          max={100}
-        />
-        <GpuStat
-          label="VRAM"
-          icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-          value={
-            gpu.vram_used_gb != null && gpu.vram_total_gb != null
-              ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB`
-              : "--"
-          }
-          pct={gpu.vram_utilization_pct ?? 0}
-        />
-        <GpuStat
-          label="Power"
-          icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-          value={
-            gpu.power_draw_w != null
-              ? gpu.power_limit_w != null
-                ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W`
-                : `${gpu.power_draw_w} W`
-              : "--"
-          }
-          pct={gpu.power_utilization_pct ?? 0}
-        />
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="corner-squircle rounded-2xl border border-dashed border-border/60 bg-background/30 px-3 py-5 text-sm text-muted-foreground">
+          No visible GPU telemetry yet.
+        </div>
+      )}
     </div>
   );
 }
@@ -606,12 +602,14 @@ function GpuStat({
   label,
   icon,
   value,
+  detail,
   pct,
   max,
 }: {
   label: string;
   icon: ReactNode;
   value: string;
+  detail?: string;
   pct: number;
   max?: number;
 }): ReactElement {
@@ -624,18 +622,96 @@ function GpuStat({
   }
 
   return (
-    <div className="corner-squircle flex flex-col gap-2 rounded-2xl border border-border/50 bg-background/60 p-3">
-      <div className="flex items-center justify-between text-xs">
-        <span className="flex items-center gap-1.5 text-muted-foreground">
-          {icon}
-          {label}
-        </span>
-        <span className="font-medium tabular-nums">{value}</span>
+    <div className="corner-squircle min-w-0 rounded-2xl border border-border/50 bg-background/60 p-3">
+      <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        <span className="shrink-0">{icon}</span>
+        <span className="truncate">{label}</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-muted/80">
+      <div className="mt-2 min-w-0">
+        <p className="truncate text-sm font-semibold leading-none tabular-nums text-foreground">
+          {value}
+        </p>
+        {detail ? (
+          <p className="mt-1 truncate text-[11px] text-muted-foreground">
+            {detail}
+          </p>
+        ) : null}
+      </div>
+      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted/80">
         <div
           className={`h-full rounded-full ${barColor} transition-all duration-300`}
           style={{ width: `${clamped}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function GpuMonitorCard({ gpu }: { gpu: GpuUtilizationDevice }): ReactElement {
+  const title =
+    gpu.visible_ordinal != null
+      ? `GPU ${gpu.visible_ordinal}`
+      : `GPU ${gpu.index}`;
+  const subtitle =
+    gpu.index_kind === "physical" &&
+    gpu.visible_ordinal != null &&
+    gpu.visible_ordinal !== gpu.index
+      ? `${gpu.name ?? "GPU device"} • physical ${gpu.index}`
+      : (gpu.name ?? "GPU device");
+
+  return (
+    <div className="corner-squircle min-w-0 rounded-2xl border border-border/50 bg-background/40 p-3">
+      <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">{title}</p>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+            {subtitle}
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        <GpuStat
+          label="Utilization"
+          icon={
+            <HugeiconsIcon icon={DashboardSpeed01Icon} className="size-3.5" />
+          }
+          value={
+            gpu.gpu_utilization_pct != null
+              ? `${gpu.gpu_utilization_pct}%`
+              : "--"
+          }
+          pct={gpu.gpu_utilization_pct ?? 0}
+        />
+        <GpuStat
+          label="Temperature"
+          icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
+          value={gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"}
+          pct={gpu.temperature_c ?? 0}
+          max={100}
+        />
+        <GpuStat
+          label="VRAM"
+          icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
+          value={
+            gpu.vram_used_gb != null ? `${gpu.vram_used_gb} GB used` : "--"
+          }
+          detail={
+            gpu.vram_total_gb != null
+              ? `${gpu.vram_total_gb} GB total`
+              : undefined
+          }
+          pct={gpu.vram_utilization_pct ?? 0}
+        />
+        <GpuStat
+          label="Power"
+          icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
+          value={gpu.power_draw_w != null ? `${gpu.power_draw_w} W draw` : "--"}
+          detail={
+            gpu.power_limit_w != null
+              ? `${gpu.power_limit_w} W limit`
+              : undefined
+          }
+          pct={gpu.power_utilization_pct ?? 0}
         />
       </div>
     </div>

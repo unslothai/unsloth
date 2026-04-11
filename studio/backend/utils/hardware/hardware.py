@@ -524,6 +524,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     {
                         "index": td["index"],
                         "index_kind": index_kind,
+                        "name": td["name"],
                         "visible_ordinal": td["visible_ordinal"],
                         "gpu_utilization_pct": None,
                         "temperature_c": None,
@@ -563,6 +564,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 {
                     "index": 0,
                     "index_kind": "relative",
+                    "name": mem.get("device_name", "MLX"),
                     "visible_ordinal": 0,
                     "gpu_utilization_pct": None,
                     "temperature_c": None,

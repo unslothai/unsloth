@@ -129,9 +129,9 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
     def test_visible_gpu_utilization_filters_to_parent_visible_ids(self):
         smi_output = "\n".join(
             [
-                "0, 10, 30, 1000, 10000, 50, 100",
-                "1, 20, 40, 2000, 10000, 60, 120",
-                "3, 30, 50, 3000, 10000, 70, 140",
+                "0, GPU Zero, 10, 30, 1000, 10000, 50, 100",
+                "1, GPU One, 20, 40, 2000, 10000, 60, 120",
+                "3, GPU Three, 30, 50, 3000, 10000, 70, 140",
             ]
         )
 
@@ -152,6 +152,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual([device["index"] for device in result["devices"]], [1, 3])
         self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
         self.assertEqual(result["devices"][1]["visible_ordinal"], 1)
+        self.assertEqual(result["devices"][0]["name"], "GPU One")
         self.assertEqual(result["devices"][0]["gpu_utilization_pct"], 20.0)
         self.assertEqual(result["devices"][1]["power_utilization_pct"], 50.0)
 
@@ -222,6 +223,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(len(result["devices"]), 2)
         self.assertEqual(result["index_kind"], "relative")
+        self.assertEqual(result["devices"][0]["name"], "GPU-A")
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
@@ -242,6 +244,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["index_kind"], "relative")
         self.assertEqual(result["devices"][0]["index"], 0)
+        self.assertEqual(result["devices"][0]["name"], "Apple Silicon")
         self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
 
 

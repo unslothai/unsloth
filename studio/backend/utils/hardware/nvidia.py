@@ -128,7 +128,7 @@ def get_visible_gpu_utilization(
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,utilization.gpu,temperature.gpu,"
+                "--query-gpu=index,name,utilization.gpu,temperature.gpu,"
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
@@ -157,7 +157,7 @@ def get_visible_gpu_utilization(
     devices = []
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 7:
+        if len(parts) < 8:
             continue
 
         try:
@@ -168,21 +168,24 @@ def get_visible_gpu_utilization(
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
 
+        name = ", ".join(parts[1:-6]).strip() or None
+
         devices.append(
             _build_gpu_metrics(
-                vram_used_mb = _parse_smi_value(parts[3]),
-                vram_total_mb = _parse_smi_value(parts[4]),
-                power_draw = _parse_smi_value(parts[5]),
-                power_limit = _parse_smi_value(parts[6]),
+                vram_used_mb = _parse_smi_value(parts[-4]),
+                vram_total_mb = _parse_smi_value(parts[-3]),
+                power_draw = _parse_smi_value(parts[-2]),
+                power_limit = _parse_smi_value(parts[-1]),
                 index = idx,
                 index_kind = "physical",
+                name = name,
                 visible_ordinal = (
                     visible_ordinals[idx]
                     if visible_ordinals is not None
                     else len(devices)
                 ),
-                gpu_utilization_pct = _parse_smi_value(parts[1]),
-                temperature_c = _parse_smi_value(parts[2]),
+                gpu_utilization_pct = _parse_smi_value(parts[-6]),
+                temperature_c = _parse_smi_value(parts[-5]),
             )
         )
 
