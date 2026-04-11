@@ -196,8 +196,6 @@ export function useGpuUtilization(
 
   useEffect(() => {
     if (!enabled) {
-      // Reset when training stops so the cards show "--" again
-      setData(DEFAULT);
       return;
     }
 
@@ -226,5 +224,5 @@ export function useGpuUtilization(
     };
   }, [enabled, intervalMs]);
 
-  return data;
+  return enabled ? data : DEFAULT;
 }
