@@ -28,8 +28,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { SidebarLeftIcon } from "@hugeicons/core-free-icons"
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const noop = (() => {}) as (...args: unknown[]) => void
+const noop = () => {}
 
 const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"

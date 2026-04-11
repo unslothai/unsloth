@@ -562,9 +562,7 @@ export function ChatPage(): ReactElement {
         .first()
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as
-            | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number }
-            | null;
+          const usage = metadata?.contextUsage as ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
         });
     }

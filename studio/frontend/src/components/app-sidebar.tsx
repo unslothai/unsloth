@@ -12,9 +12,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   useSidebar,
 } from "@/components/ui/sidebar";
 import {
@@ -34,9 +31,7 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   Book03Icon,
-  BubbleChatIcon,
   ChefHatIcon,
-  ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   ArrowLeft02Icon,
@@ -61,7 +56,6 @@ import {
   deleteChatItem,
 } from "@/features/chat/hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useRecipeSidebarItems } from "@/features/data-recipes/hooks/use-recipe-sidebar-items";
 import { useEffect, useRef, useState } from "react";
 
 function getTourId(pathname: string): string | null {
@@ -133,27 +127,15 @@ export function AppSidebar() {
   const isChatRoute = pathname.startsWith("/chat");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Recipes collapsible state — syncs with route
   const isRecipesRoute = pathname.startsWith("/data-recipes");
-  const [recipesOpen, setRecipesOpen] = useState(isRecipesRoute);
-
-  // Sync collapsibles with route changes
-  useEffect(() => {
-    if (isRecipesRoute) setRecipesOpen(true);
-    else setRecipesOpen(false);
-  }, [isRecipesRoute]);
 
   useEffect(() => {
     if (isChatRoute) setChatOpen(true);
   }, [isChatRoute]);
-  const recipeItems = useRecipeSidebarItems(recipesOpen);
-  const activeRecipeId = pathname.startsWith("/data-recipes/")
-    ? pathname.split("/data-recipes/")[1]
-    : undefined;
 
-  const { items: chatItems, canCompare } = useChatSidebarItems();
+  const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const activeThreadId = (search.thread as string | undefined) ?? storeThreadId ?? undefined;
+  const activeThreadId = (search.thread as string | undefined) ?? (search.compare as string | undefined) ?? storeThreadId ?? undefined;
 
   const chatDisabled = isTrainingRunning;
 
@@ -313,7 +295,6 @@ export function AppSidebar() {
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
-                      className=""
                       onClick={() =>
                         navigate({
                           to: "/chat",
