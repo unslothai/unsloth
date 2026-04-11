@@ -42,12 +42,18 @@ class TestAnthropicModels:
 
     def test_minimal_request(self):
         req = AnthropicMessagesRequest(
+            messages = [{"role": "user", "content": "Hi"}],
+        )
+        assert req.max_tokens is None
+        assert req.model == "default"
+        assert req.stream is False
+
+    def test_max_tokens_optional(self):
+        req = AnthropicMessagesRequest(
             max_tokens = 100,
             messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens == 100
-        assert req.model == "default"
-        assert req.stream is False
 
     def test_system_as_string(self):
         req = AnthropicMessagesRequest(
@@ -80,6 +86,25 @@ class TestAnthropicModels:
             messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.stream is False
+
+    def test_enable_tools_shorthand(self):
+        req = AnthropicMessagesRequest(
+            messages = [{"role": "user", "content": "Hi"}],
+            enable_tools = True,
+            enabled_tools = ["web_search", "python"],
+            session_id = "my-session",
+        )
+        assert req.enable_tools is True
+        assert req.enabled_tools == ["web_search", "python"]
+        assert req.session_id == "my-session"
+
+    def test_extension_fields_default_none(self):
+        req = AnthropicMessagesRequest(
+            messages = [{"role": "user", "content": "Hi"}],
+        )
+        assert req.enable_tools is None
+        assert req.enabled_tools is None
+        assert req.session_id is None
 
     def test_response_model_defaults(self):
         resp = AnthropicMessagesResponse()

@@ -621,7 +621,7 @@ class AnthropicTool(BaseModel):
 
 class AnthropicMessagesRequest(BaseModel):
     model: str = "default"
-    max_tokens: int
+    max_tokens: Optional[int] = None
     messages: list[AnthropicMessage]
     system: Optional[Union[str, list]] = None
     tools: Optional[list[AnthropicTool]] = None
@@ -632,6 +632,10 @@ class AnthropicMessagesRequest(BaseModel):
     top_k: Optional[int] = None
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
+    # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    enable_tools: Optional[bool] = None
+    enabled_tools: Optional[list[str]] = None
+    session_id: Optional[str] = None
     model_config = {"extra": "allow"}
 
 

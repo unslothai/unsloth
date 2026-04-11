@@ -2255,16 +2255,26 @@ async def anthropic_messages(
     cancel_event = threading.Event()
 
     # ── Tool-calling path ─────────────────────────────────────
-    use_tools = (
-        payload.tools
-        and len(payload.tools) > 0
-        and llama_backend.supports_tools
+    # Two ways to enable tools:
+    # 1. Anthropic-style: send full tool definitions in payload.tools
+    # 2. Unsloth shorthand: enable_tools=true + optional enabled_tools list
+    use_tools = llama_backend.supports_tools and (
+        (payload.tools and len(payload.tools) > 0)
+        or payload.enable_tools
     )
 
     if use_tools:
         from core.inference.tools import ALL_TOOLS
 
-        openai_tools = anthropic_tools_to_openai(payload.tools)
+        if payload.tools and len(payload.tools) > 0:
+            openai_tools = anthropic_tools_to_openai(payload.tools)
+        elif payload.enabled_tools is not None:
+            openai_tools = [
+                t for t in ALL_TOOLS
+                if t["function"]["name"] in payload.enabled_tools
+            ]
+        else:
+            openai_tools = ALL_TOOLS
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _tool_names = {t["function"]["name"] for t in openai_tools}
@@ -2339,6 +2349,7 @@ async def anthropic_messages(
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
+                session_id = payload.session_id,
             )
 
         if payload.stream:
