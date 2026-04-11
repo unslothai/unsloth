@@ -224,6 +224,12 @@ class AnthropicStreamEmitter:
         events = []
         # Close the tool_use block
         events.append(self._close_block())
+        # Emit custom tool_result event (non-standard, ignored by SDKs)
+        events.append(build_anthropic_sse_event("tool_result", {
+            "type": "tool_result",
+            "tool_use_id": event.get("tool_call_id", ""),
+            "content": event.get("result", ""),
+        }))
         # Open a new text block for the model's next response
         self.block_index += 1
         events.extend(self._open_text_block())
