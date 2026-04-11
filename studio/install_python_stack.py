@@ -875,19 +875,66 @@ def install_python_stack() -> int:
             package_name,
         )
     else:
-        # Update path: upgrade only unsloth + unsloth-zoo while preserving
-        # existing torch/CUDA installations.  Torch is pre-installed by
-        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
-        _progress("base packages")
-        pip_install(
-            "Updating base packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
-        )
+        # Manifest override: install from git main instead of PyPI
+        _git_ref = os.environ.get("STUDIO_UNSLOTH_GIT_REF", "")
+        if _git_ref:
+            _progress("base packages (git)")
+            pip_install(
+                f"Installing unsloth from git@{_git_ref}",
+                "--no-cache-dir",
+                "--no-deps",
+                f"git+https://github.com/unslothai/unsloth.git@{_git_ref}",
+                constrain = False,
+            )
+            # Install remaining base deps (unsloth-zoo etc.) but exclude
+            # the "unsloth" line so pip does not revert the git checkout
+            # back to the PyPI wheel.  We match "unsloth" exactly (not
+            # "unsloth-zoo") by checking for a version specifier or EOL
+            # immediately after the package name.
+            import re as _re
+
+            _base_lines = (
+                (REQ_ROOT / "base.txt")
+                .read_text(encoding = "utf-8")
+                .splitlines(keepends = True)
+            )
+            _base_filtered = [
+                ln
+                for ln in _base_lines
+                if not _re.match(r"^\s*unsloth\s*([<>=!~;\[#]|$)", ln.strip())
+            ]
+            _base_tmp = tempfile.NamedTemporaryFile(
+                mode = "w",
+                suffix = ".txt",
+                delete = False,
+                encoding = "utf-8",
+            )
+            _base_tmp.writelines(_base_filtered)
+            _base_tmp.close()
+            try:
+                pip_install(
+                    "Updating remaining base packages",
+                    "--no-cache-dir",
+                    "--upgrade-package",
+                    "unsloth-zoo",
+                    req = Path(_base_tmp.name),
+                )
+            finally:
+                Path(_base_tmp.name).unlink(missing_ok = True)
+        else:
+            # Update path: upgrade only unsloth + unsloth-zoo while preserving
+            # existing torch/CUDA installations.  Torch is pre-installed by
+            # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+            _progress("base packages")
+            pip_install(
+                "Updating base packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth",
+                "--upgrade-package",
+                "unsloth-zoo",
+                req = REQ_ROOT / "base.txt",
+            )
 
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
     #     venv received CPU-only torch (common when pip resolves torch from PyPI).

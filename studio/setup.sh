@@ -27,6 +27,50 @@ _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
 _DEFAULT_LLAMA_TAG="latest"
 _DEFAULT_LLAMA_FORCE_COMPILE_REF="master"
 
+# ── Fetch remote manifest ────────────────────────────────────────────
+# UNSLOTH_UPDATE_DETAILS.json controls update behavior centrally.
+# Fields are parsed into MANIFEST_* shell variables; all default to
+# empty when the fetch fails (graceful degradation).
+_MANIFEST_URL="https://raw.githubusercontent.com/unslothai/unsloth/main/UNSLOTH_UPDATE_DETAILS.json"
+MANIFEST_UNSLOTH_SOURCE=""
+MANIFEST_UNSLOTH_GITHUB_REF=""
+MANIFEST_LLAMA_CPP_SOURCE=""
+MANIFEST_LLAMA_CPP_TAG=""
+MANIFEST_CRITICAL_TIME=""
+MANIFEST_ANNOUNCEMENT_MESSAGE=""
+MANIFEST_ANNOUNCEMENT_BADGE=""
+MANIFEST_ANNOUNCEMENT_URL=""
+
+_fetch_manifest() {
+    local _raw
+    _raw=$(curl -fsSL --max-time 8 "$_MANIFEST_URL" 2>/dev/null) || return 0
+    # Parse all manifest fields in a single Python invocation to avoid
+    # spawning 8 separate processes (each adds ~50ms startup overhead).
+    eval "$(printf '%s' "$_raw" | python -c "
+import sys, json, shlex
+try:
+    m = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+def s(v, default=''):
+    '''Convert to string, treating None/null as empty.'''
+    return str(v) if v is not None else default
+a = m.get('announcement') or {}
+for k, v in [
+    ('MANIFEST_UNSLOTH_SOURCE',        s(m.get('unsloth_source'))),
+    ('MANIFEST_UNSLOTH_GITHUB_REF',    s(m.get('unsloth_github_ref'), 'main')),
+    ('MANIFEST_LLAMA_CPP_SOURCE',      s(m.get('llama_cpp_source'))),
+    ('MANIFEST_LLAMA_CPP_TAG',         s(m.get('llama_cpp_tag'))),
+    ('MANIFEST_CRITICAL_TIME',         s(m.get('CRITICAL_TIME'))),
+    ('MANIFEST_ANNOUNCEMENT_MESSAGE',  s(a.get('message'))),
+    ('MANIFEST_ANNOUNCEMENT_BADGE',    s(a.get('badge'))),
+    ('MANIFEST_ANNOUNCEMENT_URL',      s(a.get('url'))),
+]:
+    print(f'{k}={shlex.quote(v)}')
+" 2>/dev/null)" || true
+    substep "manifest: source=${MANIFEST_UNSLOTH_SOURCE:-pypi} llama=${MANIFEST_LLAMA_CPP_SOURCE:-default}@${MANIFEST_LLAMA_CPP_TAG:-default}"
+}
+
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
@@ -166,6 +210,7 @@ echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 verbose_substep "verbose diagnostics enabled"
+_fetch_manifest
 _LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
 if [ "$_LLAMA_ONLY" = "1" ]; then
     substep "llama.cpp only mode"
@@ -480,8 +525,22 @@ _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
+
+# Apply manifest: install from git main instead of PyPI when directed.
+# Must be evaluated BEFORE the PyPI version check so the fast-path
+# does not suppress the git-main install.
+_MANIFEST_FORCE_GIT=false
+if [ "$MANIFEST_UNSLOTH_SOURCE" = "main" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+    export STUDIO_UNSLOTH_GIT_REF="${MANIFEST_UNSLOTH_GITHUB_REF:-main}"
+    _MANIFEST_FORCE_GIT=true
+    substep "manifest override: installing unsloth from git@${STUDIO_UNSLOTH_GIT_REF}"
+fi
+
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
-if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+if [ "$_MANIFEST_FORCE_GIT" != true ] && \
+   [ "$_SKIP_VERSION_CHECK" != true ] && \
+   [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && \
+   [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 from importlib.metadata import version
@@ -562,6 +621,23 @@ if [ "$_HOST_SYSTEM" = "Darwin" ]; then
 else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
+
+# Apply manifest overrides for llama.cpp (only if user hasn't set env vars).
+# Skip on macOS -- macOS must use ggml-org (unslothai/llama.cpp has no macOS assets).
+if [ -n "$MANIFEST_LLAMA_CPP_SOURCE" ] && [ -z "${UNSLOTH_LLAMA_PUBLISHED_REPO:-}" ] && [ "$_HOST_SYSTEM" != "Darwin" ]; then
+    if [ "$MANIFEST_LLAMA_CPP_SOURCE" = "ggml-org" ]; then
+        _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+    elif [ "$MANIFEST_LLAMA_CPP_SOURCE" = "unslothai" ]; then
+        _HELPER_RELEASE_REPO="unslothai/llama.cpp"
+    fi
+    verbose_substep "manifest override: llama.cpp repo=$_HELPER_RELEASE_REPO"
+fi
+if [ -n "$MANIFEST_LLAMA_CPP_TAG" ] && [ -z "${UNSLOTH_LLAMA_TAG:-}" ]; then
+    _DEFAULT_LLAMA_TAG="$MANIFEST_LLAMA_CPP_TAG"
+    _REQUESTED_LLAMA_TAG="$MANIFEST_LLAMA_CPP_TAG"
+    verbose_substep "manifest override: llama.cpp tag=$_REQUESTED_LLAMA_TAG"
+fi
+
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
@@ -1031,6 +1107,38 @@ else
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
+
+# ── Write install timestamp (only when python deps were actually updated) ──
+# Guard against uninitialized _SKIP_PYTHON_DEPS in llama-only mode.
+if [ "$_LLAMA_ONLY" != "1" ] && [ "${_SKIP_PYTHON_DEPS:-true}" = false ]; then
+_STUDIO_INFO_DIR="$HOME/.unsloth/studio"
+mkdir -p "$_STUDIO_INFO_DIR"
+python - "$_STUDIO_INFO_DIR/UNSLOTH_STUDIO_INFO.json" <<'PY' 2>/dev/null || true
+import json, sys, time, calendar
+from pathlib import Path
+
+info_path = Path(sys.argv[1])
+existing = {}
+if info_path.is_file():
+    try:
+        existing = json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+import importlib.metadata as _meta
+try:
+    _ver = _meta.version("unsloth")
+except Exception:
+    _ver = "unknown"
+
+import os
+existing["installed_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+existing["unsloth_version"] = _ver
+existing["unsloth_source"] = os.environ.get("STUDIO_UNSLOTH_GIT_REF", "pypi")
+info_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+PY
+verbose_substep "wrote install info to $_STUDIO_INFO_DIR/UNSLOTH_STUDIO_INFO.json"
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

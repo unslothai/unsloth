@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Navbar } from "@/components/navbar";
+import { useUpdateCheck } from "@/hooks/use-update-check";
 import { usePlatformStore } from "@/config/env";
 import {
   Outlet,
@@ -33,12 +34,27 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
+function CriticalUpdateBanner() {
+  const { critical } = useUpdateCheck();
+  if (!critical) return null;
+  return (
+    <div className="w-full bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white dark:bg-amber-600">
+      A critical update is available. Run{" "}
+      <code className="rounded bg-amber-600/50 px-1 py-0.5 text-xs dark:bg-amber-700/50">
+        unsloth studio update
+      </code>{" "}
+      then restart Studio.
+    </div>
+  );
+}
+
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
 
   return (
     <AppProvider>
+      {!hideNavbar && <CriticalUpdateBanner />}
       {!hideNavbar && <Navbar />}
       <AnimatePresence initial={false}>
         <motion.div
