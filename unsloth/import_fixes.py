@@ -909,8 +909,8 @@ def fix_huggingface_hub():
             and types.UnionType not in _validators
         ):
             _validators[types.UnionType] = _validate_union
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Unsloth: Failed to patch huggingface_hub dataclass validators: {e}")
 
 
 def fix_triton_compiled_kernel_missing_attrs():
