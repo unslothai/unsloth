@@ -672,9 +672,7 @@ def _fix_chat_template(chat_template):
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
 
-    elif (
-        re.sub(r"\{#.*?#\}", "", after_endfor, flags=re.DOTALL).strip() == ""
-    ):
+    elif re.sub(r"\{#.*?#\}", "", after_endfor, flags = re.DOTALL).strip() == "":
         # GH#4150: ChatML-style templates (Hermes, Magnum, Phi-4, etc.) that
         # end with {% endfor %} (optionally followed by only whitespace
         # and/or Jinja comments) and have no add_generation_prompt block.
@@ -682,7 +680,7 @@ def _fix_chat_template(chat_template):
         # so that neither the guard nor the separator inference can be fooled
         # by ChatML tokens or `add_generation_prompt` mentions that appear
         # only inside a comment.
-        scrubbed = re.sub(r"\{#.*?#\}", "", chat_template, flags=re.DOTALL)
+        scrubbed = re.sub(r"\{#.*?#\}", "", chat_template, flags = re.DOTALL)
         if (
             "<|im_start|>" in scrubbed
             and "<|im_end|>" in scrubbed
@@ -743,9 +741,7 @@ def _fix_chat_template(chat_template):
             # after `endfor`. Jinja comments are also dropped for the same
             # reason: they have no runtime effect but their surrounding
             # whitespace would be preserved if we kept them.
-            chat_template = (
-                chat_template[: where + len(chosen_end)] + generation_block
-            )
+            chat_template = chat_template[: where + len(chosen_end)] + generation_block
 
     return chat_template
 
