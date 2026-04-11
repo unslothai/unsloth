@@ -43,9 +43,23 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
 }
 _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 
-# Windows AMD ROCm torch wheels live at repo.radeon.com, not download.pytorch.org.
-# Keyed by HIP SDK (major, minor). Wheels are cp312 only and require the HIP SDK
-# to be pre-installed.
+# Windows AMD ROCm torch wheels live at repo.radeon.com because PyTorch
+# does NOT publish Windows ROCm wheels on download.pytorch.org (and says so
+# on pytorch.org/get-started/locally: "ROCm is not available on Windows").
+# Every wheel under download.pytorch.org/whl/rocm{6.4,7.1,7.2}/ is
+# manylinux_2_28_x86_64 only. Upstream work to ship Windows ROCm wheels is
+# tracked at pytorch/pytorch#159520, targeted for torch 2.10/2.11 but not
+# yet delivered. Until then repo.radeon.com is the only source.
+#
+# AMD's official install procedure
+# (rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html) is a
+# TWO-STEP pip install:
+#   Step 1: rocm_sdk_core + rocm_sdk_devel + rocm_sdk_libraries_custom +
+#           rocm-<ver>.tar.gz. These wheels ship the ROCm runtime libraries
+#           that torch links against at import time. They total about 1.4
+#           GB. The HIP SDK developer toolkit (HIP_PATH) is NOT a substitute
+#           -- torch imports the Python-packaged runtime from rocm_sdk_*.
+#   Step 2: torch + torchvision + torchaudio. About 820 MB.
 #
 # As of 2026-04, repo.radeon.com/rocm/windows/ contains four release dirs:
 #   rocm-rel-6.4.4/  -- PEP 503 simple index (torch/, torchvision/, torchaudio/
@@ -55,18 +69,38 @@ _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 #                       so the filename changes whenever AMD rebuilds and we
 #                       cannot hardcode a URL for it. Supporting 6.4.4 would
 #                       require parsing the PEP 503 index at install time --
-#                       out of scope here; users on that SDK get a "please
-#                       upgrade to 7.1+" error.
-#   rocm-rel-7.1.1/  -- flat layout, stable `+rocmsdk20251116` date tag.
-#   rocm-rel-7.2/    -- flat layout, stable `+rocmsdk20260116` date tag.
-#   rocm-rel-7.2.1/  -- flat layout, stable `+rocm7.2.1` version tag. Newest
-#                       7.2.x release as of writing; superset of rocm-rel-7.2.
+#                       out of scope here.
+#   rocm-rel-7.1.1/  -- flat layout, torch stable `+rocmsdk20251116` tag,
+#                       SDK wheels stamped `0.1.dev0` (pre-release marker).
+#   rocm-rel-7.2/    -- flat layout, torch stable `+rocmsdk20260116` tag.
+#   rocm-rel-7.2.1/  -- flat layout, torch stable `+rocm7.2.1` tag, SDK
+#                       wheels stamped `7.2.1`. Newest 7.2.x release as of
+#                       writing; superset of rocm-rel-7.2.
 #
-# The map below routes HIP SDK 7.2.x -> rocm-rel-7.2.1 wheels (newer, bug
-# fixes) rather than rocm-rel-7.2; torch bundles its own ROCm runtime so the
-# host SDK point version does not need to match the wheel tag exactly.
+# HIP SDK detection via HIP_PATH is an OPTIONAL version hint, not a
+# prerequisite. Users only need an AMD graphics driver (26.2.2+ for 7.2.1)
+# and Python 3.12. When HIP_PATH is absent or points at an unsupported
+# version, we default to the newest stable release (7.2.1).
 _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
     (7, 2): {
+        # Step 1: ROCm SDK wheels (ship the runtime torch imports)
+        "sdk_core": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl"
+        ),
+        "sdk_devel": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl"
+        ),
+        "sdk_libraries": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl"
+        ),
+        "sdk_tarball": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm-7.2.1.tar.gz"
+        ),
+        # Step 2: torch wheels
         "torch": (
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
             "torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
@@ -81,6 +115,25 @@ _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
         ),
     },
     (7, 1): {
+        # Step 1: ROCm SDK wheels -- note 7.1.1 stamps the SDK wheels with
+        # `0.1.dev0` while keeping the torch wheels at 2.9.0.
+        "sdk_core": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl"
+        ),
+        "sdk_devel": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm_sdk_devel-0.1.dev0-py3-none-win_amd64.whl"
+        ),
+        "sdk_libraries": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl"
+        ),
+        "sdk_tarball": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm-0.1.dev0.tar.gz"
+        ),
+        # Step 2: torch wheels
         "torch": (
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
             "torch-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl"
@@ -95,6 +148,13 @@ _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
         ),
     },
 }
+# Default Windows ROCm release when HIP_PATH is absent or unreadable. Users
+# only need a recent AMD graphics driver and Python 3.12 -- the HIP SDK
+# developer toolkit is NOT required for running torch.
+_DEFAULT_WINDOWS_ROCM_VERSION: tuple[int, int] = (7, 2)
+_AMD_RADEON_DRIVER_URL = (
+    "https://www.amd.com/en/support/download/drivers.html"
+)
 _HIP_SDK_DOWNLOAD_URL = (
     "https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html"
 )
@@ -373,43 +433,37 @@ def _has_usable_nvidia_gpu() -> bool:
 
 
 def _ensure_rocm_torch_windows() -> None:
-    """Install Radeon's Windows ROCm torch wheels when an AMD GPU + HIP SDK
-    are both present. Called from _ensure_rocm_torch().
+    """Install Radeon's Windows ROCm SDK + torch wheels when an AMD GPU is
+    present. Called from _ensure_rocm_torch().
 
-    Silently returns when no AMD GPU is visible, so NVIDIA and CPU-only
-    Windows hosts are never touched. When an AMD GPU is present but the
-    HIP SDK is missing or too old, prints a pointer to the HIP SDK
-    download page and returns without raising -- the Linux helper has the
-    same shape. NVIDIA takes precedence on mixed AMD+NVIDIA hosts so
-    install.ps1 and setup.ps1 (which install CUDA torch in that case)
-    are not clobbered.
+    AMD's documented install procedure
+    (rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html) is
+    a TWO-STEP sequence: first the rocm_sdk_* wheels (which ship the ROCm
+    runtime libraries torch links against at import time), then the torch
+    wheels themselves. Both steps are mandatory -- torch import fails
+    with missing-DLL errors without the SDK wheels, even on a host that
+    has the HIP SDK developer toolkit installed, because torch imports
+    the Python-packaged runtime.
+
+    HIP_PATH is treated as an OPTIONAL version hint, not a prerequisite.
+    Regular users only need the AMD graphics driver (26.2.2+ for 7.2.1)
+    and Python 3.12, as documented by AMD. When HIP_PATH is missing or
+    points at an unsupported version, we default to the newest stable
+    release (_DEFAULT_WINDOWS_ROCM_VERSION) rather than erroring out.
+
+    NVIDIA takes precedence on mixed AMD+NVIDIA hosts. Silently returns
+    when no AMD GPU is visible so NVIDIA and CPU-only Windows hosts are
+    never touched. Both pip installs pass force_pip=True because uv's
+    installer has known problems with these wheels -- matches the fix in
+    unslothai/unsloth#4966 for bitsandbytes on Linux ROCm, and AMD's own
+    troubleshooting notes flag pip dep-resolver overwrite scenarios on
+    this procedure.
     """
     # NVIDIA wins on mixed hosts -- matches the Linux branch and avoids
     # overwriting a freshly installed CUDA torch with ROCm wheels.
     if _has_usable_nvidia_gpu():
         return
     if not _has_rocm_gpu_windows():
-        return
-
-    ver = _detect_rocm_version_windows()
-    if ver is None:
-        _safe_print(
-            _red(
-                "   AMD GPU detected but HIP SDK was not found. Install it "
-                f"from {_HIP_SDK_DOWNLOAD_URL} and re-run setup."
-            )
-        )
-        return
-
-    wheels = _ROCM_WINDOWS_TORCH_WHEELS.get(ver)
-    if wheels is None:
-        _safe_print(
-            _red(
-                f"   HIP SDK {ver[0]}.{ver[1]} detected. Unsloth on Windows "
-                f"requires HIP SDK 7.1 or 7.2. Please update from "
-                f"{_HIP_SDK_DOWNLOAD_URL}"
-            )
-        )
         return
 
     # Radeon wheels are cp312 only. Warn (do not crash) when the venv's
@@ -424,20 +478,79 @@ def _ensure_rocm_torch_windows() -> None:
         )
         return
 
+    # Prefer HIP_PATH as a version hint when available, but fall back to
+    # the newest stable release so users without the developer SDK still
+    # get a working install.
+    detected = _detect_rocm_version_windows()
+    ver: tuple[int, int]
+    using_default = False
+    if detected is not None and detected in _ROCM_WINDOWS_TORCH_WHEELS:
+        ver = detected
+    elif detected is not None:
+        # Detected but unsupported (e.g. 6.4): fall back to newest with a
+        # visible notice so the user knows what happened.
+        _safe_print(
+            _dim(
+                f"   HIP SDK {detected[0]}.{detected[1]} is too old; "
+                f"falling back to newest stable wheels "
+                f"({_DEFAULT_WINDOWS_ROCM_VERSION[0]}.{_DEFAULT_WINDOWS_ROCM_VERSION[1]})"
+            )
+        )
+        ver = _DEFAULT_WINDOWS_ROCM_VERSION
+        using_default = True
+    else:
+        ver = _DEFAULT_WINDOWS_ROCM_VERSION
+        using_default = True
+
+    wheels = _ROCM_WINDOWS_TORCH_WHEELS.get(ver)
+    if wheels is None:
+        _safe_print(
+            _red(
+                f"   No Windows ROCm wheel map for version {ver[0]}.{ver[1]}. "
+                f"Please file an issue at github.com/unslothai/unsloth/issues."
+            )
+        )
+        return
+
+    source = "default" if using_default else "HIP_PATH"
     _safe_print(
         _dim(
-            f"   HIP SDK {ver[0]}.{ver[1]} -- installing torch from "
-            f"repo.radeon.com/rocm/windows/"
+            f"   Installing Radeon ROCm wheels for Windows "
+            f"(rocm-rel-{ver[0]}.{ver[1]}.x, {source}) from repo.radeon.com"
         )
     )
+    if using_default:
+        _safe_print(
+            _dim(
+                f"   Ensure your AMD graphics driver is recent; get the "
+                f"latest from {_AMD_RADEON_DRIVER_URL}"
+            )
+        )
+
+    # Step 1: ROCm SDK wheels (runtime libraries torch imports). ~1.4 GB
+    # download on a clean venv.
     pip_install(
-        f"ROCm torch (Windows, HIP SDK {ver[0]}.{ver[1]})",
+        f"ROCm SDK (Windows, {ver[0]}.{ver[1]})",
+        "--force-reinstall",
+        "--no-cache-dir",
+        wheels["sdk_core"],
+        wheels["sdk_devel"],
+        wheels["sdk_libraries"],
+        wheels["sdk_tarball"],
+        constrain = False,
+        force_pip = True,
+    )
+
+    # Step 2: torch wheels. ~820 MB download.
+    pip_install(
+        f"ROCm torch (Windows, {ver[0]}.{ver[1]})",
         "--force-reinstall",
         "--no-cache-dir",
         wheels["torch"],
         wheels["torchvision"],
         wheels["torchaudio"],
         constrain = False,
+        force_pip = True,
     )
 
 

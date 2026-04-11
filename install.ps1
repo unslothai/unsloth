@@ -255,29 +255,52 @@ function Install-UnslothStudio {
         return $null
     }
 
-    # Map a detected HIP SDK version to Radeon's Windows torch wheels.
-    # Returns @{ Torch = ...; Torchvision = ...; Torchaudio = ... } or $null
-    # when the version is unsupported. Wheels are cp312 only.
+    # Map a ROCm release version to the full Radeon Windows wheel set.
+    # Returns @{ SdkCore, SdkDevel, SdkLibraries, SdkTarball, Torch,
+    # Torchvision, Torchaudio } or $null when unsupported. AMD's docs at
+    # rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html
+    # require a two-step install: first the rocm_sdk_* wheels (~1.4 GB;
+    # ship the runtime that torch links against), then torch itself. Both
+    # are mandatory -- torch import fails with missing DLLs otherwise.
+    # Wheels are cp312 only.
     function Get-RocmWheelUrls {
         param([Parameter(Mandatory = $true)]$Version)
         $base721 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/'
         $base711 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/'
         if ($Version.Major -eq 7 -and $Version.Minor -eq 2) {
             return @{
-                Torch       = $base721 + 'torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
-                Torchvision = $base721 + 'torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
-                Torchaudio  = $base721 + 'torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+                SdkCore       = $base721 + 'rocm_sdk_core-7.2.1-py3-none-win_amd64.whl'
+                SdkDevel      = $base721 + 'rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl'
+                SdkLibraries  = $base721 + 'rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl'
+                SdkTarball    = $base721 + 'rocm-7.2.1.tar.gz'
+                Torch         = $base721 + 'torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+                Torchvision   = $base721 + 'torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+                Torchaudio    = $base721 + 'torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
             }
         }
         if ($Version.Major -eq 7 -and $Version.Minor -eq 1) {
+            # 7.1.1 stamps SDK wheels with `0.1.dev0`; torch gets rocmsdk date tag.
             return @{
-                Torch       = $base711 + 'torch-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
-                Torchvision = $base711 + 'torchvision-0.24.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
-                Torchaudio  = $base711 + 'torchaudio-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+                SdkCore       = $base711 + 'rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl'
+                SdkDevel      = $base711 + 'rocm_sdk_devel-0.1.dev0-py3-none-win_amd64.whl'
+                SdkLibraries  = $base711 + 'rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl'
+                SdkTarball    = $base711 + 'rocm-0.1.dev0.tar.gz'
+                Torch         = $base711 + 'torch-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+                Torchvision   = $base711 + 'torchvision-0.24.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+                Torchaudio    = $base711 + 'torchaudio-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
             }
         }
         return $null
     }
+
+    # Default Windows ROCm release when HIP_PATH is absent. HIP_PATH is an
+    # optional hint, NOT a prerequisite -- regular torch users only need
+    # an AMD graphics driver (26.2.2+ for 7.2.1) and Python 3.12. PyTorch
+    # does not publish Windows ROCm wheels on download.pytorch.org (see
+    # the "ROCm is not available on Windows" note on pytorch.org), so
+    # repo.radeon.com is the only source until pytorch/pytorch#159520
+    # lands upstream Windows ROCm hosting in a future release.
+    $DefaultWindowsRocmVersion = @{ Major = 7; Minor = 2 }
 
     function New-StudioShortcuts {
         param(
@@ -646,9 +669,12 @@ shell.Run cmd, 0, False
     # users with both cards get the NVIDIA torch path they expect.
     if ($HasNvidiaSmi) { $HasAmdGpu = $false }
 
-    # Resolve HIP SDK when we are taking the AMD path. We still probe here
-    # even when $HasAmdGpu is $false so the status line is informative on
-    # mixed NVIDIA+AMD hosts.
+    # Probe HIP SDK as an OPTIONAL version hint. The HIP SDK developer
+    # toolkit is NOT a prerequisite for running torch on Windows -- AMD's
+    # install docs only require the graphics driver (26.2.2+ for 7.2.1)
+    # and Python 3.12. We use $HipSdkVersion when present to select a
+    # matching ROCm wheel release; otherwise we fall back to the newest
+    # stable release ($DefaultWindowsRocmVersion).
     $HipSdkVersion = $null
     if ($HasAmdGpu) {
         $HipSdkVersion = Get-HipSdkVersion
@@ -658,11 +684,11 @@ shell.Run cmd, 0, False
         step "gpu" "NVIDIA GPU detected"
     } elseif ($HasAmdGpu) {
         if ($HipSdkVersion) {
-            step "gpu" ("AMD GPU detected (HIP SDK {0}.{1})" -f $HipSdkVersion.Major, $HipSdkVersion.Minor)
+            step "gpu" ("AMD GPU detected (HIP SDK {0}.{1} hint)" -f $HipSdkVersion.Major, $HipSdkVersion.Minor)
         } else {
-            step "gpu" "AMD GPU detected (HIP SDK missing)" "Yellow"
-            substep "Install HIP SDK from https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html" "Yellow"
-            substep "and re-run this installer." "Yellow"
+            step "gpu" ("AMD GPU detected (will use rocm-rel-{0}.{1}.x)" -f $DefaultWindowsRocmVersion.Major, $DefaultWindowsRocmVersion.Minor)
+            substep "HIP SDK not found (optional). Ensure AMD graphics driver is up to date:" "DarkGray"
+            substep "https://www.amd.com/en/support/download/drivers.html" "DarkGray"
         }
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
@@ -925,12 +951,26 @@ shell.Run cmd, 0, False
 
     # The AMD/ROCm path does not use a --index-url; instead it installs
     # explicit wheel URLs from repo.radeon.com. $TorchIndexUrl stays $null
-    # on that branch so the NVIDIA/CPU path is visibly bypassed.
+    # on that branch so the NVIDIA/CPU path is visibly bypassed. HIP_PATH
+    # is a hint only -- we fall back to $DefaultWindowsRocmVersion when
+    # it is absent or points at an unsupported version, because the HIP
+    # SDK is NOT a runtime prerequisite for torch on Windows.
     $TorchIndexUrl = $null
     $RocmWheelUrls = $null
+    $RocmReleaseVersion = $null
     if ($HasAmdGpu) {
         if ($HipSdkVersion) {
             $RocmWheelUrls = Get-RocmWheelUrls -Version $HipSdkVersion
+            if ($RocmWheelUrls) {
+                $RocmReleaseVersion = $HipSdkVersion
+            }
+        }
+        if (-not $RocmWheelUrls) {
+            if ($HipSdkVersion) {
+                substep ("HIP SDK {0}.{1} is too old; falling back to rocm-rel-{2}.{3}.x" -f $HipSdkVersion.Major, $HipSdkVersion.Minor, $DefaultWindowsRocmVersion.Major, $DefaultWindowsRocmVersion.Minor) "Yellow"
+            }
+            $RocmWheelUrls = Get-RocmWheelUrls -Version $DefaultWindowsRocmVersion
+            $RocmReleaseVersion = $DefaultWindowsRocmVersion
         }
     } else {
         $TorchIndexUrl = Get-TorchIndexUrl
@@ -1008,26 +1048,57 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } elseif (-not $RocmWheelUrls) {
-            if (-not $HipSdkVersion) {
-                Write-Host "[ERROR] AMD GPU detected but HIP SDK is not installed." -ForegroundColor Red
-                Write-Host "        Download it from https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html" -ForegroundColor Yellow
-                Write-Host "        and re-run this installer." -ForegroundColor Yellow
-            } else {
-                Write-Host "[ERROR] AMD HIP SDK $($HipSdkVersion.Major).$($HipSdkVersion.Minor) detected." -ForegroundColor Red
-                Write-Host "        Unsloth requires HIP SDK 7.1 or later on Windows. Please update from" -ForegroundColor Yellow
-                Write-Host "        https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html" -ForegroundColor Yellow
-            }
+            # Should be unreachable because the detection block above
+            # always falls back to $DefaultWindowsRocmVersion, but guard
+            # anyway so a future refactor that drops the fallback does
+            # not install CPU torch on an AMD host.
+            Write-Host "[ERROR] Could not resolve Windows ROCm wheel URLs." -ForegroundColor Red
+            Write-Host "        This is a bug; please file it at github.com/unslothai/unsloth/issues" -ForegroundColor Yellow
             return
         } else {
-            substep "installing PyTorch ROCm wheels from repo.radeon.com..."
-            substep "(first wheel is ~780 MB; download may take a few minutes)"
+            # Verify the venv's Python is 3.12 -- Radeon's wheels are cp312
+            # only and pip would fail with a confusing error otherwise.
+            $venvPyVer = ''
+            try {
+                $venvPyVer = (& $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Out-String).Trim()
+            } catch {}
+            if ($venvPyVer -and $venvPyVer -ne "3.12") {
+                Write-Host "[ERROR] Radeon Windows ROCm wheels require Python 3.12 (venv has $venvPyVer)." -ForegroundColor Red
+                Write-Host "        Install Python 3.12 from https://www.python.org/downloads/ and re-run." -ForegroundColor Yellow
+                return
+            }
+
+            substep ("installing Radeon ROCm wheels for rocm-rel-{0}.{1}.x ..." -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
+            substep "Step 1/2: ROCm SDK runtime (~1.4 GB -- this will take a while)"
+            # Use python -m pip (NOT uv) because (a) AMD's documented
+            # procedure uses pip, (b) uv has known wheel-corruption issues
+            # on these big ROCm/bnb wheels (unslothai/unsloth#4966), and
+            # (c) pip's dep resolver is the combination AMD validates. We
+            # install all four SDK artefacts in one command so pip does
+            # not reset torch between them.
+            $sdkInstallExit = Invoke-InstallCommand {
+                & $VenvPython -m pip install --no-cache-dir --force-reinstall `
+                    $RocmWheelUrls.SdkCore `
+                    $RocmWheelUrls.SdkDevel `
+                    $RocmWheelUrls.SdkLibraries `
+                    $RocmWheelUrls.SdkTarball
+            }
+            if ($sdkInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install ROCm SDK wheels (exit code $sdkInstallExit)" -ForegroundColor Red
+                Write-Host "        Verify your AMD graphics driver is recent and repo.radeon.com is reachable." -ForegroundColor Yellow
+                return
+            }
+
+            substep "Step 2/2: PyTorch + torchvision + torchaudio (~820 MB)"
             $torchInstallExit = Invoke-InstallCommand {
-                uv pip install --python $VenvPython `
-                    $RocmWheelUrls.Torch $RocmWheelUrls.Torchvision $RocmWheelUrls.Torchaudio
+                & $VenvPython -m pip install --no-cache-dir --force-reinstall `
+                    $RocmWheelUrls.Torch `
+                    $RocmWheelUrls.Torchvision `
+                    $RocmWheelUrls.Torchaudio
             }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
-                Write-Host "        Verify HIP SDK $($HipSdkVersion.Major).$($HipSdkVersion.Minor) is installed and wheels are reachable." -ForegroundColor Yellow
+                Write-Host "        Update your AMD graphics driver: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
                 return
             }
         }
