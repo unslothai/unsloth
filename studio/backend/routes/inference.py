@@ -2400,6 +2400,10 @@ async def _anthropic_tool_stream(
                 event = await asyncio.to_thread(next, gen, _sentinel)
                 if event is _sentinel:
                     break
+                # Strip leaked tool-call XML from content events
+                if event.get("type") == "content":
+                    event = dict(event)
+                    event["text"] = _TOOL_XML_RE.sub("", event["text"])
                 for line in emitter.feed(event):
                     yield line
         except Exception as e:
@@ -2474,8 +2478,10 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
     for event in run_gen():
         etype = event.get("type", "")
         if etype == "content":
-            new = event["text"][len(prev_text):]
-            prev_text = event["text"]
+            # Strip leaked tool-call XML
+            clean = _TOOL_XML_RE.sub("", event["text"])
+            new = clean[len(prev_text):]
+            prev_text = clean
             if new:
                 text_parts.append(new)
         elif etype == "tool_start":
@@ -2490,7 +2496,7 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
     content_blocks = []
     for tb in tool_blocks:
         content_blocks.append(tb)
-    full_text = "".join(text_parts)
+    full_text = "".join(text_parts).strip()
     if full_text:
         content_blocks.append(AnthropicResponseTextBlock(text = full_text))
 
