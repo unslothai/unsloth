@@ -1194,7 +1194,9 @@ class FastModel(FastBaseModel):
                 "Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY
             )
         # OLMo 3
-        elif "olmo3" in model_types_all and transformers_version < Version("4.57.0"):
+        elif "olmo3" in model_types_all and transformers_version < Version(
+            "4.57.0.dev0"
+        ):
             raise RuntimeError(
                 "Unsloth: OLMo-3 only works on transformers >= 4.57.0." + LATEST
             )
