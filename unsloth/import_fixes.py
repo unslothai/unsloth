@@ -886,11 +886,31 @@ def fix_diffusers_warnings():
 def fix_huggingface_hub():
     # huggingface_hub.is_offline_mode got removed, so add it back
     import huggingface_hub
+    import types
 
     if not hasattr(huggingface_hub, "is_offline_mode"):
         huggingface_hub.is_offline_mode = (
             lambda: huggingface_hub.constants.HF_HUB_OFFLINE
         )
+
+    # Python 3.10+ PEP 604 unions (`str | None`) use ``types.UnionType``, but older
+    # huggingface_hub only registered ``typing.Union`` in ``_BASIC_TYPE_VALIDATORS``.
+    # That breaks @strict dataclasses with `x | y` annotations (e.g. import_name).
+    # Upstream: _BASIC_TYPE_VALIDATORS[types.UnionType] = _validate_union
+    try:
+        from huggingface_hub import dataclasses as _hf_dataclasses
+
+        _validators = getattr(_hf_dataclasses, "_BASIC_TYPE_VALIDATORS", None)
+        _validate_union = getattr(_hf_dataclasses, "_validate_union", None)
+        if (
+            _validators is not None
+            and _validate_union is not None
+            and hasattr(types, "UnionType")
+            and types.UnionType not in _validators
+        ):
+            _validators[types.UnionType] = _validate_union
+    except Exception:
+        pass
 
 
 def fix_triton_compiled_kernel_missing_attrs():
