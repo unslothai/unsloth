@@ -672,9 +672,12 @@ def _fix_chat_template(chat_template):
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
 
-    elif after_endfor.strip() == "":
+    elif (
+        re.sub(r"\{#.*?#\}", "", after_endfor, flags=re.DOTALL).strip() == ""
+    ):
         # GH#4150: ChatML-style templates (Hermes, Magnum, Phi-4, etc.) that
-        # end with {% endfor %} and have no add_generation_prompt block.
+        # end with {% endfor %} (optionally followed by only whitespace
+        # and/or Jinja comments) and have no add_generation_prompt block.
         # Strip Jinja `{# ... #}` comments before any regex / substring check
         # so that neither the guard nor the separator inference can be fooled
         # by ChatML tokens or `add_generation_prompt` mentions that appear
@@ -726,6 +729,11 @@ def _fix_chat_template(chat_template):
                 '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
                 "{%" + dash + " endif %}"
             )
+            # `after_endfor` contains only whitespace and/or Jinja comments
+            # at this point (verified above), so it carries no semantic
+            # content for rendering. Drop it and append the generation
+            # block directly after `endfor`, matching the behavior of the
+            # first repair branch.
             chat_template = (
                 chat_template[: where + len(chosen_end)] + generation_block
             )
