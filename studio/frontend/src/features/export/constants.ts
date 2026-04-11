@@ -54,8 +54,8 @@ export const QUANT_OPTIONS = [
   { value: "f32", label: "F32", size: "~28.4 GB" },
 ];
 
-export const VLLM_QUANT_OPTIONS = [
-  { value: "auto_awq", label: "AWQ", desc: "Default for vLLM" },
+export const AUTOROUND_QUANT_OPTIONS = [
+  { value: "auto_awq", label: "AWQ", desc: "Activation aware Weight Quantization" },
   { value: "auto_gptq", label: "GPTQ", desc: "Alternative 4-bit standard" },
   { value: "auto_round", label: "Auto-Round", desc: "Native Intel format" },
 ];

@@ -71,7 +71,7 @@ import { QuantPicker } from "./components/quant-picker";
 import {
   type ExportMethod,
   GUIDE_STEPS,
-  VLLM_QUANT_OPTIONS,
+  AUTOROUND_QUANT_OPTIONS,
   getEstimatedSize,
 } from "./constants";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -1053,7 +1053,7 @@ export function ExportPage() {
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-2 py-1 pl-1">
-                        {VLLM_QUANT_OPTIONS.map((opt) => {
+                        {AUTOROUND_QUANT_OPTIONS.map((opt) => {
                           const active = quantLevels[0] === opt.value;
                           return (
                             <button

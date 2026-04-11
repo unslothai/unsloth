@@ -137,7 +137,7 @@ class ExportAutoRound4bitRequest(ExportCommonOptions):
 
     export_format: Literal["auto_awq", "auto_gptq", "auto_round"] = Field(
         "auto_awq",
-        description = "Target 4-bit format natively supported by vLLM",
+        description = "Target 4-bit format for efficient inference",
     )
     bits: int = Field(4, description = "Target bitwidth")
     group_size: int = Field(128, description = "Quantisation group size")
