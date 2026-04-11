@@ -323,8 +323,11 @@ function Get-HipSdkVersion {
 # Map a ROCm release version to Radeon's full Windows wheel set.
 # Returns @{ SdkCore, SdkDevel, SdkLibraries, SdkTarball, Torch,
 # Torchvision, Torchaudio } or $null when unsupported. AMD's install docs
-# require a two-step install: first the rocm_sdk_* wheels (~1.4 GB;
-# runtime torch links against), then torch itself. Wheels are cp312 only.
+# require a two-step install: first the rocm_sdk_* wheels (~1.3 GB for
+# 7.2.1; ~3.2 GB for 7.1.1) that ship the runtime torch links against,
+# then torch itself (~780 MB for 7.2.1, ~692 MB for 7.1.1). Wheels are
+# cp312 only. All 14 URLs in the map below were HEAD-verified live on
+# 2026-04-11.
 function Get-RocmWheelUrls {
     param([Parameter(Mandatory = $true)]$Version)
     $base721 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/'
@@ -1690,53 +1693,57 @@ if ($CuTag -eq "rocm") {
         substep "Re-create the venv with Python 3.12 from https://python.org if pip fails below." "Yellow"
     }
 
-    substep ("installing Radeon ROCm wheels for rocm-rel-{0}.{1}.x from repo.radeon.com..." -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
-    substep "Step 1/2: ROCm SDK runtime (~1.4 GB, may take several minutes)"
-    # Use `python -m pip install` NOT uv for the Radeon wheels. AMD's
-    # docs specify pip; uv has known issues on similar large ROCm wheels
-    # (matches the bitsandbytes situation in unslothai/unsloth#4966); and
-    # using pip directly is the combination AMD validates.
-    if ($script:UnslothVerbose) {
-        & python -m pip install --no-cache-dir --force-reinstall `
-            $RocmWheelUrls.SdkCore `
-            $RocmWheelUrls.SdkDevel `
-            $RocmWheelUrls.SdkLibraries `
-            $RocmWheelUrls.SdkTarball
-        $sdkInstallExit = $LASTEXITCODE
-        $output = ""
+    substep ("installing Radeon ROCm SDK + PyTorch for rocm-rel-{0}.{1}.x from repo.radeon.com..." -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
+    # 7.2.1 total is ~2.1 GB; 7.1.1 is ~3.9 GB (sdk_devel alone is 2.4 GB).
+    if ($RocmReleaseVersion.Major -eq 7 -and $RocmReleaseVersion.Minor -eq 1) {
+        substep "Downloading ~3.9 GB (7.1.1 sdk_devel is 2.4 GB -- may take a while)"
     } else {
-        $output = & python -m pip install --no-cache-dir --force-reinstall `
+        substep "Downloading ~2.1 GB"
+    }
+    # setuptools and wheel are required because rocm-<ver>.tar.gz is a
+    # source distribution that pip builds with setuptools.build_meta.
+    # Ensure both are present in the venv before the install.
+    if ($script:UnslothVerbose) {
+        Fast-Install pip setuptools wheel
+    } else {
+        Fast-Install pip setuptools wheel | Out-Null
+    }
+    # Install all 7 Radeon artefacts in a SINGLE `python -m pip install`
+    # call. AMD's docs show a two-step install, but torch's metadata
+    # declares `Requires-Dist: rocm[libraries]==<ver>` which cascades to
+    # rocm-sdk-libraries-custom==<ver> -- a package that does NOT exist
+    # on PyPI. Splitting the install and using --force-reinstall on the
+    # torch step makes pip cascade-resolve through PyPI and fail.
+    # Combining into one command gives pip's resolver the full dep graph
+    # upfront. Use pip (NOT uv) because AMD validates pip, uv has known
+    # wheel-corruption issues on similar large ROCm wheels (#4966), and
+    # pip's default build-isolation handles the rocm-<ver>.tar.gz sdist.
+    if ($script:UnslothVerbose) {
+        & python -m pip install --no-cache-dir --force-reinstall `
             $RocmWheelUrls.SdkCore `
             $RocmWheelUrls.SdkDevel `
             $RocmWheelUrls.SdkLibraries `
-            $RocmWheelUrls.SdkTarball | Out-String
-        $sdkInstallExit = $LASTEXITCODE
-    }
-    if ($sdkInstallExit -ne 0) {
-        Write-Host "[FAILED] ROCm SDK install failed (exit code $sdkInstallExit)" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        Write-Host "         Verify your AMD graphics driver is recent: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
-        exit 1
-    }
-
-    substep "Step 2/2: PyTorch + torchvision + torchaudio (~820 MB)"
-    if ($script:UnslothVerbose) {
-        & python -m pip install --no-cache-dir --force-reinstall `
+            $RocmWheelUrls.SdkTarball `
             $RocmWheelUrls.Torch `
             $RocmWheelUrls.Torchvision `
             $RocmWheelUrls.Torchaudio
-        $torchInstallExit = $LASTEXITCODE
+        $rocmInstallExit = $LASTEXITCODE
         $output = ""
     } else {
         $output = & python -m pip install --no-cache-dir --force-reinstall `
+            $RocmWheelUrls.SdkCore `
+            $RocmWheelUrls.SdkDevel `
+            $RocmWheelUrls.SdkLibraries `
+            $RocmWheelUrls.SdkTarball `
             $RocmWheelUrls.Torch `
             $RocmWheelUrls.Torchvision `
             $RocmWheelUrls.Torchaudio | Out-String
-        $torchInstallExit = $LASTEXITCODE
+        $rocmInstallExit = $LASTEXITCODE
     }
-    if ($torchInstallExit -ne 0) {
-        Write-Host "[FAILED] PyTorch ROCm install failed (exit code $torchInstallExit)" -ForegroundColor Red
+    if ($rocmInstallExit -ne 0) {
+        Write-Host "[FAILED] ROCm SDK + PyTorch install failed (exit code $rocmInstallExit)" -ForegroundColor Red
         Write-Host $output -ForegroundColor Red
+        Write-Host "         Verify your AMD graphics driver is recent: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
         exit 1
     }
     # Triton has no Windows ROCm build; skip the Triton-for-Windows step so

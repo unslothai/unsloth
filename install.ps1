@@ -259,10 +259,11 @@ function Install-UnslothStudio {
     # Returns @{ SdkCore, SdkDevel, SdkLibraries, SdkTarball, Torch,
     # Torchvision, Torchaudio } or $null when unsupported. AMD's docs at
     # rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html
-    # require a two-step install: first the rocm_sdk_* wheels (~1.4 GB;
-    # ship the runtime that torch links against), then torch itself. Both
-    # are mandatory -- torch import fails with missing DLLs otherwise.
-    # Wheels are cp312 only.
+    # require a two-step install: first the rocm_sdk_* wheels (~1.3 GB
+    # for 7.2.1; ~3.2 GB for 7.1.1 whose sdk_devel is 2.4 GB) that ship
+    # the runtime torch links against, then torch itself (~780 MB for
+    # 7.2.1, ~692 MB for 7.1.1). Both are mandatory -- torch import
+    # fails with missing DLLs otherwise. Wheels are cp312 only.
     function Get-RocmWheelUrls {
         param([Parameter(Mandatory = $true)]$Version)
         $base721 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/'
@@ -1068,36 +1069,59 @@ shell.Run cmd, 0, False
                 return
             }
 
-            substep ("installing Radeon ROCm wheels for rocm-rel-{0}.{1}.x ..." -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
-            substep "Step 1/2: ROCm SDK runtime (~1.4 GB -- this will take a while)"
-            # Use python -m pip (NOT uv) because (a) AMD's documented
-            # procedure uses pip, (b) uv has known wheel-corruption issues
-            # on these big ROCm/bnb wheels (unslothai/unsloth#4966), and
-            # (c) pip's dep resolver is the combination AMD validates. We
-            # install all four SDK artefacts in one command so pip does
-            # not reset torch between them.
-            $sdkInstallExit = Invoke-InstallCommand {
+            substep ("installing Radeon ROCm SDK + PyTorch wheels for rocm-rel-{0}.{1}.x" -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
+            # Total download size is release-dependent: 7.2.1 is ~2.1 GB
+            # (1.3 GB SDK + 780 MB torch) and 7.1.1 is ~3.9 GB (3.2 GB
+            # SDK + 692 MB torch; 7.1.1's sdk_devel alone is 2.4 GB).
+            # Show the number so a user on a metered connection is not
+            # surprised.
+            if ($RocmReleaseVersion.Major -eq 7 -and $RocmReleaseVersion.Minor -eq 1) {
+                substep "Downloading ~3.9 GB from repo.radeon.com (7.1.1 sdk_devel is 2.4 GB)"
+            } else {
+                substep "Downloading ~2.1 GB from repo.radeon.com"
+            }
+            # Bootstrap pip + setuptools + wheel into the venv before
+            # running `& $VenvPython -m pip install`. uv venvs do not
+            # ship pip by default. setuptools is needed because the
+            # rocm-<ver>.tar.gz artefact is a source distribution that
+            # pip must build with setuptools as its backend.
+            substep "bootstrapping pip, setuptools, wheel into venv..."
+            $bootstrapExit = Invoke-InstallCommand { uv pip install --python $VenvPython pip setuptools wheel }
+            if ($bootstrapExit -ne 0) {
+                Write-Host "[ERROR] Failed to bootstrap pip/setuptools/wheel into venv (exit $bootstrapExit)" -ForegroundColor Red
+                return
+            }
+            # Install all 7 Radeon artefacts in a SINGLE pip call. AMD's
+            # docs document a two-step install, but torch's metadata has
+            # `Requires-Dist: rocm[libraries]==<ver>` which cascades to
+            # rocm-sdk-libraries-custom==<ver> -- a package that does NOT
+            # exist on PyPI (PyPI has rocm/rocm-sdk-core/rocm-sdk-devel
+            # only at version 0.1.0, wrong version). Splitting the
+            # install and using --force-reinstall on the torch step makes
+            # pip cascade-resolve the rocm dep chain against PyPI and
+            # fail. Passing every URL in one command gives pip's resolver
+            # the full dep graph upfront, so --force-reinstall works and
+            # pip never tries to reach PyPI for the missing packages.
+            #
+            # We use `$VenvPython -m pip install` (not uv) because:
+            # (a) AMD's docs validate pip specifically;
+            # (b) uv has known wheel-corruption issues on similar large
+            #     ROCm wheels (unslothai/unsloth#4966 for bitsandbytes);
+            # (c) pip's default build-isolation is required to build the
+            #     rocm-<ver>.tar.gz source distribution and uv's pip
+            #     shim does not set this up the same way.
+            $rocmInstallExit = Invoke-InstallCommand {
                 & $VenvPython -m pip install --no-cache-dir --force-reinstall `
                     $RocmWheelUrls.SdkCore `
                     $RocmWheelUrls.SdkDevel `
                     $RocmWheelUrls.SdkLibraries `
-                    $RocmWheelUrls.SdkTarball
-            }
-            if ($sdkInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install ROCm SDK wheels (exit code $sdkInstallExit)" -ForegroundColor Red
-                Write-Host "        Verify your AMD graphics driver is recent and repo.radeon.com is reachable." -ForegroundColor Yellow
-                return
-            }
-
-            substep "Step 2/2: PyTorch + torchvision + torchaudio (~820 MB)"
-            $torchInstallExit = Invoke-InstallCommand {
-                & $VenvPython -m pip install --no-cache-dir --force-reinstall `
+                    $RocmWheelUrls.SdkTarball `
                     $RocmWheelUrls.Torch `
                     $RocmWheelUrls.Torchvision `
                     $RocmWheelUrls.Torchaudio
             }
-            if ($torchInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
+            if ($rocmInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install ROCm wheels (exit code $rocmInstallExit)" -ForegroundColor Red
                 Write-Host "        Update your AMD graphics driver: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
                 return
             }

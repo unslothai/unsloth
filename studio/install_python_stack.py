@@ -55,11 +55,23 @@ _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 # (rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html) is a
 # TWO-STEP pip install:
 #   Step 1: rocm_sdk_core + rocm_sdk_devel + rocm_sdk_libraries_custom +
-#           rocm-<ver>.tar.gz. These wheels ship the ROCm runtime libraries
-#           that torch links against at import time. They total about 1.4
-#           GB. The HIP SDK developer toolkit (HIP_PATH) is NOT a substitute
-#           -- torch imports the Python-packaged runtime from rocm_sdk_*.
-#   Step 2: torch + torchvision + torchaudio. About 820 MB.
+#           rocm-<ver>.tar.gz. The three wheels ship the ROCm runtime
+#           libraries torch links against at import time; the tar.gz is a
+#           tiny (~15 KB) Python sdist for a meta-package named "rocm"
+#           that requires the other three. The HIP SDK developer toolkit
+#           (HIP_PATH) is NOT a substitute -- torch imports the
+#           Python-packaged runtime from rocm_sdk_*. Step 1 download size
+#           varies dramatically by release: 7.2.1 is about 1.3 GB total
+#           (sdk_core ~615 MB, sdk_devel ~222 MB, sdk_libraries ~467 MB)
+#           while 7.1.1 is about 3.2 GB total -- its sdk_devel wheel is a
+#           massive 2.4 GB (debug symbols / unstripped libraries).
+#   Step 2: torch + torchvision + torchaudio. About 780 MB for 7.2.1
+#           (torch itself is 783 MB; vision/audio are small), 692 MB for
+#           7.1.1.
+#
+# All URLs in _ROCM_WINDOWS_TORCH_WHEELS below were verified live on
+# 2026-04-11 with HEAD requests; see temp/windows_amd_tests for the
+# verification script.
 #
 # As of 2026-04, repo.radeon.com/rocm/windows/ contains four release dirs:
 #   rocm-rel-6.4.4/  -- PEP 503 simple index (torch/, torchvision/, torchaudio/
@@ -524,25 +536,34 @@ def _ensure_rocm_torch_windows() -> None:
             )
         )
 
-    # Step 1: ROCm SDK wheels (runtime libraries torch imports). ~1.4 GB
-    # download on a clean venv.
+    # Install all 7 Radeon artefacts (4 SDK + 3 torch) in a SINGLE pip call.
+    #
+    # Why one call instead of AMD's documented two steps? torch's metadata
+    # declares `Requires-Dist: rocm[libraries]==<ver>` which cascades to
+    # `rocm-sdk-libraries-custom==<ver>`. That package does NOT exist on
+    # PyPI; it is only reachable via the direct URL at repo.radeon.com.
+    # Similarly, `rocm-sdk-core==<ver>` on PyPI is stuck at 0.1.0, wrong
+    # version. If we split the install and use --force-reinstall on the
+    # torch step, pip's resolver cascades to re-resolve all transitive
+    # deps, searches PyPI for rocm-sdk-libraries-custom, fails to find
+    # it, and aborts the whole install.
+    #
+    # Passing every URL in one command gives pip's resolver the full dep
+    # graph upfront. pip picks the right sources, builds the tarball via
+    # default build isolation, and --force-reinstall works correctly.
+    # Total download: ~2.1 GB for 7.2.1, ~3.9 GB for 7.1.1 (7.1.1's
+    # sdk_devel wheel is a massive 2.4 GB -- appears to ship debug
+    # symbols or unstripped libraries).
     pip_install(
-        f"ROCm SDK (Windows, {ver[0]}.{ver[1]})",
+        f"ROCm SDK + PyTorch (Windows, {ver[0]}.{ver[1]})",
         "--force-reinstall",
         "--no-cache-dir",
+        # SDK artefacts (AMD docs call this Step 1)
         wheels["sdk_core"],
         wheels["sdk_devel"],
         wheels["sdk_libraries"],
         wheels["sdk_tarball"],
-        constrain = False,
-        force_pip = True,
-    )
-
-    # Step 2: torch wheels. ~820 MB download.
-    pip_install(
-        f"ROCm torch (Windows, {ver[0]}.{ver[1]})",
-        "--force-reinstall",
-        "--no-cache-dir",
+        # torch artefacts (AMD docs call this Step 2)
         wheels["torch"],
         wheels["torchvision"],
         wheels["torchaudio"],
