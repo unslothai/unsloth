@@ -96,6 +96,16 @@ from models.inference import (
     ResponsesOutputMessage,
     ResponsesUsage,
     ResponsesResponse,
+    AnthropicMessagesRequest,
+    AnthropicMessagesResponse,
+    AnthropicResponseTextBlock,
+    AnthropicResponseToolUseBlock,
+    AnthropicUsage,
+)
+from core.inference.anthropic_compat import (
+    anthropic_messages_to_openai,
+    anthropic_tools_to_openai,
+    AnthropicStreamEmitter,
 )
 from auth.authentication import get_current_subject
 
@@ -2201,3 +2211,320 @@ async def openai_responses(
     if payload.stream:
         return await _responses_stream(payload, messages, request)
     return await _responses_non_streaming(payload, messages, request)
+
+
+# =====================================================================
+# Anthropic-Compatible Messages API  (/messages → /v1/messages)
+# =====================================================================
+
+
+@router.post("/messages")
+async def anthropic_messages(
+    payload: AnthropicMessagesRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Anthropic-compatible Messages API endpoint.
+
+    Translates Anthropic message format to internal OpenAI format, runs
+    through the existing agentic tool loop when tools are provided, and
+    returns responses in Anthropic Messages API format (streaming SSE or
+    non-streaming JSON).
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = "No GGUF model loaded. Load a GGUF model first.",
+        )
+
+    model_name = getattr(llama_backend, "model_identifier", None) or payload.model
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    # ── Translate Anthropic → OpenAI ──────────────────────────
+    openai_messages = anthropic_messages_to_openai(
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+    )
+
+    temperature = payload.temperature if payload.temperature is not None else 0.6
+    top_p = payload.top_p if payload.top_p is not None else 0.95
+    top_k = payload.top_k if payload.top_k is not None else 20
+
+    cancel_event = threading.Event()
+
+    # ── Tool-calling path ─────────────────────────────────────
+    use_tools = (
+        payload.tools
+        and len(payload.tools) > 0
+        and llama_backend.supports_tools
+    )
+
+    if use_tools:
+        from core.inference.tools import ALL_TOOLS
+
+        openai_tools = anthropic_tools_to_openai(payload.tools)
+
+        # Build tool-use system prompt nudge (same logic as /chat/completions)
+        _tool_names = {t["function"]["name"] for t in openai_tools}
+        _has_web = "web_search" in _tool_names
+        _has_code = "python" in _tool_names or "terminal" in _tool_names
+
+        _date_line = f"The current date is {_date.today().isoformat()}."
+        _model_size_b = _extract_model_size_b(model_name)
+        _is_small_model = _model_size_b is not None and _model_size_b < 9
+
+        if _is_small_model:
+            _web_tips = "Do not repeat the same search query."
+        else:
+            _web_tips = (
+                "When you search and find a relevant URL in the results, "
+                "fetch its full content by calling web_search with the url parameter. "
+                "Do not repeat the same search query. If a search returns "
+                "no useful results, try rephrasing or fetching a result URL directly."
+            )
+        _code_tips = (
+            "Use code execution for math, calculations, data processing, "
+            "or to parse and analyze information from tool results."
+        )
+
+        if _has_web and _has_code:
+            _nudge = (
+                _date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "tools rather than answering from memory. "
+                + _web_tips + " " + _code_tips
+            )
+        elif _has_code:
+            _nudge = (
+                _date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "code execution rather than answering from memory. " + _code_tips
+            )
+        elif _has_web:
+            _nudge = (
+                _date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "web search for up-to-date or uncertain factual "
+                "information rather than answering from memory. " + _web_tips
+            )
+        else:
+            _nudge = ""
+
+        if _nudge:
+            _nudge += _TOOL_ACTION_NUDGE
+            # Inject into system prompt
+            if openai_messages and openai_messages[0].get("role") == "system":
+                openai_messages[0]["content"] = (
+                    openai_messages[0]["content"].rstrip() + "\n\n" + _nudge
+                )
+            else:
+                openai_messages.insert(0, {"role": "system", "content": _nudge})
+
+        # Strip stale tool-call XML from conversation
+        for _msg in openai_messages:
+            if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+
+        def _run_tool_gen():
+            return llama_backend.generate_chat_completion_with_tools(
+                messages = openai_messages,
+                tools = openai_tools,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                max_tokens = payload.max_tokens,
+                cancel_event = cancel_event,
+                max_tool_iterations = 25,
+                auto_heal_tool_calls = True,
+                tool_call_timeout = 300,
+            )
+
+        if payload.stream:
+            return await _anthropic_tool_stream(
+                request, cancel_event, _run_tool_gen, message_id, model_name,
+            )
+        return await _anthropic_tool_non_streaming(
+            _run_tool_gen, message_id, model_name,
+        )
+
+    # ── No-tool path ──────────────────────────────────────────
+    def _run_plain_gen():
+        return llama_backend.generate_chat_completion(
+            messages = openai_messages,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            max_tokens = payload.max_tokens,
+            cancel_event = cancel_event,
+        )
+
+    if payload.stream:
+        return await _anthropic_plain_stream(
+            request, cancel_event, _run_plain_gen, message_id, model_name,
+        )
+    return await _anthropic_plain_non_streaming(
+        _run_plain_gen, message_id, model_name,
+    )
+
+
+async def _anthropic_tool_stream(
+    request, cancel_event, run_gen, message_id, model_name,
+):
+    """Streaming response for the tool-calling path."""
+    _sentinel = object()
+
+    async def _stream():
+        emitter = AnthropicStreamEmitter()
+        for line in emitter.start(message_id, model_name):
+            yield line
+
+        gen = run_gen()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    return
+                event = await asyncio.to_thread(next, gen, _sentinel)
+                if event is _sentinel:
+                    break
+                for line in emitter.feed(event):
+                    yield line
+        except Exception as e:
+            logger.error("anthropic_messages stream error: %s", e)
+
+        for line in emitter.finish("end_turn"):
+            yield line
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _anthropic_plain_stream(
+    request, cancel_event, run_gen, message_id, model_name,
+):
+    """Streaming response for the no-tool path."""
+    _sentinel = object()
+
+    async def _stream():
+        emitter = AnthropicStreamEmitter()
+        for line in emitter.start(message_id, model_name):
+            yield line
+
+        gen = run_gen()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    return
+                cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                if cumulative is _sentinel:
+                    break
+                if isinstance(cumulative, dict):
+                    if cumulative.get("type") == "metadata":
+                        for line in emitter.feed(cumulative):
+                            yield line
+                    continue
+                # Plain generator yields cumulative text strings
+                for line in emitter.feed({"type": "content", "text": cumulative}):
+                    yield line
+        except Exception as e:
+            logger.error("anthropic_messages stream error: %s", e)
+
+        for line in emitter.finish("end_turn"):
+            yield line
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
+    """Non-streaming response for the tool-calling path."""
+    text_parts = []
+    tool_blocks = []
+    usage = {}
+    prev_text = ""
+
+    for event in run_gen():
+        etype = event.get("type", "")
+        if etype == "content":
+            new = event["text"][len(prev_text):]
+            prev_text = event["text"]
+            if new:
+                text_parts.append(new)
+        elif etype == "tool_start":
+            tool_blocks.append(AnthropicResponseToolUseBlock(
+                id = event["tool_call_id"],
+                name = event["tool_name"],
+                input = event.get("arguments", {}),
+            ))
+        elif etype == "metadata":
+            usage = event.get("usage", {})
+
+    content_blocks = []
+    for tb in tool_blocks:
+        content_blocks.append(tb)
+    full_text = "".join(text_parts)
+    if full_text:
+        content_blocks.append(AnthropicResponseTextBlock(text = full_text))
+
+    resp = AnthropicMessagesResponse(
+        id = message_id,
+        model = model_name,
+        content = content_blocks,
+        stop_reason = "end_turn",
+        usage = AnthropicUsage(
+            input_tokens = usage.get("prompt_tokens", 0),
+            output_tokens = usage.get("completion_tokens", 0),
+        ),
+    )
+    return JSONResponse(content = resp.model_dump())
+
+
+async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
+    """Non-streaming response for the no-tool path."""
+    text_parts = []
+    usage = {}
+    prev_text = ""
+
+    for cumulative in run_gen():
+        if isinstance(cumulative, dict):
+            if cumulative.get("type") == "metadata":
+                usage = cumulative.get("usage", {})
+            continue
+        new = cumulative[len(prev_text):]
+        prev_text = cumulative
+        if new:
+            text_parts.append(new)
+
+    full_text = "".join(text_parts)
+    content_blocks = []
+    if full_text:
+        content_blocks.append(AnthropicResponseTextBlock(text = full_text))
+
+    resp = AnthropicMessagesResponse(
+        id = message_id,
+        model = model_name,
+        content = content_blocks,
+        stop_reason = "end_turn",
+        usage = AnthropicUsage(
+            input_tokens = usage.get("prompt_tokens", 0),
+            output_tokens = usage.get("completion_tokens", 0),
+        ),
+    )
+    return JSONResponse(content = resp.model_dump())
