@@ -336,6 +336,7 @@ def get_dataset_splits(
 
         all_splits: list[SplitEntry] = []
         last_config_error: str | None = None
+        last_config_status: int = 500
         for config in configs:
             try:
                 split_names = get_dataset_split_names(
@@ -351,6 +352,17 @@ def get_dataset_splits(
                             split = split_name,
                         )
                     )
+            except HfHubHTTPError as config_err:
+                logger.warning(
+                    f"Could not fetch splits for config '{config}': {config_err}"
+                )
+                last_config_error = str(config_err)
+                last_config_status = (
+                    config_err.response.status_code
+                    if config_err.response is not None
+                    else 500
+                )
+                continue
             except Exception as config_err:
                 logger.warning(
                     f"Could not fetch splits for config '{config}': {config_err}"
@@ -360,10 +372,11 @@ def get_dataset_splits(
 
         # If configs were found but every single one failed, surface the
         # error so the UI can show an actionable message instead of a
-        # misleading empty-success response.
+        # misleading empty-success response.  Preserve the original HF
+        # status code (e.g. 401/403) when available.
         if configs and not all_splits and last_config_error:
             raise HTTPException(
-                status_code = 500,
+                status_code = last_config_status,
                 detail = (
                     f"Failed to fetch splits for any config of '{dataset_name}'. "
                     f"Last error: {last_config_error}"
