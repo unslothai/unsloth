@@ -87,18 +87,34 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             # No usable dict turn in the first 100 rows — record as fallback
             # and continue probing the remaining candidates.  A later column
             # may be healthy and should take priority.
-            if all_corrupt_fallback is None:
-                # Only treat the column as a corrupt conversation column when
-                # we actually saw evidence of turn-shaped data: a list that
-                # contains at least one dict or None element, or the cell
-                # itself is None.  This keeps plain scalar columns (strings,
-                # ints, etc.) and plain list-of-strings columns (e.g. a
-                # `texts` column of raw text) from being misclassified as
-                # chatml with a bogus all_corrupt match.
+            # Only treat the column as a corrupt conversation column when
+            # we actually saw evidence of turn-shaped data: a list that
+            # contains at least one dict or None element, or the cell
+            # itself is None.  This keeps plain scalar columns (strings,
+            # ints, etc.) and plain list-of-strings columns (e.g. a
+            # `texts` column of raw text) from being misclassified as
+            # chatml with a bogus all_corrupt match.
+            # Upgrade the fallback when a later candidate looks more
+            # plausible than the currently stored one, so probe order does
+            # not silently discard a better match.
+            if (
+                all_corrupt_fallback is None
+                or not all_corrupt_fallback.get("has_plausible_turns")
+            ):
                 has_plausible_turns = False
                 for i in range(min(len(dataset), 100)):
                     cell = dataset[i][col]
                     if cell is None:
+                        has_plausible_turns = True
+                        break
+                    if isinstance(cell, dict):
+                        # Struct-typed column (row is a single dict instead
+                        # of a list of dicts, e.g. a user typo of
+                        # messages=[{"role":...}] instead of
+                        # [[{"role":...}]]).  The scanner's non-list branch
+                        # handles this by flagging each row as invalid_type,
+                        # so route it to chatml instead of falling through
+                        # to `unknown`.
                         has_plausible_turns = True
                         break
                     if isinstance(cell, list):
@@ -152,9 +168,20 @@ def is_none_or_empty(value) -> bool:
         return True
     if isinstance(value, list):
         # OpenAI/VLM multimodal shape: content = [{"type":"text","text":"..."}, {"type":"image",...}].
-        # Flag empty lists and lists whose only text blocks are empty/whitespace.
+        # Flag empty lists outright.  For non-empty lists, only flag when
+        # text blocks exist *and* every text block is empty/whitespace *and*
+        # there is no non-text block (image / audio / tool-call) that
+        # provides real content.  An image-only turn with no text is not
+        # corrupt — the image itself is the content.
         if len(value) == 0:
             return True
+        non_text_blocks = [
+            item
+            for item in value
+            if isinstance(item, dict) and item.get("type") != "text"
+        ]
+        if non_text_blocks:
+            return False
         text_values = [
             item.get("text")
             for item in value
@@ -177,6 +204,11 @@ def _classify_empty(value) -> str:
             return "empty_string"
         if not value.strip():
             return "whitespace_only"
+    if isinstance(value, list):
+        # Mirrors the VLM/OpenAI content-block handling in is_none_or_empty.
+        if len(value) == 0:
+            return "empty_list"
+        return "empty_vlm_content"
     return "valid"  # should not reach here if is_none_or_empty was True
 
 
@@ -390,14 +422,19 @@ def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
 def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
     """gptoss: role/content plus optional thinking/tool_calls. Only content checked."""
     if col is None:
-        # gptoss data canonically lives in 'messages', but some third-party
-        # exports reuse the generic 'conversations' column name.  Probe
-        # messages first (priority order preserved) and fall back to
-        # conversations so an explicit fmt='gptoss' call on a
-        # conversations-only dataset still works.
-        conv_info = _probe_conversation(
-            dataset, candidates = ("messages", "conversations"),
-        )
+        # gptoss data canonically lives in 'messages'.  Preserve the original
+        # P1 invariant that a corrupt messages column alongside a clean
+        # conversations column is never silently replaced by the cleaner
+        # column: if messages exists at all, always target it.  Fall back to
+        # 'conversations' only when the messages column is absent entirely
+        # (some third-party exports rename the gptoss column to
+        # 'conversations').  This keeps explicit fmt='gptoss' on a
+        # conversations-only dataset working without masking real errors on
+        # a corrupt canonical column.
+        if "messages" in dataset.column_names:
+            conv_info = _probe_conversation(dataset, candidates = ("messages",))
+        else:
+            conv_info = _probe_conversation(dataset, candidates = ("conversations",))
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
@@ -520,19 +557,38 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # Guard against accidentally passing a DatasetDict (e.g. load_dataset
     # without split=...) — otherwise column_names returns a mapping of split
     # names and the probe silently produces a confusing "unknown format"
-    # error.  Import locally so importing this module never requires the
-    # DatasetDict symbol from `datasets`.
+    # error.  IterableDatasetDict (streaming load without split) is *not* a
+    # subclass of DatasetDict, so both types must be checked.  Import
+    # locally so importing this module never requires the DatasetDict
+    # symbols from `datasets`.
+    _dict_types = []
     try:
         from datasets import DatasetDict as _DatasetDict
+        _dict_types.append(_DatasetDict)
     except ImportError:
-        _DatasetDict = None
-    if _DatasetDict is not None and isinstance(dataset, _DatasetDict):
+        pass
+    try:
+        from datasets import IterableDatasetDict as _IterableDatasetDict
+        _dict_types.append(_IterableDatasetDict)
+    except ImportError:
+        pass
+    if _dict_types and isinstance(dataset, tuple(_dict_types)):
         raise ValueError(
             "scan_dataset requires a single Dataset split, not a DatasetDict. "
             f"Available splits: {list(dataset.keys())}. "
             "Pass dataset[<split>] or use load_dataset(..., split='train')."
         )
     was_auto = fmt == "auto"
+    # Zero-row datasets have nothing to scan and would otherwise fall
+    # through the probe to an "unknown format" error.  Return a trivially
+    # clean stats dict so callers don't have to special-case empty inputs.
+    if was_auto and len(dataset) == 0:
+        return {
+            "format": "unknown",
+            "total_rows": 0,
+            "findings": [],
+            "bad_row_indices": [],
+        }
     # Always probe so detection and column selection share one scan pass.
     conv_info = _probe_conversation(dataset)
     if was_auto:
@@ -689,14 +745,17 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
         elif col:
             conversation = row[col]
             if isinstance(conversation, list):
-                none_count = sum(
-                    1
-                    for t in conversation
-                    if not isinstance(t, dict)
-                    or is_none_or_empty(
-                        t.get("content") if "content" in t else t.get("value")
-                    )
-                )
+                def _is_bad_turn(t):
+                    if not isinstance(t, dict):
+                        return True
+                    c = t.get("content") if "content" in t else t.get("value")
+                    # Valid tool-calling assistant turns have empty content
+                    # but a populated tool_calls array; scan_dataset ignores
+                    # them, so the display should too.
+                    if is_none_or_empty(c) and not t.get("tool_calls"):
+                        return True
+                    return False
+                none_count = sum(1 for t in conversation if _is_bad_turn(t))
                 print(f"  {col}: {len(conversation)} turns ({none_count} None)")
                 print(f"  {'-' * 60}")
                 for i, turn in enumerate(conversation):
@@ -705,11 +764,14 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                         label = "None" if turn is None else "invalid_type"
                         print(f"  [{i:>3d}] {'unknown':<12s} [{label}]  << NONE")
                         continue
-                    role = str(turn.get("role") or turn.get("from", "?"))
+                    r = turn.get("role")
+                    if r is None:
+                        r = turn.get("from")
+                    role = "?" if r is None else str(r)
                     content = (
                         turn.get("content") if "content" in turn else turn.get("value")
                     )
-                    if is_none_or_empty(content):
+                    if is_none_or_empty(content) and not turn.get("tool_calls"):
                         status = "  << NONE"
                     else:
                         status = ""
