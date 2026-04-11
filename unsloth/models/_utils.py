@@ -2554,17 +2554,22 @@ def _prepare_model_for_qat(
         elif qat_scheme == "cactus":
             try:
                 from torchao.quantization import IntxWeightOnlyConfig
-                from torchao.dtypes import MappingType
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
 
+            # IntxWeightOnlyConfig already defaults to
+            # `mapping_type = MappingType.SYMMETRIC`, so we intentionally do not
+            # import `MappingType` here. Matches the upstream Cactus runtime
+            # int8 / per-group-32 / symmetric weight-only configuration.
+            group_size = 32
             base_config = IntxWeightOnlyConfig(
                 weight_dtype = torch.int8,
-                granularity = PerGroup(32),
-                mapping_type = MappingType.SYMMETRIC,
+                granularity = PerGroup(group_size),
             )
             filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= 32
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and m.in_features >= group_size
+                and m.in_features % group_size == 0
             )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
