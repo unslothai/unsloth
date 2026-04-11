@@ -107,16 +107,13 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                     if cell is None:
                         has_plausible_turns = True
                         break
-                    if isinstance(cell, dict):
-                        # Struct-typed column (row is a single dict instead
-                        # of a list of dicts, e.g. a user typo of
-                        # messages=[{"role":...}] instead of
-                        # [[{"role":...}]]).  The scanner's non-list branch
-                        # handles this by flagging each row as invalid_type,
-                        # so route it to chatml instead of falling through
-                        # to `unknown`.
-                        has_plausible_turns = True
-                        break
+                    # Struct-typed columns (row is a single dict instead of
+                    # a list of dicts) are NOT treated as plausible chat
+                    # columns: a dataset with a metadata column named
+                    # `messages` / `conversations` / `texts` should fall
+                    # through to "unknown format" rather than be classified
+                    # as a corrupt chatml dataset.  This matches the
+                    # behaviour of studio's existing format_detection.py.
                     if isinstance(cell, list):
                         # Empty list is a valid (but empty) conversation
                         # shape; a non-empty list is only plausible if it
@@ -164,8 +161,14 @@ def is_none_or_empty(value) -> bool:
     """True if value is None, empty string, whitespace-only, or an empty/whitespace-only VLM content block list."""
     if value is None:
         return True
-    if isinstance(value, str) and not value.strip():
-        return True
+    if isinstance(value, str):
+        # str.strip() removes whitespace-category characters but leaves
+        # zero-width/BOM format characters (U+FEFF, U+200B, U+200C, U+200D,
+        # U+2060) intact.  Those are invisible when rendered, so treat them
+        # as empty too — BOM artifacts are common in Windows-produced CSVs.
+        stripped = value.strip().strip("\ufeff\u200b\u200c\u200d\u2060")
+        if not stripped:
+            return True
     if isinstance(value, list):
         # OpenAI/VLM multimodal shape: content = [{"type":"text","text":"..."}, {"type":"image",...}].
         # Flag empty lists outright.  For non-empty lists, only flag when
@@ -188,7 +191,10 @@ def is_none_or_empty(value) -> bool:
             if isinstance(item, dict) and item.get("type") == "text"
         ]
         if text_values and all(
-            t is None or (isinstance(t, str) and not t.strip())
+            t is None or (
+                isinstance(t, str)
+                and not t.strip().strip("\ufeff\u200b\u200c\u200d\u2060")
+            )
             for t in text_values
         ):
             return True
@@ -202,7 +208,9 @@ def _classify_empty(value) -> str:
     if isinstance(value, str):
         if len(value) == 0:
             return "empty_string"
-        if not value.strip():
+        # Strings that are only whitespace or only invisible format
+        # characters (BOM / zero-width joiners) render as empty to users.
+        if not value.strip().strip("\ufeff\u200b\u200c\u200d\u2060"):
             return "whitespace_only"
     if isinstance(value, list):
         # Mirrors the VLM/OpenAI content-block handling in is_none_or_empty.
@@ -578,6 +586,19 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
             f"Available splits: {list(dataset.keys())}. "
             "Pass dataset[<split>] or use load_dataset(..., split='train')."
         )
+    # Streaming datasets do not expose len() / column_names, so the probe
+    # below would crash with a confusing TypeError.  Give a helpful error
+    # instead, matching the DatasetDict guard style above.
+    try:
+        from datasets import IterableDataset as _IterableDataset
+        if isinstance(dataset, _IterableDataset):
+            raise ValueError(
+                "scan_dataset requires a materialized Dataset, not an IterableDataset. "
+                "Load without streaming=True, or materialize a slice first: "
+                "Dataset.from_list(list(dataset.take(N)))."
+            )
+    except ImportError:
+        pass
     was_auto = fmt == "auto"
     # Zero-row datasets have nothing to scan and would otherwise fall
     # through the probe to an "unknown format" error.  Return a trivially
@@ -597,6 +618,17 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
             if entry["match"](dataset, conv_info):
                 fmt = entry["name"]
                 break
+        # Non-empty datasets that match no format should return a clean
+        # stats dict rather than raise, so callers can check
+        # `stats["format"] == "unknown"` instead of catching ValueError.
+        # Matches the zero-row early return above.
+        if fmt == "unknown":
+            return {
+                "format": "unknown",
+                "total_rows": len(dataset),
+                "findings": [],
+                "bad_row_indices": [],
+            }
     scanner = get_scanner(fmt)
     if scanner is None:
         raise ValueError(f"Unknown or unsupported format: '{fmt}'")
@@ -608,7 +640,16 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     #   picks a different column than the format expects, e.g. scan_dataset(
     #   fmt='sharegpt') should always scan 'conversations', not 'messages'
     #   even when both columns are all-corrupt (P1 fix).
-    use_probed_col = conv_info is not None and fmt != "alpaca" and was_auto
+    # gptoss is also exempted: find_none_gptoss has its own P1 priority
+    # rule (always target `messages` when it exists, even if corrupt), and
+    # forwarding a healthy `conversations` column from the generic probe
+    # would bypass that rule and silently report 0 bad rows when the
+    # canonical column is broken.
+    use_probed_col = (
+        conv_info is not None
+        and fmt not in ("alpaca", "gptoss")
+        and was_auto
+    )
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])
     else:
