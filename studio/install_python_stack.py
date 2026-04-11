@@ -527,6 +527,13 @@ def _ensure_rocm_torch() -> None:
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix) and falls
     # back to PyPI when the pre-release URL is unreachable.
+    #
+    # Both installs pass force_pip=True so uv is bypassed entirely. uv's
+    # installer corrupts the bitsandbytes wheel on ROCm even when the
+    # command reports success, leaving the venv with a broken bnb import
+    # at runtime. install.sh has the same fix in unslothai/unsloth#4966.
+    # We apply it to both the pre-release URL and the PyPI fallback so the
+    # fix stays consistent regardless of which branch runs.
     if rocm_torch_ready:
         # bitsandbytes has no official Windows ROCm wheel
         # (bitsandbytes-foundation/bitsandbytes#1844), so skip it entirely
@@ -544,6 +551,7 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _bnb_url,
                 constrain = False,
+                force_pip = True,
             )
             if not _bnb_installed:
                 print(
@@ -560,6 +568,7 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _BNB_ROCM_PYPI_FALLBACK,
                 constrain = False,
+                force_pip = True,
             )
 
 
@@ -859,15 +868,21 @@ def pip_install_try(
     label: str,
     *args: str,
     constrain: bool = True,
+    force_pip: bool = False,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs with a follow-up fallback.
+
+    ``force_pip`` skips uv entirely and goes straight to ``python -m pip
+    install``. Used for wheels that uv installs incorrectly -- notably
+    the bitsandbytes continuous-release_main wheel on ROCm, see
+    unslothai/unsloth#4966.
     """
     constraint_args: list[str] = []
     if constrain and CONSTRAINTS.is_file():
         constraint_args = ["-c", str(CONSTRAINTS)]
 
-    if USE_UV:
+    if USE_UV and not force_pip:
         cmd = _build_uv_cmd(args) + constraint_args
     else:
         cmd = _build_pip_cmd(args) + constraint_args
@@ -891,8 +906,15 @@ def pip_install(
     *args: str,
     req: Path | None = None,
     constrain: bool = True,
+    force_pip: bool = False,
 ) -> None:
-    """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    """Build and run a pip install command (uses uv when available, falls back to pip).
+
+    ``force_pip`` skips the uv attempt entirely and goes straight to
+    ``python -m pip install``. Use this for wheels that uv installs
+    incorrectly -- bitsandbytes pre-release ROCm wheels are the known
+    culprit, see unslothai/unsloth#4966.
+    """
     constraint_args: list[str] = []
     if constrain and CONSTRAINTS.is_file():
         constraint_args = ["-c", str(CONSTRAINTS)]
@@ -910,7 +932,7 @@ def pip_install(
         req_args = ["-r", str(actual_req)]
 
     try:
-        if USE_UV:
+        if USE_UV and not force_pip:
             uv_cmd = _build_uv_cmd(args) + constraint_args + req_args
             if VERBOSE:
                 print(f"   {label}...")
@@ -926,7 +948,7 @@ def pip_install(
                 print(result.stdout.decode(errors = "replace"))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
-        run(f"{label} (pip)" if USE_UV else label, pip_cmd)
+        run(f"{label} (pip)" if USE_UV and not force_pip else label, pip_cmd)
     finally:
         for temp_req in temp_reqs:
             temp_req.unlink(missing_ok = True)
