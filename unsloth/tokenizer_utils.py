@@ -712,13 +712,18 @@ def _fix_chat_template(chat_template):
                 )
             ]
             unique_role_seps = list(dict.fromkeys(role_seps))  # preserves order
-            if assistant_match is not None:
+            if assistant_match is not None and assistant_match.group(2):
+                # Non-empty captured separator (e.g. '<|im_start|>assistant\n').
                 separator = assistant_match.group(2)
             elif len(unique_role_seps) == 1:
                 separator = unique_role_seps[0]
             elif "<|im_sep|>" in scrubbed:
                 separator = "<|im_sep|>"
             else:
+                # Fallback for both the no-match case and the degenerate
+                # `'<|im_start|>assistant'` bare-literal case, so the
+                # injected Jinja block always produces a usable ChatML
+                # generation prefix.
                 separator = "\\n"
             # Use a double-quoted Jinja string literal so a single quote in
             # the separator (should one ever appear) cannot break the
@@ -730,10 +735,14 @@ def _fix_chat_template(chat_template):
                 "{%" + dash + " endif %}"
             )
             # `after_endfor` contains only whitespace and/or Jinja comments
-            # at this point (verified above), so it carries no semantic
-            # content for rendering. Drop it and append the generation
-            # block directly after `endfor`, matching the behavior of the
-            # first repair branch.
+            # at this point (verified by the scrubbed emptiness check
+            # above). Whitespace would render as stray trailing output
+            # after the generation prefix when
+            # `apply_chat_template(add_generation_prompt=True)` is called,
+            # so drop it entirely and place the generation block directly
+            # after `endfor`. Jinja comments are also dropped for the same
+            # reason: they have no runtime effect but their surrounding
+            # whitespace would be preserved if we kept them.
             chat_template = (
                 chat_template[: where + len(chosen_end)] + generation_block
             )
