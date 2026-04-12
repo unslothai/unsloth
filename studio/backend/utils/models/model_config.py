@@ -874,6 +874,7 @@ def _detect_audio_from_tokenizer(
 
         for tok_path in paths_to_try:
             from studio.backend.utils.hf_endpoint import get_hf_endpoint
+
             url = f"{get_hf_endpoint()}/{model_name}/resolve/main/{tok_path}"
             resp = requests.get(url, headers = headers, timeout = 15)
             if not resp.ok:
