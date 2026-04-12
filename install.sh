@@ -112,10 +112,14 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
-    # uv destroys bitsandbytes on ROCm, use pip instead.
-    # Ensure pip is installed first.
+    # uv rejects the continuous-release_main bitsandbytes wheel because the
+    # filename version (1.33.7rc0) does not match the embedded metadata version
+    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
-        uv pip install --python "$_venv_py" pip >/dev/null 2>&1 || true
+        if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
+            run_maybe_quiet uv pip install --python "$_venv_py" pip || \
+                substep "[WARN] could not bootstrap pip; bitsandbytes install will likely fail" "$C_WARN"
+        fi
     fi
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
