@@ -112,20 +112,20 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
+    # uv destroys bitsandbytes on ROCm, use pip instead.
+    # Ensure pip is installed first.
+    if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
+        uv pip install --python "$_venv_py" pip >/dev/null 2>&1 || true
+    fi
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        # uv destroys bitsandbytes, use pip instead
-        # Ensure pip is installed, then use it for this install.
-        if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
-            uv pip install --python "$_venv_py" pip >/dev/null 2>&1 || true
-        fi
         if run_install_cmd "$_label (pre-release)" "$_venv_py" -m pip install \
             --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
         substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
-    run_install_cmd "$_label (pypi fallback)" uv pip install --python "$_venv_py" \
+    run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
         --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
 }
 
