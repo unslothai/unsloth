@@ -1510,6 +1510,11 @@ if (Test-Path $VenvDir -PathType Container) {
         $shouldRebuild = $true
     }
 
+    # --no-torch: skip ROCm torch repair and wheel install entirely.
+    # Must be defined here (before stale-venv detection) because the
+    # expectedTorchTag and $_NeedRocmRepair logic below depend on it.
+    $_NoTorch = $env:UNSLOTH_NO_TORCH -in @("1", "true", "True", "TRUE")
+
     # $_NeedRocmRepair is used later to override the version fast-path
     # ($SkipPythonDeps) so the ROCm install block still runs even when
     # the unsloth package is already at the latest version.
@@ -1666,10 +1671,8 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
-# --no-torch mode: skip the ROCm wheel path entirely. AMD users running
-# install.ps1 --no-torch get a Python 3.13 venv (fine for GGUF); entering
-# the ROCm block would hard-fail on the 3.12 version check for no reason.
-$_NoTorch = $env:UNSLOTH_NO_TORCH -in @("1", "true", "True", "TRUE")
+# $_NoTorch was already initialized earlier (before stale-venv detection)
+# so it is available here for the $CuTag selection.
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
