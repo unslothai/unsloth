@@ -41,6 +41,8 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -54,13 +56,16 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
+        if accelerator == "mps":
+            return "mps"
     raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
+        "Unsloth currently only works on NVIDIA, AMD, Intel, and Apple Silicon GPUs."
     )
 
 
 DEVICE_TYPE: str = get_device_type()
 # HIP fails for autocast and other torch functions. Use CUDA instead
+# MPS uses its own device type for torch operations
 DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
@@ -72,6 +77,8 @@ def get_device_count():
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
+    elif DEVICE_TYPE == "mps":
+        return 1  # MPS only supports a single device
     else:
         return 1
 

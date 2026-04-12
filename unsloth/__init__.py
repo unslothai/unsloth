@@ -220,10 +220,17 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+elif DEVICE_TYPE == "mps":
+    # Apple Silicon (M1+) natively supports bfloat16
+    SUPPORTS_BFLOAT16 = True
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
+if DEVICE_TYPE == "mps":
+    # Triton is not available on MPS; skip triton and bitsandbytes CUDA-specific setup
+    triton = None
+else:
+    import triton
 
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
@@ -329,6 +336,10 @@ elif DEVICE_TYPE == "xpu":
     import bitsandbytes as bnb
 
     # TODO: check triton for intel installed properly.
+    pass
+elif DEVICE_TYPE == "mps":
+    # Apple Silicon MPS: Triton and bitsandbytes CUDA kernels are not available.
+    # 16-bit and full finetuning are supported; 4-bit QLoRA requires future bnb MPS support.
     pass
 
 from .models import *

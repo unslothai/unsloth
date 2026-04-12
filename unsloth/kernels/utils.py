@@ -13,11 +13,8 @@
 # limitations under the License.
 
 import importlib
-import triton
 import ctypes
 
-MAX_FUSED_SIZE: int = 65536
-next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
 
@@ -29,8 +26,6 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .fp8 import weight_dequant, fp8_linear
-import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -38,12 +33,29 @@ import torch
 torch_Tensor = torch.Tensor
 from unsloth_zoo.utils import Version
 
+# Triton is not available on MPS (Apple Silicon); conditionally import
+if DEVICE_TYPE == "mps":
+    triton = None
+    next_power_of_2 = lambda n: 1 << (n - 1).bit_length()
+else:
+    import triton
+    next_power_of_2 = triton.next_power_of_2
+
+MAX_FUSED_SIZE: int = 65536
+import functools
+
+from .fp8 import weight_dequant, fp8_linear
+
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError(
         "Intel xpu currently supports unsloth with torch.version >= 2.6.0"
     )
 
-if Version(torch.__version__) < Version("2.4.0"):
+if DEVICE_TYPE == "mps":
+    # MPS does not support autocast custom_fwd/bwd; use CPU fallback
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cpu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cpu")
+elif Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
 else:
@@ -56,28 +68,36 @@ if DEVICE_TYPE == "xpu":
 
 
 # tl.math.tanh now is libdevice.tanh
-import triton
-import triton.language as tl
+if DEVICE_TYPE != "mps":
+    import triton
+    import triton.language as tl
 
-if Version(triton.__version__) >= Version("3.0.0"):
-    if DEVICE_TYPE == "xpu":
-        triton_tanh = tl.extra.intel.libdevice.tanh
+    if Version(triton.__version__) >= Version("3.0.0"):
+        if DEVICE_TYPE == "xpu":
+            triton_tanh = tl.extra.intel.libdevice.tanh
+        else:
+            from triton.language.extra import libdevice
+
+            triton_tanh = libdevice.tanh
+        triton_cast = tl.cast
     else:
-        from triton.language.extra import libdevice
+        triton_tanh = tl.math.tanh
 
-        triton_tanh = libdevice.tanh
-    triton_cast = tl.cast
+        # No casting in old Triton versions
+        @triton.jit
+        def triton_cast(x, dtype):
+            return x.to(dtype)
 else:
-    triton_tanh = tl.math.tanh
-
-    # No casting in old Triton versions
-    @triton.jit
-    def triton_cast(x, dtype):
-        return x.to(dtype)
+    # MPS: Triton kernels not available; provide stubs
+    tl = None
+    triton_tanh = None
+    triton_cast = None
 
 
 @functools.lru_cache(1)
 def is_cdna():
+    if DEVICE_TYPE == "mps":
+        return False
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
         "gfx940",
         "gfx941",
@@ -89,6 +109,8 @@ def is_cdna():
 @functools.lru_cache(1)
 def is_rdna():
     """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA2, RDNA3, RDNA3.5, RDNA4)."""
+    if DEVICE_TYPE == "mps":
+        return False
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
         # RDNA2 (Navi 21-24)
         "gfx1030",
@@ -136,16 +158,29 @@ def calculate_settings(
 
 
 HAS_CUDA_STREAM = False
-import bitsandbytes as bnb
+HAS_MPS_DEVICE = DEVICE_TYPE == "mps"
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+if HAS_MPS_DEVICE:
+    # bitsandbytes CUDA kernels are not available on MPS; provide stubs
+    bnb = None
+    get_ptr = None
+else:
+    import bitsandbytes as bnb
+
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
 
-if DEVICE_COUNT > 1:
+if DEVICE_TYPE == "mps":
+    # MPS only has a single device, no multi-GPU context needed
+    from contextlib import nullcontext
+
+    def torch_gpu_device(device):
+        return nullcontext()
+elif DEVICE_COUNT > 1:
     if DEVICE_TYPE in ("cuda", "hip"):
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
@@ -157,28 +192,40 @@ else:
         return nullcontext()
 
 
-# INTEL GPU Specific Logic
-if DEVICE_TYPE == "xpu":
-    _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
-# NVIDIA GPU Default Logic
-else:
-    _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
-
 c_void_p = ctypes.c_void_p
 
+if DEVICE_TYPE == "mps":
+    # MPS does not have raw CUDA/XPU streams
+    _gpu_getCurrentRawStream = None
 
-def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-    return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
+    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+        return c_void_p(0)
+else:
+    # INTEL GPU Specific Logic
+    if DEVICE_TYPE == "xpu":
+        _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
+    # NVIDIA GPU Default Logic
+    else:
+        _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+
+    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+        return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 
 # Get array of CUDA streams and other buffers
 global CUDA_STREAMS
 global XPU_STREAMS
+global MPS_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
+if DEVICE_TYPE == "mps":
+    # MPS has no explicit stream management; provide minimal stubs
+    MPS_STREAMS = (ctypes.c_void_p(0),)
+    WEIGHT_BUFFERS = [None]
+    ABSMAX_BUFFERS = [None]
 # INTEL GPU Specific Logic
-if DEVICE_TYPE == "xpu":
+elif DEVICE_TYPE == "xpu":
     _XPU_STREAMS = {
         (index := torch.xpu.device(i).idx): ctypes.c_void_p(
             torch._C._xpu_getCurrentRawStream(index)
@@ -211,23 +258,36 @@ else:
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
 
-if DEVICE_TYPE == "xpu":
-    # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
-    # for xpu, inference gemv using above link
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+if HAS_MPS_DEVICE:
+    # Stubs for bitsandbytes operations not available on MPS
+    cdequantize_blockwise_fp32 = None
+    cdequantize_blockwise_fp16_nf4 = None
+    cdequantize_blockwise_bf16_nf4 = None
+    cgemm_4bit_inference_naive_fp16 = None
+    cgemm_4bit_inference_naive_bf16 = None
 else:
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+
+    if DEVICE_TYPE == "xpu":
+        # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
+        # for xpu, inference gemv using above link
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+    else:
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
 
-torch_device_stream = (
-    torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
-)
+if DEVICE_TYPE == "mps":
+    # MPS does not have stream objects like CUDA/XPU
+    torch_device_stream = None
+elif DEVICE_TYPE == "xpu":
+    torch_device_stream = torch.xpu.current_stream
+else:
+    torch_device_stream = torch.cuda.current_stream
 
 torch_mm = torch.mm
 torch_mv = torch.mv
