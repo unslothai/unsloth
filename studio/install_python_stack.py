@@ -500,8 +500,11 @@ def _ensure_rocm_torch_windows() -> None:
     # call (or a prior setup.ps1 / install.ps1 run) already succeeded.
     try:
         _probe = subprocess.run(
-            [sys.executable, "-c",
-             "import torch; print(getattr(torch.version,'hip','') or '')"],
+            [
+                sys.executable,
+                "-c",
+                "import torch; print(getattr(torch.version,'hip','') or '')",
+            ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             timeout = 30,
