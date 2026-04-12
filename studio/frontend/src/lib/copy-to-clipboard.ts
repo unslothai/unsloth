@@ -64,9 +64,12 @@ export async function copyToClipboardAsync(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // After an await rejection the synchronous user-gesture frame is gone,
-      // so execCommand will also fail. Return false rather than attempting it.
-      return false;
+      // Clipboard API rejected (e.g. NotAllowedError, permission policy).
+      // User activation is still valid through promise chains per spec, so
+      // execCommand can succeed for callers outside focus-trapped dialogs.
+      // Inside a Radix modal the focus trap will block textarea.focus() and
+      // execCommand returns false harmlessly.
+      return copyWithExecCommand(text);
     }
   }
 
