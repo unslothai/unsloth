@@ -43,7 +43,7 @@ function formatBytes(n: number): string {
 }
 
 function formatCachePath(path: string): string {
-  return path.replace(/^\/home\/[^/]+/, "~");
+  return path.replace(/^\/(?:home|Users)\/[^/]+/, "~");
 }
 
 type DownloadState = {
@@ -161,7 +161,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}`
       : state.downloadedBytes > 0
         ? `${formatBytes(state.downloadedBytes)} downloaded`
-        : "preparing...";
+        : null;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
       <div className="flex items-center justify-between gap-3">
@@ -177,9 +177,11 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           {state.totalBytes > 0 ? `${state.percent}%` : ""}
         </span>
       </div>
-      <div className="text-[11px] tabular-nums text-muted-foreground">
-        {sizeLabel}
-      </div>
+      {sizeLabel ? (
+        <div className="text-[11px] tabular-nums text-muted-foreground">
+          {sizeLabel}
+        </div>
+      ) : null}
       {state.totalBytes > 0 ? (
         <Progress
           value={state.percent}
