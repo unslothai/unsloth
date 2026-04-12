@@ -43,7 +43,9 @@ function formatBytes(n: number): string {
 }
 
 function formatCachePath(path: string): string {
-  return path.replace(/^\/(?:home|Users)\/[^/]+/, "~");
+  return path
+    .replace(/^\/(?:home|Users)\/[^/]+/, "~")
+    .replace(/^[A-Za-z]:[/\\]Users[/\\][^/\\]+/, "~");
 }
 
 type DownloadState = {
@@ -153,9 +155,11 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   const isComplete = state.totalBytes > 0 && state.percent >= 100;
   const statusLabel = isComplete
     ? "Ready"
-    : state.downloadedBytes > 0
+    : state.totalBytes > 0
       ? "Downloading"
-      : "Preparing";
+      : state.downloadedBytes === 0
+        ? "Preparing"
+        : null;
   const sizeLabel =
     state.totalBytes > 0
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}`
@@ -167,11 +171,13 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xs text-foreground/90">{label}</span>
-          <span
-            className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
-          >
-            {statusLabel}
-          </span>
+          {statusLabel ? (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
+            >
+              {statusLabel}
+            </span>
+          ) : null}
         </div>
         <span className="text-xs tabular-nums text-muted-foreground">
           {state.totalBytes > 0 ? `${state.percent}%` : ""}
