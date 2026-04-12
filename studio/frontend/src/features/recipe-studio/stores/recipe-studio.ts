@@ -41,6 +41,7 @@ import {
   optimizeModelInfraEdgeHandles,
 } from "./helpers/model-infra-layout";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import {
   applyRenameToConfigs,
   applyLayoutDirectionToNodes,
@@ -404,7 +405,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_split: "",
         hf_path: "",
         hf_token: "",
-        hf_endpoint: "https://huggingface.co",
+        hf_endpoint: getHfEndpoint(),
         local_file_name: "",
         unstructured_file_ids: [],
         unstructured_file_names: [],

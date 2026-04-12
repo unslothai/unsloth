@@ -235,8 +235,9 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
 
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
+    from studio.backend.utils.hf_endpoint import get_hf_endpoint
 
-    url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    url = f"{get_hf_endpoint()}/{model_name}/raw/main/tokenizer_config.json"
     try:
         req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
         with urllib.request.urlopen(req, timeout = 10) as resp:
@@ -301,8 +302,9 @@ def _check_config_needs_550(model_name: str) -> bool:
 
     # --- Fall back to fetching from HuggingFace ---------------------------
     import urllib.request
+    from studio.backend.utils.hf_endpoint import get_hf_endpoint
 
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    url = f"{get_hf_endpoint()}/{model_name}/raw/main/config.json"
     try:
         req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
         with urllib.request.urlopen(req, timeout = 10) as resp:

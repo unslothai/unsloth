@@ -18,6 +18,7 @@ interface PlatformState {
   deviceType: DeviceType;
   chatOnly: boolean;
   fetched: boolean;
+  hfEndpoint: string;
   isChatOnly: () => boolean;
 }
 
@@ -25,6 +26,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: "linux",
   chatOnly: false,
   fetched: false,
+  hfEndpoint: "https://huggingface.co",
   isChatOnly: () => get().chatOnly,
 }));
 
@@ -35,10 +37,15 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   try {
     const res = await fetch("/api/health");
     if (res.ok) {
-      const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
+      const data = (await res.json()) as {
+        device_type?: string;
+        chat_only?: boolean;
+        hf_endpoint?: string;
+      };
       const deviceType = data.device_type ?? "linux";
       const chatOnly = data.chat_only ?? deviceType === "mac";
-      usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
+      const hfEndpoint = data.hf_endpoint ?? "https://huggingface.co";
+      usePlatformStore.setState({ deviceType, chatOnly, hfEndpoint, fetched: true });
       return deviceType;
     }
   } catch (err) {
