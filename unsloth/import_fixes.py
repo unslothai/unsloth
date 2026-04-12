@@ -910,7 +910,7 @@ def fix_huggingface_hub():
         ):
             _validators[types.UnionType] = _validate_union
     except Exception as e:
-        logger.debug(
+        logger.info(
             f"Unsloth: Failed to patch huggingface_hub dataclass validators: {e}"
         )
 
