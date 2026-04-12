@@ -2672,21 +2672,36 @@ async def _anthropic_passthrough_stream(
                     json = body,
                     timeout = 600,
                 ) as resp:
-                    async for raw_line in resp.aiter_lines():
-                        if await request.is_disconnected():
-                            cancel_event.set()
-                            return
-                        if not raw_line or not raw_line.startswith("data: "):
-                            continue
-                        data_str = raw_line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
+                    # Explicitly manage the aiter_lines() iterator so it is
+                    # closed in this task before the surrounding `async with`
+                    # blocks unwind the response / client. Without this, the
+                    # inner httpcore byte-stream gets finalized by the GC in
+                    # a different asyncio task on Python 3.13 + httpcore 1.x,
+                    # raising "Attempted to exit cancel scope in a different
+                    # task" and "async generator ignored GeneratorExit".
+                    lines_iter = resp.aiter_lines()
+                    try:
+                        async for raw_line in lines_iter:
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
+                            if not raw_line or not raw_line.startswith("data: "):
+                                continue
+                            data_str = raw_line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            for line in emitter.feed_chunk(chunk):
+                                yield line
+                    finally:
                         try:
-                            chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        for line in emitter.feed_chunk(chunk):
-                            yield line
+                            await lines_iter.aclose()
+                        except RuntimeError:
+                            # Python 3.13 + httpcore 1.0.x asyncgen cleanup
+                            pass
         except Exception as e:
             logger.error("anthropic_messages passthrough stream error: %s", e)
 
