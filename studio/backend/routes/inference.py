@@ -106,6 +106,7 @@ from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
     anthropic_tools_to_openai,
     AnthropicStreamEmitter,
+    AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
 
@@ -2254,20 +2255,53 @@ async def anthropic_messages(
 
     cancel_event = threading.Event()
 
-    # ── Tool-calling path ─────────────────────────────────────
-    # Two ways to enable tools:
-    # 1. Anthropic-style: send full tool definitions in payload.tools
-    # 2. Unsloth shorthand: enable_tools=true + optional enabled_tools list
-    use_tools = llama_backend.supports_tools and (
-        (payload.tools and len(payload.tools) > 0) or payload.enable_tools
+    # ── Tool routing ──────────────────────────────────────────
+    # Three paths:
+    # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
+    # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
+    # 3. neither           → plain chat
+    server_tools = payload.enable_tools and llama_backend.supports_tools
+    client_tools = (
+        not server_tools
+        and payload.tools
+        and len(payload.tools) > 0
+        and llama_backend.supports_tools
     )
 
-    if use_tools:
+    # ── Client-side pass-through path ─────────────────────────
+    if client_tools:
+        openai_tools = anthropic_tools_to_openai(payload.tools)
+
+        if payload.stream:
+            return await _anthropic_passthrough_stream(
+                request,
+                cancel_event,
+                llama_backend,
+                openai_messages,
+                openai_tools,
+                temperature,
+                top_p,
+                top_k,
+                payload.max_tokens,
+                message_id,
+                model_name,
+            )
+        return await _anthropic_passthrough_non_streaming(
+            llama_backend,
+            openai_messages,
+            openai_tools,
+            temperature,
+            top_p,
+            top_k,
+            payload.max_tokens,
+            message_id,
+            model_name,
+        )
+
+    if server_tools:
         from core.inference.tools import ALL_TOOLS
 
-        if payload.tools and len(payload.tools) > 0:
-            openai_tools = anthropic_tools_to_openai(payload.tools)
-        elif payload.enabled_tools is not None:
+        if payload.enabled_tools is not None:
             openai_tools = [
                 t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
             ]
@@ -2567,3 +2601,184 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
         ),
     )
     return JSONResponse(content = resp.model_dump())
+
+
+# =====================================================================
+# Client-side tool pass-through (Anthropic-native tools field)
+# =====================================================================
+
+
+def _build_passthrough_payload(
+    openai_messages,
+    openai_tools,
+    temperature,
+    top_p,
+    top_k,
+    max_tokens,
+    stream,
+):
+    body = {
+        "messages": openai_messages,
+        "tools": openai_tools,
+        "tool_choice": "auto",
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "stream": stream,
+    }
+    if stream:
+        body["stream_options"] = {"include_usage": True}
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+    return body
+
+
+async def _anthropic_passthrough_stream(
+    request,
+    cancel_event,
+    llama_backend,
+    openai_messages,
+    openai_tools,
+    temperature,
+    top_p,
+    top_k,
+    max_tokens,
+    message_id,
+    model_name,
+):
+    """Streaming client-side pass-through: forward tools to llama-server and
+    translate its streaming response to Anthropic SSE without executing anything."""
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    body = _build_passthrough_payload(
+        openai_messages,
+        openai_tools,
+        temperature,
+        top_p,
+        top_k,
+        max_tokens,
+        True,
+    )
+
+    async def _stream():
+        emitter = AnthropicPassthroughEmitter()
+        for line in emitter.start(message_id, model_name):
+            yield line
+
+        try:
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    target_url,
+                    json = body,
+                    timeout = 600,
+                ) as resp:
+                    async for raw_line in resp.aiter_lines():
+                        if await request.is_disconnected():
+                            cancel_event.set()
+                            return
+                        if not raw_line or not raw_line.startswith("data: "):
+                            continue
+                        data_str = raw_line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        for line in emitter.feed_chunk(chunk):
+                            yield line
+        except Exception as e:
+            logger.error("anthropic_messages passthrough stream error: %s", e)
+
+        for line in emitter.finish():
+            yield line
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _anthropic_passthrough_non_streaming(
+    llama_backend,
+    openai_messages,
+    openai_tools,
+    temperature,
+    top_p,
+    top_k,
+    max_tokens,
+    message_id,
+    model_name,
+):
+    """Non-streaming client-side pass-through."""
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    body = _build_passthrough_payload(
+        openai_messages,
+        openai_tools,
+        temperature,
+        top_p,
+        top_k,
+        max_tokens,
+        False,
+    )
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(target_url, json = body, timeout = 600)
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code = resp.status_code,
+            detail = f"llama-server error: {resp.text[:500]}",
+        )
+
+    data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    finish_reason = choice.get("finish_reason")
+
+    content_blocks = []
+    text = message.get("content") or ""
+    if text:
+        text = _TOOL_XML_RE.sub("", text).strip()
+        if text:
+            content_blocks.append(AnthropicResponseTextBlock(text = text))
+
+    tool_calls = message.get("tool_calls") or []
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments", "{}"))
+        except json.JSONDecodeError:
+            args = {}
+        content_blocks.append(
+            AnthropicResponseToolUseBlock(
+                id = tc.get("id", ""),
+                name = fn.get("name", ""),
+                input = args,
+            )
+        )
+
+    if tool_calls:
+        stop_reason = "tool_use"
+    elif finish_reason == "length":
+        stop_reason = "max_tokens"
+    else:
+        stop_reason = "end_turn"
+
+    usage = data.get("usage") or {}
+    resp_obj = AnthropicMessagesResponse(
+        id = message_id,
+        model = model_name,
+        content = content_blocks,
+        stop_reason = stop_reason,
+        usage = AnthropicUsage(
+            input_tokens = usage.get("prompt_tokens", 0),
+            output_tokens = usage.get("completion_tokens", 0),
+        ),
+    )
+    return JSONResponse(content = resp_obj.model_dump())

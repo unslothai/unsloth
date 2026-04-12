@@ -30,6 +30,7 @@ from core.inference.anthropic_compat import (
     anthropic_tools_to_openai,
     build_anthropic_sse_event,
     AnthropicStreamEmitter,
+    AnthropicPassthroughEmitter,
 )
 
 
@@ -486,3 +487,193 @@ class TestAnthropicStreamEmitter:
         events = e.feed({"type": "content", "text": "After tool"})
         parsed = json.loads(events[0].split("data: ")[1])
         assert parsed["delta"]["text"] == "After tool"
+
+
+# =====================================================================
+# Pass-through emitter tests (client-side tool execution path)
+# =====================================================================
+
+
+class TestAnthropicPassthroughEmitter:
+
+    def _parse(self, event_str):
+        return json.loads(event_str.split("data: ")[1])
+
+    def test_start_emits_message_start_only(self):
+        e = AnthropicPassthroughEmitter()
+        events = e.start("msg_1", "test-model")
+        assert len(events) == 1
+        assert "message_start" in events[0]
+        parsed = self._parse(events[0])
+        assert parsed["message"]["id"] == "msg_1"
+        assert parsed["message"]["model"] == "test-model"
+
+    def test_text_chunk_opens_text_block_and_emits_delta(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        chunk = {"choices": [{"delta": {"content": "Hello"}}]}
+        events = e.feed_chunk(chunk)
+        # content_block_start + content_block_delta
+        assert len(events) == 2
+        assert "content_block_start" in events[0]
+        assert '"type": "text"' in events[0]
+        delta = self._parse(events[1])
+        assert delta["delta"]["type"] == "text_delta"
+        assert delta["delta"]["text"] == "Hello"
+
+    def test_sequential_text_chunks_single_block(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        events1 = e.feed_chunk({"choices": [{"delta": {"content": "Hello"}}]})
+        events2 = e.feed_chunk({"choices": [{"delta": {"content": " world"}}]})
+        # First chunk opens the block, second only emits delta
+        assert len(events1) == 2
+        assert len(events2) == 1
+        assert self._parse(events2[0])["delta"]["text"] == " world"
+
+    def test_tool_call_opens_tool_use_block(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        chunk = {
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": ""},
+                    }]
+                }
+            }]
+        }
+        events = e.feed_chunk(chunk)
+        assert len(events) == 1
+        parsed = self._parse(events[0])
+        assert parsed["type"] == "content_block_start"
+        assert parsed["content_block"]["type"] == "tool_use"
+        assert parsed["content_block"]["id"] == "call_1"
+        assert parsed["content_block"]["name"] == "Bash"
+
+    def test_tool_call_arguments_streamed_as_input_json_delta(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        # Open the tool call
+        e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "c1", "type": "function",
+             "function": {"name": "Bash", "arguments": ""}}
+        ]}}]})
+        # Stream argument fragments
+        events1 = e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": "{\"cmd"}}
+        ]}}]})
+        events2 = e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": "\": \"ls\"}"}}
+        ]}}]})
+        parsed1 = self._parse(events1[0])
+        parsed2 = self._parse(events2[0])
+        assert parsed1["delta"]["type"] == "input_json_delta"
+        assert parsed1["delta"]["partial_json"] == "{\"cmd"
+        assert parsed2["delta"]["partial_json"] == "\": \"ls\"}"
+
+    def test_text_then_tool_closes_text_block(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        e.feed_chunk({"choices": [{"delta": {"content": "Let me check."}}]})
+        events = e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "c1", "type": "function",
+             "function": {"name": "Bash", "arguments": ""}}
+        ]}}]})
+        # Should close text block and open tool_use block
+        assert "content_block_stop" in events[0]
+        assert "content_block_start" in events[1]
+        assert '"type": "tool_use"' in events[1]
+
+    def test_finish_reason_tool_calls_sets_tool_use_stop(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "c1", "type": "function",
+             "function": {"name": "Bash", "arguments": "{}"}}
+        ]}}]})
+        e.feed_chunk({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+        events = e.finish()
+        delta_event = [ev for ev in events if "message_delta" in ev][0]
+        parsed = self._parse(delta_event)
+        assert parsed["delta"]["stop_reason"] == "tool_use"
+
+    def test_finish_reason_stop_sets_end_turn(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        e.feed_chunk({"choices": [{"delta": {"content": "Hi"}}]})
+        e.feed_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        events = e.finish()
+        delta_event = [ev for ev in events if "message_delta" in ev][0]
+        parsed = self._parse(delta_event)
+        assert parsed["delta"]["stop_reason"] == "end_turn"
+
+    def test_finish_reason_length_sets_max_tokens(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        e.feed_chunk({"choices": [{"delta": {"content": "Hi"}}]})
+        e.feed_chunk({"choices": [{"delta": {}, "finish_reason": "length"}]})
+        events = e.finish()
+        delta_event = [ev for ev in events if "message_delta" in ev][0]
+        parsed = self._parse(delta_event)
+        assert parsed["delta"]["stop_reason"] == "max_tokens"
+
+    def test_finish_closes_current_block(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        e.feed_chunk({"choices": [{"delta": {"content": "Hi"}}]})
+        events = e.finish()
+        assert "content_block_stop" in events[0]
+        assert "message_delta" in events[1]
+        assert "message_stop" in events[2]
+
+    def test_usage_chunk_captured(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        e.feed_chunk({"choices": [{"delta": {"content": "Hi"}}]})
+        e.feed_chunk({
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+        events = e.finish()
+        delta_event = [ev for ev in events if "message_delta" in ev][0]
+        parsed = self._parse(delta_event)
+        assert parsed["usage"]["output_tokens"] == 5
+
+    def test_empty_chunk_returns_no_events(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        events = e.feed_chunk({"choices": []})
+        assert events == []
+
+    def test_no_blocks_at_all_still_produces_valid_finish(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        events = e.finish()
+        # No content_block_stop because no block was opened
+        assert not any("content_block_stop" in ev for ev in events)
+        assert any("message_delta" in ev for ev in events)
+        assert any("message_stop" in ev for ev in events)
+
+    def test_multiple_tool_calls_distinct_blocks(self):
+        e = AnthropicPassthroughEmitter()
+        e.start("msg_1", "m")
+        # First tool call
+        e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "c1", "type": "function",
+             "function": {"name": "Bash", "arguments": "{}"}}
+        ]}}]})
+        # Second tool call (different index)
+        events = e.feed_chunk({"choices": [{"delta": {"tool_calls": [
+            {"index": 1, "id": "c2", "type": "function",
+             "function": {"name": "Read", "arguments": "{}"}}
+        ]}}]})
+        # Should close block 0, open block 1
+        assert "content_block_stop" in events[0]
+        assert "content_block_start" in events[1]
+        parsed = self._parse(events[1])
+        assert parsed["content_block"]["name"] == "Read"
+        assert parsed["content_block"]["id"] == "c2"
