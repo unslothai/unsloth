@@ -54,26 +54,31 @@ def anthropic_messages_to_openai(
             if btype == "text":
                 text_parts.append(b["text"])
             elif btype == "tool_use":
-                tool_calls.append({
-                    "id": b["id"],
-                    "type": "function",
-                    "function": {
-                        "name": b["name"],
-                        "arguments": json.dumps(b["input"]),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": b["id"],
+                        "type": "function",
+                        "function": {
+                            "name": b["name"],
+                            "arguments": json.dumps(b["input"]),
+                        },
+                    }
+                )
             elif btype == "tool_result":
                 tc = b.get("content", "")
                 if isinstance(tc, list):
                     tc = " ".join(
-                        p["text"] for p in tc
+                        p["text"]
+                        for p in tc
                         if isinstance(p, dict) and p.get("type") == "text"
                     )
-                tool_results.append({
-                    "role": "tool",
-                    "tool_call_id": b["tool_use_id"],
-                    "content": str(tc),
-                })
+                tool_results.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": b["tool_use_id"],
+                        "content": str(tc),
+                    }
+                )
 
         if role == "assistant":
             msg_dict: dict[str, Any] = {"role": "assistant"}
@@ -96,14 +101,16 @@ def anthropic_tools_to_openai(tools: list) -> list[dict]:
     result = []
     for t in tools:
         td = t if isinstance(t, dict) else t.model_dump()
-        result.append({
-            "type": "function",
-            "function": {
-                "name": td["name"],
-                "description": td.get("description", ""),
-                "parameters": td.get("input_schema", {}),
-            },
-        })
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": td["name"],
+                    "description": td.get("description", ""),
+                    "parameters": td.get("input_schema", {}),
+                },
+            }
+        )
     return result
 
 
@@ -125,19 +132,24 @@ class AnthropicStreamEmitter:
     def start(self, message_id: str, model: str) -> list[str]:
         """Emit message_start and open the first text content block."""
         events = []
-        events.append(build_anthropic_sse_event("message_start", {
-            "type": "message_start",
-            "message": {
-                "id": message_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": model,
-                "stop_reason": None,
-                "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            },
-        }))
+        events.append(
+            build_anthropic_sse_event(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": message_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": model,
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                    },
+                },
+            )
+        )
         events.extend(self._open_text_block())
         return events
 
@@ -161,21 +173,31 @@ class AnthropicStreamEmitter:
         events = []
         if self._text_block_open:
             events.append(self._close_block())
-        events.append(build_anthropic_sse_event("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-            "usage": {
-                "output_tokens": self._usage.get("completion_tokens", 0),
-            },
-        }))
-        events.append(build_anthropic_sse_event("message_stop", {
-            "type": "message_stop",
-        }))
+        events.append(
+            build_anthropic_sse_event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                    "usage": {
+                        "output_tokens": self._usage.get("completion_tokens", 0),
+                    },
+                },
+            )
+        )
+        events.append(
+            build_anthropic_sse_event(
+                "message_stop",
+                {
+                    "type": "message_stop",
+                },
+            )
+        )
         return events
 
     def _handle_content(self, event: dict) -> list[str]:
         cumulative = event.get("text", "")
-        new_text = cumulative[len(self._prev_text):]
+        new_text = cumulative[len(self._prev_text) :]
         self._prev_text = cumulative
         if not new_text:
             return []
@@ -183,11 +205,16 @@ class AnthropicStreamEmitter:
             events = self._open_text_block()
         else:
             events = []
-        events.append(build_anthropic_sse_event("content_block_delta", {
-            "type": "content_block_delta",
-            "index": self.block_index,
-            "delta": {"type": "text_delta", "text": new_text},
-        }))
+        events.append(
+            build_anthropic_sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self.block_index,
+                    "delta": {"type": "text_delta", "text": new_text},
+                },
+            )
+        )
         return events
 
     def _handle_tool_start(self, event: dict) -> list[str]:
@@ -197,27 +224,37 @@ class AnthropicStreamEmitter:
             events.append(self._close_block())
         # Open a tool_use block
         self.block_index += 1
-        events.append(build_anthropic_sse_event("content_block_start", {
-            "type": "content_block_start",
-            "index": self.block_index,
-            "content_block": {
-                "type": "tool_use",
-                "id": event.get("tool_call_id", ""),
-                "name": event.get("tool_name", ""),
-                "input": {},
-            },
-        }))
+        events.append(
+            build_anthropic_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self.block_index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": event.get("tool_call_id", ""),
+                        "name": event.get("tool_name", ""),
+                        "input": {},
+                    },
+                },
+            )
+        )
         # Emit the arguments as input_json_delta
         args = event.get("arguments", {})
         if args:
-            events.append(build_anthropic_sse_event("content_block_delta", {
-                "type": "content_block_delta",
-                "index": self.block_index,
-                "delta": {
-                    "type": "input_json_delta",
-                    "partial_json": json.dumps(args),
-                },
-            }))
+            events.append(
+                build_anthropic_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": self.block_index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": json.dumps(args),
+                        },
+                    },
+                )
+            )
         return events
 
     def _handle_tool_end(self, event: dict) -> list[str]:
@@ -225,11 +262,16 @@ class AnthropicStreamEmitter:
         # Close the tool_use block
         events.append(self._close_block())
         # Emit custom tool_result event (non-standard, ignored by SDKs)
-        events.append(build_anthropic_sse_event("tool_result", {
-            "type": "tool_result",
-            "tool_use_id": event.get("tool_call_id", ""),
-            "content": event.get("result", ""),
-        }))
+        events.append(
+            build_anthropic_sse_event(
+                "tool_result",
+                {
+                    "type": "tool_result",
+                    "tool_use_id": event.get("tool_call_id", ""),
+                    "content": event.get("result", ""),
+                },
+            )
+        )
         # Open a new text block for the model's next response
         self.block_index += 1
         events.extend(self._open_text_block())
@@ -239,15 +281,23 @@ class AnthropicStreamEmitter:
 
     def _open_text_block(self) -> list[str]:
         self._text_block_open = True
-        return [build_anthropic_sse_event("content_block_start", {
-            "type": "content_block_start",
-            "index": self.block_index,
-            "content_block": {"type": "text", "text": ""},
-        })]
+        return [
+            build_anthropic_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self.block_index,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+        ]
 
     def _close_block(self) -> str:
         self._text_block_open = False
-        return build_anthropic_sse_event("content_block_stop", {
-            "type": "content_block_stop",
-            "index": self.block_index,
-        })
+        return build_anthropic_sse_event(
+            "content_block_stop",
+            {
+                "type": "content_block_stop",
+                "index": self.block_index,
+            },
+        )

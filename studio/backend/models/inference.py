@@ -659,7 +659,9 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
+]
 
 
 class AnthropicMessagesResponse(BaseModel):

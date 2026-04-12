@@ -39,7 +39,6 @@ from core.inference.anthropic_compat import (
 
 
 class TestAnthropicModels:
-
     def test_minimal_request(self):
         req = AnthropicMessagesRequest(
             messages = [{"role": "user", "content": "Hi"}],
@@ -121,7 +120,6 @@ class TestAnthropicModels:
 
 
 class TestAnthropicMessagesToOpenAI:
-
     def test_simple_user_message(self):
         msgs = [{"role": "user", "content": "Hello"}]
         result = anthropic_messages_to_openai(msgs)
@@ -134,7 +132,10 @@ class TestAnthropicMessagesToOpenAI:
         assert result[1] == {"role": "user", "content": "Hello"}
 
     def test_system_as_block_list(self):
-        system = [{"type": "text", "text": "Be brief."}, {"type": "text", "text": "Be accurate."}]
+        system = [
+            {"type": "text", "text": "Be brief."},
+            {"type": "text", "text": "Be accurate."},
+        ]
         msgs = [{"role": "user", "content": "Hello"}]
         result = anthropic_messages_to_openai(msgs, system = system)
         assert result[0]["role"] == "system"
@@ -154,13 +155,20 @@ class TestAnthropicMessagesToOpenAI:
         assert result[2]["role"] == "user"
 
     def test_assistant_tool_use_maps_to_tool_calls(self):
-        msgs = [{
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Let me search."},
-                {"type": "tool_use", "id": "tu_1", "name": "web_search", "input": {"query": "test"}},
-            ],
-        }]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me search."},
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "web_search",
+                        "input": {"query": "test"},
+                    },
+                ],
+            }
+        ]
         result = anthropic_messages_to_openai(msgs)
         assert len(result) == 1
         m = result[0]
@@ -173,12 +181,18 @@ class TestAnthropicMessagesToOpenAI:
         assert json.loads(tc["function"]["arguments"]) == {"query": "test"}
 
     def test_tool_result_maps_to_tool_role(self):
-        msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "tool_result", "tool_use_id": "tu_1", "content": "Result text"},
-            ],
-        }]
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": "Result text",
+                    },
+                ],
+            }
+        ]
         result = anthropic_messages_to_openai(msgs)
         assert len(result) == 1
         assert result[0]["role"] == "tool"
@@ -186,14 +200,26 @@ class TestAnthropicMessagesToOpenAI:
         assert result[0]["content"] == "Result text"
 
     def test_mixed_text_and_tool_use_blocks(self):
-        msgs = [{
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Thinking..."},
-                {"type": "tool_use", "id": "tu_1", "name": "python", "input": {"code": "1+1"}},
-                {"type": "tool_use", "id": "tu_2", "name": "terminal", "input": {"command": "ls"}},
-            ],
-        }]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Thinking..."},
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "python",
+                        "input": {"code": "1+1"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tu_2",
+                        "name": "terminal",
+                        "input": {"command": "ls"},
+                    },
+                ],
+            }
+        ]
         result = anthropic_messages_to_openai(msgs)
         assert len(result) == 1
         m = result[0]
@@ -201,15 +227,21 @@ class TestAnthropicMessagesToOpenAI:
         assert len(m["tool_calls"]) == 2
 
     def test_tool_result_with_list_content(self):
-        msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "tool_result", "tool_use_id": "tu_1", "content": [
-                    {"type": "text", "text": "Line 1"},
-                    {"type": "text", "text": "Line 2"},
-                ]},
-            ],
-        }]
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [
+                            {"type": "text", "text": "Line 1"},
+                            {"type": "text", "text": "Line 2"},
+                        ],
+                    },
+                ],
+            }
+        ]
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1 Line 2"
 
@@ -220,9 +252,17 @@ class TestAnthropicMessagesToOpenAI:
 
 
 class TestAnthropicToolsToOpenAI:
-
     def test_single_tool(self):
-        tools = [{"name": "web_search", "description": "Search", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}}]
+        tools = [
+            {
+                "name": "web_search",
+                "description": "Search",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            }
+        ]
         result = anthropic_tools_to_openai(tools)
         assert len(result) == 1
         assert result[0]["type"] == "function"
@@ -243,7 +283,9 @@ class TestAnthropicToolsToOpenAI:
         assert anthropic_tools_to_openai([]) == []
 
     def test_pydantic_model_input(self):
-        tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
+        tool = AnthropicTool(
+            name = "test", description = "desc", input_schema = {"type": "object"}
+        )
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"
 
@@ -254,7 +296,6 @@ class TestAnthropicToolsToOpenAI:
 
 
 class TestBuildAnthropicSSEEvent:
-
     def test_basic_event(self):
         result = build_anthropic_sse_event("message_start", {"type": "message_start"})
         assert result.startswith("event: message_start\n")
@@ -274,7 +315,6 @@ class TestBuildAnthropicSSEEvent:
 
 
 class TestAnthropicStreamEmitter:
-
     def test_start_emits_message_start_and_content_block_start(self):
         e = AnthropicStreamEmitter()
         events = e.start("msg_123", "test-model")
@@ -311,12 +351,14 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Thinking"})
-        events = e.feed({
-            "type": "tool_start",
-            "tool_name": "web_search",
-            "tool_call_id": "tc_1",
-            "arguments": {"query": "test"},
-        })
+        events = e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "tc_1",
+                "arguments": {"query": "test"},
+            }
+        )
         # content_block_stop + content_block_start(tool_use) + content_block_delta(input_json)
         assert len(events) == 3
         assert "content_block_stop" in events[0]
@@ -326,8 +368,22 @@ class TestAnthropicStreamEmitter:
     def test_tool_end_closes_tool_opens_new_text_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        e.feed({"type": "tool_start", "tool_name": "t", "tool_call_id": "tc_1", "arguments": {}})
-        events = e.feed({"type": "tool_end", "tool_name": "t", "tool_call_id": "tc_1", "result": "done"})
+        e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "arguments": {},
+            }
+        )
+        events = e.feed(
+            {
+                "type": "tool_end",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "result": "done",
+            }
+        )
         # content_block_stop (tool) + tool_result + content_block_start (new text)
         assert len(events) == 3
         assert "content_block_stop" in events[0]
@@ -352,7 +408,12 @@ class TestAnthropicStreamEmitter:
     def test_metadata_captured_in_finish_usage(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        e.feed({"type": "metadata", "usage": {"prompt_tokens": 10, "completion_tokens": 20}})
+        e.feed(
+            {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        )
         events = e.finish("end_turn")
         delta_event = [ev for ev in events if "message_delta" in ev][0]
         parsed = json.loads(delta_event.split("data: ")[1])
@@ -368,7 +429,9 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         start_events = e.start("msg_1", "m")
         content_events = e.feed({"type": "content", "text": "Hello world"})
-        meta_events = e.feed({"type": "metadata", "usage": {"prompt_tokens": 5, "completion_tokens": 2}})
+        meta_events = e.feed(
+            {"type": "metadata", "usage": {"prompt_tokens": 5, "completion_tokens": 2}}
+        )
         end_events = e.finish("end_turn")
 
         assert len(start_events) == 2
@@ -380,17 +443,45 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         assert e.block_index == 0
-        e.feed({"type": "tool_start", "tool_name": "t", "tool_call_id": "tc_1", "arguments": {}})
+        e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "arguments": {},
+            }
+        )
         assert e.block_index == 1
-        e.feed({"type": "tool_end", "tool_name": "t", "tool_call_id": "tc_1", "result": "ok"})
+        e.feed(
+            {
+                "type": "tool_end",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "result": "ok",
+            }
+        )
         assert e.block_index == 2
 
     def test_text_after_tool_resets_prev_text(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Before tool"})
-        e.feed({"type": "tool_start", "tool_name": "t", "tool_call_id": "tc_1", "arguments": {}})
-        e.feed({"type": "tool_end", "tool_name": "t", "tool_call_id": "tc_1", "result": "ok"})
+        e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "arguments": {},
+            }
+        )
+        e.feed(
+            {
+                "type": "tool_end",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "result": "ok",
+            }
+        )
         # After tool_end, prev_text should be reset
         events = e.feed({"type": "content", "text": "After tool"})
         parsed = json.loads(events[0].split("data: ")[1])

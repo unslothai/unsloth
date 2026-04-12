@@ -2259,8 +2259,7 @@ async def anthropic_messages(
     # 1. Anthropic-style: send full tool definitions in payload.tools
     # 2. Unsloth shorthand: enable_tools=true + optional enabled_tools list
     use_tools = llama_backend.supports_tools and (
-        (payload.tools and len(payload.tools) > 0)
-        or payload.enable_tools
+        (payload.tools and len(payload.tools) > 0) or payload.enable_tools
     )
 
     if use_tools:
@@ -2270,8 +2269,7 @@ async def anthropic_messages(
             openai_tools = anthropic_tools_to_openai(payload.tools)
         elif payload.enabled_tools is not None:
             openai_tools = [
-                t for t in ALL_TOOLS
-                if t["function"]["name"] in payload.enabled_tools
+                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
             ]
         else:
             openai_tools = ALL_TOOLS
@@ -2304,7 +2302,9 @@ async def anthropic_messages(
                 _date_line + " "
                 "You have access to tools. When appropriate, prefer using "
                 "tools rather than answering from memory. "
-                + _web_tips + " " + _code_tips
+                + _web_tips
+                + " "
+                + _code_tips
             )
         elif _has_code:
             _nudge = (
@@ -2354,10 +2354,16 @@ async def anthropic_messages(
 
         if payload.stream:
             return await _anthropic_tool_stream(
-                request, cancel_event, _run_tool_gen, message_id, model_name,
+                request,
+                cancel_event,
+                _run_tool_gen,
+                message_id,
+                model_name,
             )
         return await _anthropic_tool_non_streaming(
-            _run_tool_gen, message_id, model_name,
+            _run_tool_gen,
+            message_id,
+            model_name,
         )
 
     # ── No-tool path ──────────────────────────────────────────
@@ -2373,15 +2379,25 @@ async def anthropic_messages(
 
     if payload.stream:
         return await _anthropic_plain_stream(
-            request, cancel_event, _run_plain_gen, message_id, model_name,
+            request,
+            cancel_event,
+            _run_plain_gen,
+            message_id,
+            model_name,
         )
     return await _anthropic_plain_non_streaming(
-        _run_plain_gen, message_id, model_name,
+        _run_plain_gen,
+        message_id,
+        model_name,
     )
 
 
 async def _anthropic_tool_stream(
-    request, cancel_event, run_gen, message_id, model_name,
+    request,
+    cancel_event,
+    run_gen,
+    message_id,
+    model_name,
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
@@ -2424,7 +2440,11 @@ async def _anthropic_tool_stream(
 
 
 async def _anthropic_plain_stream(
-    request, cancel_event, run_gen, message_id, model_name,
+    request,
+    cancel_event,
+    run_gen,
+    message_id,
+    model_name,
 ):
     """Streaming response for the no-tool path."""
     _sentinel = object()
@@ -2480,16 +2500,18 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
         if etype == "content":
             # Strip leaked tool-call XML
             clean = _TOOL_XML_RE.sub("", event["text"])
-            new = clean[len(prev_text):]
+            new = clean[len(prev_text) :]
             prev_text = clean
             if new:
                 text_parts.append(new)
         elif etype == "tool_start":
-            tool_blocks.append(AnthropicResponseToolUseBlock(
-                id = event["tool_call_id"],
-                name = event["tool_name"],
-                input = event.get("arguments", {}),
-            ))
+            tool_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = event["tool_call_id"],
+                    name = event["tool_name"],
+                    input = event.get("arguments", {}),
+                )
+            )
         elif etype == "metadata":
             usage = event.get("usage", {})
 
@@ -2524,7 +2546,7 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
             if cumulative.get("type") == "metadata":
                 usage = cumulative.get("usage", {})
             continue
-        new = cumulative[len(prev_text):]
+        new = cumulative[len(prev_text) :]
         prev_text = cumulative
         if new:
             text_parts.append(new)

@@ -417,7 +417,10 @@ def test_anthropic_with_tools(base_url: str, api_key: str):
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "code": {"type": "string", "description": "The Python code to run"},
+                            "code": {
+                                "type": "string",
+                                "description": "The Python code to run",
+                            },
                         },
                         "required": ["code"],
                     },
@@ -436,7 +439,9 @@ def test_anthropic_with_tools(base_url: str, api_key: str):
     assert "message_stop" in event_types, "Missing message_stop"
 
     full = _collect_anthropic_text(events)
-    print(f"  PASS  anthropic with tools: {len(events)} events, {len(full)} chars content")
+    print(
+        f"  PASS  anthropic with tools: {len(events)} events, {len(full)} chars content"
+    )
 
 
 # ── Server lifecycle ─────────────────────────────────────────────────
