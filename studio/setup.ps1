@@ -1510,14 +1510,9 @@ if (Test-Path $VenvDir -PathType Container) {
         $shouldRebuild = $true
     }
 
-    # --no-torch: skip ROCm torch repair and wheel install entirely.
-    # Must be defined here (before stale-venv detection) because the
-    # expectedTorchTag and $_NeedRocmRepair logic below depend on it.
+    # Must be defined before stale-venv detection (expectedTorchTag depends on it).
     $_NoTorch = $env:UNSLOTH_NO_TORCH -in @("1", "true", "True", "TRUE")
-
-    # $_NeedRocmRepair is used later to override the version fast-path
-    # ($SkipPythonDeps) so the ROCm install block still runs even when
-    # the unsloth package is already at the latest version.
+    # Overrides $SkipPythonDeps so the ROCm block runs even when unsloth is current.
     $_NeedRocmRepair = $false
 
     if (-not $shouldRebuild) {
@@ -1529,12 +1524,9 @@ if (Test-Path $VenvDir -PathType Container) {
             $expectedTorchTag = "cpu"
         }
         if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
-            # Existing Windows AMD users commonly have a CPU-only venv from
-            # pre-ROCm installs.  Rebuilding from scratch would delete the
-            # venv and then exit with "Run install.ps1 first" because
-            # setup.ps1 cannot recreate the venv on its own.  Instead, keep
-            # the venv and let the ROCm install block below repair torch
-            # in-place -- the end state is the same but no work is lost.
+            # Keep the venv and let the ROCm block below repair torch
+            # in-place; rebuilding would delete it and exit since
+            # setup.ps1 cannot recreate a venv on its own.
             if ($HasAmdGpu -and -not $_NoTorch -and $installedTorchTag -eq "cpu") {
                 substep "CPU-only torch detected on AMD host; will repair to ROCm in place..." "Yellow"
                 $_NeedRocmRepair = $true
@@ -1671,8 +1663,7 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
-# $_NoTorch was already initialized earlier (before stale-venv detection)
-# so it is available here for the $CuTag selection.
+# $_NoTorch initialized earlier (before stale-venv detection).
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
@@ -1707,9 +1698,8 @@ if ($CuTag -eq "rocm") {
         exit 1
     }
 
-    # Radeon wheels are cp312 only. Hard-stop when the venv's Python is a
-    # different minor version -- continuing would download multi-GB wheels
-    # that pip will reject with a confusing incompatible-wheel error.
+    # Radeon wheels are cp312 only. Hard-stop instead of downloading
+    # multi-GB wheels that pip will reject.
     try {
         $venvPyVer = (& python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Out-String).Trim()
     } catch { $venvPyVer = "" }
@@ -1724,10 +1714,7 @@ if ($CuTag -eq "rocm") {
         exit 1
     }
 
-    # Skip the expensive reinstall when ROCm torch is already healthy.
-    # Mirrors the idempotency guard in _ensure_rocm_torch_windows() --
-    # without this, fresh installs (install.ps1 -> setup.ps1) and every
-    # `unsloth studio update` would re-download 2.1-3.9 GB unnecessarily.
+    # Skip reinstall when ROCm torch is already healthy (idempotency guard).
     $_existingHip = ""
     try {
         $_existingHip = (& python -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>$null | Out-String).Trim()

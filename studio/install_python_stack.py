@@ -438,10 +438,8 @@ def _has_usable_nvidia_gpu() -> bool:
     """Return True only when nvidia-smi exists AND reports at least one GPU."""
     exe = shutil.which("nvidia-smi")
     if not exe and IS_WINDOWS:
-        # nvidia-smi.exe is often absent from PATH on Windows even with a
-        # valid driver.  Match the fallback paths used in install.ps1 /
-        # setup.ps1 so the NVIDIA-wins-on-mixed-systems rule is consistent
-        # between the PowerShell and Python install paths.
+        # nvidia-smi.exe is often not on PATH on Windows; match the
+        # fallback paths in install.ps1 / setup.ps1.
         _candidates = [
             os.path.join(
                 os.environ.get("ProgramFiles", r"C:\Program Files"),
@@ -498,10 +496,8 @@ def _ensure_rocm_torch_windows() -> None:
     troubleshooting notes flag pip dep-resolver overwrite scenarios on
     this procedure.
     """
-    # Cheap idempotency probe first -- no subprocess spawn needed when
-    # torch already links against ROCm (common at step 13 and on updates).
-    # Placed before the expensive GPU-detection calls so the happy-path
-    # (ROCm already installed) avoids two subprocess spawns entirely.
+    # Cheap idempotency probe first -- skip GPU detection when torch
+    # already links against ROCm (common at step 13 and on updates).
     try:
         _probe = subprocess.run(
             [
@@ -525,9 +521,8 @@ def _ensure_rocm_torch_windows() -> None:
     if not _has_rocm_gpu_windows():
         return
 
-    # Radeon wheels are cp312 only.  Hard-exit so the caller (setup.ps1 or
-    # install.ps1) sees a non-zero exit code instead of continuing with a
-    # CPU-only torch that silently reports success.
+    # Radeon wheels are cp312 only. Hard-exit so the caller sees a
+    # non-zero code instead of silently leaving CPU-only torch.
     if (sys.version_info.major, sys.version_info.minor) != (3, 12):
         _safe_print(
             _red(

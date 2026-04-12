@@ -784,9 +784,7 @@ shell.Run cmd, 0, False
 
     # ── Install Python if no compatible version found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
-    # AMD + torch path requires Python 3.12 specifically (Radeon only publishes
-    # cp312 wheels for Windows). AMD + --no-torch (GGUF-only) is fine with any
-    # 3.11-3.13, since the cp312 constraint only applies to the ROCm wheels.
+    # AMD + torch requires Python 3.12 (Radeon wheels are cp312 only).
     if ($HasAmdGpu -and -not $SkipTorch) {
         $PythonPreferred = @("3.12")
         $PythonVersion = "3.12"
