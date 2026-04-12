@@ -382,7 +382,12 @@ export function ChatPage(): ReactElement {
   const search = useSearch({ from: "/chat" });
   const navigate = useNavigate();
 
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
+  const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+
+  useEffect(() => {
+    return () => setSettingsOpen(false);
+  }, [setSettingsOpen]);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
@@ -754,7 +759,7 @@ export function ChatPage(): ReactElement {
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
+        <div className="flex h-11 shrink-0 items-center pl-12 pr-1.5 sm:pl-2 sm:pr-2">
           <div className="flex items-center gap-1">
             <ModelSelector
               models={models}
@@ -810,7 +815,7 @@ export function ChatPage(): ReactElement {
           ) : null}
           <button
             type="button"
-            onClick={() => setSettingsOpen((o) => !o)}
+            onClick={() => setSettingsOpen(!settingsOpen)}
             className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Inference settings"
             data-tour="chat-settings"

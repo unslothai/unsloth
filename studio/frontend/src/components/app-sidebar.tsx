@@ -56,6 +56,8 @@ import {
   deleteChatItem,
 } from "@/features/chat/hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
+import type { TrainingRunSummary } from "@/features/training";
 import { useEffect, useRef, useState } from "react";
 
 function getTourId(pathname: string): string | null {
@@ -66,6 +68,35 @@ function getTourId(pathname: string): string | null {
 }
 
 const NAV_SPRING = { type: "spring", stiffness: 500, damping: 35, mass: 0.5 } as const;
+
+function runStatusDotClass(status: TrainingRunSummary["status"]): string {
+  switch (status) {
+    case "running":
+      return "bg-blue-500 animate-pulse";
+    case "completed":
+      return "bg-emerald-500";
+    case "stopped":
+      return "bg-amber-500";
+    case "error":
+      return "bg-red-500";
+    default:
+      return "bg-muted-foreground";
+  }
+}
+
+function formatRelativeShort(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const diffMs = Date.now() - then;
+  const s = Math.max(0, Math.floor(diffMs / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
+}
 
 function NavItem({
   icon,
@@ -116,16 +147,23 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { pinned, togglePinned, setHovered } = useSidebar();
+  const { pinned, togglePinned, setHovered, isMobile, setOpenMobile } = useSidebar();
   const router = useRouter();
   const navigate = useNavigate();
+
+  // Auto-close mobile Sheet after navigation
+  const closeMobileIfOpen = () => {
+    if (isMobile) setOpenMobile(false);
+  };
 
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
 
   // Chat collapsible state — open by default, syncs with route
   const isChatRoute = pathname.startsWith("/chat");
+  const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
+  const [runsOpen, setRunsOpen] = useState(true);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
 
@@ -133,9 +171,19 @@ export function AppSidebar() {
     if (isChatRoute) setChatOpen(true);
   }, [isChatRoute]);
 
+  useEffect(() => {
+    if (isStudioRoute) setRunsOpen(true);
+  }, [isStudioRoute]);
+
   const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeThreadId = (search.thread as string | undefined) ?? (search.compare as string | undefined) ?? storeThreadId ?? undefined;
+
+  // Training runs
+  const { items: runItems, refresh: refreshRuns } = useTrainingHistorySidebarItems(!chatOnly);
+  const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
+  const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
   const chatDisabled = isTrainingRunning;
 
@@ -185,18 +233,20 @@ export function AppSidebar() {
               <HugeiconsIcon icon={ArrowRight02Icon} className="size-4" />
             </button>
           </div>
-          <button
-            type="button"
-            onClick={togglePinned}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            title={pinned ? "Unpin sidebar" : "Pin sidebar"}
-            aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
-          >
-            <HugeiconsIcon
-              icon={pinned ? PinOffIcon : PinIcon}
-              className="size-4"
-            />
-          </button>
+          {!isMobile && (
+            <button
+              type="button"
+              onClick={togglePinned}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              title={pinned ? "Unpin sidebar" : "Pin sidebar"}
+              aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
+            >
+              <HugeiconsIcon
+                icon={pinned ? PinOffIcon : PinIcon}
+                className="size-4"
+              />
+            </button>
+          )}
         </div>
 
         {/* Logo */}
@@ -207,7 +257,7 @@ export function AppSidebar() {
               className="data-[slot=sidebar-menu-button]:!p-1.5"
               tooltip="Unsloth"
             >
-              <Link to={chatOnly ? "/chat" : "/studio"} className="select-none">
+              <Link to={chatOnly ? "/chat" : "/studio"} onClick={closeMobileIfOpen} className="select-none">
                 {/* Collapsed: sticker icon */}
                 <img
                   src="/sticker.png"
@@ -245,7 +295,11 @@ export function AppSidebar() {
                 label="New Chat"
                 active={isChatRoute}
                 disabled={chatDisabled}
-                onClick={() => { if (!chatDisabled) navigate({ to: "/chat", search: { new: crypto.randomUUID() } }); }}
+                onClick={() => {
+                  if (chatDisabled) return;
+                  navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+                  closeMobileIfOpen();
+                }}
               />
 
               <NavItem
@@ -253,14 +307,21 @@ export function AppSidebar() {
                 label="Studio"
                 active={pathname === "/studio" || pathname.startsWith("/studio/")}
                 disabled={chatOnly}
-                onClick={() => { if (!chatOnly) navigate({ to: "/studio" }); }}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/studio" });
+                  closeMobileIfOpen();
+                }}
               />
 
               <NavItem
                 icon={ChefHatIcon}
                 label="Recipes"
                 active={isRecipesRoute}
-                onClick={() => navigate({ to: "/data-recipes" })}
+                onClick={() => {
+                  navigate({ to: "/data-recipes" });
+                  closeMobileIfOpen();
+                }}
               />
 
               <NavItem
@@ -268,42 +329,47 @@ export function AppSidebar() {
                 label="Export"
                 active={pathname === "/export" || pathname.startsWith("/export/")}
                 disabled={chatOnly}
-                onClick={() => { if (!chatOnly) navigate({ to: "/export" }); }}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/export" });
+                  closeMobileIfOpen();
+                }}
               />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Recents */}
+        {/* Recent Chats */}
         {chatItems.length > 0 && (
           <Collapsible open={isChatRoute ? chatOpen : true} onOpenChange={setChatOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden flex-1 overflow-hidden">
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden">
             <SidebarGroupLabel asChild>
               {isChatRoute ? (
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                  Recents
+                  Recent Chats
                   <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
                 </CollapsibleTrigger>
               ) : (
-                <span>Recents</span>
+                <span>Recent Chats</span>
               )}
             </SidebarGroupLabel>
             <CollapsibleContent>
             <SidebarGroupContent className="overflow-y-auto">
               <SidebarMenu>
-                {(isChatRoute ? chatItems : chatItems.slice(0, 1)).map((item) => (
+                {(isChatRoute || isMobile ? chatItems : chatItems.slice(0, 1)).map((item) => (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
-                      onClick={() =>
+                      onClick={() => {
                         navigate({
                           to: "/chat",
                           search:
                             item.type === "single"
                               ? { thread: item.id }
                               : { compare: item.id },
-                        })
-                      }
+                        });
+                        closeMobileIfOpen();
+                      }}
                     >
                       <span className="truncate">{item.title}</span>
                     </SidebarMenuButton>
@@ -322,6 +388,90 @@ export function AppSidebar() {
                 ))}
               </SidebarMenu>
             </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {/* Recent Runs */}
+        {runItems.length > 0 && !chatOnly && (
+          <Collapsible open={isStudioRoute ? runsOpen : true} onOpenChange={setRunsOpen} asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden">
+            <SidebarGroupLabel asChild>
+              {isStudioRoute ? (
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                  Recent Runs
+                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                </CollapsibleTrigger>
+              ) : (
+                <span>Recent Runs</span>
+              )}
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent className="overflow-y-auto">
+                <SidebarMenu>
+                  {(isStudioRoute || isMobile ? runItems : runItems.slice(0, 1)).map((run) => {
+                    const isActiveRun =
+                      selectedHistoryRunId === run.id || activeJobId === run.id;
+                    return (
+                      <SidebarMenuItem
+                        key={run.id}
+                        className="group/run-item relative"
+                      >
+                        <SidebarMenuButton
+                          isActive={isActiveRun}
+                          className="h-auto flex-col items-start gap-0.5 py-2"
+                          onClick={() => {
+                            setSelectedHistoryRunId(run.id);
+                            if (!isStudioRoute) {
+                              navigate({ to: "/studio" });
+                            }
+                            closeMobileIfOpen();
+                          }}
+                        >
+                          <div className="flex w-full items-center gap-2">
+                            <span
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full",
+                                runStatusDotClass(run.status),
+                              )}
+                              aria-hidden
+                            />
+                            <span className="truncate text-sm font-medium">
+                              {run.model_name}
+                            </span>
+                            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                              {formatRelativeShort(run.started_at)}
+                            </span>
+                          </div>
+                          <span className="w-full truncate pl-3.5 text-xs text-muted-foreground">
+                            {run.dataset_name}
+                          </span>
+                        </SidebarMenuButton>
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              await deleteTrainingRun(run.id);
+                              if (selectedHistoryRunId === run.id) {
+                                setSelectedHistoryRunId(null);
+                              }
+                              await refreshRuns();
+                            } catch {
+                              // ignore — next refresh will reconcile
+                            }
+                          }}
+                          title="Delete"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/run-item:opacity-100"
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} className="size-3" />
+                        </button>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
             </CollapsibleContent>
           </SidebarGroup>
           </Collapsible>

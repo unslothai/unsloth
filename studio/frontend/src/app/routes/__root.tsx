@@ -58,7 +58,7 @@ function RootLayout() {
           <AppSidebar />
           <SidebarInset className="overflow-hidden">
             <Navbar />
-            <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+            <div className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden ${pathname.startsWith("/chat") ? "" : "pt-14 md:pt-0"}`}>
               <Outlet />
             </div>
           </SidebarInset>

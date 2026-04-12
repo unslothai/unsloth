@@ -840,7 +840,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
+      className={`relative z-50 shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
     >
       <div className="flex h-full w-[17rem] flex-col">{settingsContent}</div>
     </aside>

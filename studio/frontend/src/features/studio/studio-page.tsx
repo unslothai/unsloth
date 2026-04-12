@@ -50,7 +50,12 @@ export function StudioPage(): ReactElement {
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const [requestedTab, setRequestedTab] = useState("configure");
-  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
+  const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
+
+  useEffect(() => {
+    return () => setSelectedHistoryRunId(null);
+  }, [setSelectedHistoryRunId]);
 
   // Derive activeTab: auto-switch to "current-run" only while training is
   // genuinely running.  Once training ends, honour whatever tab the user clicks.
