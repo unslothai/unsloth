@@ -419,7 +419,10 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "LiquidAI/LFM2-1.2B",
         "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
     ),
-    "lfm-2.5": ("unsloth/LFM2.5-1.2B-Instruct",),
+    "lfm-2.5": (
+        "unsloth/LFM2.5-1.2B-Instruct",
+        "LiquidAI/LFM2.5-1.2B-Instruct",
+    ),
 }
 
 MODEL_TO_TEMPLATE_MAPPER = {}
