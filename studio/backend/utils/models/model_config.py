@@ -873,6 +873,7 @@ def _detect_audio_from_tokenizer(
             headers["Authorization"] = f"Bearer {token}"
 
         from utils.hf_endpoint import get_hf_endpoint
+
         hf_endpoint = get_hf_endpoint()
         for tok_path in paths_to_try:
             url = f"{hf_endpoint}/{model_name}/resolve/main/{tok_path}"
