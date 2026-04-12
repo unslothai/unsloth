@@ -323,10 +323,11 @@ def get_dataset_splits(
     server-side (avoids browser CORS / token-exposure issues with the
     datasets-server API for private datasets).
     """
-    try:
-        from datasets import get_dataset_config_names, get_dataset_split_names
-        from huggingface_hub.utils import HfHubHTTPError
+    from datasets import get_dataset_config_names, get_dataset_split_names
+    from datasets.exceptions import DatasetNotFoundError
+    from huggingface_hub.utils import HfHubHTTPError
 
+    try:
         dataset_name = request.dataset_name
         token = request.hf_token or None
 
@@ -357,23 +358,25 @@ def get_dataset_splits(
                     f"Could not fetch splits for config '{config}': {config_err}"
                 )
                 last_config_error = str(config_err)
-                last_config_status = (
+                hf_status = (
                     config_err.response.status_code
                     if config_err.response is not None
                     else 500
                 )
+                last_config_status = 403 if hf_status == 401 else hf_status
                 continue
             except Exception as config_err:
                 logger.warning(
                     f"Could not fetch splits for config '{config}': {config_err}"
                 )
                 last_config_error = str(config_err)
+                last_config_status = 500
                 continue
 
         # If configs were found but every single one failed, surface the
         # error so the UI can show an actionable message instead of a
         # misleading empty-success response.  Preserve the original HF
-        # status code (e.g. 401/403) when available.
+        # status code (e.g. 403) when available.
         if configs and not all_splits and last_config_error:
             raise HTTPException(
                 status_code = last_config_status,
@@ -387,8 +390,21 @@ def get_dataset_splits(
 
     except HTTPException:
         raise
+    except DatasetNotFoundError:
+        raise HTTPException(
+            status_code = 404,
+            detail = (
+                f"Dataset '{request.dataset_name}' was not found on the Hub "
+                "or cannot be accessed with the provided token."
+            ),
+        )
     except HfHubHTTPError as e:
-        status_code = e.response.status_code if e.response is not None else 500
+        hf_status = e.response.status_code if e.response is not None else 500
+        # Remap HF 401 to 403: authFetch intercepts 401 as a studio-session
+        # expiry and triggers a refresh/logout cycle. The frontend error
+        # normalizer matches on message text, not HTTP status, so the user
+        # still sees the correct auth-related guidance.
+        status_code = 403 if hf_status == 401 else hf_status
         logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
         raise HTTPException(
             status_code = status_code,
