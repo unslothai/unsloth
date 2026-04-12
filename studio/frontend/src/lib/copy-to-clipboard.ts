@@ -35,7 +35,21 @@ export function copyToClipboard(text: string): boolean {
     return false;
   }
 
-  return copyWithExecCommand(text);
+  if (document.queryCommandSupported?.("copy") !== false) {
+    return copyWithExecCommand(text);
+  }
+
+  // Async fallback for environments where execCommand is entirely unsupported
+  // but the Clipboard API is available (rare; kept for original contract parity).
+  if (typeof navigator?.clipboard?.writeText === "function") {
+    navigator.clipboard.writeText(text).then(
+      () => {},
+      () => {},
+    );
+    return true;
+  }
+
+  return false;
 }
 
 export async function copyToClipboardAsync(text: string): Promise<boolean> {
@@ -50,9 +64,13 @@ export async function copyToClipboardAsync(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Fall through to execCommand (older Safari, non-secure context).
+      // After an await rejection the synchronous user-gesture frame is gone,
+      // so execCommand will also fail. Return false rather than attempting it.
+      return false;
     }
   }
 
+  // No Clipboard API (older browser / non-secure context): still in the
+  // original user-gesture frame, so execCommand can work.
   return copyWithExecCommand(text);
 }
