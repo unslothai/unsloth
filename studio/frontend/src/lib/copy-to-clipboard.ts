@@ -7,7 +7,7 @@
  * same user gesture as the click (required by Safari's clipboard security).
  */
 function copyWithExecCommand(text: string): boolean {
-  if (typeof document === "undefined") return false;
+  if (typeof document === "undefined" || !document.body) return false;
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -35,18 +35,7 @@ export function copyToClipboard(text: string): boolean {
     return false;
   }
 
-  if (copyWithExecCommand(text)) return true;
-
-  // If synchronous copy is unavailable or failed, try modern async clipboard.
-  if (typeof navigator?.clipboard?.writeText === "function") {
-    navigator.clipboard.writeText(text).then(
-      () => {},
-      () => {}
-    );
-    return true;
-  }
-
-  return false;
+  return copyWithExecCommand(text);
 }
 
 export async function copyToClipboardAsync(text: string): Promise<boolean> {
@@ -54,19 +43,16 @@ export async function copyToClipboardAsync(text: string): Promise<boolean> {
     return false;
   }
 
-  // Try execCommand first so it runs inside the user-gesture stack (Safari).
-  if (copyWithExecCommand(text)) return true;
-
-  // Fallback to async clipboard API (works in focus-trapped dialogs where
-  // execCommand can't grab selection).
+  // Prefer the async Clipboard API: avoids focus disruption in Radix
+  // focus-trapped dialogs where execCommand always fails.
   if (typeof navigator?.clipboard?.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      return false;
+      // Fall through to execCommand (older Safari, non-secure context).
     }
   }
 
-  return false;
+  return copyWithExecCommand(text);
 }
