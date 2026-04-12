@@ -96,7 +96,6 @@ function formatDate(iso: string | null): string {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const [copying, setCopying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -106,17 +105,10 @@ function CopyButton({ text }: { text: string }) {
   }, []);
 
   const handleCopy = async () => {
-    if (copying) return;
-    setCopying(true);
-    try {
-      const ok = await copyToClipboardAsync(text);
-      if (!ok) return;
-      setCopied(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 2000);
-    } finally {
-      setCopying(false);
-    }
+    if (!(await copyToClipboardAsync(text))) return;
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -124,7 +116,6 @@ function CopyButton({ text }: { text: string }) {
       variant="ghost"
       size="icon-sm"
       onClick={handleCopy}
-      disabled={copying}
       className={cn(
         "shrink-0 rounded-md text-muted-foreground hover:text-foreground",
         copied && "text-emerald-600 hover:text-emerald-600",
