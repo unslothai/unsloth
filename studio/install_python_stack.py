@@ -385,6 +385,9 @@ def _detect_rocm_version_windows() -> tuple[int, int] | None:
     return None
 
 
+_HAS_ROCM_GPU_WINDOWS: bool | None = None  # module-level cache
+
+
 def _has_rocm_gpu_windows() -> bool:
     """Return True when a Radeon/AMD GPU is visible in WMI Win32_VideoController.
 
@@ -392,8 +395,15 @@ def _has_rocm_gpu_windows() -> bool:
     HIP SDK -- if we used it to decide whether to prompt the user to install
     the HIP SDK we would never trigger the prompt on the hosts that need it
     most. WMI is always available on Windows and needs no elevation.
+
+    Result is cached so repeated calls (steps 2b and 13) do not spawn
+    a second PowerShell process (~0.5-2 s per call).
     """
+    global _HAS_ROCM_GPU_WINDOWS
+    if _HAS_ROCM_GPU_WINDOWS is not None:
+        return _HAS_ROCM_GPU_WINDOWS
     if not IS_WINDOWS:
+        _HAS_ROCM_GPU_WINDOWS = False
         return False
     ps_cmd = (
         "Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue "
@@ -418,7 +428,9 @@ def _has_rocm_gpu_windows() -> bool:
             continue
         raw = (result.stdout or "").strip()
         if raw.isdigit() and int(raw) > 0:
+            _HAS_ROCM_GPU_WINDOWS = True
             return True
+    _HAS_ROCM_GPU_WINDOWS = False
     return False
 
 
@@ -486,18 +498,10 @@ def _ensure_rocm_torch_windows() -> None:
     troubleshooting notes flag pip dep-resolver overwrite scenarios on
     this procedure.
     """
-    # NVIDIA wins on mixed hosts -- matches the Linux branch and avoids
-    # overwriting a freshly installed CUDA torch with ROCm wheels.
-    if _has_usable_nvidia_gpu():
-        return
-    if not _has_rocm_gpu_windows():
-        return
-
-    # Skip when torch already links against ROCm -- mirrors the Linux
-    # has_hip_torch probe (line ~622) and makes this function idempotent.
-    # Without this guard, steps 2b and 13 in install_python_stack() would
-    # each re-download the full 2.1-3.9 GB wheel set even when the first
-    # call (or a prior setup.ps1 / install.ps1 run) already succeeded.
+    # Cheap idempotency probe first -- no subprocess spawn needed when
+    # torch already links against ROCm (common at step 13 and on updates).
+    # Placed before the expensive GPU-detection calls so the happy-path
+    # (ROCm already installed) avoids two subprocess spawns entirely.
     try:
         _probe = subprocess.run(
             [
@@ -514,8 +518,16 @@ def _ensure_rocm_torch_windows() -> None:
     except Exception:
         pass
 
-    # Radeon wheels are cp312 only. Warn (do not crash) when the venv's
-    # Python is not 3.12 -- pip will fail anyway with a clearer message.
+    # NVIDIA wins on mixed hosts -- matches the Linux branch and avoids
+    # overwriting a freshly installed CUDA torch with ROCm wheels.
+    if _has_usable_nvidia_gpu():
+        return
+    if not _has_rocm_gpu_windows():
+        return
+
+    # Radeon wheels are cp312 only.  Hard-exit so the caller (setup.ps1 or
+    # install.ps1) sees a non-zero exit code instead of continuing with a
+    # CPU-only torch that silently reports success.
     if (sys.version_info.major, sys.version_info.minor) != (3, 12):
         _safe_print(
             _red(
@@ -524,7 +536,7 @@ def _ensure_rocm_torch_windows() -> None:
                 f"Install Python 3.12 from https://python.org and re-run."
             )
         )
-        return
+        sys.exit(1)
 
     # Prefer HIP_PATH as a version hint when available, but fall back to
     # the newest stable release so users without the developer SDK still

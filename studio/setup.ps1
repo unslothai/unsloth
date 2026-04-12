@@ -1519,7 +1519,17 @@ if (Test-Path $VenvDir -PathType Container) {
             $expectedTorchTag = "cpu"
         }
         if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
-            $shouldRebuild = $true
+            # Existing Windows AMD users commonly have a CPU-only venv from
+            # pre-ROCm installs.  Rebuilding from scratch would delete the
+            # venv and then exit with "Run install.ps1 first" because
+            # setup.ps1 cannot recreate the venv on its own.  Instead, keep
+            # the venv and let the ROCm install block below repair torch
+            # in-place -- the end state is the same but no work is lost.
+            if ($HasAmdGpu -and $installedTorchTag -eq "cpu") {
+                substep "CPU-only torch detected on AMD host; will repair to ROCm in place..." "Yellow"
+            } else {
+                $shouldRebuild = $true
+            }
         }
     }
 
@@ -1648,9 +1658,14 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
+# --no-torch mode: skip the ROCm wheel path entirely. AMD users running
+# install.ps1 --no-torch get a Python 3.13 venv (fine for GGUF); entering
+# the ROCm block would hard-fail on the 3.12 version check for no reason.
+$_NoTorch = $env:UNSLOTH_NO_TORCH -in @("1", "true", "True", "TRUE")
+
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
-} elseif ($HasAmdGpu) {
+} elseif ($HasAmdGpu -and -not $_NoTorch) {
     $CuTag = "rocm"
 } else {
     $CuTag = "cpu"
@@ -1698,6 +1713,17 @@ if ($CuTag -eq "rocm") {
         exit 1
     }
 
+    # Skip the expensive reinstall when ROCm torch is already healthy.
+    # Mirrors the idempotency guard in _ensure_rocm_torch_windows() --
+    # without this, fresh installs (install.ps1 -> setup.ps1) and every
+    # `unsloth studio update` would re-download 2.1-3.9 GB unnecessarily.
+    $_existingHip = ""
+    try {
+        $_existingHip = (& python -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>$null | Out-String).Trim()
+    } catch {}
+    if ($_existingHip) {
+        substep ("ROCm torch already installed (HIP $_existingHip) -- skipping reinstall") "DarkGray"
+    } else {
     substep ("installing Radeon ROCm SDK + PyTorch for rocm-rel-{0}.{1}.x from repo.radeon.com..." -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
     # 7.2.1 total is ~2.1 GB; 7.1.1 is ~3.9 GB (sdk_devel alone is 2.4 GB).
     if ($RocmReleaseVersion.Major -eq 7 -and $RocmReleaseVersion.Minor -eq 1) {
@@ -1742,15 +1768,17 @@ if ($CuTag -eq "rocm") {
             $RocmWheelUrls.SdkTarball `
             $RocmWheelUrls.Torch `
             $RocmWheelUrls.Torchvision `
-            $RocmWheelUrls.Torchaudio | Out-String
+            $RocmWheelUrls.Torchaudio 2>&1 | Out-String
         $rocmInstallExit = $LASTEXITCODE
     }
     if ($rocmInstallExit -ne 0) {
         Write-Host "[FAILED] ROCm SDK + PyTorch install failed (exit code $rocmInstallExit)" -ForegroundColor Red
         Write-Host $output -ForegroundColor Red
-        Write-Host "         Verify your AMD graphics driver is recent: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
+        Write-Host "         Possible causes: network error, disk full, or outdated AMD graphics driver." -ForegroundColor Yellow
+        Write-Host "         Update AMD graphics driver: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
         exit 1
     }
+    }  # end of: if (-not $_existingHip)
     # Triton has no Windows ROCm build; skip the Triton-for-Windows step so
     # we do not poison the venv with a package that only targets CUDA.
     substep "Triton skipped on Windows AMD (no ROCm build available)" "DarkGray"
