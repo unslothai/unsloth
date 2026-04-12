@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { copyToClipboardAsync } from "@/lib/copy-to-clipboard";
 import {
   AlertCircleIcon,
   Copy01Icon,
@@ -104,11 +105,7 @@ function CopyButton({ text }: { text: string }) {
   }, []);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      return;
-    }
+    if (!(await copyToClipboardAsync(text))) return;
     setCopied(true);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setCopied(false), 2000);
