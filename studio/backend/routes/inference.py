@@ -2252,6 +2252,13 @@ async def anthropic_messages(
     temperature = payload.temperature if payload.temperature is not None else 0.6
     top_p = payload.top_p if payload.top_p is not None else 0.95
     top_k = payload.top_k if payload.top_k is not None else 20
+    min_p = payload.min_p if payload.min_p is not None else 0.01
+    repetition_penalty = (
+        payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
+    )
+    presence_penalty = (
+        payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    )
     stop = payload.stop_sequences or None
 
     # tool_choice is declared on AnthropicMessagesRequest for Anthropic SDK
@@ -2304,6 +2311,9 @@ async def anthropic_messages(
                 message_id,
                 model_name,
                 stop = stop,
+                min_p = min_p,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -2316,6 +2326,9 @@ async def anthropic_messages(
             message_id,
             model_name,
             stop = stop,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
         )
 
     if server_tools:
@@ -2398,6 +2411,9 @@ async def anthropic_messages(
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
+                min_p = min_p,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
                 max_tokens = payload.max_tokens,
                 stop = stop,
                 cancel_event = cancel_event,
@@ -2428,6 +2444,9 @@ async def anthropic_messages(
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
             max_tokens = payload.max_tokens,
             stop = stop,
             cancel_event = cancel_event,
@@ -2639,6 +2658,9 @@ def _build_passthrough_payload(
     max_tokens,
     stream,
     stop = None,
+    min_p = None,
+    repetition_penalty = None,
+    presence_penalty = None,
 ):
     body = {
         "messages": openai_messages,
@@ -2655,6 +2677,13 @@ def _build_passthrough_payload(
         body["max_tokens"] = max_tokens
     if stop:
         body["stop"] = stop
+    if min_p is not None:
+        body["min_p"] = min_p
+    if repetition_penalty is not None:
+        # llama-server's field is "repeat_penalty", not "repetition_penalty"
+        body["repeat_penalty"] = repetition_penalty
+    if presence_penalty is not None:
+        body["presence_penalty"] = presence_penalty
     return body
 
 
@@ -2671,6 +2700,9 @@ async def _anthropic_passthrough_stream(
     message_id,
     model_name,
     stop = None,
+    min_p = None,
+    repetition_penalty = None,
+    presence_penalty = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -2684,6 +2716,9 @@ async def _anthropic_passthrough_stream(
         max_tokens,
         True,
         stop = stop,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
     )
 
     async def _stream():
@@ -2757,6 +2792,9 @@ async def _anthropic_passthrough_non_streaming(
     message_id,
     model_name,
     stop = None,
+    min_p = None,
+    repetition_penalty = None,
+    presence_penalty = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -2769,6 +2807,9 @@ async def _anthropic_passthrough_non_streaming(
         max_tokens,
         False,
         stop = stop,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
     )
 
     async with httpx.AsyncClient() as client:

@@ -633,6 +633,15 @@ class AnthropicMessagesRequest(BaseModel):
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
     # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    min_p: Optional[float] = Field(
+        None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+    )
+    repetition_penalty: Optional[float] = Field(
+        None, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+    )
+    presence_penalty: Optional[float] = Field(
+        None, ge = 0.0, le = 2.0, description = "[x-unsloth] Presence penalty"
+    )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
