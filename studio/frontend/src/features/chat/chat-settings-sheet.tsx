@@ -436,19 +436,8 @@ export function ChatSettingsPanel({
       toast.error(`"${trimmed}" is reserved. Pick a different name.`);
       return;
     }
-    const isBuiltinActive = BUILTIN_PRESETS.some((p) => p.name === activePreset);
     setCustomPresets((prev) => {
-      const next = prev.filter((p) => {
-        if (p.name === trimmed) return false;
-        if (
-          !isBuiltinActive &&
-          activePreset !== trimmed &&
-          p.name === activePreset
-        ) {
-          return false;
-        }
-        return true;
-      });
+      const next = prev.filter((p) => p.name !== trimmed);
       const merged = [...next, { name: trimmed, params: { ...params } }];
       if (canUseStorage()) {
         try {
