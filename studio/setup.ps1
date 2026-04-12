@@ -552,11 +552,14 @@ try {
         $envKey.Close()
         if ($rawPath) {
             $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
-            $existingBackup = $backupKey.GetValue('PathBackup', $null)
-            if (-not $existingBackup) {
-                $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            try {
+                $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                if (-not $existingBackup) {
+                    $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                }
+            } finally {
+                $backupKey.Close()
             }
-            $backupKey.Close()
         }
     }
 } catch {
