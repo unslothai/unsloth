@@ -2252,6 +2252,24 @@ async def anthropic_messages(
     temperature = payload.temperature if payload.temperature is not None else 0.6
     top_p = payload.top_p if payload.top_p is not None else 0.95
     top_k = payload.top_k if payload.top_k is not None else 20
+    stop = payload.stop_sequences or None
+
+    # tool_choice is declared on AnthropicMessagesRequest for Anthropic SDK
+    # compatibility (the SDK often sets it by default), but it is not
+    # currently honored by Unsloth's backend. Warn once per request so the
+    # silent drop is visible to operators instead of looking like a model
+    # quality issue to clients.
+    if payload.tool_choice is not None:
+        logger.warning(
+            "anthropic_messages.tool_choice_ignored",
+            tool_choice = payload.tool_choice,
+            note = (
+                "tool_choice is accepted for Anthropic SDK compatibility but not "
+                "honored by Unsloth. Use enable_tools / enabled_tools (server-side "
+                "built-in tools) or restrict the `tools` array (client-side) to "
+                "control which tools the model sees."
+            ),
+        )
 
     cancel_event = threading.Event()
 
@@ -2285,6 +2303,7 @@ async def anthropic_messages(
                 payload.max_tokens,
                 message_id,
                 model_name,
+                stop = stop,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -2296,6 +2315,7 @@ async def anthropic_messages(
             payload.max_tokens,
             message_id,
             model_name,
+            stop = stop,
         )
 
     if server_tools:
@@ -2379,6 +2399,7 @@ async def anthropic_messages(
                 top_p = top_p,
                 top_k = top_k,
                 max_tokens = payload.max_tokens,
+                stop = stop,
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
@@ -2408,6 +2429,7 @@ async def anthropic_messages(
             top_p = top_p,
             top_k = top_k,
             max_tokens = payload.max_tokens,
+            stop = stop,
             cancel_event = cancel_event,
         )
 
@@ -2616,6 +2638,7 @@ def _build_passthrough_payload(
     top_k,
     max_tokens,
     stream,
+    stop = None,
 ):
     body = {
         "messages": openai_messages,
@@ -2630,6 +2653,8 @@ def _build_passthrough_payload(
         body["stream_options"] = {"include_usage": True}
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
+    if stop:
+        body["stop"] = stop
     return body
 
 
@@ -2645,6 +2670,7 @@ async def _anthropic_passthrough_stream(
     max_tokens,
     message_id,
     model_name,
+    stop = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -2657,6 +2683,7 @@ async def _anthropic_passthrough_stream(
         top_k,
         max_tokens,
         True,
+        stop = stop,
     )
 
     async def _stream():
@@ -2729,6 +2756,7 @@ async def _anthropic_passthrough_non_streaming(
     max_tokens,
     message_id,
     model_name,
+    stop = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -2740,6 +2768,7 @@ async def _anthropic_passthrough_non_streaming(
         top_k,
         max_tokens,
         False,
+        stop = stop,
     )
 
     async with httpx.AsyncClient() as client:
