@@ -112,9 +112,11 @@ function Add-ToUserPath {
             $newPath = if ($rawPath) { "$Directory;$rawPath" } else { $Directory }
             $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
             # Broadcast WM_SETTINGCHANGE so other processes pick up the change
-            $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
-            [Environment]::SetEnvironmentVariable($d, '1', 'User')
-            [Environment]::SetEnvironmentVariable($d, $null, 'User')
+            try {
+                $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                [Environment]::SetEnvironmentVariable($d, $null, 'User')
+            } catch { }
             return $true
         } finally {
             $regKey.Close()
