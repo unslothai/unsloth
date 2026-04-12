@@ -164,9 +164,6 @@ _ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
 # developer toolkit is NOT required for running torch.
 _DEFAULT_WINDOWS_ROCM_VERSION: tuple[int, int] = (7, 2)
 _AMD_RADEON_DRIVER_URL = "https://www.amd.com/en/support/download/drivers.html"
-_HIP_SDK_DOWNLOAD_URL = (
-    "https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html"
-)
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
@@ -363,7 +360,9 @@ def _detect_rocm_version_windows() -> tuple[int, int] | None:
             if ver is not None:
                 return ver
 
-    rocm_root = r"C:\Program Files\AMD\ROCm"
+    rocm_root = os.path.join(
+        os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+    )
     if os.path.isdir(rocm_root):
         best: tuple[int, int] | None = None
         try:
@@ -426,6 +425,25 @@ def _has_rocm_gpu_windows() -> bool:
 def _has_usable_nvidia_gpu() -> bool:
     """Return True only when nvidia-smi exists AND reports at least one GPU."""
     exe = shutil.which("nvidia-smi")
+    if not exe and IS_WINDOWS:
+        # nvidia-smi.exe is often absent from PATH on Windows even with a
+        # valid driver.  Match the fallback paths used in install.ps1 /
+        # setup.ps1 so the NVIDIA-wins-on-mixed-systems rule is consistent
+        # between the PowerShell and Python install paths.
+        _candidates = [
+            os.path.join(
+                os.environ.get("ProgramFiles", r"C:\Program Files"),
+                r"NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+            ),
+            os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                r"System32\nvidia-smi.exe",
+            ),
+        ]
+        for _c in _candidates:
+            if os.path.isfile(_c):
+                exe = _c
+                break
     if not exe:
         return False
     try:
@@ -474,6 +492,24 @@ def _ensure_rocm_torch_windows() -> None:
         return
     if not _has_rocm_gpu_windows():
         return
+
+    # Skip when torch already links against ROCm -- mirrors the Linux
+    # has_hip_torch probe (line ~622) and makes this function idempotent.
+    # Without this guard, steps 2b and 13 in install_python_stack() would
+    # each re-download the full 2.1-3.9 GB wheel set even when the first
+    # call (or a prior setup.ps1 / install.ps1 run) already succeeded.
+    try:
+        _probe = subprocess.run(
+            [sys.executable, "-c",
+             "import torch; print(getattr(torch.version,'hip','') or '')"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+        )
+        if _probe.returncode == 0 and _probe.stdout.decode().strip():
+            return  # already has ROCm torch
+    except Exception:
+        pass
 
     # Radeon wheels are cp312 only. Warn (do not crash) when the venv's
     # Python is not 3.12 -- pip will fail anyway with a clearer message.

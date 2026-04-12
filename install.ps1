@@ -784,24 +784,18 @@ shell.Run cmd, 0, False
 
     # ── Install Python if no compatible version found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
-    # AMD path requires Python 3.12 specifically (Radeon only publishes cp312
-    # wheels for Windows), so we pass a narrower preference list AND skip the
-    # winget auto-install (the user must have 3.12 already).
-    if ($HasAmdGpu) {
+    # AMD + torch path requires Python 3.12 specifically (Radeon only publishes
+    # cp312 wheels for Windows). AMD + --no-torch (GGUF-only) is fine with any
+    # 3.11-3.13, since the cp312 constraint only applies to the ROCm wheels.
+    if ($HasAmdGpu -and -not $SkipTorch) {
         $PythonPreferred = @("3.12")
+        $PythonVersion = "3.12"
     } else {
         $PythonPreferred = @("3.13", "3.12", "3.11")
     }
     $DetectedPython = Find-CompatiblePython -PreferredVersions $PythonPreferred
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
-    }
-    if (-not $DetectedPython -and $HasAmdGpu) {
-        Write-Host "[ERROR] AMD ROCm path requires Python 3.12 (Radeon's Windows wheels are cp312 only)." -ForegroundColor Red
-        Write-Host "        Install Python 3.12 from https://www.python.org/downloads/ or via:" -ForegroundColor Yellow
-        Write-Host "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
-        Write-Host "        Then re-run this installer." -ForegroundColor Yellow
-        return
     }
     if (-not $DetectedPython) {
         substep "installing Python ${PythonVersion}..."
@@ -1063,7 +1057,11 @@ shell.Run cmd, 0, False
             try {
                 $venvPyVer = (& $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Out-String).Trim()
             } catch {}
-            if ($venvPyVer -and $venvPyVer -ne "3.12") {
+            if (-not $venvPyVer) {
+                Write-Host "[ERROR] Could not determine venv Python version." -ForegroundColor Red
+                return
+            }
+            if ($venvPyVer -ne "3.12") {
                 Write-Host "[ERROR] Radeon Windows ROCm wheels require Python 3.12 (venv has $venvPyVer)." -ForegroundColor Red
                 Write-Host "        Install Python 3.12 from https://www.python.org/downloads/ and re-run." -ForegroundColor Yellow
                 return

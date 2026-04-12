@@ -1681,16 +1681,21 @@ if ($CuTag -eq "rocm") {
         exit 1
     }
 
-    # Radeon wheels are cp312 only. Warn loudly when the venv's Python is
-    # a different minor version so the pip error makes sense. We do not
-    # exit here because setup.ps1 is also invoked as "unsloth studio update"
-    # inside a venv the user may have created manually.
+    # Radeon wheels are cp312 only. Hard-stop when the venv's Python is a
+    # different minor version -- continuing would download multi-GB wheels
+    # that pip will reject with a confusing incompatible-wheel error.
     try {
         $venvPyVer = (& python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Out-String).Trim()
     } catch { $venvPyVer = "" }
-    if ($venvPyVer -and $venvPyVer -ne "3.12") {
-        substep "Warning: Radeon Windows ROCm wheels require Python 3.12, venv has $venvPyVer." "Yellow"
-        substep "Re-create the venv with Python 3.12 from https://python.org if pip fails below." "Yellow"
+    if (-not $venvPyVer) {
+        Write-Host "[FAILED] Could not determine venv Python version." -ForegroundColor Red
+        Write-Host "         Re-create the venv with Python 3.12 from https://python.org and re-run." -ForegroundColor Yellow
+        exit 1
+    }
+    if ($venvPyVer -ne "3.12") {
+        Write-Host "[FAILED] Radeon Windows ROCm wheels require Python 3.12, venv has $venvPyVer." -ForegroundColor Red
+        Write-Host "         Re-create the venv with Python 3.12 from https://python.org and re-run." -ForegroundColor Yellow
+        exit 1
     }
 
     substep ("installing Radeon ROCm SDK + PyTorch for rocm-rel-{0}.{1}.x from repo.radeon.com..." -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
