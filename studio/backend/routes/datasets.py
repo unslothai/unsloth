@@ -331,7 +331,7 @@ def get_splits(
     Uses the HuggingFace datasets-server ``/splits`` endpoint which returns
     all configs and splits in a single request.
     """
-    token = (request.hf_token or "").strip() or os.environ.get("HF_TOKEN") or None
+    token = (request.hf_token or "").strip() or (os.environ.get("HF_TOKEN") or "").strip() or None
 
     headers: dict[str, str] = {}
     if token:
@@ -356,13 +356,15 @@ def get_splits(
         return SplitsResponse(splits = entries)
 
     except http_requests.HTTPError as e:
-        detail = str(e)
+        detail = None
         upstream_status = 502
         try:
             upstream_status = e.response.status_code
-            detail = e.response.json().get("error", detail)
+            detail = e.response.json().get("error")
         except Exception:
             pass
+        if not isinstance(detail, str) or not detail:
+            detail = f"HuggingFace returned an error (HTTP {upstream_status})"
         # HF 401/403 means the HF token is invalid or missing, not that the
         # Studio session expired.  Remap to 422 so authFetch does not
         # mistake this for a Studio auth failure and force a logout.
