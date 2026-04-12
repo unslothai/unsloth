@@ -1029,7 +1029,7 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "mps":
     # Check MPS bfloat16 support at runtime (requires PyTorch 2.3+ and macOS 14+)
     try:
-        _test = torch.zeros(1, dtype=torch.bfloat16, device="mps")
+        _test = torch.zeros(1, dtype = torch.bfloat16, device = "mps")
         del _test
         SUPPORTS_BFLOAT16 = True
     except Exception:
