@@ -1027,8 +1027,13 @@ elif DEVICE_TYPE == "hip":
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
 elif DEVICE_TYPE == "mps":
-    # Apple Silicon (M1+) natively supports bfloat16
-    SUPPORTS_BFLOAT16 = True
+    # Check MPS bfloat16 support at runtime (requires PyTorch 2.3+ and macOS 14+)
+    try:
+        _test = torch.zeros(1, dtype=torch.bfloat16, device="mps")
+        del _test
+        SUPPORTS_BFLOAT16 = True
+    except Exception:
+        SUPPORTS_BFLOAT16 = False
     # Flash Attention and xformers are not available on MPS; SDPA is used instead
     HAS_FLASH_ATTENTION = False
     HAS_FLASH_ATTENTION_SOFTCAPPING = False
