@@ -191,7 +191,7 @@ app.include_router(
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
-    from utils.hf_endpoint import get_hf_endpoint
+    from utils.hf_endpoint import get_hf_endpoint, get_hf_datasets_server
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
@@ -203,6 +203,7 @@ async def health_check():
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
         "hf_endpoint": get_hf_endpoint(),
+        "hf_datasets_server": get_hf_datasets_server(),
     }
 
 

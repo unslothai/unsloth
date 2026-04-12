@@ -8,11 +8,16 @@
  * fetched at app startup via ``/api/health`` and stored in the platform Zustand
  * store.  All frontend code that needs the HF hub URL should call
  * :func:`getHfEndpoint`.
+ *
+ * The datasets-server URL is resolved similarly via ``HF_DATASETS_SERVER``
+ * (with automatic fallback to the same host as the mirror, or the official
+ * ``datasets-server.huggingface.co``).
  */
 
 import { usePlatformStore } from "@/config/env";
 
 const DEFAULT_HF_ENDPOINT = "https://huggingface.co";
+const DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co";
 
 /** Return the HuggingFace endpoint configured via the backend ``HF_ENDPOINT`` env var. */
 export function getHfEndpoint(): string {
@@ -21,13 +26,12 @@ export function getHfEndpoint(): string {
 
 /**
  * Return the HuggingFace datasets-server base URL.
- * Falls back to the official endpoint if no mirror is configured.
+ *
+ * Uses the dedicated ``hf_datasets_server`` value from the backend (sourced
+ * from ``HF_DATASETS_SERVER`` env var).  This keeps datasets-server independent
+ * from the Hub mirror — a mirror may only proxy Hub endpoints, not the
+ * datasets-server API.
  */
 export function getHfDatasetsServerBase(): string {
-  const mirror = getHfEndpoint();
-  if (mirror !== DEFAULT_HF_ENDPOINT) {
-    // Common mirrors serve datasets-server at the same host
-    return mirror;
-  }
-  return "https://datasets-server.huggingface.co";
+  return usePlatformStore.getState().hfDatasetsServer || DEFAULT_DATASETS_SERVER;
 }

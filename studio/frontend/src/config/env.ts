@@ -19,6 +19,7 @@ interface PlatformState {
   chatOnly: boolean;
   fetched: boolean;
   hfEndpoint: string;
+  hfDatasetsServer: string;
   isChatOnly: () => boolean;
 }
 
@@ -27,6 +28,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnly: false,
   fetched: false,
   hfEndpoint: "https://huggingface.co",
+  hfDatasetsServer: "https://datasets-server.huggingface.co",
   isChatOnly: () => get().chatOnly,
 }));
 
@@ -41,11 +43,13 @@ export async function fetchDeviceType(): Promise<DeviceType> {
         device_type?: string;
         chat_only?: boolean;
         hf_endpoint?: string;
+        hf_datasets_server?: string;
       };
       const deviceType = data.device_type ?? "linux";
       const chatOnly = data.chat_only ?? deviceType === "mac";
       const hfEndpoint = data.hf_endpoint ?? "https://huggingface.co";
-      usePlatformStore.setState({ deviceType, chatOnly, hfEndpoint, fetched: true });
+      const hfDatasetsServer = data.hf_datasets_server ?? "https://datasets-server.huggingface.co";
+      usePlatformStore.setState({ deviceType, chatOnly, hfEndpoint, hfDatasetsServer, fetched: true });
       return deviceType;
     }
   } catch (err) {
