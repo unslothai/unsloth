@@ -165,12 +165,15 @@ export function useTrainingRuntimeLifecycle(): void {
     void hydrate();
 
     const statusTimer = setInterval(() => {
+      const s = runtimeStore.getState();
+      if (s.phase === "idle" && s.hasHydrated && !s.isTrainingRunning) return;
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
 
     const metricsTimer = setInterval(() => {
-      const state = runtimeStore.getState();
-      if (shouldUseLiveSync(state) || state.currentStep > 0) {
+      const s = runtimeStore.getState();
+      if (s.phase === "idle" && s.hasHydrated && !s.isTrainingRunning) return;
+      if (shouldUseLiveSync(s) || s.currentStep > 0) {
         void pollMetrics();
       }
     }, METRICS_POLL_INTERVAL_MS);
