@@ -120,6 +120,7 @@ def publish_recipe_dataset(
         )
 
         from utils.hf_endpoint import get_hf_endpoint
+
         return f"{get_hf_endpoint()}/datasets/{repo_id}"
     except HuggingFaceHubClientUploadError as exc:
         raise RecipeDatasetPublishError(str(exc)) from exc
