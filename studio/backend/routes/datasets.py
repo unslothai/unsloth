@@ -331,7 +331,11 @@ def get_splits(
     Uses the HuggingFace datasets-server ``/splits`` endpoint which returns
     all configs and splits in a single request.
     """
-    token = (request.hf_token or "").strip() or (os.environ.get("HF_TOKEN") or "").strip() or None
+    token = (
+        (request.hf_token or "").strip()
+        or (os.environ.get("HF_TOKEN") or "").strip()
+        or None
+    )
 
     headers: dict[str, str] = {}
     if token:
