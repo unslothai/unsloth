@@ -45,7 +45,12 @@ else:
 MAX_FUSED_SIZE: int = 65536
 import functools
 
-from .fp8 import weight_dequant, fp8_linear
+if DEVICE_TYPE != "mps":
+    from .fp8 import weight_dequant, fp8_linear
+else:
+    # fp8 requires Triton which is not available on MPS
+    weight_dequant = None
+    fp8_linear = None
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError(
@@ -53,9 +58,9 @@ if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     )
 
 if DEVICE_TYPE == "mps":
-    # MPS does not support autocast custom_fwd/bwd; use CPU fallback
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cpu")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cpu")
+    # MPS supports autocast since PyTorch 2.3+
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "mps")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "mps")
 elif Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd

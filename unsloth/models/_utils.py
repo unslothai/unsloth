@@ -875,9 +875,9 @@ elif DEVICE_TYPE == "xpu":
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 elif DEVICE_TYPE == "mps":
-    # MPS does not support autocast custom_fwd/bwd; use CPU fallback for amp decorators
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cpu")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cpu")
+    # MPS supports autocast since PyTorch 2.3+
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "mps")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "mps")
 # =============================================
 
 # =============================================
@@ -1515,10 +1515,11 @@ def get_statistics(local_files_only = False):
     if DEVICE_TYPE == "xpu":
         total_memory = torch.xpu.get_device_properties(0).total_memory
     elif DEVICE_TYPE == "mps":
-        # MPS shares unified memory; report recommended allocator limit
-        total_memory = torch.mps.driver_allocated_memory() or (
-            int(os.popen("sysctl -n hw.memsize").read().strip())
-        )
+        # MPS shares unified memory; use recommended max working set size
+        if hasattr(torch.mps, "recommended_max_working_set_size"):
+            total_memory = torch.mps.recommended_max_working_set_size()
+        else:
+            total_memory = int(os.popen("sysctl -n hw.memsize").read().strip()) * 3 // 4
     else:
         total_memory = torch.cuda.get_device_properties(0).total_memory
     vram = total_memory / 1024 / 1024 / 1024
