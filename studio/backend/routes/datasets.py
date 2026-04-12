@@ -365,6 +365,13 @@ def get_dataset_splits(
                 )
                 last_config_status = 403 if hf_status == 401 else hf_status
                 continue
+            except DatasetNotFoundError as config_err:
+                logger.warning(
+                    f"Could not fetch splits for config '{config}': {config_err}"
+                )
+                last_config_error = str(config_err)
+                last_config_status = 404
+                continue
             except Exception as config_err:
                 logger.warning(
                     f"Could not fetch splits for config '{config}': {config_err}"
