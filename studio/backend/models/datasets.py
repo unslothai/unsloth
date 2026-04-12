@@ -102,7 +102,7 @@ class LocalDatasetsResponse(BaseModel):
 class SplitsRequest(BaseModel):
     """Request for fetching dataset splits from HuggingFace."""
 
-    dataset: str
+    dataset: str = Field(..., min_length = 1)
     hf_token: Optional[str] = None
 
 

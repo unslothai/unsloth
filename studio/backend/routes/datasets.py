@@ -349,22 +349,30 @@ def get_splits(
 
         entries = [
             SplitEntry(dataset = s["dataset"], config = s["config"], split = s["split"])
-            for s in data.get("splits", [])
+            for s in (data.get("splits") or [])
+            if isinstance(s, dict) and all(k in s for k in ("dataset", "config", "split"))
         ]
         return SplitsResponse(splits = entries)
 
     except http_requests.HTTPError as e:
         detail = str(e)
+        upstream_status = 502
         try:
+            upstream_status = e.response.status_code
             detail = e.response.json().get("error", detail)
         except Exception:
             pass
-        logger.warning(f"Failed to fetch splits for {request.dataset}: {detail}")
-        raise HTTPException(status_code = e.response.status_code, detail = detail)
+        # HF 401/403 means the HF token is invalid or missing, not that the
+        # Studio session expired.  Remap to 422 so authFetch does not
+        # mistake this for a Studio auth failure and force a logout.
+        if upstream_status in (401, 403):
+            upstream_status = 422
+        logger.warning(f"Failed to fetch splits for {request.dataset!r}: {detail}")
+        raise HTTPException(status_code = upstream_status, detail = detail)
 
     except Exception as e:
-        logger.warning(f"Failed to fetch splits for {request.dataset}: {e}")
-        raise HTTPException(status_code = 502, detail = str(e))
+        logger.error(f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True)
+        raise HTTPException(status_code = 502, detail = "Failed to fetch dataset splits from HuggingFace")
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
