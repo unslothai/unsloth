@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import os
 
-_HF_ENDPOINT: str = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+_DEFAULT_HF_ENDPOINT = "https://huggingface.co"
+
+_raw = os.environ.get("HF_ENDPOINT", "").strip()
+_HF_ENDPOINT: str = _raw if _raw else _DEFAULT_HF_ENDPOINT
 
 
 def get_hf_endpoint() -> str:

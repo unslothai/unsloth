@@ -126,7 +126,7 @@ class InferenceOrchestrator:
         try:
             import httpx
 
-            from studio.backend.utils.hf_endpoint import get_hf_endpoint
+            from utils.hf_endpoint import get_hf_endpoint
 
             resp = httpx.get(
                 f"{get_hf_endpoint()}/api/models",

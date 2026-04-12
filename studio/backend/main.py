@@ -191,7 +191,7 @@ app.include_router(
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
-    from studio.backend.utils.hf_endpoint import get_hf_endpoint
+    from utils.hf_endpoint import get_hf_endpoint
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)

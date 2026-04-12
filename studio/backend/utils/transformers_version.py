@@ -235,7 +235,7 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
 
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
-    from studio.backend.utils.hf_endpoint import get_hf_endpoint
+    from utils.hf_endpoint import get_hf_endpoint
 
     url = f"{get_hf_endpoint()}/{model_name}/raw/main/tokenizer_config.json"
     try:
@@ -302,7 +302,7 @@ def _check_config_needs_550(model_name: str) -> bool:
 
     # --- Fall back to fetching from HuggingFace ---------------------------
     import urllib.request
-    from studio.backend.utils.hf_endpoint import get_hf_endpoint
+    from utils.hf_endpoint import get_hf_endpoint
 
     url = f"{get_hf_endpoint()}/{model_name}/raw/main/config.json"
     try:

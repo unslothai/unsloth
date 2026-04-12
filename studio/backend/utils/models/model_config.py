@@ -872,9 +872,10 @@ def _detect_audio_from_tokenizer(
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
+        from utils.hf_endpoint import get_hf_endpoint
+        hf_endpoint = get_hf_endpoint()
         for tok_path in paths_to_try:
-            from studio.backend.utils.hf_endpoint import get_hf_endpoint
-            url = f"{get_hf_endpoint()}/{model_name}/resolve/main/{tok_path}"
+            url = f"{hf_endpoint}/{model_name}/resolve/main/{tok_path}"
             resp = requests.get(url, headers = headers, timeout = 15)
             if not resp.ok:
                 continue
