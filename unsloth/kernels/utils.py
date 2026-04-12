@@ -39,6 +39,7 @@ if DEVICE_TYPE == "mps":
     next_power_of_2 = lambda n: 1 << (n - 1).bit_length()
 else:
     import triton
+
     next_power_of_2 = triton.next_power_of_2
 
 MAX_FUSED_SIZE: int = 65536
@@ -277,8 +278,12 @@ else:
         cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
         cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
     else:
-        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+        cgemm_4bit_inference_naive_fp16 = (
+            bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+        )
+        cgemm_4bit_inference_naive_bf16 = (
+            bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+        )
 
 
 if DEVICE_TYPE == "mps":
