@@ -401,8 +401,8 @@ def get_dataset_splits(
         raise HTTPException(
             status_code = 404,
             detail = (
-                f"Dataset '{request.dataset_name}' was not found on the Hub "
-                "or cannot be accessed with the provided token."
+                f"Dataset '{request.dataset_name}' does not exist on the Hub, "
+                "or is private and requires a valid Hugging Face token."
             ),
         )
     except HfHubHTTPError as e:
