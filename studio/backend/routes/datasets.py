@@ -350,7 +350,8 @@ def get_splits(
         entries = [
             SplitEntry(dataset = s["dataset"], config = s["config"], split = s["split"])
             for s in (data.get("splits") or [])
-            if isinstance(s, dict) and all(k in s for k in ("dataset", "config", "split"))
+            if isinstance(s, dict)
+            and all(k in s for k in ("dataset", "config", "split"))
         ]
         return SplitsResponse(splits = entries)
 
@@ -371,8 +372,12 @@ def get_splits(
         raise HTTPException(status_code = upstream_status, detail = detail)
 
     except Exception as e:
-        logger.error(f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True)
-        raise HTTPException(status_code = 502, detail = "Failed to fetch dataset splits from HuggingFace")
+        logger.error(
+            f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True
+        )
+        raise HTTPException(
+            status_code = 502, detail = "Failed to fetch dataset splits from HuggingFace"
+        )
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
