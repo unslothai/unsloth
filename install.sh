@@ -130,7 +130,7 @@ _install_bnb_rocm() {
         substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
-        --isolated --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
 }
 
 if [ "$_next_is_package" = true ]; then
