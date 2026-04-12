@@ -124,10 +124,10 @@ _install_bnb_rocm() {
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
         if run_install_cmd "$_label (pre-release)" "$_venv_py" -m pip install \
-            --isolated --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
+            --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
-        substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
         --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
