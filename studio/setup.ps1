@@ -1510,10 +1510,15 @@ if (Test-Path $VenvDir -PathType Container) {
         $shouldRebuild = $true
     }
 
+    # $_NeedRocmRepair is used later to override the version fast-path
+    # ($SkipPythonDeps) so the ROCm install block still runs even when
+    # the unsloth package is already at the latest version.
+    $_NeedRocmRepair = $false
+
     if (-not $shouldRebuild) {
         if ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag
-        } elseif ($HasAmdGpu) {
+        } elseif ($HasAmdGpu -and -not $_NoTorch) {
             $expectedTorchTag = "rocm"
         } else {
             $expectedTorchTag = "cpu"
@@ -1525,8 +1530,9 @@ if (Test-Path $VenvDir -PathType Container) {
             # setup.ps1 cannot recreate the venv on its own.  Instead, keep
             # the venv and let the ROCm install block below repair torch
             # in-place -- the end state is the same but no work is lost.
-            if ($HasAmdGpu -and $installedTorchTag -eq "cpu") {
+            if ($HasAmdGpu -and -not $_NoTorch -and $installedTorchTag -eq "cpu") {
                 substep "CPU-only torch detected on AMD host; will repair to ROCm in place..." "Yellow"
+                $_NeedRocmRepair = $true
             } else {
                 $shouldRebuild = $true
             }
@@ -1607,9 +1613,11 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
+    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer) -and -not $_NeedRocmRepair) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+    } elseif ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer) -and $_NeedRocmRepair) {
+        substep "$_PkgName $InstalledVer is current; repairing torch to ROCm..."
     } elseif ($InstalledVer -and $LatestVer) {
         substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
     } elseif (-not $LatestVer) {
