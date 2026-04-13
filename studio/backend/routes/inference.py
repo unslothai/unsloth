@@ -96,6 +96,17 @@ from models.inference import (
     ResponsesOutputMessage,
     ResponsesUsage,
     ResponsesResponse,
+    AnthropicMessagesRequest,
+    AnthropicMessagesResponse,
+    AnthropicResponseTextBlock,
+    AnthropicResponseToolUseBlock,
+    AnthropicUsage,
+)
+from core.inference.anthropic_compat import (
+    anthropic_messages_to_openai,
+    anthropic_tools_to_openai,
+    AnthropicStreamEmitter,
+    AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
 
@@ -2201,3 +2212,669 @@ async def openai_responses(
     if payload.stream:
         return await _responses_stream(payload, messages, request)
     return await _responses_non_streaming(payload, messages, request)
+
+
+# =====================================================================
+# Anthropic-Compatible Messages API  (/messages → /v1/messages)
+# =====================================================================
+
+
+@router.post("/messages")
+async def anthropic_messages(
+    payload: AnthropicMessagesRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Anthropic-compatible Messages API endpoint.
+
+    Translates Anthropic message format to internal OpenAI format, runs
+    through the existing agentic tool loop when tools are provided, and
+    returns responses in Anthropic Messages API format (streaming SSE or
+    non-streaming JSON).
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = "No GGUF model loaded. Load a GGUF model first.",
+        )
+
+    model_name = getattr(llama_backend, "model_identifier", None) or payload.model
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    # ── Translate Anthropic → OpenAI ──────────────────────────
+    openai_messages = anthropic_messages_to_openai(
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+    )
+
+    temperature = payload.temperature if payload.temperature is not None else 0.6
+    top_p = payload.top_p if payload.top_p is not None else 0.95
+    top_k = payload.top_k if payload.top_k is not None else 20
+    min_p = payload.min_p if payload.min_p is not None else 0.01
+    repetition_penalty = (
+        payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
+    )
+    presence_penalty = (
+        payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    )
+    stop = payload.stop_sequences or None
+
+    # tool_choice is declared on AnthropicMessagesRequest for Anthropic SDK
+    # compatibility (the SDK often sets it by default), but it is not
+    # currently honored by Unsloth's backend. Warn once per request so the
+    # silent drop is visible to operators instead of looking like a model
+    # quality issue to clients.
+    if payload.tool_choice is not None:
+        logger.warning(
+            "anthropic_messages.tool_choice_ignored",
+            tool_choice = payload.tool_choice,
+            note = (
+                "tool_choice is accepted for Anthropic SDK compatibility but not "
+                "honored by Unsloth. Use enable_tools / enabled_tools (server-side "
+                "built-in tools) or restrict the `tools` array (client-side) to "
+                "control which tools the model sees."
+            ),
+        )
+
+    cancel_event = threading.Event()
+
+    # ── Tool routing ──────────────────────────────────────────
+    # Three paths:
+    # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
+    # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
+    # 3. neither           → plain chat
+    server_tools = payload.enable_tools and llama_backend.supports_tools
+    client_tools = (
+        not server_tools
+        and payload.tools
+        and len(payload.tools) > 0
+        and llama_backend.supports_tools
+    )
+
+    # ── Client-side pass-through path ─────────────────────────
+    if client_tools:
+        openai_tools = anthropic_tools_to_openai(payload.tools)
+
+        if payload.stream:
+            return await _anthropic_passthrough_stream(
+                request,
+                cancel_event,
+                llama_backend,
+                openai_messages,
+                openai_tools,
+                temperature,
+                top_p,
+                top_k,
+                payload.max_tokens,
+                message_id,
+                model_name,
+                stop = stop,
+                min_p = min_p,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
+            )
+        return await _anthropic_passthrough_non_streaming(
+            llama_backend,
+            openai_messages,
+            openai_tools,
+            temperature,
+            top_p,
+            top_k,
+            payload.max_tokens,
+            message_id,
+            model_name,
+            stop = stop,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        )
+
+    if server_tools:
+        from core.inference.tools import ALL_TOOLS
+
+        if payload.enabled_tools is not None:
+            openai_tools = [
+                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
+            ]
+        else:
+            openai_tools = ALL_TOOLS
+
+        # Build tool-use system prompt nudge (same logic as /chat/completions)
+        _tool_names = {t["function"]["name"] for t in openai_tools}
+        _has_web = "web_search" in _tool_names
+        _has_code = "python" in _tool_names or "terminal" in _tool_names
+
+        _date_line = f"The current date is {_date.today().isoformat()}."
+        _model_size_b = _extract_model_size_b(model_name)
+        _is_small_model = _model_size_b is not None and _model_size_b < 9
+
+        if _is_small_model:
+            _web_tips = "Do not repeat the same search query."
+        else:
+            _web_tips = (
+                "When you search and find a relevant URL in the results, "
+                "fetch its full content by calling web_search with the url parameter. "
+                "Do not repeat the same search query. If a search returns "
+                "no useful results, try rephrasing or fetching a result URL directly."
+            )
+        _code_tips = (
+            "Use code execution for math, calculations, data processing, "
+            "or to parse and analyze information from tool results."
+        )
+
+        if _has_web and _has_code:
+            _nudge = (
+                _date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "tools rather than answering from memory. "
+                + _web_tips
+                + " "
+                + _code_tips
+            )
+        elif _has_code:
+            _nudge = (
+                _date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "code execution rather than answering from memory. " + _code_tips
+            )
+        elif _has_web:
+            _nudge = (
+                _date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "web search for up-to-date or uncertain factual "
+                "information rather than answering from memory. " + _web_tips
+            )
+        else:
+            _nudge = ""
+
+        if _nudge:
+            _nudge += _TOOL_ACTION_NUDGE
+            # Inject into system prompt
+            if openai_messages and openai_messages[0].get("role") == "system":
+                openai_messages[0]["content"] = (
+                    openai_messages[0]["content"].rstrip() + "\n\n" + _nudge
+                )
+            else:
+                openai_messages.insert(0, {"role": "system", "content": _nudge})
+
+        # Strip stale tool-call XML from conversation
+        for _msg in openai_messages:
+            if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+
+        def _run_tool_gen():
+            return llama_backend.generate_chat_completion_with_tools(
+                messages = openai_messages,
+                tools = openai_tools,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
+                max_tokens = payload.max_tokens,
+                stop = stop,
+                cancel_event = cancel_event,
+                max_tool_iterations = 25,
+                auto_heal_tool_calls = True,
+                tool_call_timeout = 300,
+                session_id = payload.session_id,
+            )
+
+        if payload.stream:
+            return await _anthropic_tool_stream(
+                request,
+                cancel_event,
+                _run_tool_gen,
+                message_id,
+                model_name,
+            )
+        return await _anthropic_tool_non_streaming(
+            _run_tool_gen,
+            message_id,
+            model_name,
+        )
+
+    # ── No-tool path ──────────────────────────────────────────
+    def _run_plain_gen():
+        return llama_backend.generate_chat_completion(
+            messages = openai_messages,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+            max_tokens = payload.max_tokens,
+            stop = stop,
+            cancel_event = cancel_event,
+        )
+
+    if payload.stream:
+        return await _anthropic_plain_stream(
+            request,
+            cancel_event,
+            _run_plain_gen,
+            message_id,
+            model_name,
+        )
+    return await _anthropic_plain_non_streaming(
+        _run_plain_gen,
+        message_id,
+        model_name,
+    )
+
+
+async def _anthropic_tool_stream(
+    request,
+    cancel_event,
+    run_gen,
+    message_id,
+    model_name,
+):
+    """Streaming response for the tool-calling path."""
+    _sentinel = object()
+
+    async def _stream():
+        emitter = AnthropicStreamEmitter()
+        for line in emitter.start(message_id, model_name):
+            yield line
+
+        gen = run_gen()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    return
+                event = await asyncio.to_thread(next, gen, _sentinel)
+                if event is _sentinel:
+                    break
+                # Strip leaked tool-call XML from content events
+                if event.get("type") == "content":
+                    event = dict(event)
+                    event["text"] = _TOOL_XML_RE.sub("", event["text"])
+                for line in emitter.feed(event):
+                    yield line
+        except Exception as e:
+            logger.error("anthropic_messages stream error: %s", e)
+
+        for line in emitter.finish("end_turn"):
+            yield line
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _anthropic_plain_stream(
+    request,
+    cancel_event,
+    run_gen,
+    message_id,
+    model_name,
+):
+    """Streaming response for the no-tool path."""
+    _sentinel = object()
+
+    async def _stream():
+        emitter = AnthropicStreamEmitter()
+        for line in emitter.start(message_id, model_name):
+            yield line
+
+        gen = run_gen()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    return
+                cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                if cumulative is _sentinel:
+                    break
+                if isinstance(cumulative, dict):
+                    if cumulative.get("type") == "metadata":
+                        for line in emitter.feed(cumulative):
+                            yield line
+                    continue
+                # Plain generator yields cumulative text strings
+                for line in emitter.feed({"type": "content", "text": cumulative}):
+                    yield line
+        except Exception as e:
+            logger.error("anthropic_messages stream error: %s", e)
+
+        for line in emitter.finish("end_turn"):
+            yield line
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
+    """Non-streaming response for the tool-calling path.
+
+    Builds ``content_blocks`` in generation order (text → tool_use → text →
+    tool_use → ...), mirroring the streaming emitter's behavior. Deltas
+    within a single synthesis turn are merged into the trailing text block;
+    tool_use blocks interrupt the text sequence and open a new text block on
+    the next content event.
+
+    ``prev_text`` is reset on ``tool_end`` because
+    ``generate_chat_completion_with_tools`` yields cumulative content *per
+    turn* — the first content event of turn N+1 must diff against an empty
+    baseline, not against turn N's final length.
+    """
+    content_blocks: list = []
+    usage = {}
+    prev_text = ""
+
+    for event in run_gen():
+        etype = event.get("type", "")
+        if etype == "content":
+            # Strip leaked tool-call XML
+            clean = _TOOL_XML_RE.sub("", event["text"])
+            new = clean[len(prev_text) :]
+            prev_text = clean
+            if new:
+                if content_blocks and isinstance(
+                    content_blocks[-1], AnthropicResponseTextBlock
+                ):
+                    content_blocks[-1].text += new
+                else:
+                    content_blocks.append(AnthropicResponseTextBlock(text = new))
+        elif etype == "tool_start":
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = event["tool_call_id"],
+                    name = event["tool_name"],
+                    input = event.get("arguments", {}),
+                )
+            )
+        elif etype == "tool_end":
+            prev_text = ""
+        elif etype == "metadata":
+            usage = event.get("usage", {})
+
+    resp = AnthropicMessagesResponse(
+        id = message_id,
+        model = model_name,
+        content = content_blocks,
+        stop_reason = "end_turn",
+        usage = AnthropicUsage(
+            input_tokens = usage.get("prompt_tokens", 0),
+            output_tokens = usage.get("completion_tokens", 0),
+        ),
+    )
+    return JSONResponse(content = resp.model_dump())
+
+
+async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
+    """Non-streaming response for the no-tool path."""
+    text_parts = []
+    usage = {}
+    prev_text = ""
+
+    for cumulative in run_gen():
+        if isinstance(cumulative, dict):
+            if cumulative.get("type") == "metadata":
+                usage = cumulative.get("usage", {})
+            continue
+        new = cumulative[len(prev_text) :]
+        prev_text = cumulative
+        if new:
+            text_parts.append(new)
+
+    full_text = "".join(text_parts)
+    content_blocks = []
+    if full_text:
+        content_blocks.append(AnthropicResponseTextBlock(text = full_text))
+
+    resp = AnthropicMessagesResponse(
+        id = message_id,
+        model = model_name,
+        content = content_blocks,
+        stop_reason = "end_turn",
+        usage = AnthropicUsage(
+            input_tokens = usage.get("prompt_tokens", 0),
+            output_tokens = usage.get("completion_tokens", 0),
+        ),
+    )
+    return JSONResponse(content = resp.model_dump())
+
+
+# =====================================================================
+# Client-side tool pass-through (Anthropic-native tools field)
+# =====================================================================
+
+
+def _build_passthrough_payload(
+    openai_messages,
+    openai_tools,
+    temperature,
+    top_p,
+    top_k,
+    max_tokens,
+    stream,
+    stop = None,
+    min_p = None,
+    repetition_penalty = None,
+    presence_penalty = None,
+):
+    body = {
+        "messages": openai_messages,
+        "tools": openai_tools,
+        "tool_choice": "auto",
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "stream": stream,
+    }
+    if stream:
+        body["stream_options"] = {"include_usage": True}
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+    if stop:
+        body["stop"] = stop
+    if min_p is not None:
+        body["min_p"] = min_p
+    if repetition_penalty is not None:
+        # llama-server's field is "repeat_penalty", not "repetition_penalty"
+        body["repeat_penalty"] = repetition_penalty
+    if presence_penalty is not None:
+        body["presence_penalty"] = presence_penalty
+    return body
+
+
+async def _anthropic_passthrough_stream(
+    request,
+    cancel_event,
+    llama_backend,
+    openai_messages,
+    openai_tools,
+    temperature,
+    top_p,
+    top_k,
+    max_tokens,
+    message_id,
+    model_name,
+    stop = None,
+    min_p = None,
+    repetition_penalty = None,
+    presence_penalty = None,
+):
+    """Streaming client-side pass-through: forward tools to llama-server and
+    translate its streaming response to Anthropic SSE without executing anything."""
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    body = _build_passthrough_payload(
+        openai_messages,
+        openai_tools,
+        temperature,
+        top_p,
+        top_k,
+        max_tokens,
+        True,
+        stop = stop,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+    )
+
+    async def _stream():
+        emitter = AnthropicPassthroughEmitter()
+        for line in emitter.start(message_id, model_name):
+            yield line
+
+        try:
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    target_url,
+                    json = body,
+                    timeout = 600,
+                ) as resp:
+                    # Explicitly manage the aiter_lines() iterator so it is
+                    # closed in this task before the surrounding `async with`
+                    # blocks unwind the response / client. Without this, the
+                    # inner httpcore byte-stream gets finalized by the GC in
+                    # a different asyncio task on Python 3.13 + httpcore 1.x,
+                    # raising "Attempted to exit cancel scope in a different
+                    # task" and "async generator ignored GeneratorExit".
+                    lines_iter = resp.aiter_lines()
+                    try:
+                        async for raw_line in lines_iter:
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
+                            if not raw_line or not raw_line.startswith("data: "):
+                                continue
+                            data_str = raw_line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            for line in emitter.feed_chunk(chunk):
+                                yield line
+                    finally:
+                        try:
+                            await lines_iter.aclose()
+                        except RuntimeError:
+                            # Python 3.13 + httpcore 1.0.x asyncgen cleanup
+                            pass
+        except Exception as e:
+            logger.error("anthropic_messages passthrough stream error: %s", e)
+
+        for line in emitter.finish():
+            yield line
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _anthropic_passthrough_non_streaming(
+    llama_backend,
+    openai_messages,
+    openai_tools,
+    temperature,
+    top_p,
+    top_k,
+    max_tokens,
+    message_id,
+    model_name,
+    stop = None,
+    min_p = None,
+    repetition_penalty = None,
+    presence_penalty = None,
+):
+    """Non-streaming client-side pass-through."""
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    body = _build_passthrough_payload(
+        openai_messages,
+        openai_tools,
+        temperature,
+        top_p,
+        top_k,
+        max_tokens,
+        False,
+        stop = stop,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+    )
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(target_url, json = body, timeout = 600)
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code = resp.status_code,
+            detail = f"llama-server error: {resp.text[:500]}",
+        )
+
+    data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    finish_reason = choice.get("finish_reason")
+
+    content_blocks = []
+    text = message.get("content") or ""
+    if text:
+        text = _TOOL_XML_RE.sub("", text).strip()
+        if text:
+            content_blocks.append(AnthropicResponseTextBlock(text = text))
+
+    tool_calls = message.get("tool_calls") or []
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments", "{}"))
+        except json.JSONDecodeError:
+            args = {}
+        content_blocks.append(
+            AnthropicResponseToolUseBlock(
+                id = tc.get("id", ""),
+                name = fn.get("name", ""),
+                input = args,
+            )
+        )
+
+    if tool_calls:
+        stop_reason = "tool_use"
+    elif finish_reason == "length":
+        stop_reason = "max_tokens"
+    else:
+        stop_reason = "end_turn"
+
+    usage = data.get("usage") or {}
+    resp_obj = AnthropicMessagesResponse(
+        id = message_id,
+        model = model_name,
+        content = content_blocks,
+        stop_reason = stop_reason,
+        usage = AnthropicUsage(
+            input_tokens = usage.get("prompt_tokens", 0),
+            output_tokens = usage.get("completion_tokens", 0),
+        ),
+    )
+    return JSONResponse(content = resp_obj.model_dump())

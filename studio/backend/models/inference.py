@@ -560,3 +560,125 @@ class ResponsesResponse(BaseModel):
     tool_choice: Optional[Any] = None
     tools: list = Field(default_factory = list)
     truncation: Optional[Any] = None
+
+
+# =====================================================================
+# Anthropic Messages API Models  (/v1/messages)
+# =====================================================================
+
+
+# ── Request models ─────────────────────────────────────────────
+
+
+class AnthropicTextBlock(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class AnthropicImageSource(BaseModel):
+    type: Literal["base64", "url"]
+    media_type: Optional[str] = None
+    data: Optional[str] = None
+    url: Optional[str] = None
+
+
+class AnthropicImageBlock(BaseModel):
+    type: Literal["image"]
+    source: AnthropicImageSource
+
+
+class AnthropicToolUseBlock(BaseModel):
+    type: Literal["tool_use"]
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicToolResultBlock(BaseModel):
+    type: Literal["tool_result"]
+    tool_use_id: str
+    content: Union[str, list] = ""
+
+
+AnthropicContentBlock = Union[
+    AnthropicTextBlock,
+    AnthropicImageBlock,
+    AnthropicToolUseBlock,
+    AnthropicToolResultBlock,
+]
+
+
+class AnthropicMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: Union[str, list[AnthropicContentBlock]]
+
+
+class AnthropicTool(BaseModel):
+    name: str
+    description: Optional[str] = None
+    input_schema: dict
+
+
+class AnthropicMessagesRequest(BaseModel):
+    model: str = "default"
+    max_tokens: Optional[int] = None
+    messages: list[AnthropicMessage]
+    system: Optional[Union[str, list]] = None
+    tools: Optional[list[AnthropicTool]] = None
+    tool_choice: Optional[Any] = None
+    stream: bool = False
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    stop_sequences: Optional[list[str]] = None
+    metadata: Optional[dict] = None
+    # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    min_p: Optional[float] = Field(
+        None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+    )
+    repetition_penalty: Optional[float] = Field(
+        None, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+    )
+    presence_penalty: Optional[float] = Field(
+        None, ge = 0.0, le = 2.0, description = "[x-unsloth] Presence penalty"
+    )
+    enable_tools: Optional[bool] = None
+    enabled_tools: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    model_config = {"extra": "allow"}
+
+
+# ── Response models ────────────────────────────────────────────
+
+
+class AnthropicUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class AnthropicResponseTextBlock(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class AnthropicResponseToolUseBlock(BaseModel):
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
+]
+
+
+class AnthropicMessagesResponse(BaseModel):
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:24]}")
+    type: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
+    content: list[AnthropicResponseBlock] = Field(default_factory = list)
+    model: str = "default"
+    stop_reason: Optional[str] = None
+    stop_sequence: Optional[str] = None
+    usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
