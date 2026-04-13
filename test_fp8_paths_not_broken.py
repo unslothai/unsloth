@@ -1,11 +1,18 @@
 """Test that new Gemma-4/LFM entries don't break existing FP8 mapper paths."""
+
 import os, sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 
 def _load_mappers():
     g = {}
-    exec(open(os.path.join(os.path.dirname(__file__), "unsloth", "models", "mapper.py")).read(), g)
+    exec(
+        open(
+            os.path.join(os.path.dirname(__file__), "unsloth", "models", "mapper.py")
+        ).read(),
+        g,
+    )
     return g
 
 

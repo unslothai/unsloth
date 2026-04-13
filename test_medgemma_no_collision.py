@@ -1,10 +1,16 @@
 """Test that medgemma models (containing 'gemma-4' substring via 'medgemma-4b') are not misrouted."""
+
 import os, sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 MAPPINGS_FILE = os.path.join(
     os.path.dirname(__file__),
-    "studio", "backend", "utils", "datasets", "model_mappings.py",
+    "studio",
+    "backend",
+    "utils",
+    "datasets",
+    "model_mappings.py",
 )
 
 
@@ -16,7 +22,12 @@ def _load():
 
 def _load_mappers():
     g = {}
-    exec(open(os.path.join(os.path.dirname(__file__), "unsloth", "models", "mapper.py")).read(), g)
+    exec(
+        open(
+            os.path.join(os.path.dirname(__file__), "unsloth", "models", "mapper.py")
+        ).read(),
+        g,
+    )
     return g
 
 
@@ -34,7 +45,9 @@ def test_medgemma_not_routed_to_gemma4_bnb():
     FTI = g["FLOAT_TO_INT_MAPPER"]
     result = FTI.get("google/medgemma-4b-it")
     if result is not None:
-        assert "medgemma" in result, f"medgemma-4b-it routed away from medgemma: {result}"
+        assert (
+            "medgemma" in result
+        ), f"medgemma-4b-it routed away from medgemma: {result}"
 
 
 def test_medgemma_bnb4bit_maps_to_gemma3():

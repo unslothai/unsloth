@@ -1,8 +1,12 @@
 """Test that no model ID appears in multiple Ollama template tuples (would cause wrong template)."""
+
 import os, sys, re
+
 sys.path.insert(0, os.path.dirname(__file__))
 
-OLLAMA_FILE = os.path.join(os.path.dirname(__file__), "unsloth", "ollama_template_mappers.py")
+OLLAMA_FILE = os.path.join(
+    os.path.dirname(__file__), "unsloth", "ollama_template_mappers.py"
+)
 
 
 def _load_ollama_mapper():
@@ -10,12 +14,14 @@ def _load_ollama_mapper():
     start = text.find("OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {")
     depth = 0
     for i in range(start, len(text)):
-        if text[i] == "{": depth += 1
+        if text[i] == "{":
+            depth += 1
         elif text[i] == "}":
             depth -= 1
-            if depth == 0: break
+            if depth == 0:
+                break
     g = {}
-    exec(text[start:i+1], g)
+    exec(text[start : i + 1], g)
     return g["OLLAMA_TEMPLATE_TO_MODEL_MAPPER"]
 
 
@@ -28,7 +34,10 @@ def test_no_model_id_in_multiple_ollama_templates():
             if model in seen and seen[model] != template:
                 conflicts.append(f"{model}: in both '{seen[model]}' and '{template}'")
             seen[model] = template
-    assert not conflicts, "Model ID conflicts in OLLAMA_TEMPLATE_TO_MODEL_MAPPER:\n" + "\n".join(conflicts)
+    assert not conflicts, (
+        "Model ID conflicts in OLLAMA_TEMPLATE_TO_MODEL_MAPPER:\n"
+        + "\n".join(conflicts)
+    )
 
 
 def test_gemma4_ids_only_in_gemma4():

@@ -1,10 +1,16 @@
 """Test structural integrity of all Studio mapping dicts."""
+
 import os, sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 MAPPINGS_FILE = os.path.join(
     os.path.dirname(__file__),
-    "studio", "backend", "utils", "datasets", "model_mappings.py",
+    "studio",
+    "backend",
+    "utils",
+    "datasets",
+    "model_mappings.py",
 )
 
 
@@ -24,7 +30,9 @@ def test_all_template_keys_are_strings():
 def test_all_model_ids_are_strings():
     g = _load()
     for key, values in g["TEMPLATE_TO_MODEL_MAPPER"].items():
-        assert isinstance(values, tuple), f"{key}: values is {type(values)}, expected tuple"
+        assert isinstance(
+            values, tuple
+        ), f"{key}: values is {type(values)}, expected tuple"
         for v in values:
             assert isinstance(v, str), f"{key}: non-string model ID {v!r}"
             assert "/" in v, f"{key}: model ID {v!r} missing org/ prefix"

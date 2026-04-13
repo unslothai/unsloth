@@ -1,11 +1,18 @@
 """Test mapper behavior with edge-case model name inputs."""
+
 import os, sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 
 def _load_mappers():
     g = {}
-    exec(open(os.path.join(os.path.dirname(__file__), "unsloth", "models", "mapper.py")).read(), g)
+    exec(
+        open(
+            os.path.join(os.path.dirname(__file__), "unsloth", "models", "mapper.py")
+        ).read(),
+        g,
+    )
     return g
 
 
