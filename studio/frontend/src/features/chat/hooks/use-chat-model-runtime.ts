@@ -251,6 +251,7 @@ export function useChatModelRuntime() {
           ? (statusRes.native_context_length ?? null)
           : null;
         const currentSpecType = statusRes.speculative_type ?? null;
+        const currentFitTarget = statusRes.fit_target ?? null;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
@@ -260,6 +261,8 @@ export function useChatModelRuntime() {
           ggufNativeContextLength,
           speculativeType: currentSpecType,
           loadedSpeculativeType: currentSpecType,
+          fitTarget: currentFitTarget,
+          loadedFitTarget: currentFitTarget,
         });
 
         // Set reasoning default for Qwen3.5 small models
@@ -346,6 +349,8 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora ? true : false);
+      const previousLoadedFitTarget =
+        useChatRuntimeStore.getState().loadedFitTarget;
       // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
       const isLocal = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(modelId);
       const isCachedLora = isLora && isLocal;
@@ -396,7 +401,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
+            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType, fitTarget } = useChatRuntimeStore.getState();
             // GGUF: use custom context length, or 0 = model's native context
             // Non-GGUF: use the Max Seq Length slider value
             const effectiveMaxSeqLength = customContextLength != null
@@ -413,6 +418,7 @@ export function useChatModelRuntime() {
               chat_template_override: chatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
+              fit_target: fitTarget,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -436,6 +442,7 @@ export function useChatModelRuntime() {
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedSpec = loadResponse.speculative_type ?? null;
+            const loadedFitTarget = loadResponse.fit_target ?? null;
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -464,6 +471,8 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
+              fitTarget: loadedFitTarget,
+              loadedFitTarget,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
@@ -490,6 +499,7 @@ export function useChatModelRuntime() {
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
+                  fit_target: previousLoadedFitTarget,
                 });
                 await refresh();
               } catch {

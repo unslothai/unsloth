@@ -42,6 +42,7 @@ export interface LoadModelRequest {
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   speculative_type?: string | null;
+  fit_target?: number | null;
 }
 
 export interface ValidateModelResponse {
@@ -95,6 +96,7 @@ export interface LoadModelResponse {
   cache_type_kv?: string | null;
   chat_template?: string | null;
   speculative_type?: string | null;
+  fit_target?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -126,6 +128,7 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   speculative_type?: string | null;
+  fit_target?: number | null;
 }
 
 export interface AudioGenerationResponse {

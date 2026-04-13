@@ -315,6 +315,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               codeToolsEnabled: loadResp.supports_tools ?? false,
               kvCacheDtype: loadResp.cache_type_kv ?? null,
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+              fitTarget: loadResp.fit_target ?? null,
+              loadedFitTarget: loadResp.fit_target ?? null,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
             });
@@ -402,6 +404,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         codeToolsEnabled: loadResp.supports_tools ?? false,
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        fitTarget: loadResp.fit_target ?? null,
+        loadedFitTarget: loadResp.fit_target ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
       });

@@ -167,6 +167,8 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  fitTarget: number | null;
+  loadedFitTarget: number | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -201,6 +203,7 @@ type ChatRuntimeStore = {
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
+  setFitTarget: (target: number | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -235,6 +238,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   loadedKvCacheDtype: null,
   speculativeType: "ngram-mod",
   loadedSpeculativeType: null,
+  fitTarget: null,
+  loadedFitTarget: null,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -309,6 +314,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       loadedKvCacheDtype: null,
       speculativeType: "ngram-mod",
       loadedSpeculativeType: null,
+      fitTarget: null,
+      loadedFitTarget: null,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -335,6 +342,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
+  setFitTarget: (fitTarget) => set({ fitTarget }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>

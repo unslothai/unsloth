@@ -69,7 +69,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
-from models.inference import LoadResponse, InferenceStatusResponse
+from models.inference import LoadRequest, LoadResponse, InferenceStatusResponse
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -268,9 +268,24 @@ class TestContextValueSeparation:
 class TestPydanticModels:
     """Tests native_context_length field on Pydantic models."""
 
+    def test_load_request_has_fit_target_field(self):
+        """Field exists in LoadRequest.model_fields."""
+        assert "fit_target" in LoadRequest.model_fields
+
+    def test_load_request_fit_target_defaults_none(self):
+        """Omitting fit_target defaults to None."""
+        req = LoadRequest(model_path = "unsloth/test")
+        assert req.fit_target is None
+
+    def test_load_request_fit_target_accepts_int(self):
+        """fit_target stores valid integer values."""
+        req = LoadRequest(model_path = "unsloth/test", fit_target = 256)
+        assert req.fit_target == 256
+
     def test_load_response_has_field(self):
         """Field exists in LoadResponse.model_fields."""
         assert "native_context_length" in LoadResponse.model_fields
+        assert "fit_target" in LoadResponse.model_fields
 
     def test_load_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
@@ -319,6 +334,7 @@ class TestPydanticModels:
     def test_status_response_has_field(self):
         """Field exists in InferenceStatusResponse.model_fields."""
         assert "native_context_length" in InferenceStatusResponse.model_fields
+        assert "fit_target" in InferenceStatusResponse.model_fields
 
     def test_status_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
@@ -376,7 +392,7 @@ class TestRouteCompleteness:
         return blocks
 
     def test_gguf_load_responses_have_field(self):
-        """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
+        """Every GGUF LoadResponse (is_gguf = True) includes native_context_length + fit_target."""
         blocks = self._find_construction_blocks("LoadResponse")
         gguf_blocks = [
             b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b
@@ -388,6 +404,9 @@ class TestRouteCompleteness:
             assert (
                 "native_context_length" in block
             ), f"GGUF LoadResponse block #{i} missing native_context_length:\n{block[:200]}"
+            assert (
+                "fit_target" in block
+            ), f"GGUF LoadResponse block #{i} missing fit_target:\n{block[:200]}"
 
     def test_non_gguf_load_responses_omit_field(self):
         """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
@@ -403,14 +422,116 @@ class TestRouteCompleteness:
             ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
 
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has the field."""
+        """InferenceStatusResponse construction with llama_backend has both fields."""
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "native_context_length" in block:
+            if (
+                "llama_backend" in block
+                and "native_context_length" in block
+                and "fit_target" in block
+            ):
                 found = True
                 break
-        assert found, "No InferenceStatusResponse block with llama_backend has native_context_length"
+        assert found, (
+            "No InferenceStatusResponse block with llama_backend has "
+            "native_context_length and fit_target"
+        )
+
+
+# =====================================================================
+# E.1 TestFitTargetSource -- source-level verification
+# =====================================================================
+
+
+class TestFitTargetSource:
+    """Verify fit_target support is wired in llama_cpp backend source."""
+
+    @pytest.fixture(autouse = True)
+    def _load_source(self):
+        backend_path = (
+            Path(__file__).resolve().parent.parent
+            / "core"
+            / "inference"
+            / "llama_cpp.py"
+        )
+        self._source = backend_path.read_text()
+
+    def test_backend_has_fit_target_property(self):
+        assert "def fit_target(self)" in self._source
+        assert "self._fit_target" in self._source
+
+    def test_backend_passes_fit_target_to_command(self):
+        assert '"--fit-target"' in self._source
+        assert "fit_target if fit_target and fit_target > 0 else None" in self._source
+
+
+# =====================================================================
+# E.2 TestFitTargetBehavior -- runtime behavior
+# =====================================================================
+
+
+class TestFitTargetBehavior:
+    """Runtime behavior for explicit fit_target + explicit context."""
+
+    def test_explicit_fit_target_keeps_requested_context(self, tmp_path, backend):
+        """When full ctx won't fit GPU-only, fit_target keeps requested ctx via --fit."""
+        gguf_path = tmp_path / "model.gguf"
+        gguf_path.write_bytes(b"not-a-real-gguf")
+
+        captured_cmd = {}
+
+        class _DummyProc:
+            def __init__(self, cmd, **kwargs):
+                captured_cmd["cmd"] = cmd
+                self.stdout = iter(())
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout = None):
+                return 0
+
+            def kill(self):
+                pass
+
+        def _fake_read_metadata(_path: str):
+            backend._context_length = 131072
+            backend._n_layers = 32
+            backend._n_kv_heads = 8
+            backend._n_heads = 32
+            backend._embedding_length = 4096
+
+        with (
+            patch.object(
+                backend, "_find_llama_server_binary", return_value = "llama-server"
+            ),
+            patch.object(
+                backend, "_read_gguf_metadata", side_effect = _fake_read_metadata
+            ),
+            patch.object(backend, "_get_gguf_size_bytes", return_value = 4 * 1024**3),
+            patch.object(backend, "_get_gpu_free_memory", return_value = [(0, 12000)]),
+            patch.object(backend, "_select_gpus", return_value = (None, True)),
+            patch.object(backend, "_fit_context_to_vram", return_value = 8192),
+            patch.object(backend, "_wait_for_health", return_value = True),
+            patch("core.inference.llama_cpp.subprocess.Popen", side_effect = _DummyProc),
+        ):
+            ok = backend.load_model(
+                gguf_path = str(gguf_path),
+                model_identifier = "test-model",
+                n_ctx = 100000,
+                fit_target = 256,
+            )
+
+        assert ok is True
+        cmd = captured_cmd["cmd"]
+        assert "-c" in cmd
+        assert cmd[cmd.index("-c") + 1] == "100000"
+        assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
+        assert "--fit-target" in cmd and cmd[cmd.index("--fit-target") + 1] == "256"
+        assert backend.fit_target == 256
+
+        backend.unload_model()
 
 
 # =====================================================================
