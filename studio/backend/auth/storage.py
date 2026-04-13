@@ -6,7 +6,6 @@ SQLite storage for authentication data (user credentials + JWT secret).
 """
 
 import hashlib
-import hmac
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -83,8 +82,11 @@ def _hash_token(token: str) -> str:
     See the OWASP Password Storage Cheat Sheet on fast-vs-slow hashing
     of high-entropy inputs.
 
-    API keys use the separate ``_hmac_api_key`` helper below, which
-    keyed-hashes with a persistent server secret for defense-in-depth.
+    API keys use the separate ``_pbkdf2_api_key`` helper below, which
+    runs PBKDF2-HMAC-SHA256 with a persistent server-side salt — not
+    for cryptographic reasons (128-bit random tokens don't need slow
+    hashing), but because CodeQL's ``py/weak-sensitive-data-hashing``
+    query mislabels API keys as passwords and demands a KDF.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -148,69 +150,87 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-# ── API-key HMAC secret ────────────────────────────────────────────────
+# ── API-key PBKDF2 salt ────────────────────────────────────────────────
 #
-# Module-level cache for the persistent API-key HMAC secret. Populated
-# lazily on first use via ``_get_or_create_api_key_hmac_secret``. Not
+# Module-level cache for the persistent API-key PBKDF2 salt. Populated
+# lazily on first use via ``_get_or_create_api_key_pbkdf2_salt``. Not
 # protected by a lock because (a) the ``INSERT OR IGNORE`` provides
 # atomicity at the SQLite layer and (b) concurrent populations converge
 # on the same value, so the worst case is a harmless duplicate read on
 # startup.
-_api_key_hmac_secret_cache: Optional[bytes] = None
+_api_key_pbkdf2_salt_cache: Optional[bytes] = None
 
 
-def _get_or_create_api_key_hmac_secret() -> bytes:
-    """Return the persistent API-key HMAC secret, generating it once if missing.
+def _get_or_create_api_key_pbkdf2_salt() -> bytes:
+    """Return the persistent API-key PBKDF2 salt, generating it once if missing.
 
     Stored as a hex-encoded 32-byte random value in the ``app_secrets``
-    table under key ``"api_key_hmac"``. Regenerated only if the row is
-    missing (i.e. fresh install, or operator manually deleted the row
+    table under key ``"api_key_pbkdf2_salt"``. Regenerated only if the row
+    is missing (i.e. fresh install, or operator manually deleted the row
     and accepts invalidating existing API keys).
     """
-    global _api_key_hmac_secret_cache
-    if _api_key_hmac_secret_cache is not None:
-        return _api_key_hmac_secret_cache
+    global _api_key_pbkdf2_salt_cache
+    if _api_key_pbkdf2_salt_cache is not None:
+        return _api_key_pbkdf2_salt_cache
 
     conn = get_connection()
     try:
         cur = conn.execute(
             "SELECT value FROM app_secrets WHERE key = ?",
-            ("api_key_hmac",),
+            ("api_key_pbkdf2_salt",),
         )
         row = cur.fetchone()
         if row is None:
             new_value = secrets.token_hex(32)  # 32 bytes -> 64 hex chars
             conn.execute(
                 "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
-                ("api_key_hmac", new_value),
+                ("api_key_pbkdf2_salt", new_value),
             )
             conn.commit()
             cur = conn.execute(
                 "SELECT value FROM app_secrets WHERE key = ?",
-                ("api_key_hmac",),
+                ("api_key_pbkdf2_salt",),
             )
             row = cur.fetchone()
-        secret = bytes.fromhex(row["value"])
+        salt = bytes.fromhex(row["value"])
     finally:
         conn.close()
 
-    _api_key_hmac_secret_cache = secret
-    return secret
+    _api_key_pbkdf2_salt_cache = salt
+    return salt
 
 
-def _hmac_api_key(raw_key: str) -> str:
-    """HMAC-SHA256 an API key with the persistent server-side secret.
+_API_KEY_PBKDF2_ITERATIONS = 100_000
 
-    Used for API-key storage ONLY, not refresh tokens. API keys are
-    cryptographically random 128-bit tokens (via ``secrets.token_hex``),
-    so a slow KDF would buy zero security — 2^128 is unreachable by
-    brute force regardless of hash speed. HMAC with a persistent secret
-    adds defense-in-depth vs. plain SHA-256: an attacker dumping the
-    ``api_keys`` table alone cannot compute hashes for candidate
-    tokens without also obtaining the ``app_secrets`` row.
+
+def _pbkdf2_api_key(raw_key: str) -> str:
+    """PBKDF2-HMAC-SHA256 an API key with a persistent server-side salt.
+
+    Used for API-key storage ONLY, not refresh tokens. Matches the
+    PBKDF2 algorithm + iteration count used by the password hasher in
+    ``auth/hashing.py`` so the codebase is consistent on which KDF it
+    uses for credential storage.
+
+    Notes on why a slow KDF here is *only* a CodeQL appeasement and
+    *not* a cryptographic requirement: API keys are cryptographically
+    random 128-bit tokens (via ``secrets.token_hex``), so brute force
+    against 2^128 is infeasible regardless of hash speed. CodeQL's
+    ``py/weak-sensitive-data-hashing`` query mislabels these tokens as
+    "password" sensitive data and then demands a KDF from its
+    allowlist (Argon2 / scrypt / bcrypt / PBKDF2). Per the query's
+    own recommendation page we use PBKDF2. The persistent salt is
+    still loaded from ``app_secrets`` so an attacker dumping the
+    ``api_keys`` table alone cannot derive hashes for candidate
+    tokens without also obtaining the salt row.
     """
-    secret = _get_or_create_api_key_hmac_secret()
-    return hmac.new(secret, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
+    salt = _get_or_create_api_key_pbkdf2_salt()
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        raw_key.encode("utf-8"),
+        salt,
+        _API_KEY_PBKDF2_ITERATIONS,
+    )
+    return dk.hex()
 
 
 def is_initialized() -> bool:
@@ -478,7 +498,7 @@ def create_api_key(
     exactly once.  The database only stores the SHA-256 hash.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
-    key_hash = _hmac_api_key(raw_key)
+    key_hash = _pbkdf2_api_key(raw_key)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
     now = datetime.now(timezone.utc).isoformat()
 
@@ -536,7 +556,7 @@ def validate_api_key(raw_key: str) -> Optional[str]:
 
     Also updates ``last_used_at`` on success.
     """
-    key_hash = _hmac_api_key(raw_key)
+    key_hash = _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
         cur = conn.execute(
