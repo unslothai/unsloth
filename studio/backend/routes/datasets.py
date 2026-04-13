@@ -364,9 +364,11 @@ def get_splits(
         upstream_status = 502
         try:
             upstream_status = e.response.status_code
-            detail = e.response.json().get("error")
+            error_data = e.response.json()
+            if isinstance(error_data, dict):
+                detail = error_data.get("error")
         except Exception:
-            pass
+            logger.debug("Failed to parse HuggingFace error response", exc_info = True)
         if not isinstance(detail, str) or not detail:
             detail = f"HuggingFace returned an error (HTTP {upstream_status})"
         # HF 401/403 means the HF token is invalid or missing, not that the
