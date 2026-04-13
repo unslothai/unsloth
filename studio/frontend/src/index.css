@@ -173,6 +173,7 @@
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
+  --color-code-block: #181818;
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -394,6 +395,13 @@
     margin-left: -1.25rem;
     width: calc(100% + 1.25rem);
     max-width: calc(100% + 1.25rem);
+  }
+
+  .dark .aui-thread-root [data-streamdown="code-block"] {
+    /* Streamdown `pre` uses `dark:bg-[var(--shiki-dark-bg,...)]`; keep one surface on the outer shell. */
+    --shiki-dark-bg: transparent;
+    background: var(--color-code-block);
+    border: 1px solid oklch(1 0 0 / 0.07);
   }
 }
 
