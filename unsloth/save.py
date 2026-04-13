@@ -1353,9 +1353,18 @@ def save_to_gguf(
                 all_saved_locations.remove(base_gguf)
                 Path(base_gguf).unlink(missing_ok = True)
             elif is_vlm:
-                # For VLMs, move base_gguf so mmproj becomes index 0 before reversal.
-                # This ensures mmproj remains at the end of the list after reversal.
-                all_saved_locations.insert(1, all_saved_locations.pop(0))
+                # VLM case: initial_files = [text_part(s)..., mmproj], with quants
+                # appended after. For the trailing reverse() to yield the desired
+                # [quants_desc, text_parts_in_order, mmproj] we rebuild the list
+                # as [mmproj, text_parts_reversed, quants]. This generalises the
+                # non-sharded case (one text part) to multi-shard text outputs.
+                n_text = len(initial_files) - 1
+                text_parts = all_saved_locations[:n_text]
+                mmproj_file = all_saved_locations[n_text]
+                quants = all_saved_locations[len(initial_files) :]
+                all_saved_locations[:] = (
+                    [mmproj_file] + list(reversed(text_parts)) + quants
+                )
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
