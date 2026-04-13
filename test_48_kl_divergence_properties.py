@@ -14,7 +14,14 @@ advantages = torch.randn(B)
 shared = torch.randn(B, S)
 new = shared.clone().requires_grad_(True)
 result = grpo_compute_loss(
-    shared.clone(), new, shared.clone(), None, input_ids, mask, 0.1, advantages,
+    shared.clone(),
+    new,
+    shared.clone(),
+    None,
+    input_ids,
+    mask,
+    0.1,
+    advantages,
 )
 mean_kl = result[2].item()
 assert abs(mean_kl) < 1e-5, f"Expected KL~0 when ref==new, got {mean_kl}"
@@ -22,9 +29,16 @@ print(f"PASS: KL={mean_kl:.8f} when ref==new (expected ~0)")
 
 # KL should be non-negative (reverse KL: exp(x) - x - 1 >= 0 for all x)
 ref = torch.randn(B, S)
-new2 = torch.randn(B, S, requires_grad=True)
+new2 = torch.randn(B, S, requires_grad = True)
 result2 = grpo_compute_loss(
-    ref, new2, torch.randn(B, S), None, input_ids, mask, 0.1, advantages,
+    ref,
+    new2,
+    torch.randn(B, S),
+    None,
+    input_ids,
+    mask,
+    0.1,
+    advantages,
 )
 mean_kl2 = result2[2].item()
 assert mean_kl2 >= -1e-6, f"KL should be non-negative, got {mean_kl2}"

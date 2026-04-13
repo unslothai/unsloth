@@ -20,14 +20,23 @@ results = {}
 for mcl in [S, S * 2, S * 4]:
     new = new_base.clone().requires_grad_(True)
     result = grpo_compute_loss(
-        ref, new, old, None, input_ids, mask, beta, advantages,
-        loss_type="dr_grpo", max_completion_length=mcl,
+        ref,
+        new,
+        old,
+        None,
+        input_ids,
+        mask,
+        beta,
+        advantages,
+        loss_type = "dr_grpo",
+        max_completion_length = mcl,
     )
     assert torch.isfinite(result[0]), f"mcl={mcl}: loss not finite"
     results[mcl] = result[0].item()
     print(f"PASS: dr_grpo max_completion_length={mcl}, loss={result[0].item():.6f}")
 
 # Larger max_completion_length should produce smaller loss magnitude (larger denominator)
-assert abs(results[S]) > abs(results[S * 4]) or abs(results[S]) == 0.0, \
-    f"Expected |loss(mcl={S})| > |loss(mcl={S*4})|, got {abs(results[S]):.6f} vs {abs(results[S*4]):.6f}"
+assert (
+    abs(results[S]) > abs(results[S * 4]) or abs(results[S]) == 0.0
+), f"Expected |loss(mcl={S})| > |loss(mcl={S*4})|, got {abs(results[S]):.6f} vs {abs(results[S*4]):.6f}"
 print("PASS: DR-GRPO normalization scales correctly with max_completion_length")

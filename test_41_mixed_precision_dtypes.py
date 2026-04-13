@@ -12,9 +12,9 @@ beta = 0.1
 advantages = torch.randn(B)
 
 for dtype in [torch.float16, torch.bfloat16, torch.float32]:
-    ref = torch.randn(B, S, dtype=dtype)
-    new = torch.randn(B, S, dtype=dtype, requires_grad=True)
-    old = torch.randn(B, S, dtype=dtype)
+    ref = torch.randn(B, S, dtype = dtype)
+    new = torch.randn(B, S, dtype = dtype, requires_grad = True)
+    old = torch.randn(B, S, dtype = dtype)
     result = grpo_compute_loss(ref, new, old, None, input_ids, mask, beta, advantages)
     loss = result[0]
     assert torch.isfinite(loss), f"{dtype}: loss not finite"

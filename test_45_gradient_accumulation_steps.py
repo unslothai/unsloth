@@ -18,8 +18,16 @@ new_base = torch.randn(B, S)
 for gas in [1, 2, 4]:
     new = new_base.clone().requires_grad_(True)
     result = grpo_compute_loss(
-        ref, new, old, None, input_ids, mask, beta, advantages,
-        loss_type="grpo", current_gradient_accumulation_steps=gas,
+        ref,
+        new,
+        old,
+        None,
+        input_ids,
+        mask,
+        beta,
+        advantages,
+        loss_type = "grpo",
+        current_gradient_accumulation_steps = gas,
     )
     assert torch.isfinite(result[0]), f"gas={gas}: loss not finite"
     print(f"PASS: gradient_accumulation_steps={gas}, loss={result[0].item():.6f}")
@@ -27,14 +35,28 @@ for gas in [1, 2, 4]:
 # Verify: loss with gas=2 should be half of gas=1
 new1 = new_base.clone().requires_grad_(True)
 r1 = grpo_compute_loss(
-    ref, new1, old, None, input_ids, mask, beta, advantages,
-    current_gradient_accumulation_steps=1,
+    ref,
+    new1,
+    old,
+    None,
+    input_ids,
+    mask,
+    beta,
+    advantages,
+    current_gradient_accumulation_steps = 1,
 )
 new2 = new_base.clone().requires_grad_(True)
 r2 = grpo_compute_loss(
-    ref, new2, old, None, input_ids, mask, beta, advantages,
-    current_gradient_accumulation_steps=2,
+    ref,
+    new2,
+    old,
+    None,
+    input_ids,
+    mask,
+    beta,
+    advantages,
+    current_gradient_accumulation_steps = 2,
 )
-ratio = r1[0].item() / r2[0].item() if r2[0].item() != 0 else float('inf')
+ratio = r1[0].item() / r2[0].item() if r2[0].item() != 0 else float("inf")
 assert abs(ratio - 2.0) < 0.01, f"Expected loss ratio of 2.0, got {ratio:.4f}"
 print(f"PASS: gas=1 loss / gas=2 loss = {ratio:.4f} (expected 2.0)")

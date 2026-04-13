@@ -7,7 +7,7 @@ from unsloth_zoo.rl_replacements import grpo_compute_loss
 
 B, S = 4, 16
 ref = torch.randn(B, S)
-new = torch.randn(B, S, requires_grad=True)
+new = torch.randn(B, S, requires_grad = True)
 old = torch.randn(B, S)
 input_ids = torch.randint(0, 100, (B, S))
 beta = 0.1
@@ -21,7 +21,14 @@ mask[2, :12] = 1
 mask[3, :16] = 1
 
 loss, comp_len, mean_kl, delta, flat_is_ratio, coef_1, out_mask = grpo_compute_loss(
-    ref, new, old, None, input_ids, mask, beta, advantages,
+    ref,
+    new,
+    old,
+    None,
+    input_ids,
+    mask,
+    beta,
+    advantages,
 )
 
 # completion_length should be mean of [4, 8, 12, 16] = 10.0
@@ -30,7 +37,9 @@ print(f"PASS: completion_length={comp_len.item():.1f} (expected 10.0)")
 
 # Without use_vllm, delta and flat_is_ratio should be empty tensors
 assert delta.numel() == 0, f"delta should be empty without vllm, got {delta.shape}"
-assert flat_is_ratio.numel() == 0, f"flat_is_ratio should be empty without vllm, got {flat_is_ratio.shape}"
+assert (
+    flat_is_ratio.numel() == 0
+), f"flat_is_ratio should be empty without vllm, got {flat_is_ratio.shape}"
 print(f"PASS: delta and flat_is_ratio empty without vllm")
 
 # Output mask should be float32 (cast inside the function)
@@ -39,7 +48,9 @@ print(f"PASS: output mask dtype={out_mask.dtype}")
 
 # coef_1 should be positive (exp of something)
 assert (coef_1 > 0).all(), "coef_1 should be all positive (exp values)"
-print(f"PASS: coef_1 all positive, range [{coef_1.min().item():.4f}, {coef_1.max().item():.4f}]")
+print(
+    f"PASS: coef_1 all positive, range [{coef_1.min().item():.4f}, {coef_1.max().item():.4f}]"
+)
 
 # mean_kl should be non-negative (reverse KL property)
 assert mean_kl.item() >= -1e-6, f"mean_kl should be non-negative, got {mean_kl.item()}"

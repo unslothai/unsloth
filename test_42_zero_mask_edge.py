@@ -7,7 +7,7 @@ from unsloth_zoo.rl_replacements import grpo_compute_loss
 
 B, S = 4, 8
 ref = torch.randn(B, S)
-new = torch.randn(B, S, requires_grad=True)
+new = torch.randn(B, S, requires_grad = True)
 old = torch.randn(B, S)
 input_ids = torch.randint(0, 100, (B, S))
 beta = 0.1
