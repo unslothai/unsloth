@@ -351,9 +351,13 @@ def get_splits(
         resp.raise_for_status()
         data = resp.json()
 
+        splits_data = data.get("splits")
+        if not isinstance(splits_data, list):
+            splits_data = []
+
         entries = [
             SplitEntry(dataset = s["dataset"], config = s["config"], split = s["split"])
-            for s in (data.get("splits") or [])
+            for s in splits_data
             if isinstance(s, dict)
             and all(k in s for k in ("dataset", "config", "split"))
         ]
