@@ -123,7 +123,7 @@ _VENV_PY="$VENV_DIR/bin/python"
 
 # ── Install dependencies ──────────────────────────────────────
 step "install" "installing mlx-vlm..."
-uv pip install --python "$_VENV_PY" -q mlx-vlm 2>/dev/null
+uv pip install --python "$_VENV_PY" -q mlx-vlm
 substep "done"
 
 step "install" "installing transformers>=5.5.0..."
@@ -140,7 +140,7 @@ else
 fi
 
 # ── Verify installation ──────────────────────────────────────
-if "$_VENV_PY" -c "import mlx_vlm" 2>/dev/null; then
+if "$_VENV_PY" -c "import mlx_vlm"; then
     substep "mlx-vlm verified"
 else
     fail "Installation verification failed."
