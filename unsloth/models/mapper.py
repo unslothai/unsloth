@@ -59,6 +59,11 @@ __INT_TO_FLOAT_MAPPER = \
         "google/gemma-4-31B",
     ),
 
+    "unsloth/LFM2-1.2B-unsloth-bnb-4bit" : (
+        "unsloth/LFM2-1.2B",
+        "LiquidAI/LFM2-1.2B",
+    ),
+
     "unsloth/mistral-7b-bnb-4bit" : (
         "unsloth/mistral-7b",
         "mistralai/Mistral-7B-v0.1",
