@@ -2111,11 +2111,11 @@ def patch_gradient_accumulation_fix(Trainer):
             # Respect an inner wrapped model's explicit accepts_loss_kwargs flag before inferring from forward(**kwargs).
             # https://github.com/unslothai/unsloth/issues/4982 Gemma4ForConditionalGeneration had issues with grad_acc
             init_function = init_function.replace(
-                'self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n    else:',
-                'self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n'
+                "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n    else:",
+                "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n"
                 '    elif hasattr(getattr(unwrapped_model, "model", None), "accepts_loss_kwargs"):\n'
-                '        self.model_accepts_loss_kwargs = unwrapped_model.model.accepts_loss_kwargs\n'
-                '    else:',
+                "        self.model_accepts_loss_kwargs = unwrapped_model.model.accepts_loss_kwargs\n"
+                "    else:",
             )
             exec(init_function, globals())
             Trainer.__init__ = _unsloth___init__
