@@ -9,7 +9,7 @@ Responsibilities:
    (and similar flat imports) resolve in test modules — mirrors how the
    app itself is launched.
 2. Provide a hybrid ``studio_server`` session fixture for end-to-end tests
-   (see ``test_studio_run.py``). The fixture supports two invocation modes:
+   (see ``test_studio_api.py``). The fixture supports two invocation modes:
 
    a. **External server.** If ``UNSLOTH_E2E_BASE_URL`` is set, tests point
       at an already-running Studio instance. ``UNSLOTH_E2E_API_KEY`` must
@@ -24,7 +24,7 @@ Responsibilities:
    The model / variant for mode (b) come from ``--unsloth-model`` /
    ``--unsloth-gguf-variant`` pytest options, then ``UNSLOTH_E2E_MODEL`` /
    ``UNSLOTH_E2E_VARIANT`` env vars, then the defaults in
-   ``test_studio_run.py``.
+   ``test_studio_api.py``.
 """
 
 import os
@@ -54,7 +54,7 @@ def pytest_addoption(parser):
         help = (
             "GGUF model id used when starting a server for e2e tests. "
             "Ignored if UNSLOTH_E2E_BASE_URL is set. Overrides "
-            "UNSLOTH_E2E_MODEL env var. Defaults to test_studio_run.py's "
+            "UNSLOTH_E2E_MODEL env var. Defaults to test_studio_api.py's "
             "DEFAULT_MODEL."
         ),
     )
@@ -65,7 +65,7 @@ def pytest_addoption(parser):
         help = (
             "GGUF variant used when starting a server for e2e tests. "
             "Ignored if UNSLOTH_E2E_BASE_URL is set. Overrides "
-            "UNSLOTH_E2E_VARIANT env var. Defaults to test_studio_run.py's "
+            "UNSLOTH_E2E_VARIANT env var. Defaults to test_studio_api.py's "
             "DEFAULT_VARIANT."
         ),
     )
@@ -83,7 +83,7 @@ def studio_server(request):
     1. If ``UNSLOTH_E2E_BASE_URL`` is set → point at that server,
        require ``UNSLOTH_E2E_API_KEY`` alongside (skip if missing).
     2. Otherwise → start a fresh ``unsloth studio run`` subprocess via
-       the existing ``_start_server`` helper in ``test_studio_run.py``
+       the existing ``_start_server`` helper in ``test_studio_api.py``
        and tear it down on session teardown.
 
     Session-scoped so the expensive GGUF load happens at most once per
@@ -103,10 +103,10 @@ def studio_server(request):
         yield external_url, api_key
         return
 
-    # Lazy import: pytest has already loaded test_studio_run into
+    # Lazy import: pytest has already loaded test_studio_api into
     # sys.modules by the time any test requests this fixture, so this
     # is a cache hit, not a re-execution.
-    import test_studio_run as _e2e
+    import test_studio_api as _e2e
 
     model = (
         request.config.getoption("--unsloth-model")

@@ -2,10 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-End-to-end tests for ``unsloth studio run`` and API key authentication.
+End-to-end tests for Unsloth Studio's HTTP API surface.
 
-Exercises the usage examples shown on the API Keys page plus the Anthropic
-Messages API:
+Covers the OpenAI-compatible and Anthropic-compatible endpoints exposed
+by the server that ``unsloth studio run`` boots, plus API key
+authentication and the CLI's ``--help`` output:
 
     1. curl -- basic chat completions (non-streaming)
     2. curl -- streaming chat completions
@@ -16,24 +17,25 @@ Messages API:
     7. Anthropic Python SDK -- non-streaming
     8. Anthropic Messages API -- streaming with tools
 
-The test also validates the ``--help`` output and the server banner.
+Training, export, fine-tuning, and chat-UI concerns are out of scope —
+see the unit suites elsewhere under ``studio/backend/tests/`` for those.
 
 Usage:
 
     # Script mode — launches its own server via ``unsloth studio run``.
-    python tests/test_studio_run.py
-    python tests/test_studio_run.py --model unsloth/... --gguf-variant ...
+    python tests/test_studio_api.py
+    python tests/test_studio_api.py --model unsloth/... --gguf-variant ...
 
     # Pytest mode, external server — start a Studio server yourself,
     # then point pytest at it. Fastest iteration loop.
     unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL &
     export UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8080
     export UNSLOTH_E2E_API_KEY=sk-unsloth-...   # from the server banner
-    pytest tests/test_studio_run.py -v
+    pytest tests/test_studio_api.py -v
 
     # Pytest mode, fixture-managed server — pytest launches and tears
     # down the server itself. One-shot verification, CI-friendly.
-    pytest tests/test_studio_run.py -v \\
+    pytest tests/test_studio_api.py -v \\
         --unsloth-model unsloth/Qwen3-1.7B-GGUF \\
         --unsloth-gguf-variant UD-Q4_K_XL
 
@@ -68,7 +70,7 @@ STARTUP_TIMEOUT = 120  # seconds to wait for banner
 LOG_FILE = (
     Path(__file__).resolve().parent.parent.parent.parent
     / "temp"
-    / "test_studio_run.log"
+    / "test_studio_api.log"
 )
 
 
