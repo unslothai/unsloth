@@ -110,3 +110,45 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
     worker._sp.run.assert_not_called()
+
+
+def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+
+    worker._ensure_causal_conv1d_fast_path(
+        event_queue = [],
+        model_name = "tiiuae/Falcon-H1-0.5B-Instruct",
+    )
+
+    install_mock.assert_called_once_with(
+        event_queue = [],
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        pypi_version = worker._CAUSAL_CONV1D_PACKAGE_VERSION,
+        filename_prefix = "causal_conv1d",
+        release_tag = worker._CAUSAL_CONV1D_RELEASE_TAG,
+        release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+    )
+
+
+def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+
+    worker._ensure_mamba_ssm(
+        event_queue = [],
+        model_name = "tiiuae/Falcon-H1-0.5B-Instruct",
+    )
+
+    install_mock.assert_called_once_with(
+        event_queue = [],
+        import_name = "mamba_ssm",
+        display_name = "mamba-ssm",
+        pypi_name = "mamba-ssm",
+        pypi_version = worker._MAMBA_SSM_PACKAGE_VERSION,
+        filename_prefix = "mamba_ssm",
+        release_tag = worker._MAMBA_SSM_RELEASE_TAG,
+        release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+    )
