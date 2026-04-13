@@ -928,6 +928,20 @@ else
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
                         if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            # Drop bare family-level targets (gfx10, gfx11, gfx12, ...)
+                            # when a specific sibling is present in the same list.
+                            # rocminfo on ROCm 6.1+ emits both the specific GPU and
+                            # the LLVM generic family line (e.g. gfx1100 alongside
+                            # gfx11-generic), and the outer grep above captures the
+                            # bare family prefix from the generic line. Passing that
+                            # bare prefix to -DGPU_TARGETS breaks the HIP/llama.cpp
+                            # build because clang only accepts specific gfxNNN ids.
+                            # No real AMD GPU has a 2-digit gfx id, so this filter
+                            # can only ever drop family prefixes, never real targets.
+                            if [[ "$_gfx" =~ ^gfx[0-9]{2}$ ]] \
+                               && echo "$_gfx_list" | grep -qE "^${_gfx}[0-9][0-9a-z]?$"; then
+                                continue
+                            fi
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done
