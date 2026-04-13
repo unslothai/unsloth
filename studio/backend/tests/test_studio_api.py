@@ -2,21 +2,45 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-End-to-end tests for ``unsloth studio run`` and API key authentication.
+End-to-end tests for Unsloth Studio's HTTP API surface.
 
-Starts a Studio server via the ``run`` subcommand, then exercises the
-four usage examples shown on the API Keys page:
+Covers the OpenAI-compatible and Anthropic-compatible endpoints exposed
+by the server that ``unsloth studio run`` boots, plus API key
+authentication and the CLI's ``--help`` output:
 
     1. curl -- basic chat completions (non-streaming)
     2. curl -- streaming chat completions
     3. Python OpenAI SDK -- streaming completions
     4. curl -- with tools (web_search + python)
+    5. Anthropic Messages API -- basic non-streaming
+    6. Anthropic Messages API -- streaming SSE
+    7. Anthropic Python SDK -- non-streaming
+    8. Anthropic Messages API -- streaming with tools
 
-The test also validates the ``--help`` output and the server banner.
+Training, export, fine-tuning, and chat-UI concerns are out of scope —
+see the unit suites elsewhere under ``studio/backend/tests/`` for those.
 
 Usage:
-    python test_studio_run.py                        # default model
-    python test_studio_run.py --model unsloth/...    # custom model
+
+    # Script mode — launches its own server via ``unsloth studio run``.
+    python tests/test_studio_api.py
+    python tests/test_studio_api.py --model unsloth/... --gguf-variant ...
+
+    # Pytest mode, external server — start a Studio server yourself,
+    # then point pytest at it. Fastest iteration loop.
+    unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL &
+    export UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8080
+    export UNSLOTH_E2E_API_KEY=sk-unsloth-...   # from the server banner
+    pytest tests/test_studio_api.py -v
+
+    # Pytest mode, fixture-managed server — pytest launches and tears
+    # down the server itself. One-shot verification, CI-friendly.
+    pytest tests/test_studio_api.py -v \\
+        --unsloth-model unsloth/Qwen3-1.7B-GGUF \\
+        --unsloth-gguf-variant UD-Q4_K_XL
+
+The ``base_url`` / ``api_key`` parameters on the test functions resolve
+via the ``studio_server`` session fixture in ``conftest.py``.
 
 Requires a GPU and ~2 GB of disk for the GGUF download.
 """
@@ -46,7 +70,7 @@ STARTUP_TIMEOUT = 120  # seconds to wait for banner
 LOG_FILE = (
     Path(__file__).resolve().parent.parent.parent.parent
     / "temp"
-    / "test_studio_run.log"
+    / "test_studio_api.log"
 )
 
 
@@ -271,6 +295,175 @@ def test_no_key_rejected(base_url: str):
     print(f"  PASS  no API key rejected ({status})")
 
 
+# ── Anthropic SSE helper ─────────────────────────────────────────────
+
+
+def _stream_anthropic_http(
+    url: str,
+    *,
+    body: dict,
+    headers: dict,
+    timeout: int = 60,
+) -> tuple[int, list[tuple[str, dict]]]:
+    """POST a streaming request and collect Anthropic SSE events.
+
+    Returns (status, [(event_type, data_dict), ...]).
+    """
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data = data, headers = headers, method = "POST")
+    req.add_header("Content-Type", "application/json")
+    events: list[tuple[str, dict]] = []
+    try:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
+            status = resp.status
+            current_event = None
+            for raw_line in resp:
+                line = raw_line.decode().strip()
+                if line.startswith("event: "):
+                    current_event = line[7:]
+                elif line.startswith("data: ") and current_event:
+                    try:
+                        events.append((current_event, json.loads(line[6:])))
+                    except json.JSONDecodeError:
+                        pass
+                    current_event = None
+            return status, events
+    except urllib.error.HTTPError as exc:
+        return exc.code, []
+
+
+def _collect_anthropic_text(events: list[tuple[str, dict]]) -> str:
+    """Extract text content from Anthropic SSE events."""
+    parts = []
+    for etype, data in events:
+        if etype == "content_block_delta":
+            delta = data.get("delta", {})
+            if delta.get("type") == "text_delta":
+                parts.append(delta.get("text", ""))
+    return "".join(parts)
+
+
+# ── Anthropic /v1/messages test functions ────────────────────────────
+
+
+def test_anthropic_basic(base_url: str, api_key: str):
+    """Anthropic Messages API: non-streaming."""
+    status, text = _http(
+        "POST",
+        f"{base_url}/v1/messages",
+        body = {
+            "model": "default",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "Say just the word hello"}],
+        },
+        headers = {"Authorization": f"Bearer {api_key}"},
+    )
+    assert status == 200, f"Expected 200, got {status}: {text[:300]}"
+    data = json.loads(text)
+    assert data.get("type") == "message", f"Expected type 'message': {text[:300]}"
+    assert data.get("role") == "assistant"
+    content = data.get("content", [])
+    assert len(content) > 0, "Empty content array"
+    text_block = content[-1]
+    assert text_block.get("type") == "text", f"Expected text block: {text_block}"
+    assert len(text_block.get("text", "")) > 0, "Empty text in response"
+    print(f"  PASS  anthropic basic: {text_block['text'][:80]!r}")
+
+
+def test_anthropic_streaming(base_url: str, api_key: str):
+    """Anthropic Messages API: streaming SSE."""
+    status, events = _stream_anthropic_http(
+        f"{base_url}/v1/messages",
+        body = {
+            "model": "default",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "Count from 1 to 3"}],
+            "stream": True,
+        },
+        headers = {"Authorization": f"Bearer {api_key}"},
+    )
+    assert status == 200, f"Expected 200, got {status}"
+    assert len(events) > 0, "No SSE events received"
+
+    event_types = [e[0] for e in events]
+    assert "message_start" in event_types, "Missing message_start event"
+    assert "message_stop" in event_types, "Missing message_stop event"
+
+    full = _collect_anthropic_text(events)
+    assert len(full) > 0, "Streamed text content is empty"
+    print(f"  PASS  anthropic streaming: {len(events)} events, {len(full)} chars")
+
+
+def test_anthropic_sdk(base_url: str, api_key: str):
+    """Anthropic Python SDK: non-streaming."""
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        print("  SKIP  anthropic SDK not installed")
+        return
+
+    client = Anthropic(base_url = f"{base_url}/v1", api_key = api_key)
+    message = client.messages.create(
+        model = "default",
+        max_tokens = 100,
+        messages = [
+            {"role": "user", "content": "What is 2+2? Answer with just the number."}
+        ],
+    )
+    assert message.role == "assistant"
+    assert len(message.content) > 0, "Empty content"
+    text = message.content[0].text
+    assert len(text) > 0, "Empty text"
+    print(f"  PASS  Anthropic SDK: {text.strip()[:80]!r}")
+
+
+def test_anthropic_with_tools(base_url: str, api_key: str):
+    """Anthropic Messages API: streaming with tools."""
+    status, events = _stream_anthropic_http(
+        f"{base_url}/v1/messages",
+        body = {
+            "model": "default",
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "What is 123 * 456? Use code to compute it.",
+                }
+            ],
+            "tools": [
+                {
+                    "name": "python",
+                    "description": "Execute Python code in a sandbox and return stdout/stderr.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "The Python code to run",
+                            },
+                        },
+                        "required": ["code"],
+                    },
+                }
+            ],
+            "stream": True,
+        },
+        headers = {"Authorization": f"Bearer {api_key}"},
+        timeout = 120,
+    )
+    assert status == 200, f"Expected 200, got {status}"
+    assert len(events) > 0, "No SSE events received for tools request"
+
+    event_types = [e[0] for e in events]
+    assert "message_start" in event_types, "Missing message_start"
+    assert "message_stop" in event_types, "Missing message_stop"
+
+    full = _collect_anthropic_text(events)
+    print(
+        f"  PASS  anthropic with tools: {len(events)} events, {len(full)} chars content"
+    )
+
+
 # ── Server lifecycle ─────────────────────────────────────────────────
 
 
@@ -385,10 +578,10 @@ def main():
             print(f"  ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
 
     # ── 1. Test --help (no server needed) ────────────────────────────
-    print("\n[1/7] Testing --help output")
+    print("\n[1/11] Testing --help output")
     run_test(test_help_output)
 
-    # ── 2-7. Start server and run API tests ──────────────────────────
+    # ── 2-11. Start server and run API tests ─────────────────────────
     print(
         f"\nStarting server: {args.model} (variant={args.gguf_variant}) on port {PORT}..."
     )
@@ -398,27 +591,39 @@ def main():
         base_url = f"http://{HOST}:{PORT}"
         print(f"Server ready.  API Key: {api_key[:20]}...\n")
 
-        print("[2/7] Testing curl basic (non-streaming)")
+        print("[2/11] Testing curl basic (non-streaming)")
         run_test(test_curl_basic, base_url, api_key)
 
-        print("[3/7] Testing curl streaming")
+        print("[3/11] Testing curl streaming")
         run_test(test_curl_streaming, base_url, api_key)
 
-        print("[4/7] Testing OpenAI Python SDK (streaming)")
+        print("[4/11] Testing OpenAI Python SDK (streaming)")
         run_test(test_openai_sdk, base_url, api_key)
 
-        print("[5/7] Testing curl with tools")
+        print("[5/11] Testing curl with tools")
         run_test(test_curl_with_tools, base_url, api_key)
 
-        print("[6/7] Testing invalid API key rejection")
+        print("[6/11] Testing invalid API key rejection")
         run_test(test_invalid_key_rejected, base_url)
 
-        print("[7/7] Testing no API key rejection")
+        print("[7/11] Testing no API key rejection")
         run_test(test_no_key_rejected, base_url)
+
+        print("[8/11] Testing Anthropic basic (non-streaming)")
+        run_test(test_anthropic_basic, base_url, api_key)
+
+        print("[9/11] Testing Anthropic streaming")
+        run_test(test_anthropic_streaming, base_url, api_key)
+
+        print("[10/11] Testing Anthropic Python SDK")
+        run_test(test_anthropic_sdk, base_url, api_key)
+
+        print("[11/11] Testing Anthropic with tools")
+        run_test(test_anthropic_with_tools, base_url, api_key)
 
     except RuntimeError as exc:
         print(f"\nFATAL: Server failed to start: {exc}")
-        failed += 7  # count remaining tests as failed
+        failed += 11  # count remaining tests as failed
     finally:
         if proc:
             print("\nStopping server...")

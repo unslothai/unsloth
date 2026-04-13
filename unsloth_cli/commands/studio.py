@@ -357,6 +357,7 @@ def run(
     # ── 6. Print banner ───────────────────────────────────────────────
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
+    sdk_base_url = f"{base_url}/v1"
 
     if not silent:
         typer.echo("")
@@ -364,15 +365,32 @@ def run(
         typer.echo(f"  Unsloth Studio running at {base_url}")
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
         typer.echo(f"  API Key:      {api_key}")
+        typer.echo("")
+        typer.echo("  OpenAI / Anthropic SDK base URL:")
+        typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
         typer.echo("")
-        typer.echo("Usage:")
-        typer.echo(f"  curl {base_url}/v1/chat/completions \\")
+        typer.echo("OpenAI Chat Completions:")
+        typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
         typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
-        typer.echo(f'    -H "Content-Type: application/json" \\')
+        typer.echo('    -H "Content-Type: application/json" \\')
         typer.echo(
             """    -d '{"messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
         )
+        typer.echo("")
+        typer.echo("Anthropic Messages:")
+        typer.echo(f"  curl {sdk_base_url}/messages \\")
+        typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
+        typer.echo('    -H "Content-Type: application/json" \\')
+        typer.echo(
+            """    -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
+        )
+        typer.echo("")
+        typer.echo("OpenAI Responses:")
+        typer.echo(f"  curl {sdk_base_url}/responses \\")
+        typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
+        typer.echo('    -H "Content-Type: application/json" \\')
+        typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
 
     # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
