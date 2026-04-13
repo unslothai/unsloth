@@ -1,16 +1,18 @@
 # Copyright 2025 electroglyph. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
 
@@ -21,7 +23,9 @@ import json
 import os
 import types
 from huggingface_hub import hf_hub_download
-from typing import Optional
+from typing import Optional, NamedTuple
+import torch.nn as nn
+import torch.nn.functional as F
 import torch
 from transformers.modeling_outputs import BaseModelOutput
 from collections import OrderedDict
@@ -34,9 +38,1362 @@ from transformers import AutoModel, AutoConfig
 from transformers.models.auto.auto_factory import _get_model_class
 import tempfile
 from huggingface_hub import HfApi, get_token
-from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
+from ..save import (
+    unsloth_save_pretrained_torchao,
+    unsloth_save_pretrained_gguf,
+    unsloth_push_to_hub_gguf,
+)
 import contextlib
 import shutil
+
+try:
+    from ..kernels.layernorm import fast_layernorm
+
+    _HAS_FAST_LAYERNORM = True
+except ImportError:
+    _HAS_FAST_LAYERNORM = False
+
+try:
+    from ..kernels.fused_pooling import fused_layernorm_mean_pool
+
+    _HAS_FUSED_POOLING = True
+except ImportError:
+    _HAS_FUSED_POOLING = False
+
+
+class EncoderSeqInfo(NamedTuple):
+    seq_lengths: torch.Tensor  # (B,)
+    cu_seqlens: torch.Tensor  # (B+1,)
+    max_seqlen: int
+    indices: torch.Tensor  # (total_tokens,)
+
+
+def get_encoder_seq_info(attention_mask):
+    """Build packed-sequence metadata from a (B, S) attention mask."""
+    device = attention_mask.device
+    seq_lengths = attention_mask.sum(dim = 1).to(dtype = torch.int32, device = device)
+
+    cu_seqlens = torch.empty(
+        seq_lengths.numel() + 1,
+        dtype = torch.int32,
+        device = device,
+    )
+    cu_seqlens[0] = 0
+    torch.cumsum(seq_lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+
+    max_seqlen = int(seq_lengths.max().item())
+    indices = torch.nonzero(attention_mask.flatten(), as_tuple = False).squeeze(-1)
+
+    return EncoderSeqInfo(seq_lengths, cu_seqlens, max_seqlen, indices)
+
+
+def unpad_input(input_ids, seq_info, token_type_ids = None):
+    """Remove padding tokens from a (B, S) batch."""
+    unpadded_ids = input_ids.flatten()[seq_info.indices]
+    unpadded_token_type_ids = None
+    if token_type_ids is not None:
+        unpadded_token_type_ids = token_type_ids.flatten()[seq_info.indices]
+    return unpadded_ids, unpadded_token_type_ids
+
+
+def pad_output(unpadded_output, seq_info, batch_size, max_seq_len):
+    """Re-pad (total_tokens, D) back to (B, S, D)."""
+    hidden_dim = unpadded_output.shape[-1]
+    output = torch.zeros(
+        batch_size * max_seq_len,
+        hidden_dim,
+        dtype = unpadded_output.dtype,
+        device = unpadded_output.device,
+    )
+    output[seq_info.indices] = unpadded_output
+    return output.view(batch_size, max_seq_len, hidden_dim)
+
+
+class GuidedProjection(nn.Module):
+    """Trainable projection after pooling for embedding space transformation."""
+
+    def __init__(
+        self,
+        dim: int,
+        output_dim: Optional[int] = None,
+        use_bias: bool = False,
+        use_residual: bool = True,
+        init: str = "identity",
+    ):
+        super().__init__()
+        output_dim = output_dim or dim
+        self.dim = dim
+        self.output_dim = output_dim
+        self.use_residual = use_residual and (dim == output_dim)
+        self._init_method = init
+
+        self.proj = nn.Linear(dim, output_dim, bias = use_bias)
+
+        if init == "identity" and dim == output_dim:
+            nn.init.eye_(self.proj.weight)
+        elif init == "orthogonal":
+            nn.init.orthogonal_(self.proj.weight)
+        else:
+            nn.init.xavier_uniform_(self.proj.weight)
+
+        if use_bias:
+            nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        projected = self.proj(x)
+        if self.use_residual:
+            projected = projected + x
+        return F.normalize(projected, p = 2, dim = -1)
+
+    @property
+    def num_trainable_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def extra_repr(self) -> str:
+        bias = self.proj.bias is not None
+        return (
+            f"dim={self.dim}, output_dim={self.output_dim}, "
+            f"use_bias={bias}, use_residual={self.use_residual}, "
+            f"init='{self._init_method}'"
+        )
+
+
+class GuidedProjectionPooling(nn.Module):
+    """Pooling + GuidedProjection as a single ST pipeline module."""
+
+    PROJECTION_WEIGHTS_NAME = "guided_projection.pt"
+    PROJECTION_CONFIG_NAME = "guided_projection_config.json"
+
+    def __init__(self, pooling_module: nn.Module, projection: GuidedProjection):
+        super().__init__()
+        self.pooling = pooling_module
+        self.projection = projection
+
+    def forward(self, features: dict) -> dict:
+        features = self.pooling(features)
+        if "sentence_embedding" in features:
+            features["sentence_embedding"] = self.projection(
+                features["sentence_embedding"]
+            )
+        return features
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.pooling, name)
+
+    def save(self, output_path: str, safe_serialization: bool = True) -> None:
+        os.makedirs(output_path, exist_ok = True)
+
+        if hasattr(self.pooling, "save"):
+            self.pooling.save(output_path)
+
+        torch.save(
+            self.projection.state_dict(),
+            os.path.join(output_path, self.PROJECTION_WEIGHTS_NAME),
+        )
+
+        config = {
+            "dim": self.projection.dim,
+            "output_dim": self.projection.output_dim,
+            "use_bias": self.projection.proj.bias is not None,
+            "use_residual": self.projection.use_residual,
+            "init": self.projection._init_method,
+        }
+        with open(os.path.join(output_path, self.PROJECTION_CONFIG_NAME), "w") as f:
+            json.dump(config, f, indent = 2)
+
+    @classmethod
+    def load(
+        cls, input_path: str, pooling_module: nn.Module
+    ) -> "GuidedProjectionPooling":
+        config_path = os.path.join(input_path, cls.PROJECTION_CONFIG_NAME)
+        weights_path = os.path.join(input_path, cls.PROJECTION_WEIGHTS_NAME)
+
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        projection = GuidedProjection(
+            dim = config["dim"],
+            output_dim = config["output_dim"],
+            use_bias = config["use_bias"],
+            use_residual = config["use_residual"],
+            init = config["init"],
+        )
+        projection.load_state_dict(
+            torch.load(weights_path, map_location = "cpu", weights_only = True)
+        )
+
+        return cls(pooling_module, projection)
+
+
+def attach_guided_projection(st_model, dim = None, **kwargs):
+    """Freeze encoder and attach a GuidedProjection after pooling."""
+    if dim is None:
+        encoder = None
+        for mod in st_model:
+            if hasattr(mod, "auto_model"):
+                encoder = mod
+                break
+
+        if encoder is None:
+            raise ValueError(
+                "Could not locate a Transformer module. Specify `dim` explicitly."
+            )
+
+        config = encoder.auto_model.config
+        dim = getattr(config, "hidden_size", None)
+        if dim is None:
+            raise ValueError(
+                f"Could not infer hidden_size from {type(config).__name__}. "
+                f"Specify `dim` explicitly."
+            )
+
+    for param in st_model.parameters():
+        param.requires_grad = False
+
+    projection = GuidedProjection(dim = dim, **kwargs)
+
+    pooling_idx = None
+    pooling_mod = None
+    if hasattr(st_model, "_modules"):
+        for key, mod in st_model._modules.items():
+            if mod.__class__.__name__ == "Pooling":
+                pooling_idx = key
+                pooling_mod = mod
+                break
+
+    if pooling_mod is not None and pooling_idx is not None:
+        wrapper = GuidedProjectionPooling(pooling_mod, projection)
+        st_model._modules[pooling_idx] = wrapper
+    else:
+        import warnings
+
+        warnings.warn(
+            "Unsloth: No Pooling module found. GuidedProjection appended to module list.",
+            stacklevel = 2,
+        )
+        next_key = str(len(st_model._modules))
+        st_model._modules[next_key] = projection
+
+    return projection
+
+
+_VARLEN_ATTN_AVAILABLE = False
+try:
+    from torch.nn.attention.varlen import varlen_attn as _torch_varlen_attn
+
+    # Requires Ampere+ (SM80); guard to avoid T4 error
+    if torch.cuda.is_available():
+        _major, _ = torch.cuda.get_device_capability()
+        _VARLEN_ATTN_AVAILABLE = _major >= 8
+    else:
+        _VARLEN_ATTN_AVAILABLE = True  # CPU-only env, won't actually be used
+except ImportError:
+    pass
+
+
+_FLASH_ATTN_VARLEN_AVAILABLE = False
+try:
+    from flash_attn import flash_attn_varlen_func as _flash_attn_varlen_func
+
+    # Requires Ampere+
+    if torch.cuda.is_available():
+        _major, _ = torch.cuda.get_device_capability()
+        _FLASH_ATTN_VARLEN_AVAILABLE = _major >= 8
+    else:
+        _FLASH_ATTN_VARLEN_AVAILABLE = True
+except ImportError:
+    pass
+
+_XFORMERS_ATTN_AVAILABLE = False
+_XFORMERS_DROPOUT_SAFE = True
+try:
+    from xformers.ops import (
+        memory_efficient_attention as _xformers_memory_efficient_attention,
+    )
+    from xformers.ops.fmha.attn_bias import (
+        BlockDiagonalMask as _XFormersBlockDiagonalMask,
+    )
+
+    _XFORMERS_ATTN_AVAILABLE = True
+    # xformers dropout unsafe on pre-Ampere; use F.dropout instead
+    if torch.cuda.is_available():
+        _major, _ = torch.cuda.get_device_capability()
+        _XFORMERS_DROPOUT_SAFE = _major >= 8
+except ImportError:
+    pass
+
+_SM_MAJOR = 0
+if torch.cuda.is_available():
+    _SM_MAJOR, _ = torch.cuda.get_device_capability()
+
+
+def _patch_encoder_layernorms(model):
+    """Replace nn.LayerNorm with Triton kernel."""
+    if not _HAS_FAST_LAYERNORM:
+        return 0
+
+    import torch.nn as nn
+
+    count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, nn.LayerNorm) and module.elementwise_affine:
+            if not hasattr(module, "_original_forward"):
+                module._original_forward = module.forward
+
+            def make_fast_forward(ln_module):
+                def _fast_forward(X):
+                    return fast_layernorm(ln_module, X)
+
+                return _fast_forward
+
+            module.forward = make_fast_forward(module)
+            count += 1
+
+    return count
+
+
+def _patch_encoder_attention_lora(model):
+    """Fuse Q/K/V LoRA into single LoRA_QKV backward. Call after PEFT, before compile."""
+    try:
+        from ..kernels.fast_lora import LoRA_QKV
+        from ..kernels.utils import get_lora_parameters
+    except ImportError:
+        return 0
+
+    QKV_ATTRS = [
+        ("query", "key", "value"),  # BERT, RoBERTa, XLM-RoBERTa, ALBERT, ELECTRA
+        ("q", "k", "v"),  # MPNet
+        ("q_lin", "k_lin", "v_lin"),  # DistilBERT
+    ]
+
+    count = 0
+    for _name, module in model.named_modules():
+        detected = None
+        for q_attr, k_attr, v_attr in QKV_ATTRS:
+            q_mod = getattr(module, q_attr, None)
+            k_mod = getattr(module, k_attr, None)
+            v_mod = getattr(module, v_attr, None)
+            if q_mod is None or k_mod is None or v_mod is None:
+                continue
+            if (
+                hasattr(q_mod, "lora_A")
+                and hasattr(k_mod, "lora_A")
+                and hasattr(v_mod, "lora_A")
+            ):
+                detected = (q_attr, k_attr, v_attr)
+                break
+
+        if detected is None:
+            continue
+
+        q_attr, k_attr, v_attr = detected
+        q_mod = getattr(module, q_attr)
+        k_mod = getattr(module, k_attr)
+        v_mod = getattr(module, v_attr)
+
+        q_mod._original_forward = q_mod.forward
+        k_mod._original_forward = k_mod.forward
+        v_mod._original_forward = v_mod.forward
+
+        def _make_fused_forwards(attn_mod, qm, km, vm):
+            def q_fused(x, *args, **kwargs):
+                QW, QW_quant, QA, QB, QS = get_lora_parameters(qm)
+                KW, KW_quant, KA, KB, KS = get_lora_parameters(km)
+                VW, VW_quant, VA, VB, VS = get_lora_parameters(vm)
+
+                Q, K, V = LoRA_QKV.apply(
+                    x,
+                    QW,
+                    QW_quant,
+                    QA,
+                    QB,
+                    QS,
+                    KW,
+                    KW_quant,
+                    KA,
+                    KB,
+                    KS,
+                    VW,
+                    VW_quant,
+                    VA,
+                    VB,
+                    VS,
+                    False,
+                )
+
+                # LoRA_QKV doesn't handle bias
+                q_bias = getattr(qm.base_layer, "bias", None)
+                k_bias = getattr(km.base_layer, "bias", None)
+                v_bias = getattr(vm.base_layer, "bias", None)
+                if q_bias is not None:
+                    Q = Q + q_bias
+                if k_bias is not None:
+                    K = K + k_bias
+                if v_bias is not None:
+                    V = V + v_bias
+
+                attn_mod._fused_k = K
+                attn_mod._fused_v = V
+                return Q
+
+            def k_fused(x, *args, **kwargs):
+                cached = getattr(attn_mod, "_fused_k", None)
+                if cached is not None:
+                    del attn_mod._fused_k
+                    return cached
+                return km._original_forward(x, *args, **kwargs)
+
+            def v_fused(x, *args, **kwargs):
+                cached = getattr(attn_mod, "_fused_v", None)
+                if cached is not None:
+                    del attn_mod._fused_v
+                    return cached
+                return vm._original_forward(x, *args, **kwargs)
+
+            return q_fused, k_fused, v_fused
+
+        q_fwd, k_fwd, v_fwd = _make_fused_forwards(module, q_mod, k_mod, v_mod)
+        q_mod.forward = q_fwd
+        k_mod.forward = k_fwd
+        v_mod.forward = v_fwd
+        count += 1
+
+    return count
+
+
+def _check_sparsity_support():
+    """Check if 2:4 sparsity is supported on this GPU."""
+    if not torch.cuda.is_available():
+        return (False, "CUDA is not available.")
+
+    try:
+        from torch.sparse import SparseSemiStructuredTensor, to_sparse_semi_structured
+    except ImportError:
+        return (False, "torch.sparse.SparseSemiStructuredTensor not available.")
+
+    major, minor = torch.cuda.get_device_capability()
+    sm = major * 10 + minor
+
+    if major < 8:
+        return (False, f"No sparse tensor cores on sm_{sm} (requires sm_80+).")
+
+    if major >= 12:
+        return (
+            False,
+            f"Not beneficial on sm_{sm} (cuSPARSELt overhead at encoder dims).",
+        )
+
+    try:
+        SparseSemiStructuredTensor._FORCE_CUTLASS = True
+        test_w = torch.zeros(32, 32, device = "cuda", dtype = torch.float16)
+        test_w[:, 0::4] = 1.0
+        test_w[:, 1::4] = 1.0
+        _ = to_sparse_semi_structured(test_w)
+    except Exception as e:
+        return (False, f"CUTLASS not available on sm_{sm}: {e}")
+
+    return (True, f"sm_{sm}, CUTLASS backend")
+
+
+def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
+    """Apply 2:4 magnitude pruning to frozen base weights (not LoRA adapters)."""
+    from torch.sparse import SparseSemiStructuredTensor, to_sparse_semi_structured
+
+    SparseSemiStructuredTensor._FORCE_CUTLASS = True
+
+    if target_modules is None:
+        target_modules = {
+            "query",
+            "key",
+            "value",
+            "dense",
+            "q",
+            "k",
+            "v",
+            "q_lin",
+            "k_lin",
+            "v_lin",
+        }
+
+    count = 0
+    for name, module in peft_model.named_modules():
+        base = getattr(module, "base_layer", None)
+        if base is None or not isinstance(base, torch.nn.Linear):
+            continue
+
+        leaf_name = name.split(".")[-1]
+        if leaf_name not in target_modules:
+            continue
+
+        w = base.weight.data
+        if w.shape[0] % 4 != 0 or w.shape[1] % 4 != 0:
+            continue
+
+        # Keep top-2 per group of 4
+        w_abs = w.detach().abs().view(w.shape[0], -1, 4)
+        _, topk = w_abs.topk(2, dim = -1)
+        mask = torch.zeros_like(w_abs, dtype = torch.bool)
+        mask.scatter_(-1, topk, True)
+        mask = mask.view(w.shape)
+        w.mul_(mask)
+
+        base._dense_weight = w.clone()
+        _rg = base.weight.requires_grad
+        base.weight = torch.nn.Parameter(
+            to_sparse_semi_structured(w), requires_grad = _rg
+        )
+        count += 1
+
+    return count
+
+
+def _remove_sparsity_from_base_weights(peft_model):
+    """Restore dense weights for saving/merging."""
+    count = 0
+    for _name, module in peft_model.named_modules():
+        base = getattr(module, "base_layer", None)
+        if base is None or not isinstance(base, torch.nn.Linear):
+            continue
+        if hasattr(base, "_dense_weight"):
+            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad = False)
+            del base._dense_weight
+            count += 1
+    return count
+
+
+def _patch_fused_pooling(st_model):
+    """Fuse final LayerNorm + mean Pooling into single Triton kernel."""
+    if not _HAS_FUSED_POOLING:
+        return False
+
+    transformer_mod = None
+    pooling_mod = None
+    for mod in st_model:
+        if hasattr(mod, "auto_model"):
+            transformer_mod = mod
+        if mod.__class__.__name__ == "Pooling":
+            pooling_mod = mod
+
+    if transformer_mod is None or pooling_mod is None:
+        return False
+
+    if not getattr(pooling_mod, "pooling_mode_mean_tokens", False):
+        return False
+
+    if (
+        getattr(pooling_mod, "pooling_mode_cls_token", False)
+        or getattr(pooling_mod, "pooling_mode_max_tokens", False)
+        or getattr(pooling_mod, "pooling_mode_mean_sqrt_len_tokens", False)
+        or getattr(pooling_mod, "pooling_mode_weightedmean_tokens", False)
+        or getattr(pooling_mod, "pooling_mode_lasttoken", False)
+        or not getattr(pooling_mod, "include_prompt", True)
+    ):
+        return False
+
+    # unwrap PEFT if needed
+    inner = transformer_mod.auto_model
+    if hasattr(inner, "_orig_mod"):
+        inner = inner._orig_mod
+    base = inner
+    if hasattr(base, "base_model"):
+        base = base.base_model
+    if hasattr(base, "model"):
+        base = base.model
+
+    last_ln_name = None
+    last_ln = None
+    for name, module in base.named_modules():
+        if isinstance(module, torch.nn.LayerNorm) and module.elementwise_affine:
+            last_ln_name = name
+            last_ln = module
+
+    if last_ln is None:
+        return False
+
+    stored_ln = last_ln
+
+    # replace last LayerNorm with Identity
+    parts = last_ln_name.split(".")
+    parent = base
+    for p in parts[:-1]:
+        parent = getattr(parent, p)
+    setattr(parent, parts[-1], torch.nn.Identity())
+
+    _original_pooling_forward = pooling_mod.forward
+    pooling_mod._fused_ln = stored_ln
+    pooling_mod._fused_ln_parent = parent
+    pooling_mod._fused_ln_attr = parts[-1]
+    pooling_mod._original_pooling_forward = _original_pooling_forward
+
+    def _fused_pooling_forward(features):
+        token_embeddings = features["token_embeddings"]
+        attention_mask = features.get(
+            "attention_mask",
+            torch.ones(
+                token_embeddings.shape[:-1],
+                device = token_embeddings.device,
+                dtype = torch.int64,
+            ),
+        )
+
+        pooled = fused_layernorm_mean_pool(stored_ln, token_embeddings, attention_mask)
+        features["sentence_embedding"] = pooled
+        return features
+
+    pooling_mod._fused_pooling_forward = _fused_pooling_forward
+    pooling_mod.forward = _fused_pooling_forward
+    return True
+
+
+@contextlib.contextmanager
+def _restore_fused_pooling_ln(st_model):
+    """Temporarily restore original LayerNorm for save operations."""
+    pooling_mod = None
+    for mod in st_model:
+        if hasattr(mod, "_fused_ln"):
+            pooling_mod = mod
+            break
+    if pooling_mod is None:
+        yield
+        return
+    parent = pooling_mod._fused_ln_parent
+    attr = pooling_mod._fused_ln_attr
+    ln = pooling_mod._fused_ln
+    identity = getattr(parent, attr)
+    setattr(parent, attr, ln)
+    old_fwd = pooling_mod.forward
+    pooling_mod.forward = pooling_mod._original_pooling_forward
+    try:
+        yield
+    finally:
+        setattr(parent, attr, identity)
+        pooling_mod.forward = old_fwd
+
+
+# modernbert excluded — has native unpadding (indices, cu_seqlens args)
+_UNPAD_SUPPORTED_TYPES = {
+    "bert",
+    "roberta",
+    "xlm-roberta",
+    "albert",
+    "electra",
+    "mpnet",
+    "distilbert",
+}
+_UNPAD_MIN_PADDING_RATIO = 0.15
+
+
+def _register_varlen_attention():
+    """Register unsloth_varlen in ALL_ATTENTION_FUNCTIONS (transformers 5.x)."""
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    except (ImportError, AttributeError):
+        return False
+
+    if "unsloth_varlen" in ALL_ATTENTION_FUNCTIONS:
+        return True
+
+    def _unsloth_varlen_attention(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
+        # Varlen metadata stored on config (PEFT wrappers reject unknown kwargs)
+        _config = getattr(module, "config", None)
+        cu_seqlens = getattr(_config, "_unsloth_cu_seqlens", None)
+        if cu_seqlens is None:
+            is_causal = (
+                is_causal
+                if is_causal is not None
+                else getattr(module, "is_causal", False)
+            )
+            is_causal = query.shape[2] > 1 and attention_mask is None and is_causal
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask = attention_mask,
+                dropout_p = dropout,
+                scale = scaling,
+                is_causal = is_causal,
+            )
+            return attn_output.transpose(1, 2).contiguous(), None
+
+        max_seqlen = _config._unsloth_max_seqlen
+        seq_lengths = getattr(_config, "_unsloth_seq_lengths", None)
+
+        if _FLASH_ATTN_VARLEN_AVAILABLE:
+            q = query.squeeze(0).transpose(0, 1).contiguous()
+            k = key.squeeze(0).transpose(0, 1).contiguous()
+            v = value.squeeze(0).transpose(0, 1).contiguous()
+            out = _flash_attn_varlen_func(
+                q,
+                k,
+                v,
+                cu_seqlens_q = cu_seqlens,
+                cu_seqlens_k = cu_seqlens,
+                max_seqlen_q = max_seqlen,
+                max_seqlen_k = max_seqlen,
+                causal = False,
+                dropout_p = dropout,
+                softmax_scale = scaling,
+            )
+            attn_output = out.transpose(0, 1).unsqueeze(0)
+        elif _XFORMERS_ATTN_AVAILABLE:
+            q_x = query.transpose(1, 2)
+            k_x = key.transpose(1, 2)
+            v_x = value.transpose(1, 2)
+            attn_bias = _XFormersBlockDiagonalMask.from_seqlens(seq_lengths.tolist())
+            if _XFORMERS_DROPOUT_SAFE:
+                out_x = _xformers_memory_efficient_attention(
+                    q_x,
+                    k_x,
+                    v_x,
+                    attn_bias = attn_bias,
+                    p = dropout,
+                    scale = scaling,
+                )
+            else:
+                out_x = _xformers_memory_efficient_attention(
+                    q_x,
+                    k_x,
+                    v_x,
+                    attn_bias = attn_bias,
+                    p = 0.0,
+                    scale = scaling,
+                )
+                if dropout > 0.0:
+                    out_x = F.dropout(out_x, p = dropout, training = True)
+            attn_output = out_x.transpose(1, 2)
+        elif _VARLEN_ATTN_AVAILABLE:
+            q = query.squeeze(0).transpose(0, 1).contiguous()
+            k = key.squeeze(0).transpose(0, 1).contiguous()
+            v = value.squeeze(0).transpose(0, 1).contiguous()
+            out = _torch_varlen_attn(
+                q,
+                k,
+                v,
+                cu_seq_q = cu_seqlens,
+                cu_seq_k = cu_seqlens,
+                max_q = max_seqlen,
+                max_k = max_seqlen,
+                is_causal = False,
+            )
+            attn_output = out.transpose(0, 1).unsqueeze(0)
+        else:
+            # Bool mask fallback
+            segment_ids = torch.repeat_interleave(
+                torch.arange(seq_lengths.shape[0], device = query.device),
+                seq_lengths.long(),
+            )
+            bool_mask = segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1)
+            bool_mask = bool_mask.unsqueeze(0).unsqueeze(0)
+            # GQA: repeat KV heads
+            if key.shape[1] != query.shape[1]:
+                n_rep = query.shape[1] // key.shape[1]
+                key = key.repeat_interleave(n_rep, dim = 1)
+                value = value.repeat_interleave(n_rep, dim = 1)
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask = bool_mask,
+                dropout_p = dropout,
+                scale = scaling,
+                is_causal = False,
+            )
+
+        return attn_output.transpose(1, 2).contiguous(), None
+
+    ALL_ATTENTION_FUNCTIONS.register("unsloth_varlen", _unsloth_varlen_attention)
+    return True
+
+
+_VARLEN_ATTN_REGISTERED = _register_varlen_attention()
+
+
+def _patch_unpadded_encoder(st_model, model_type):
+    """Patch Transformer forward for variable-length batching (unpadding)."""
+    if model_type not in _UNPAD_SUPPORTED_TYPES:
+        return False
+
+    transformer_mod = None
+    for mod in st_model:
+        if hasattr(mod, "auto_model"):
+            transformer_mod = mod
+            break
+
+    if transformer_mod is None:
+        return False
+
+    inner = transformer_mod.auto_model
+    if hasattr(inner, "_orig_mod"):
+        inner = inner._orig_mod
+    config = inner.config
+
+    _orig_attn_impl = getattr(config, "_attn_implementation", "sdpa")
+
+    # XLM-RoBERTa position_ids start at padding_idx + 1
+    _position_offset = 0
+    for mod in inner.modules():
+        if hasattr(mod, "position_embeddings") and hasattr(
+            mod.position_embeddings, "padding_idx"
+        ):
+            _pad_idx = mod.position_embeddings.padding_idx
+            if _pad_idx is not None:
+                _position_offset = _pad_idx + 1
+            break
+
+    _original_forward = transformer_mod.forward
+
+    # Only use the ALL_ATTENTION_FUNCTIONS registry on transformers 5.x+.
+    # On 4.x, BERT/RoBERTa bake their attention class at __init__ time,
+    # so changing config._attn_implementation after construction has no effect.
+    _use_attn_interface = (
+        _VARLEN_ATTN_REGISTERED and Version(transformers.__version__).major >= 5
+    )
+
+    if not _use_attn_interface:
+        # transformers 4.x: F.sdpa monkey-patching
+        _use_varlen = (
+            _FLASH_ATTN_VARLEN_AVAILABLE
+            or _VARLEN_ATTN_AVAILABLE
+            or _XFORMERS_ATTN_AVAILABLE
+        )
+        _original_sdpa = torch.nn.functional.scaled_dot_product_attention
+
+        # NOTE: Thread-safety limitation (transformers 4.x path only).
+        # The below closure monkey-patches the global F.scaled_dot_product_attention for the
+        # duration of a forward pass. Two concurrent forward passes will race on the global.
+        # The transformers 5.x path (ALL_ATTENTION_FUNCTIONS registry) does not have this issue.
+        # Resolution: upgrade to transformers >=5.0, or use single-threaded DataLoader.
+        def _varlen_sdpa(
+            query,
+            key,
+            value,
+            attn_mask = None,
+            dropout_p = 0.0,
+            is_causal = False,
+            scale = None,
+            **extra_kwargs,
+        ):
+            cu_seqlens = getattr(config, "_unsloth_cu_seqlens", None)
+            if cu_seqlens is None:
+                return _original_sdpa(
+                    query,
+                    key,
+                    value,
+                    attn_mask = attn_mask,
+                    dropout_p = dropout_p,
+                    is_causal = is_causal,
+                    scale = scale,
+                    **extra_kwargs,
+                )
+            max_seqlen = config._unsloth_max_seqlen
+            q = query.squeeze(0).transpose(0, 1).contiguous()
+            k = key.squeeze(0).transpose(0, 1).contiguous()
+            v = value.squeeze(0).transpose(0, 1).contiguous()
+            if _FLASH_ATTN_VARLEN_AVAILABLE:
+                out = _flash_attn_varlen_func(
+                    q,
+                    k,
+                    v,
+                    cu_seqlens_q = cu_seqlens,
+                    cu_seqlens_k = cu_seqlens,
+                    max_seqlen_q = max_seqlen,
+                    max_seqlen_k = max_seqlen,
+                    causal = is_causal,
+                    dropout_p = dropout_p,
+                    softmax_scale = scale,
+                )
+                return out.transpose(0, 1).unsqueeze(0)
+            elif _XFORMERS_ATTN_AVAILABLE:
+                seq_lengths = config._unsloth_seq_lengths
+                q_x = query.transpose(1, 2)
+                k_x = key.transpose(1, 2)
+                v_x = value.transpose(1, 2)
+                attn_bias = _XFormersBlockDiagonalMask.from_seqlens(
+                    seq_lengths.tolist()
+                )
+                if _XFORMERS_DROPOUT_SAFE:
+                    out_x = _xformers_memory_efficient_attention(
+                        q_x,
+                        k_x,
+                        v_x,
+                        attn_bias = attn_bias,
+                        p = dropout_p,
+                        scale = scale,
+                    )
+                else:
+                    out_x = _xformers_memory_efficient_attention(
+                        q_x,
+                        k_x,
+                        v_x,
+                        attn_bias = attn_bias,
+                        p = 0.0,
+                        scale = scale,
+                    )
+                    if dropout_p > 0.0:
+                        out_x = F.dropout(out_x, p = dropout_p, training = True)
+                return out_x.transpose(1, 2)
+            elif _VARLEN_ATTN_AVAILABLE:
+                out = _torch_varlen_attn(
+                    q,
+                    k,
+                    v,
+                    cu_seq_q = cu_seqlens,
+                    cu_seq_k = cu_seqlens,
+                    max_q = max_seqlen,
+                    max_k = max_seqlen,
+                    is_causal = is_causal,
+                )
+                return out.transpose(0, 1).unsqueeze(0)
+            return _original_sdpa(
+                query,
+                key,
+                value,
+                attn_mask = attn_mask,
+                dropout_p = dropout_p,
+                is_causal = is_causal,
+                scale = scale,
+                **extra_kwargs,
+            )
+
+        def _bool_mask_sdpa(
+            query,
+            key,
+            value,
+            attn_mask = None,
+            dropout_p = 0.0,
+            is_causal = False,
+            scale = None,
+            **extra_kwargs,
+        ):
+            bool_mask = getattr(config, "_unsloth_bool_mask", None)
+            if bool_mask is None:
+                return _original_sdpa(
+                    query,
+                    key,
+                    value,
+                    attn_mask = attn_mask,
+                    dropout_p = dropout_p,
+                    is_causal = is_causal,
+                    scale = scale,
+                    **extra_kwargs,
+                )
+            return _original_sdpa(
+                query,
+                key,
+                value,
+                attn_mask = bool_mask,
+                dropout_p = dropout_p,
+                is_causal = False,
+                scale = scale,
+            )
+
+        config._unsloth_cu_seqlens = None
+        config._unsloth_max_seqlen = None
+        config._unsloth_seq_lengths = None
+
+    def _unpadded_forward(features, **kwargs):
+        attention_mask = features.get("attention_mask")
+        if attention_mask is None:
+            return _original_forward(features, **kwargs)
+
+        auto_model = transformer_mod.auto_model
+        actual_model = (
+            auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
+        )
+        if not actual_model.training:
+            return _original_forward(features, **kwargs)
+
+        # Skip when compiled (recompiles on every shape) or when gradient
+        # checkpointing is active (config resets before checkpoint recompute)
+        if hasattr(auto_model, "_orig_mod"):
+            return _original_forward(features, **kwargs)
+        if getattr(actual_model, "gradient_checkpointing", False):
+            return _original_forward(features, **kwargs)
+
+        B, S = attention_mask.shape
+        device = attention_mask.device
+
+        seq_info = get_encoder_seq_info(attention_mask)
+        total_tokens = int(seq_info.cu_seqlens[-1].item())
+
+        if total_tokens >= B * S * (1.0 - _UNPAD_MIN_PADDING_RATIO):
+            return _original_forward(features, **kwargs)
+
+        input_ids = features["input_ids"]
+        packed_ids = input_ids.flatten()[seq_info.indices].unsqueeze(0)
+
+        _offsets = torch.repeat_interleave(
+            seq_info.cu_seqlens[:-1], seq_info.seq_lengths.long()
+        )
+        position_ids = (
+            torch.arange(total_tokens, device = device) - _offsets + _position_offset
+        ).unsqueeze(0)
+
+        packed_features = {
+            "input_ids": packed_ids,
+            "position_ids": position_ids,
+        }
+
+        if "token_type_ids" in features and features["token_type_ids"] is not None:
+            packed_features["token_type_ids"] = (
+                features["token_type_ids"].flatten()[seq_info.indices].unsqueeze(0)
+            )
+
+        trans_features = {
+            k: v
+            for k, v in packed_features.items()
+            if k in transformer_mod.model_forward_params
+        }
+
+        if _use_attn_interface:
+            # Transformers 5.x: varlen via ALL_ATTENTION_FUNCTIONS
+            config._attn_implementation = "unsloth_varlen"
+            config._unsloth_cu_seqlens = seq_info.cu_seqlens
+            config._unsloth_max_seqlen = seq_info.max_seqlen
+            config._unsloth_seq_lengths = seq_info.seq_lengths
+            try:
+                outputs = auto_model(
+                    **trans_features,
+                    return_dict = True,
+                    **kwargs,
+                )
+            finally:
+                config._attn_implementation = _orig_attn_impl
+                config._unsloth_cu_seqlens = None
+                config._unsloth_max_seqlen = None
+                config._unsloth_seq_lengths = None
+        elif _use_varlen:
+            # Transformers 4.x Tier 1: monkey-patch F.sdpa → varlen kernels
+            config._attn_implementation = "sdpa"
+            config._unsloth_cu_seqlens = seq_info.cu_seqlens
+            config._unsloth_max_seqlen = seq_info.max_seqlen
+            config._unsloth_seq_lengths = seq_info.seq_lengths
+            torch.nn.functional.scaled_dot_product_attention = _varlen_sdpa
+            try:
+                outputs = auto_model(**trans_features, return_dict = True, **kwargs)
+            finally:
+                torch.nn.functional.scaled_dot_product_attention = _original_sdpa
+                config._attn_implementation = _orig_attn_impl
+                config._unsloth_cu_seqlens = None
+                config._unsloth_max_seqlen = None
+                config._unsloth_seq_lengths = None
+        else:
+            # Transformers 4.x Tier 2: bool mask SDPA fallback
+            config._attn_implementation = "sdpa"
+            segment_ids = torch.repeat_interleave(
+                torch.arange(seq_info.seq_lengths.shape[0], device = device),
+                seq_info.seq_lengths.long(),
+            )
+            bool_mask = segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1)
+            config._unsloth_bool_mask = bool_mask.unsqueeze(0).unsqueeze(0)
+            torch.nn.functional.scaled_dot_product_attention = _bool_mask_sdpa
+            try:
+                outputs = auto_model(**trans_features, return_dict = True, **kwargs)
+            finally:
+                torch.nn.functional.scaled_dot_product_attention = _original_sdpa
+                config._attn_implementation = _orig_attn_impl
+                config._unsloth_bool_mask = None
+
+        packed_embeddings = outputs[0].squeeze(0)  # (total_tokens, D)
+
+        token_embeddings = pad_output(packed_embeddings, seq_info, B, S)
+        features["token_embeddings"] = token_embeddings
+        features["attention_mask"] = attention_mask
+
+        return features
+
+    transformer_mod.forward = _unpadded_forward
+    transformer_mod._original_forward = _original_forward
+    transformer_mod._unpadding_active = True
+
+    if _use_attn_interface:
+        backend_name = "attn_interface"
+    elif _FLASH_ATTN_VARLEN_AVAILABLE:
+        backend_name = "flash_attn_varlen"
+    elif _XFORMERS_ATTN_AVAILABLE:
+        backend_name = "xformers"
+    elif _VARLEN_ATTN_AVAILABLE:
+        backend_name = "torch_varlen"
+    else:
+        backend_name = "bool_mask_sdpa"
+    transformer_mod._unpadding_backend = backend_name
+    return True
+
+
+def _patch_unpadded_decoder(st_model):
+    """Patch Transformer forward for variable-length batching on causal decoders."""
+    transformer_mod = None
+    for mod in st_model:
+        if hasattr(mod, "auto_model"):
+            transformer_mod = mod
+            break
+
+    if transformer_mod is None:
+        return False
+
+    if hasattr(transformer_mod, "model_forward_params"):
+        transformer_mod.model_forward_params.add("packed_seq_lengths")
+
+    _original_forward = transformer_mod.forward
+
+    def _unpadded_forward(features, **kwargs):
+        attention_mask = features.get("attention_mask")
+        if attention_mask is None:
+            return _original_forward(features, **kwargs)
+
+        auto_model = transformer_mod.auto_model
+        actual_model = (
+            auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
+        )
+        if not actual_model.training:
+            return _original_forward(features, **kwargs)
+
+        B, S = attention_mask.shape
+        device = attention_mask.device
+
+        seq_info = get_encoder_seq_info(attention_mask)
+        total_tokens = int(seq_info.cu_seqlens[-1].item())
+
+        if total_tokens >= B * S * (1.0 - _UNPAD_MIN_PADDING_RATIO):
+            return _original_forward(features, **kwargs)
+
+        input_ids = features["input_ids"]
+        packed_ids = input_ids.flatten()[seq_info.indices].unsqueeze(0)
+
+        _offsets = torch.repeat_interleave(
+            seq_info.cu_seqlens[:-1], seq_info.seq_lengths.long()
+        )
+        position_ids = (torch.arange(total_tokens, device = device) - _offsets).unsqueeze(
+            0
+        )
+
+        packed_features = {
+            "input_ids": packed_ids,
+            "position_ids": position_ids,
+            "packed_seq_lengths": seq_info.seq_lengths,
+        }
+
+        if "token_type_ids" in features and features["token_type_ids"] is not None:
+            packed_features["token_type_ids"] = (
+                features["token_type_ids"].flatten()[seq_info.indices].unsqueeze(0)
+            )
+
+        trans_features = {
+            k: v
+            for k, v in packed_features.items()
+            if k in transformer_mod.model_forward_params
+        }
+
+        outputs = auto_model(**trans_features, return_dict = True, **kwargs)
+        packed_embeddings = outputs[0].squeeze(0)  # (total_tokens, D)
+
+        token_embeddings = pad_output(packed_embeddings, seq_info, B, S)
+        features["token_embeddings"] = token_embeddings
+        features["attention_mask"] = attention_mask
+        return features
+
+    transformer_mod.forward = _unpadded_forward
+    transformer_mod._original_forward = _original_forward
+    transformer_mod._unpadding_active = True
+    transformer_mod._unpadding_backend = "native_packing"
+    return True
+
+
+_POOLING_PATCHED = False
+
+
+def _patch_efficient_pooling():
+    """Monkey-patch Pooling to skip redundant expand()."""
+    global _POOLING_PATCHED
+    if _POOLING_PATCHED:
+        return
+    _POOLING_PATCHED = True
+
+    try:
+        from sentence_transformers.models import Pooling
+
+        _original_forward = Pooling.forward
+
+        def _efficient_forward(self, features):
+            token_embeddings = features["token_embeddings"]
+            attention_mask = features.get(
+                "attention_mask",
+                torch.ones(
+                    token_embeddings.shape[:-1],
+                    device = token_embeddings.device,
+                    dtype = torch.int64,
+                ),
+            )
+
+            if not self.include_prompt and "prompt_length" in features:
+                prompt_length = features["prompt_length"]
+                if isinstance(prompt_length, torch.Tensor):
+                    prompt_length = int(prompt_length[0].item())
+                attention_mask = attention_mask.clone()
+                # Handle left-padded sequences
+                pad_lengths = (attention_mask == 0).to(torch.int32).argmin(dim = 1)
+                for i in range(attention_mask.shape[0]):
+                    start = int(pad_lengths[i].item())
+                    attention_mask[i, start : start + prompt_length] = 0
+
+            output_vectors = []
+
+            if self.pooling_mode_cls_token:
+                cls_token = features.get("cls_token_embeddings", token_embeddings[:, 0])
+                output_vectors.append(cls_token)
+
+            if self.pooling_mode_max_tokens:
+                input_mask_expanded = (
+                    attention_mask.unsqueeze(-1)
+                    .expand(token_embeddings.size())
+                    .to(token_embeddings.dtype)
+                )
+                token_embeddings[input_mask_expanded == 0] = -1e9
+                max_over_time = torch.max(token_embeddings, 1)[0]
+                output_vectors.append(max_over_time)
+
+            if self.pooling_mode_mean_tokens or self.pooling_mode_mean_sqrt_len_tokens:
+                mask = attention_mask.unsqueeze(-1).to(token_embeddings.dtype)
+                sum_embeddings = (token_embeddings * mask).sum(dim = 1)
+
+                if "token_weights_sum" in features:
+                    sum_mask = (
+                        features["token_weights_sum"]
+                        .unsqueeze(-1)
+                        .expand(sum_embeddings.size())
+                    )
+                else:
+                    sum_mask = mask.sum(dim = 1)
+
+                sum_mask = torch.clamp(sum_mask, min = 1e-9)
+
+                if self.pooling_mode_mean_tokens:
+                    output_vectors.append(sum_embeddings / sum_mask)
+                if self.pooling_mode_mean_sqrt_len_tokens:
+                    output_vectors.append(sum_embeddings / torch.sqrt(sum_mask))
+
+            if self.pooling_mode_weightedmean_tokens:
+                return _original_forward(self, features)
+
+            if self.pooling_mode_lasttoken:
+                return _original_forward(self, features)
+
+            output_vector = torch.cat(output_vectors, 1)
+            features["sentence_embedding"] = output_vector
+            return features
+
+        Pooling.forward = _efficient_forward
+    except Exception as e:
+        import warnings
+
+        warnings.warn(f"Unsloth: Failed to patch Pooling: {e}", stacklevel = 2)
+
+
+_DENSE_PATCHED = False
+
+
+def _patch_dense_dtype():
+    """Monkey-patch Dense.forward to cast input to match weight dtype.
+
+    Models like Gemma3 use high-precision RMSNorm that outputs float32, but
+    SentenceTransformer.__init__ casts Dense weights to the transformer's
+    param dtype (e.g. bf16). This causes a dtype mismatch in F.linear.
+    """
+    global _DENSE_PATCHED
+    if _DENSE_PATCHED:
+        return
+    _DENSE_PATCHED = True
+
+    try:
+        from sentence_transformers.models import Dense
+
+        _original_dense_forward = Dense.forward
+
+        def _dtype_safe_forward(self, features):
+            if "sentence_embedding" in features:
+                target_dtype = self.linear.weight.dtype
+                emb = features["sentence_embedding"]
+                if emb.dtype != target_dtype:
+                    features["sentence_embedding"] = emb.to(target_dtype)
+            return _original_dense_forward(self, features)
+
+        Dense.forward = _dtype_safe_forward
+    except Exception:
+        pass
+
+
+_MNRL_PATCHED = False
+
+
+def _patch_mnrl_loss():
+    """Monkey-patch MNRL with fused chunked contrastive loss."""
+    global _MNRL_PATCHED
+    if _MNRL_PATCHED:
+        return
+    _MNRL_PATCHED = True
+
+    try:
+        from sentence_transformers.losses import MultipleNegativesRankingLoss
+        from ..kernels.contrastive_loss import FusedContrastiveLoss
+
+        _original_forward = MultipleNegativesRankingLoss.forward
+
+        def _fused_forward(self, sentence_features, labels = None):
+            first_ids = sentence_features[0].get("input_ids")
+            if first_ids is not None and first_ids.shape[0] < 8:
+                return _original_forward(self, sentence_features, labels)
+
+            # Fall back for non-default MNRL configurations
+            if (
+                getattr(self, "gather_across_devices", False)
+                or getattr(self, "directions", None) not in (None, ("query_to_doc",))
+                or getattr(self, "partition_mode", None)
+                not in (None, "disabled", "joint")
+                or getattr(self, "hardness_mode", None) is not None
+            ):
+                return _original_forward(self, sentence_features, labels)
+
+            reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
+            embeddings_a = reps[0]
+            embeddings_b = torch.cat(reps[1:], dim = 0)
+
+            try:
+                from sentence_transformers.util import cos_sim
+
+                is_cosine = self.similarity_fct is cos_sim
+            except ImportError:
+                is_cosine = True
+
+            if is_cosine:
+                embeddings_a = torch.nn.functional.normalize(embeddings_a, p = 2, dim = 1)
+                embeddings_b = torch.nn.functional.normalize(embeddings_b, p = 2, dim = 1)
+
+            return FusedContrastiveLoss.apply(embeddings_a, embeddings_b, self.scale)
+
+        MultipleNegativesRankingLoss.forward = _fused_forward
+        MultipleNegativesRankingLoss._original_forward = _original_forward
+        print(
+            "Unsloth: Patched MultipleNegativesRankingLoss with fused contrastive loss"
+        )
+    except Exception as e:
+        import warnings
+
+        warnings.warn(
+            f"Unsloth: Failed to patch MultipleNegativesRankingLoss: {e}", stacklevel = 2
+        )
 
 
 def _save_pretrained_torchao(
@@ -47,7 +1404,8 @@ def _save_pretrained_torchao(
     push_to_hub = False,
     token = None,
 ):
-    self.save_pretrained(save_directory)
+    with _restore_fused_pooling_ln(self):
+        self.save_pretrained(save_directory)
 
     # grab inner model
     inner_model = self[0].auto_model
@@ -103,7 +1461,6 @@ def _save_pretrained_torchao(
             token = token,
         )
 
-    # avoid `0_Transformer-torchao`, it was either this or fix modules.json
     torchao_dir = transformer_dir + "-torchao"
     if os.path.exists(torchao_dir):
         if not os.path.exists(transformer_dir):
@@ -134,389 +1491,6 @@ def _save_pretrained_torchao(
         FastSentenceTransformer._add_unsloth_branding(save_directory)
     except:
         pass
-
-
-# Thanks Etherl:
-def _save_pretrained_gguf(
-    self,
-    save_directory,
-    tokenizer = None,
-    quantization_method = "fast_quantized",
-    first_conversion = None,
-    push_to_hub = False,
-    token = None,
-    max_shard_size = "5GB",
-    temporary_location = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage = 0.85,
-    **kwargs,
-):
-    """
-    Saves the SentenceTransformer model to GGUF format by saving the inner transformer model,
-    converting it, and placing the resulting GGUF files in the save directory.
-    """
-    # 1. Save standard SentenceTransformer structure (configs, modules.json, etc.)
-    self.save_pretrained(save_directory)
-
-    # 2. Extract inner transformer model
-    inner_model = self[0].auto_model
-    if hasattr(inner_model, "_orig_mod"):
-        inner_model = inner_model._orig_mod
-
-    # If it's a PEFT model, unsloth_save_pretrained_gguf handles merging,
-    # but we pass the inner model wrapper.
-
-    # 3. Identify where the transformer weights are stored
-    transformer_path = "0_Transformer"
-    modules_path = os.path.join(save_directory, "modules.json")
-    if os.path.exists(modules_path):
-        try:
-            with open(modules_path, "r") as f:
-                modules = json.load(f)
-            for m in modules:
-                if m.get("type", "").endswith("Transformer"):
-                    transformer_path = m.get("path", "")
-                    break
-        except:
-            pass
-
-    # This is where Unsloth will perform the save + conversion operations
-    transformer_dir = os.path.join(save_directory, transformer_path)
-    # Ensure this path is absolute for consistent comparison later
-    transformer_dir = os.path.abspath(transformer_dir)
-
-    if tokenizer is None:
-        tokenizer = self.tokenizer
-
-    # 4. Patch environment to ensure Unsloth treats this embedding model correctly
-    @contextlib.contextmanager
-    def patch_unsloth_gguf_save():
-        # Prevent deletion of the directory we just created via self.save_pretrained
-        original_rmtree = shutil.rmtree
-        try:
-            yield
-        finally:
-            shutil.rmtree = original_rmtree
-
-    # 5. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
-    with patch_unsloth_gguf_save():
-        result = unsloth_save_pretrained_gguf(
-            inner_model,
-            save_directory = transformer_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # Force local first to move files
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
-        )
-
-    # 6. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
-    gguf_files = result.get("gguf_files", [])
-
-    new_gguf_locations = []
-
-    for gguf_file in gguf_files:
-        if os.path.exists(gguf_file):
-            filename = os.path.basename(gguf_file)
-            dest_path = os.path.join(save_directory, filename)
-
-            # Convert to absolute path to avoid mixing relative/absolute in commonpath
-            abs_gguf_file = os.path.abspath(gguf_file)
-
-            # Check if file is inside transformer_dir (subpath)
-            try:
-                is_subpath = (
-                    os.path.commonpath([abs_gguf_file, transformer_dir])
-                    == transformer_dir
-                )
-            except ValueError:
-                # Can happen on Windows with different drives, or mix of absolute/relative (handled by abspath above)
-                is_subpath = False
-
-            if is_subpath:
-                # If the GGUF file is inside the transformer_dir, move it out to root
-                shutil.move(gguf_file, dest_path)
-                new_gguf_locations.append(dest_path)
-            else:
-                # If it's elsewhere, move it to root if not already there
-                if os.path.abspath(dest_path) != abs_gguf_file:
-                    shutil.move(gguf_file, dest_path)
-                new_gguf_locations.append(dest_path)
-
-    # Update result with new locations
-    result["gguf_files"] = new_gguf_locations
-
-    # 7. Add branding
-    try:
-        FastSentenceTransformer._add_unsloth_branding(save_directory)
-
-        # Add GGUF details to README
-        readme_path = os.path.join(save_directory, "README.md")
-        if os.path.exists(readme_path):
-            with open(readme_path, "a", encoding = "utf-8") as f:
-                f.write("\n## GGUF Quantization\n")
-                f.write(
-                    f"This model contains GGUF quantized versions in: {', '.join([os.path.basename(f) for f in new_gguf_locations])}\n"
-                )
-    except:
-        pass
-
-    # 8. Handle Push to Hub if requested
-    if push_to_hub:
-        if token is None:
-            token = get_token()
-
-        api = HfApi(token = token)
-        repo_id = save_directory  # Assuming save_directory is the repo name if pushing
-
-        print(f"Unsloth: Uploading to {repo_id}...")
-        try:
-            api.create_repo(
-                repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False)
-            )
-            api.upload_folder(
-                folder_path = save_directory,
-                repo_id = repo_id,
-                commit_message = "Upload GGUF and SentenceTransformer model",
-            )
-            print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
-        except Exception as e:
-            print(f"Unsloth: Upload failed: {e}")
-
-    return result
-
-
-def _push_to_hub_gguf(
-    self,
-    repo_id,
-    tokenizer = None,
-    quantization_method = "fast_quantized",
-    first_conversion = None,
-    token = None,
-    private = None,
-    commit_message = "Upload GGUF SentenceTransformer model trained with Unsloth",
-    commit_description = "Upload GGUF model trained with Unsloth 2x faster",
-    max_shard_size = "5GB",
-    temporary_location = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage = 0.85,
-    create_pr = False,
-    revision = None,
-    tags = None,
-    **kwargs,
-):
-    """
-    Converts the SentenceTransformer model to GGUF format and pushes to the Hugging Face Hub.
-
-    This method:
-    1. Saves the model locally to a temporary directory in GGUF format.
-    2. Uploads the GGUF files, config, Ollama Modelfile, and README to the Hub.
-    3. Cleans up the temporary directory.
-
-    Args:
-        repo_id (str): The Hugging Face Hub repo ID (e.g., "username/model-name").
-        tokenizer: The tokenizer to save. Defaults to `self.tokenizer`.
-        quantization_method (str or list): GGUF quantization method(s). Can be a string or list of strings.
-            Choose from the following options:
-            * "not_quantized"  : Recommended. Fast conversion. Slow inference, big files.
-            * "fast_quantized" : Recommended. Fast conversion. OK inference, OK file size.
-            * "quantized"      : Recommended. Slow conversion. Fast inference, small files.
-            * "f32"     : Not recommended. Retains 100% accuracy, but super slow and memory hungry.
-            * "f16"     : Fastest conversion + retains 100% accuracy. Slow and memory hungry.
-            * "q8_0"    : Fast conversion. High resource use, but generally acceptable.
-            * "q4_k_m"  : Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K
-            * "q5_k_m"  : Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K
-            * "q2_k"    : Uses Q4_K for the attention.vw and feed_forward.w2 tensors, Q2_K for the other tensors.
-            * "q3_k_l"  : Uses Q5_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K
-            * "q3_k_m"  : Uses Q4_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K
-            * "q3_k_s"  : Uses Q3_K for all tensors
-            * "q4_0"    : Original quant method, 4-bit.
-            * "q4_1"    : Higher accuracy than q4_0 but not as high as q5_0. However has quicker inference than q5 models.
-            * "q4_k_s"  : Uses Q4_K for all tensors
-            * "q5_0"    : Higher accuracy, higher resource usage and slower inference.
-            * "q5_1"    : Even higher accuracy, resource usage and slower inference.
-            * "q5_k_s"  : Uses Q5_K for all tensors
-            * "q6_k"    : Uses Q8_K for all tensors
-        first_conversion (str, optional): The initial conversion format before quantization.
-        token (str, optional): Hugging Face token. Uses cached token if not provided.
-        private (bool, optional): Whether the repo should be private.
-        commit_message (str): Commit message for the upload.
-        commit_description (str): Commit description for the upload.
-        max_shard_size (str): Maximum shard size for saving.
-        temporary_location (str): Temp directory for intermediate files.
-        maximum_memory_usage (float): Max fraction of memory to use.
-        create_pr (bool): Whether to create a pull request instead of pushing directly.
-        revision (str, optional): Branch/revision to push to.
-        tags (list, optional): Additional tags for the repo.
-
-    Returns:
-        str: The full repo ID on Hugging Face Hub.
-    """
-    if token is None:
-        token = get_token()
-    if token is None:
-        raise ValueError(
-            "No HF token provided. Please provide a token or login with `huggingface-cli login`"
-        )
-
-    api = HfApi(token = token)
-
-    # Determine full repo_id
-    if "/" not in repo_id:
-        username = api.whoami()["name"]
-        full_repo_id = f"{username}/{repo_id}"
-    else:
-        full_repo_id = repo_id
-
-    model_name = full_repo_id.split("/")[-1]
-
-    # Create repo
-    try:
-        api.create_repo(
-            repo_id = full_repo_id,
-            private = private,
-            exist_ok = True,
-            repo_type = "model",
-        )
-    except Exception as e:
-        print(f"Unsloth Warning: Could not create repo: {e}")
-
-    # Save to temporary directory first
-    with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
-        print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
-
-        # Call save_pretrained_gguf to do the local conversion
-        result = _save_pretrained_gguf(
-            self,
-            save_directory = temp_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # We handle upload ourselves
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
-        )
-
-        gguf_files = result.get("gguf_files", [])
-        modelfile_location = result.get("modelfile_location", None)
-        is_vlm = result.get("is_vlm", False)
-        fix_bos_token = result.get("fix_bos_token", False)
-
-        print(f"Unsloth: Uploading GGUF to https://huggingface.co/{full_repo_id}...")
-
-        # Upload GGUF files
-        for file_location in gguf_files:
-            if os.path.exists(file_location):
-                filename = os.path.basename(file_location)
-                print(f"  Uploading {filename}...")
-                api.upload_file(
-                    path_or_fileobj = file_location,
-                    path_in_repo = filename,
-                    repo_id = full_repo_id,
-                    repo_type = "model",
-                    commit_message = commit_message,
-                    commit_description = commit_description,
-                    create_pr = create_pr,
-                    revision = revision,
-                )
-
-        # Upload Modelfile if exists
-        if modelfile_location and os.path.exists(modelfile_location):
-            print("  Uploading Ollama Modelfile...")
-            api.upload_file(
-                path_or_fileobj = modelfile_location,
-                path_in_repo = "Modelfile",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - Ollama Modelfile",
-                create_pr = create_pr,
-                revision = revision,
-            )
-
-        # Upload config.json if exists
-        config_path = os.path.join(temp_dir, "config.json")
-        if os.path.exists(config_path):
-            print("  Uploading config.json...")
-            api.upload_file(
-                path_or_fileobj = config_path,
-                path_in_repo = "config.json",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - config",
-                create_pr = create_pr,
-                revision = revision,
-            )
-
-        # Create and upload README
-        gguf_basenames = [os.path.basename(f) for f in gguf_files if os.path.exists(f)]
-        readme_content = f"""---
-tags:
-- gguf
-- llama.cpp
-- unsloth
-- sentence-transformers
-{"- vision-language-model" if is_vlm else ""}
----
-
-# {model_name} - GGUF
-
-This sentence-transformers model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
-
-## Available Model files:
-"""
-        for fname in gguf_basenames:
-            readme_content += f"- `{fname}`\n"
-
-        if modelfile_location and os.path.exists(modelfile_location):
-            readme_content += "\n## Ollama\n"
-            readme_content += "An Ollama Modelfile is included for easy deployment.\n"
-
-        if fix_bos_token:
-            readme_content += "\n## Note\n"
-            readme_content += (
-                "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
-            )
-
-        readme_content += (
-            "\nThis was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
-            '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
-        )
-
-        readme_path = os.path.join(temp_dir, "README.md")
-        with open(readme_path, "w", encoding = "utf-8") as f:
-            f.write(readme_content)
-
-        api.upload_file(
-            path_or_fileobj = readme_path,
-            path_in_repo = "README.md",
-            repo_id = full_repo_id,
-            repo_type = "model",
-            commit_message = "Add README",
-            create_pr = create_pr,
-            revision = revision,
-        )
-
-    # Add tags
-    all_tags = ["gguf", "llama-cpp", "unsloth", "sentence-transformers"]
-    if is_vlm:
-        all_tags.append("vision-language-model")
-    if tags is not None:
-        if isinstance(tags, (list, tuple)):
-            all_tags.extend(tags)
-        else:
-            all_tags.append(tags)
-    try:
-        api.add_tags(repo_id = full_repo_id, tags = all_tags, repo_type = "model")
-    except:
-        pass
-
-    print(
-        f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}"
-    )
-    return full_repo_id
 
 
 class FastSentenceTransformer(FastModel):
@@ -583,7 +1557,6 @@ class FastSentenceTransformer(FastModel):
             )
             return "mean"
 
-    # should prolly be done upstream instead of this hackfest here
     @staticmethod
     def _patch_mpnet_v4():
         """
@@ -631,7 +1604,6 @@ class FastSentenceTransformer(FastModel):
                 if getattr(self, "gradient_checkpointing", False) and self.training:
 
                     def create_custom_forward(module):
-                        # bog standard checkpoint
                         def custom_forward(*inputs):
                             return module(*inputs, output_attentions = output_attentions)
 
@@ -646,7 +1618,6 @@ class FastSentenceTransformer(FastModel):
                         use_reentrant = True,  # fix for torch 2.9
                     )
                 else:
-                    # original code from here on
                     layer_outputs = layer_module(
                         hidden_states,
                         attention_mask,
@@ -725,7 +1696,6 @@ class FastSentenceTransformer(FastModel):
                 if getattr(self, "gradient_checkpointing", False) and self.training:
 
                     def create_custom_forward(module):
-                        # checkpoint
                         def custom_forward(*inputs):
                             return module(*inputs, output_attentions = output_attentions)
 
@@ -739,7 +1709,6 @@ class FastSentenceTransformer(FastModel):
                         use_reentrant = True,  # required for torch >= 2.9
                     )
                 else:
-                    # original code from here on
                     layer_outputs = layer_module(
                         hidden_states,
                         attention_mask,
@@ -772,15 +1741,11 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _patch_distilbert_v4():
-        # change kwargs to positional args to be compatible with peft_utils
         """
-        Patch the forward method of the DistilBertModel to use positional arguments instead of keyword arguments.
+        Patch DistilBert forward to use positional args (for PEFT compatibility).
         Transformers 4 version.
         """
 
-        # based on:
-        # https://github.com/huggingface/transformers/blob/v4.57.3/src/transformers/models/distilbert/modeling_distilbert.py#L666
-        # original code from here on:
         def forward(
             self,
             input_ids: Optional[torch.Tensor] = None,
@@ -849,7 +1814,6 @@ class FastSentenceTransformer(FastModel):
                     attention_mask = _prepare_4d_attention_mask_for_sdpa(
                         attention_mask, embeddings.dtype, tgt_len = input_shape[1]
                     )
-            # patch here, change kwargs to positional args:
             return self.transformer(
                 embeddings,
                 attention_mask,
@@ -883,12 +1847,9 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _patch_distilbert_v5():
         """
-        Patch the forward method of the DistilBertModel to use positional arguments instead of keyword arguments.
+        Patch DistilBert forward to use positional args (for PEFT compatibility).
         Transformers 5 version.
         """
-        # based on:
-        # https://github.com/huggingface/transformers/blob/v5.0.0rc1/src/transformers/models/distilbert/modeling_distilbert.py#L386
-        # original code from here on:
         from transformers.masking_utils import create_bidirectional_mask
 
         def forward(
@@ -912,7 +1873,6 @@ class FastSentenceTransformer(FastModel):
                 attention_mask = attention_mask,
             )
 
-            # patch here: unsloth gradient checkpointing hook needs positional arguments
             return self.transformer(
                 embeddings,
                 attention_mask,
@@ -1008,7 +1968,6 @@ class FastSentenceTransformer(FastModel):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
-        # prevents sentence-transformers from loading the model a second time, thanks Etherl
         original_from_pretrained = AutoModel.from_pretrained
 
         def return_existing_model(*args, **kwargs):
@@ -1172,19 +2131,7 @@ class FastSentenceTransformer(FastModel):
         grad_accum = None,
         max_seq_length = None,
     ):
-        """
-        Estimate the minimum training steps needed for torch.compile to be beneficial.
-        Returns the threshold with a 1.2x safety margin built in.
-
-        Based on empirical benchmarks:
-        - Larger models have lower breakeven (more time saved per step)
-        - Warmup time scales with model size but speedup also increases
-
-        Optional inputs (batch_size, grad_accum, max_seq_length) allow
-        a coarse pre-run adjustment. These are intentionally conservative
-        and avoid any runtime measurements.
-        """
-        # Get parameter count from inner model
+        """Estimate min training steps for torch.compile to be beneficial."""
         if hasattr(model, "__getitem__"):
             try:
                 inner = model[0].auto_model
@@ -1205,9 +2152,6 @@ class FastSentenceTransformer(FastModel):
 
         params_m = params / 1e6
 
-        # Empirical formula based on benchmarks with batch_size=2, grad_accum=4
-        # Small models: high fixed overhead, lower speedup
-        # Large models: warmup scales but speedup is significant
         if params_m < 50:
             estimated_warmup = 35 + params_m * 0.3
             base_speedup = 1.35
@@ -1218,7 +2162,6 @@ class FastSentenceTransformer(FastModel):
             estimated_warmup = 15 + params_m * 0.04
             base_speedup = 1.60
 
-        # Estimate time per step (ms) and time saved
         naive_ms = 50 + params_m * 1.0
         compiled_ms = naive_ms / base_speedup
         time_saved_per_step_s = (naive_ms - compiled_ms) / 1000
@@ -1228,11 +2171,8 @@ class FastSentenceTransformer(FastModel):
         else:
             breakeven = float("inf")
 
-        # Return threshold with 1.2x safety margin
         threshold = breakeven * 1.2
 
-        # Optional adjustment based on expected work per step.
-        # This uses only pre-run information (batch size, grad accum, seq length).
         generic_scale = 1.0
         fast_scale = 1.0
         if (
@@ -1249,24 +2189,20 @@ class FastSentenceTransformer(FastModel):
 
             bs = max(1, bs)
             ga = max(1, ga)
-            # Guard against unbounded tokenizer.model_max_length
             seq = max(64, min(seq, 8192))
 
             ref_bs, ref_ga, ref_seq = 2, 4, 512
 
-            # Generic path: lighter scaling, less conservative than params-only.
             ga_scale = (ref_ga / ga) ** 1.0
             bs_seq_scale = ((ref_bs * ref_seq) / (bs * seq)) ** 0.15
             generic_scale = 0.35 * ga_scale * bs_seq_scale
             generic_scale = max(0.05, min(generic_scale, 5.0))
 
-            # Fast encoder path: stronger scaling based on observed behavior.
             fast_ga_scale = (ref_ga / ga) ** 1.5
             fast_bs_seq_scale = ((ref_bs * ref_seq) / (bs * seq)) ** 0.25
             fast_scale = 0.2 * fast_ga_scale * fast_bs_seq_scale
             fast_scale = max(0.05, min(fast_scale, 5.0))
 
-        # Conservative safety factors: generic is less conservative than fast.
         generic_threshold = threshold * generic_scale * 1.25
 
         is_fast_type = (
@@ -1275,33 +2211,22 @@ class FastSentenceTransformer(FastModel):
         )
         if is_fast_type:
             fast_threshold = threshold * fast_scale * 1.5
-            # Prefer the smaller (less conservative) of the two estimates.
             final_threshold = min(generic_threshold, fast_threshold)
         else:
             final_threshold = generic_threshold
 
-        # Reduce mpnet overestimation slightly.
         if model_type == "mpnet":
             final_threshold *= 0.7
 
-        # Lower bound to avoid compiling on extremely short runs.
         return int(max(20, final_threshold))
 
     @staticmethod
     def _apply_torch_compile(model, mode = "default"):
-        """
-        Apply torch.compile to a SentenceTransformer model.
-        Includes workaround for accelerate's unwrap_model bug.
-        """
+        """Apply torch.compile to a SentenceTransformer model."""
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
             model[0].auto_model = compiled
-            # Fix for accelerate unwrap_model bug:
-            # When SentenceTransformer contains a compiled inner model,
-            # accelerate checks has_compiled_regions() which returns True,
-            # then tries to access model.__dict__["_orig_mod"] which fails.
-            # This workaround sets _orig_mod to satisfy accelerate.
             model.__dict__["_orig_mod"] = model
         else:
             model = torch.compile(model, mode = mode)
@@ -1333,6 +2258,7 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
+        use_guided_projection = False,
         **kwargs,
     ):
         try:
@@ -1344,7 +2270,6 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues
         if for_inference:
             st_device = device_map
             if isinstance(st_device, dict) or (
@@ -1352,12 +2277,9 @@ class FastSentenceTransformer(FastModel):
             ):
                 st_device = None
 
-            # this was added because when loading for inference it was defaulting to float32
-            # propagate dtype to model_kwargs, default to "auto"
             model_kwargs = kwargs.get("model_kwargs", {})
             model_kwargs["dtype"] = dtype if dtype is not None else "auto"
 
-            # filter kwargs for SentenceTransformer
             st_kwargs = {
                 "device": st_device,
                 "trust_remote_code": trust_remote_code,
@@ -1366,7 +2288,6 @@ class FastSentenceTransformer(FastModel):
                 "model_kwargs": model_kwargs,
             }
 
-            # add other known kwargs if present
             known_keys = [
                 "cache_folder",
                 "truncate_dim",
@@ -1380,7 +2301,6 @@ class FastSentenceTransformer(FastModel):
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
-        # sanity check, thanks Etherl:
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
                 "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
@@ -1401,6 +2321,10 @@ class FastSentenceTransformer(FastModel):
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 
+        _patch_mnrl_loss()
+        _patch_efficient_pooling()
+        _patch_dense_dtype()
+
         transformers4 = Version(transformers.__version__).major < 5
         model_type = ""
         config = None
@@ -1412,22 +2336,16 @@ class FastSentenceTransformer(FastModel):
         except:
             pass
 
-        # Fast encoder path: Use native torch.compile for encoder models (6x speedup)
-        # This bypasses Unsloth's auto-compiler which adds @torch.compiler.disable decorators
-        # that interfere with torch.compile and cause runtime errors for encoder models.
-        # NOTE: The old Unsloth path is BROKEN for encoder models with torch 2.9+ due to
-        # conflicting @torch.compile and @torch.compiler.disable decorators.
-        # Set UNSLOTH_COMPILE_DISABLE=1 to disable torch.compile and use the old path.
         is_encoder_model = (
             model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
         )
         use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
         if use_fast_encoder and is_encoder_model:
-            # torch.compile mode: "default" is safest for PEFT/LoRA training
-            # Note: "reduce-overhead" uses CUDA Graphs which is incompatible with PEFT
-            compile_mode = "default"
+            if full_finetuning:
+                compile_mode = "max-autotune"
+            else:
+                compile_mode = "default"
 
-            # Determine dtype - handle float16 machines that don't support bfloat16
             if dtype is None:
                 if load_in_16bit:
                     dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -1439,52 +2357,79 @@ class FastSentenceTransformer(FastModel):
                 )
                 dtype = torch.float16
 
-            # Determine device
             st_device = device_map
             if isinstance(st_device, dict) or (
                 isinstance(st_device, str) and st_device in ["auto", "sequential"]
             ):
                 st_device = "cuda"
 
-            # Check if model supports SDPA (Scaled Dot Product Attention) for extra speedup
             supports_sdpa = False
+            supports_flash_attn_2 = False
             if config is not None:
                 try:
                     model_class = _get_model_class(
                         config, kwargs.get("auto_model", AutoModel)._model_mapping
                     )
                     supports_sdpa = getattr(model_class, "_supports_sdpa", False)
+                    supports_flash_attn_2 = getattr(
+                        model_class, "_supports_flash_attn_2", False
+                    )
                 except:
                     pass
 
-            # Build model_kwargs for SentenceTransformer
-            model_kwargs = {"torch_dtype": dtype}
+            if supports_flash_attn_2:
+                try:
+                    import flash_attn  # noqa: F401
+                except ImportError:
+                    supports_flash_attn_2 = False
 
-            # Enable SDPA if supported (1.2x extra speedup on top of torch.compile)
-            # But disable for models with known SDPA + torch.compile backward issues
+            # force-enable flash_attn_2 for known encoder types
+            if not supports_flash_attn_2 and model_type in _UNPAD_SUPPORTED_TYPES:
+                try:
+                    import flash_attn  # noqa: F401
+
+                    supports_flash_attn_2 = True
+                except ImportError:
+                    pass
+
+            _use_new_dtype_kwarg = Version(transformers.__version__) >= Version(
+                "4.48.0"
+            )
+            model_kwargs = (
+                {"dtype": dtype} if _use_new_dtype_kwarg else {"torch_dtype": dtype}
+            )
+
             _force_eager = False
             for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
                 if _sdpa_model in model_type.lower():
                     supports_sdpa = False
+                    supports_flash_attn_2 = False
                     _force_eager = True
                     break
-            if supports_sdpa:
+
+            if supports_flash_attn_2:
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+            elif supports_sdpa:
                 model_kwargs["attn_implementation"] = "sdpa"
             elif _force_eager:
                 model_kwargs["attn_implementation"] = "eager"
 
-            # Print optimization status
-            sdpa_str = " + SDPA" if supports_sdpa else ""
+            if supports_flash_attn_2:
+                attn_str = " + FlashAttention 2"
+            elif supports_sdpa:
+                attn_str = " + SDPA"
+            else:
+                attn_str = ""
+
             if load_in_4bit:
                 print(
-                    f"Unsloth: Using fast encoder path for {model_type} with 4-bit quantization{sdpa_str}"
+                    f"Unsloth: Using fast encoder path for {model_type} with 4-bit quantization{attn_str}"
                 )
             else:
                 print(
-                    f"Unsloth: Using fast encoder path for {model_type} (torch.compile{sdpa_str})"
+                    f"Unsloth: Using fast encoder path for {model_type} (torch.compile{attn_str})"
                 )
 
-            # Handle 4-bit quantization via BitsAndBytesConfig
             if load_in_4bit:
                 from transformers import BitsAndBytesConfig
 
@@ -1495,10 +2440,8 @@ class FastSentenceTransformer(FastModel):
                     bnb_4bit_use_double_quant = True,
                 )
                 model_kwargs["quantization_config"] = bnb_config
-                # When using quantization, device must be handled by accelerate
                 st_device = None
 
-            # Handle gradient checkpointing - warn user it conflicts with torch.compile
             _use_gc = use_gradient_checkpointing
             if _use_gc and _use_gc != False:
                 print(
@@ -1514,7 +2457,6 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # Load via native SentenceTransformer (bypasses Unsloth patching)
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1524,30 +2466,73 @@ class FastSentenceTransformer(FastModel):
                 model_kwargs = model_kwargs,
             )
 
-            # Store metadata for get_peft_model
             st_model._unsloth_fast_encoder = True
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
+            st_model._full_finetuning = full_finetuning
             st_model.no_modules = False
 
-            # Add save methods
+            if compile_mode is None and _HAS_FAST_LAYERNORM:
+                inner_model = st_model[0].auto_model
+                ln_count = _patch_encoder_layernorms(inner_model)
+                if ln_count > 0:
+                    print(
+                        f"Unsloth: Patched {ln_count} LayerNorm modules with Triton kernel"
+                    )
+
+            if compile_mode is None and _HAS_FUSED_POOLING:
+                if _patch_fused_pooling(st_model):
+                    print(
+                        "Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel"
+                    )
+
+            _unpad_env = os.environ.get("UNSLOTH_UNPADDING", "1")
+            if _unpad_env == "1":
+                if _patch_unpadded_encoder(st_model, model_type):
+                    backend = getattr(st_model[0], "_unpadding_backend", "unknown")
+                    print(
+                        f"Unsloth: Enabled variable-length batching (unpadding) via {backend}"
+                    )
+
+            if use_guided_projection:
+                if _use_gc and _use_gc != False:
+                    print(
+                        "Unsloth Warning: use_guided_projection is incompatible with "
+                        "gradient checkpointing (no encoder backward pass needed). "
+                        "Disabling guided projection."
+                    )
+                elif not full_finetuning:
+                    projection = attach_guided_projection(st_model)
+                    st_model._guided_projection = projection
+                    print(
+                        f"Unsloth: Attached guided projection ({projection.num_trainable_parameters:,} "
+                        f"trainable params). Encoder frozen — use projection.parameters() for optimizer."
+                    )
+                else:
+                    print(
+                        "Unsloth Warning: use_guided_projection is not compatible with "
+                        "full_finetuning=True (encoder already trainable). Skipping."
+                    )
+
             def _save_pretrained_merged(self, save_directory, **save_kwargs):
-                self.save_pretrained(save_directory)
-                tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
-                if hasattr(self[0], "auto_model"):
-                    inner = self[0].auto_model
-                    # Handle compiled model
-                    if hasattr(inner, "_orig_mod"):
-                        inner = inner._orig_mod
-                    if hasattr(inner, "merge_and_unload"):
-                        merged = inner.merge_and_unload()
-                        merged.save_pretrained(save_directory)
-                    elif hasattr(inner, "save_pretrained"):
-                        inner.save_pretrained(save_directory)
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
-                FastSentenceTransformer._add_unsloth_branding(save_directory)
+                with _restore_fused_pooling_ln(self):
+                    self.save_pretrained(save_directory)
+                    tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
+                    if hasattr(self[0], "auto_model"):
+                        inner = self[0].auto_model
+                        if hasattr(inner, "_orig_mod"):
+                            inner = inner._orig_mod
+                        if getattr(self, "_sparsity_applied", False):
+                            _remove_sparsity_from_base_weights(inner)
+                        if hasattr(inner, "merge_and_unload"):
+                            merged = inner.merge_and_unload()
+                            merged.save_pretrained(save_directory)
+                        elif hasattr(inner, "save_pretrained"):
+                            inner.save_pretrained(save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                    FastSentenceTransformer._add_unsloth_branding(save_directory)
 
             st_model.save_pretrained_merged = types.MethodType(
                 _save_pretrained_merged, st_model
@@ -1558,10 +2543,12 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model.save_pretrained_gguf = types.MethodType(
-                _save_pretrained_gguf, st_model
+                unsloth_save_pretrained_gguf, st_model
             )
 
-            st_model.push_to_hub_gguf = types.MethodType(_push_to_hub_gguf, st_model)
+            st_model.push_to_hub_gguf = types.MethodType(
+                unsloth_push_to_hub_gguf, st_model
+            )
 
             def _push_to_hub_merged(self, repo_id, **push_kwargs):
                 hub_token = push_kwargs.get("token", None) or get_token()
@@ -1595,14 +2582,12 @@ class FastSentenceTransformer(FastModel):
 
             return st_model
 
-        # Warn if using 4-bit with encoder (slow due to dequantization overhead)
         if is_encoder_model and load_in_4bit:
             print(
                 "Unsloth Warning: 4-bit quantization adds ~2.3x overhead for encoder models."
             )
             print("Consider using load_in_16bit=True for better performance.")
 
-        # check if the model supports add_pooling_layer
         if "add_pooling_layer" not in kwargs:
             supported = FastSentenceTransformer._has_add_pooling_layer(
                 config, kwargs.get("auto_model", AutoModel)
@@ -1610,15 +2595,11 @@ class FastSentenceTransformer(FastModel):
             if supported:
                 kwargs["add_pooling_layer"] = False
 
-        # forces fp8 to be False since it's not supported
         fp8 = kwargs.pop("load_in_fp8", None)
         if fp8:
             logging.info("Unsloth: Disabling fp8 for model")
         load_in_fp8 = False
 
-        # this is a fix for Snowflake/snowflake-arctic-embed-l-v2.0
-        # it has pooler weights which we don't care about for training,
-        # however unsloth throws an exception if "UNSLOTH_WARN_UNINITIALIZED" == 1 and it sees unused weights
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
@@ -1634,9 +2615,6 @@ class FastSentenceTransformer(FastModel):
         elif is_mpnet:
             FastSentenceTransformer._patch_mpnet_v5()
 
-        # check if modules.json exists - if not, force 16-bit training
-        # why? because i have to implement saving myself for these models, and i don't feel like adding dequantization
-        # to the save_pretrained_merged for a model that really should be trained in 16-bit anyway
         has_modules_json = (
             FastSentenceTransformer._module_path(model_name, token) is not None
         )
@@ -1702,56 +2680,124 @@ class FastSentenceTransformer(FastModel):
         st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
 
-        def _save_pretrained_merged(self, save_directory, **kwargs):
-            # check which adapter files exist before save_pretrained
-            adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
-            existing_before = {
-                f
-                for f in adapter_files
-                if os.path.exists(os.path.join(save_directory, f))
-            }
+        _inner = None
+        _is_bidirectional = False
+        for _mod in st_model:
+            if hasattr(_mod, "auto_model"):
+                _am = _mod.auto_model
+                _am_unwrap = _am._orig_mod if hasattr(_am, "_orig_mod") else _am
+                _cfg = getattr(_am_unwrap, "config", None)
+                _is_bidirectional = getattr(_cfg, "use_bidirectional_attention", False)
+                _is_decoder = bool(getattr(_cfg, "is_decoder", False))
+                if (
+                    _cfg is not None
+                    and getattr(_cfg, "_attn_implementation", None) == "flex_attention"
+                ):
+                    if _is_bidirectional:
+                        # flex_attention's create_block_mask Triton kernel can crash
+                        # with illegal memory access on variable-length batches during
+                        # training. SDPA handles sliding window via explicit masks and
+                        # is stable for sentence transformer workloads.
+                        _cfg._attn_implementation = "sdpa"
+                        if hasattr(_cfg, "attn_implementation"):
+                            _cfg.attn_implementation = "sdpa"
+                        print(
+                            "Unsloth: Overriding flex_attention -> sdpa for "
+                            "bidirectional sentence transformer training"
+                        )
+                    else:
+                        _has_fa2 = False
+                        try:
+                            import flash_attn  # noqa: F401
 
-            # sentence-transformers config and modules only get saved if we call save_pretrained
-            self.save_pretrained(save_directory)
+                            _has_fa2 = getattr(
+                                _am_unwrap.__class__, "_supports_flash_attn_2", False
+                            )
+                        except ImportError:
+                            pass
+                        _best_attn = "flash_attention_2" if _has_fa2 else "sdpa"
+                        _cfg._attn_implementation = _best_attn
+                        if hasattr(_cfg, "attn_implementation"):
+                            _cfg.attn_implementation = _best_attn
+                        print(
+                            f"Unsloth: Overriding flex_attention → {_best_attn} for sentence transformer training"
+                        )
+                _inner = _am_unwrap
+                break
 
-            # remove LoRA adapters only if they were created by save_pretrained (not pre-existing)
-            for file in adapter_files:
-                if file not in existing_before:
-                    try:
-                        os.remove(os.path.join(save_directory, file))
-                    except:
-                        pass
-
-            tokenizer = kwargs.pop("tokenizer", self.tokenizer)
-            if self.no_modules:
-                # fallback for non-sentence-transformers models
+        if _inner is not None and _HAS_FAST_LAYERNORM:
+            _ln_count = _patch_encoder_layernorms(_inner)
+            if _ln_count > 0:
                 print(
-                    "Unsloth: No modules detected. Using standard merge_and_unload for saving..."
-                )
-                safe_kwargs = kwargs.copy()
-                # filter out Unsloth-specific args that are not in huggingface's save_pretrained
-                unsloth_args = [
-                    "save_method",
-                    "temporary_location",
-                    "maximum_memory_usage",
-                ]
-                for k in unsloth_args:
-                    safe_kwargs.pop(k, None)
-
-                merged_model = self[0].auto_model.merge_and_unload()
-                merged_model.save_pretrained(save_directory, **safe_kwargs)
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
-            else:
-                self[0].auto_model.save_pretrained_merged(
-                    save_directory, tokenizer = tokenizer, **kwargs
+                    f"Unsloth: Patched {_ln_count} LayerNorm modules with Triton kernel"
                 )
 
-            # add Unsloth branding to the generated README
-            try:
-                FastSentenceTransformer._add_unsloth_branding(save_directory)
-            except Exception as e:
-                print(f"Unsloth Warning: Failed to add branding to README: {e}")
+        if _HAS_FUSED_POOLING:
+            if _patch_fused_pooling(st_model):
+                print(
+                    "Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel"
+                )
+
+        # Skip bidirectional decoders — Unsloth patch closure prevents varlen injection
+        _unpad_env = os.environ.get("UNSLOTH_UNPADDING", "1")
+        if _unpad_env == "1" and _is_decoder and not _is_bidirectional:
+            if _patch_unpadded_decoder(st_model):
+                _backend = getattr(st_model[0], "_unpadding_backend", "unknown")
+                print(
+                    f"Unsloth: Enabled variable-length batching (unpadding) via {_backend}"
+                )
+
+        def _save_pretrained_merged(self, save_directory, **kwargs):
+            with _restore_fused_pooling_ln(self):
+                # check which adapter files exist before save_pretrained
+                adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
+                existing_before = {
+                    f
+                    for f in adapter_files
+                    if os.path.exists(os.path.join(save_directory, f))
+                }
+
+                self.save_pretrained(save_directory)
+
+                for file in adapter_files:
+                    if file not in existing_before:
+                        try:
+                            os.remove(os.path.join(save_directory, file))
+                        except:
+                            pass
+
+                tokenizer = kwargs.pop("tokenizer", self.tokenizer)
+                if self.no_modules:
+                    print(
+                        "Unsloth: No modules detected. Using standard merge_and_unload for saving..."
+                    )
+                    safe_kwargs = kwargs.copy()
+                    unsloth_args = [
+                        "save_method",
+                        "temporary_location",
+                        "maximum_memory_usage",
+                    ]
+                    for k in unsloth_args:
+                        safe_kwargs.pop(k, None)
+
+                    inner_auto = self[0].auto_model
+                    if getattr(self, "_sparsity_applied", False):
+                        _remove_sparsity_from_base_weights(inner_auto)
+                    merged_model = inner_auto.merge_and_unload()
+                    merged_model.save_pretrained(save_directory, **safe_kwargs)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                else:
+                    if getattr(self, "_sparsity_applied", False):
+                        _remove_sparsity_from_base_weights(self[0].auto_model)
+                    self[0].auto_model.save_pretrained_merged(
+                        save_directory, tokenizer = tokenizer, **kwargs
+                    )
+
+                try:
+                    FastSentenceTransformer._add_unsloth_branding(save_directory)
+                except Exception as e:
+                    print(f"Unsloth Warning: Failed to add branding to README: {e}")
 
         st_model.save_pretrained_merged = types.MethodType(
             _save_pretrained_merged, st_model
@@ -1762,10 +2808,10 @@ class FastSentenceTransformer(FastModel):
         )
 
         st_model.save_pretrained_gguf = types.MethodType(
-            _save_pretrained_gguf, st_model
+            unsloth_save_pretrained_gguf, st_model
         )
 
-        st_model.push_to_hub_gguf = types.MethodType(_push_to_hub_gguf, st_model)
+        st_model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, st_model)
 
         def _push_to_hub_merged(self, repo_id, **kwargs):
             token = kwargs.get("token", None) or get_token()
@@ -1789,7 +2835,6 @@ class FastSentenceTransformer(FastModel):
             except:
                 pass
 
-            # order doesn't seem to matter for this after repo creation...
             FastSentenceTransformer._add_unsloth_tags(repo_id, token)
 
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -1842,22 +2887,17 @@ class FastSentenceTransformer(FastModel):
             is_fast_encoder = getattr(model, "_unsloth_fast_encoder", False)
 
             if is_fast_encoder:
-                # Fast encoder path: Use native PEFT + torch.compile (6x speedup)
                 transformer_module = model[0]
                 inner_model = transformer_module.auto_model
 
-                # Check if model is quantized (4-bit/8-bit)
                 is_quantized = (
                     getattr(inner_model, "is_quantized", False)
                     or getattr(inner_model.config, "quantization_config", None)
                     is not None
                 )
 
-                # Track if gradient checkpointing was actually enabled
                 gc_enabled = False
 
-                # this is needed when from_pretrained was called without gradient
-                # checkpointing but get_peft_model requests it
                 if use_gradient_checkpointing and use_gradient_checkpointing != False:
                     import transformers
                     from packaging.version import Version
@@ -1870,7 +2910,6 @@ class FastSentenceTransformer(FastModel):
                     elif model_type == "mpnet":
                         FastSentenceTransformer._patch_mpnet_v5()
 
-                # Prepare for k-bit training if quantized
                 if is_quantized:
                     from ._utils import prepare_model_for_kbit_training
 
@@ -1888,7 +2927,6 @@ class FastSentenceTransformer(FastModel):
                         gc_enabled = bool(_gc_for_kbit)
                     except ValueError as e:
                         if "does not support gradient checkpointing" in str(e):
-                            # Model doesn't support gradient checkpointing, disable it
                             print(
                                 f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping."
                             )
@@ -1902,7 +2940,6 @@ class FastSentenceTransformer(FastModel):
                         else:
                             raise
 
-                # Enable gradient checkpointing if requested (only for non-quantized, since prepare_model handles it)
                 elif use_gradient_checkpointing and use_gradient_checkpointing != False:
                     if hasattr(inner_model, "gradient_checkpointing_enable"):
                         try:
@@ -1915,7 +2952,6 @@ class FastSentenceTransformer(FastModel):
                                     f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping."
                                 )
 
-                # Create LoRA config
                 lora_config = LoraConfig(
                     r = r,
                     lora_alpha = lora_alpha,
@@ -1925,50 +2961,68 @@ class FastSentenceTransformer(FastModel):
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
-                # Apply PEFT directly (not through FastModel)
                 peft_model = peft_get_peft_model(inner_model, lora_config)
 
-                # Apply QAT if specified
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
                     from ._utils import _prepare_model_for_qat
 
                     peft_model = _prepare_model_for_qat(peft_model, qat_scheme)
 
-                # Determine compile mode (only if not using gradient checkpointing)
                 compile_mode = getattr(model, "_compile_mode", "default")
-                # Re-enable torch.compile if gradient checkpointing was requested but couldn't be enabled
                 if compile_mode is None and not gc_enabled:
                     compile_mode = "default"
                     print(
                         "Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported"
                     )
 
-                # Re-assign the peft model back to the transformer module
                 transformer_module.auto_model = peft_model
 
-                # Store compile info for auto-compile at trainer time
-                # torch.compile is deferred until training starts so we can check max_steps
+                sparsity_env = os.environ.get("UNSLOTH_SPARSITY", "auto")
+                if sparsity_env.lower() == "1":
+                    do_sparsity = True
+                elif sparsity_env.lower() == "0":
+                    do_sparsity = False
+                else:
+                    do_sparsity = True
+
+                if do_sparsity and not getattr(model, "_full_finetuning", False):
+                    supported, sparsity_msg = _check_sparsity_support()
+                    if supported:
+                        sparse_count = _apply_sparsity_to_base_weights(peft_model)
+                        if sparse_count > 0:
+                            model._sparsity_applied = True
+                            print(
+                                f"Unsloth: Applied 2:4 sparsity to {sparse_count} base layer(s) ({sparsity_msg})"
+                            )
+                    elif sparsity_env.lower() == "1":
+                        print(
+                            f"Unsloth Warning: UNSLOTH_SPARSITY=1 but not supported: {sparsity_msg}"
+                        )
+
                 if compile_mode is not None:
                     model._compile_mode = compile_mode
-                    model._compile_threshold = (
-                        FastSentenceTransformer._estimate_compile_threshold(model)
-                    )
-                    # Flag to indicate compile has not been applied yet
+                    # threshold re-estimated with batch/seq info in _patch_sentence_transformer_trainer
                     model._compile_pending = True
                     print(
-                        f"Unsloth: torch.compile will be applied automatically if max_steps > {model._compile_threshold}"
+                        "Unsloth: torch.compile deferred until training starts (threshold computed from TrainingArguments)"
                     )
                 else:
                     model._compile_mode = None
                     model._compile_pending = False
+
+                    fused_attn_count = _patch_encoder_attention_lora(peft_model)
+                    if fused_attn_count > 0:
+                        print(
+                            f"Unsloth: Fused LoRA QKV backward for {fused_attn_count} attention layer(s)"
+                        )
+
                     print(
                         "Unsloth: torch.compile disabled (gradient checkpointing enabled)"
                     )
 
                 return model
 
-            # Original path for non-fast-encoder models
             transformer_module = model[0]
             inner_model = transformer_module.auto_model
 
@@ -1991,7 +3045,6 @@ class FastSentenceTransformer(FastModel):
                 **kwargs,
             )
 
-            # re-assign the peft model back to the transformer module
             transformer_module.auto_model = peft_model
             return model
         else:
@@ -2016,12 +3069,7 @@ class FastSentenceTransformer(FastModel):
 
 
 def _patch_sentence_transformer_trainer():
-    """
-    Patch SentenceTransformerTrainer to automatically apply torch.compile
-    when training steps exceed the breakeven threshold.
-
-    This is called automatically when this module is imported.
-    """
+    """Auto-apply torch.compile when training steps exceed breakeven threshold."""
     try:
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
@@ -2036,11 +3084,9 @@ def _patch_sentence_transformer_trainer():
 
     @wraps(_original_init)
     def _patched_init(self, *args, **kwargs):
-        # Extract model and training_args
         model = kwargs.get("model") or (args[0] if args else None)
         training_args = kwargs.get("args") or (args[1] if len(args) > 1 else None)
 
-        # Check if model has pending compile
         if (
             model is not None
             and training_args is not None
@@ -2049,7 +3095,6 @@ def _patch_sentence_transformer_trainer():
             max_steps = getattr(training_args, "max_steps", -1)
             compile_mode = getattr(model, "_compile_mode", "default")
 
-            # Re-estimate threshold now that training args are available
             batch_size = getattr(training_args, "per_device_train_batch_size", None)
             grad_accum = getattr(training_args, "gradient_accumulation_steps", None)
             max_seq_length = getattr(model, "max_seq_length", None)
@@ -2075,8 +3120,14 @@ def _patch_sentence_transformer_trainer():
             model._compile_threshold = threshold
 
             if max_steps > 0 and max_steps >= threshold:
+                is_full_ft = getattr(model, "_full_finetuning", False)
+                if max_steps >= 500 or is_full_ft:
+                    compile_mode = "max-autotune"
+                else:
+                    compile_mode = "default"
+
                 print(
-                    f"Unsloth: Auto-compiling model ({max_steps} steps >= {threshold} threshold)"
+                    f"Unsloth: Auto-compiling model ({max_steps} steps >= {threshold} threshold, mode={compile_mode})"
                 )
                 FastSentenceTransformer._apply_torch_compile(model, mode = compile_mode)
                 model._compile_pending = False
@@ -2086,10 +3137,20 @@ def _patch_sentence_transformer_trainer():
                 )
                 model._compile_pending = False
 
-        # Call original __init__
         _original_init(self, *args, **kwargs)
 
-        # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
+        if hasattr(self, "args") and self.args is not None:
+            if not self.args.dataloader_pin_memory:
+                self.args.dataloader_pin_memory = True
+            if (
+                self.args.dataloader_num_workers == 0
+                and os.environ.get("UNSLOTH_NUM_WORKERS") != "0"
+            ):
+                print(
+                    "Unsloth: Setting dataloader_num_workers=2. Set UNSLOTH_NUM_WORKERS=0 to disable."
+                )
+                self.args.dataloader_num_workers = 2
+
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
             if hasattr(self, "args") and self.args is not None:
                 if self.args.fp16 or self.args.bf16:
@@ -2107,5 +3168,4 @@ def _patch_sentence_transformer_trainer():
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
 
-# Auto-patch trainer on module import
 _patch_sentence_transformer_trainer()
