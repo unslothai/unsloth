@@ -542,6 +542,7 @@ NO_TORCH_SKIP_PACKAGES = {
     "transformers-cfg",
 }
 
+
 def _select_flash_attn_version(torch_mm: str) -> str | None:
     return flash_attn_package_version(torch_mm)
 
@@ -550,7 +551,9 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
     return flash_attn_wheel_url(env)
 
 
-def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
+def _print_optional_install_failure(
+    label: str, result: subprocess.CompletedProcess[str]
+) -> None:
     _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
     if result.stdout:
         print(result.stdout.strip())
@@ -565,11 +568,14 @@ def _ensure_flash_attn() -> None:
         return
     if _flash_attn_install_disabled():
         return
-    if subprocess.run(
-        [sys.executable, "-c", "import flash_attn"],
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.DEVNULL,
-    ).returncode == 0:
+    if (
+        subprocess.run(
+            [sys.executable, "-c", "import flash_attn"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        ).returncode
+        == 0
+    ):
         return
 
     env = probe_torch_wheel_env()
@@ -594,6 +600,7 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
     else:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+
 
 # -- uv bootstrap ------------------------------------------------------
 

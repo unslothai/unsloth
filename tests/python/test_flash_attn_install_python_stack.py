@@ -214,7 +214,10 @@ class TestEnsureFlashAttn:
             ips._ensure_flash_attn()
 
         mock_install_wheel.assert_not_called()
-        assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
+        assert (
+            "warning",
+            "No published flash-attn prebuilt wheel found",
+        ) in step_messages
 
     def test_skip_env_disables_setup_install(self):
         with (
@@ -255,7 +258,9 @@ class TestInstallPythonStackFlashAttnIntegration:
             mock.patch("subprocess.run", side_effect = fake_run),
             mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
             mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
-            mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
+            mock.patch.object(
+                ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")
+            ),
             mock.patch("pathlib.Path.is_dir", return_value = True),
             mock.patch("pathlib.Path.is_file", return_value = True),
             mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear = False),
@@ -265,25 +270,13 @@ class TestInstallPythonStackFlashAttnIntegration:
         return flash_attn_calls
 
     def test_linux_torch_install_calls_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = False, is_macos = False, is_windows = False)
-            == 1
-        )
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = False) == 1
 
     def test_no_torch_install_skips_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = True, is_macos = False, is_windows = False)
-            == 0
-        )
+        assert self._run_install(no_torch = True, is_macos = False, is_windows = False) == 0
 
     def test_macos_install_skips_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = False, is_macos = True, is_windows = False)
-            == 0
-        )
+        assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
 
     def test_windows_install_skips_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = False, is_macos = False, is_windows = True)
-            == 0
-        )
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
