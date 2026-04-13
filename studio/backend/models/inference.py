@@ -94,6 +94,10 @@ class ValidateModelResponse(BaseModel):
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -136,6 +140,10 @@ class LoadResponse(BaseModel):
     )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
         None, description = "Model's native context length (from GGUF metadata)"
@@ -212,6 +220,10 @@ class InferenceStatusResponse(BaseModel):
     )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the active model requires trust_remote_code to be enabled for loading.",
     )
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"

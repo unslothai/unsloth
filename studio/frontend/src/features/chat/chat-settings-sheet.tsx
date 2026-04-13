@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -493,6 +498,9 @@ export function ChatSettingsPanel({
     (s) => s.loadedSpeculativeType,
   );
   const currentModels = useChatRuntimeStore((s) => s.models);
+  const modelRequiresTrustRemoteCode = useChatRuntimeStore(
+    (s) => s.modelRequiresTrustRemoteCode,
+  );
   const currentCheckpoint = params.checkpoint;
   const currentModelIsVision =
     currentModels.find((m) => m.id === currentCheckpoint)?.isVision ?? false;
@@ -570,6 +578,10 @@ export function ChatSettingsPanel({
     [activePreset, activePresetDirty, presetNameInput, presets],
   );
   const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
+  const trustRemoteCodeMissing =
+    Boolean(currentCheckpoint) &&
+    modelRequiresTrustRemoteCode &&
+    !(params.trustRemoteCode ?? false);
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => onParamsChange({ ...params, [key]: v });
@@ -578,6 +590,16 @@ export function ChatSettingsPanel({
   function applyPreset(name: string) {
     const p = presets.find((pr) => pr.name === name);
     if (p) {
+      if (
+        modelRequiresTrustRemoteCode &&
+        !(p.params.trustRemoteCode ?? false)
+      ) {
+        toast.warning("This configuration turns custom code off", {
+          description:
+            "The current model needs custom code enabled to load. Keep it on for this model.",
+        });
+        return;
+      }
       onParamsChange({
         ...p.params,
         checkpoint: params.checkpoint,
@@ -629,6 +651,23 @@ export function ChatSettingsPanel({
     if (!hasCustomPreset) {
       return;
     }
+    const builtinPreset = BUILTIN_PRESETS.find((preset) => preset.name === name);
+    const fallbackPreset =
+      builtinPreset ??
+      BUILTIN_PRESETS.find((preset) => preset.name === "Default") ??
+      null;
+    if (
+      activePreset === name &&
+      fallbackPreset &&
+      modelRequiresTrustRemoteCode &&
+      !(fallbackPreset.params.trustRemoteCode ?? false)
+    ) {
+      toast.warning("Reset would turn custom code off", {
+        description:
+          "The current model needs custom code enabled to load. Keep it on for this model.",
+      });
+      return;
+    }
     setCustomPresets((prev) => {
       const next = prev.filter((preset) => preset.name !== name);
       if (canUseStorage()) {
@@ -641,12 +680,6 @@ export function ChatSettingsPanel({
       return next;
     });
     if (activePreset === name) {
-      const builtinPreset = BUILTIN_PRESETS.find(
-        (preset) => preset.name === name,
-      );
-      const fallbackPreset =
-        builtinPreset ??
-        BUILTIN_PRESETS.find((preset) => preset.name === "Default");
       if (fallbackPreset) {
         onParamsChange({
           ...fallbackPreset.params,
@@ -1016,19 +1049,33 @@ export function ChatSettingsPanel({
               </>
             )}
             {!isGguf && params.checkpoint && (
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium">Enable custom code</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Allow models with custom code (e.g. Nemotron). Only enable
-                    if sure.
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">Enable custom code</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Allow models with custom code (e.g. Nemotron). Only
+                      enable if sure.
+                    </div>
                   </div>
+                  <Switch
+                    checked={params.trustRemoteCode ?? false}
+                    onCheckedChange={set("trustRemoteCode")}
+                  />
                 </div>
-                <Switch
-                  checked={params.trustRemoteCode ?? false}
-                  onCheckedChange={set("trustRemoteCode")}
-                />
-              </div>
+                {trustRemoteCodeMissing && (
+                  <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
+                    <AlertTitle className="text-[11px] font-medium">
+                      Keep custom code enabled for this model
+                    </AlertTitle>
+                    <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
+                      This model requires custom code to load. You can edit the
+                      toggle, but loading will stay blocked until it is turned
+                      back on.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </>
             )}
           </div>
         </CollapsibleSection>

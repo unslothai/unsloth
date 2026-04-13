@@ -11,6 +11,7 @@ import {
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  validateModel,
 } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -252,13 +253,39 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * without selecting one. Prefers GGUF (picks smallest cached variant),
  * falls back to smallest cached safetensors model.
  */
-async function autoLoadSmallestModel(): Promise<boolean> {
-  const hfToken = useChatRuntimeStore.getState().hfToken || null;
+async function autoLoadSmallestModel(): Promise<{
+  loaded: boolean;
+  blockedByTrustRemoteCode: boolean;
+}> {
+  const store = useChatRuntimeStore.getState();
+  const hfToken = store.hfToken || null;
+  const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
     closeButton: true,
   });
+  let blockedByTrustRemoteCode = false;
+  let hadNonTrustFailure = false;
+
+  async function canAutoLoad(payload: {
+    model_path: string;
+    max_seq_length: number;
+    is_lora: boolean;
+    gguf_variant?: string | null;
+  }): Promise<boolean> {
+    const validation = await validateModel({
+      ...payload,
+      hf_token: hfToken,
+      load_in_4bit: true,
+      trust_remote_code: trustRemoteCode,
+    });
+    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+      blockedByTrustRemoteCode = true;
+      return false;
+    }
+    return true;
+  }
   try {
     const [ggufRepos, modelRepos] = await Promise.all([
       listCachedGguf().catch(() => []),
@@ -277,6 +304,16 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
+            if (
+              !(await canAutoLoad({
+                model_path: repo.repo_id,
+                max_seq_length: 0,
+                is_lora: false,
+                gguf_variant: variant.quant,
+              }))
+            ) {
+              continue;
+            }
             const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: hfToken,
@@ -284,10 +321,13 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
-              trust_remote_code: false,
+              trust_remote_code: trustRemoteCode,
             });
             useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
             const store = useChatRuntimeStore.getState();
+            store.setModelRequiresTrustRemoteCode(
+              loadResp.requires_trust_remote_code ?? false,
+            );
             store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
             // Add model to store so the selector shows the name
             const autoModel: ChatModelSummary = {
@@ -319,9 +359,10 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               chatTemplateOverride: null,
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
-            return true;
+            return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
+          hadNonTrustFailure = true;
           continue;
         }
       }
@@ -332,6 +373,16 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
         try {
+          if (
+            !(await canAutoLoad({
+              model_path: repo.repo_id,
+              max_seq_length: 4096,
+              is_lora: false,
+              gguf_variant: null,
+            }))
+          ) {
+            continue;
+          }
           const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
             hf_token: hfToken,
@@ -339,10 +390,13 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             load_in_4bit: true,
             is_lora: false,
             gguf_variant: null,
-            trust_remote_code: false,
+            trust_remote_code: trustRemoteCode,
           });
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
+          store.setModelRequiresTrustRemoteCode(
+            sfLoadResp.requires_trust_remote_code ?? false,
+          );
           store.setParams({ ...store.params, maxTokens: 4096 });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -355,8 +409,9 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             store.setModels([...store.models, sfModel]);
           }
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
-          return true;
+          return { loaded: true, blockedByTrustRemoteCode: false };
         } catch {
+          hadNonTrustFailure = true;
           continue;
         }
       }
@@ -369,6 +424,17 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       duration: 30000,
     });
     try {
+      if (
+        !(await canAutoLoad({
+          model_path: "unsloth/Qwen3.5-4B-GGUF",
+          max_seq_length: 0,
+          is_lora: false,
+          gguf_variant: "UD-Q4_K_XL",
+        }))
+      ) {
+        toast.dismiss(toastId);
+        return { loaded: false, blockedByTrustRemoteCode };
+      }
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-GGUF",
         hf_token: hfToken,
@@ -376,10 +442,13 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
-        trust_remote_code: false,
+        trust_remote_code: trustRemoteCode,
       });
       useChatRuntimeStore.getState().setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
+      store.setModelRequiresTrustRemoteCode(
+        loadResp.requires_trust_remote_code ?? false,
+      );
       store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
       const defaultModel: ChatModelSummary = {
         id: "unsloth/Qwen3.5-4B-GGUF",
@@ -406,14 +475,24 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         chatTemplateOverride: null,
       });
       toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
-      return true;
+      return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
-      return false;
+      hadNonTrustFailure = true;
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+      };
     }
   } catch {
     toast.dismiss(toastId);
-    return false;
+    hadNonTrustFailure = true;
+    return {
+      loaded: false,
+      blockedByTrustRemoteCode:
+        blockedByTrustRemoteCode && !hadNonTrustFailure,
+    };
   }
 }
 
@@ -434,11 +513,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
         // Auto-load the smallest downloaded model
-        const loaded = await autoLoadSmallestModel();
+        const { loaded, blockedByTrustRemoteCode } =
+          await autoLoadSmallestModel();
         if (!loaded) {
-          toast.error("No model loaded", {
-            description: "Pick a model in the top bar, then retry.",
-          });
+          toast.error(
+            blockedByTrustRemoteCode
+              ? "Enable custom code to auto-load this model"
+              : "No model loaded",
+            {
+              description: blockedByTrustRemoteCode
+                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                : "Pick a model in the top bar, then retry.",
+            },
+          );
           throw new Error("Load a model first.");
         }
       }
