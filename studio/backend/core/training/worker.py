@@ -146,6 +146,7 @@ def _install_package_wheel_first(
 
     _send_status(event_queue, pypi_status_message)
 
+    # Prefer uv for faster dependency resolution when available
     plain_pypi_install = pypi_version is None
     if plain_pypi_install:
         if shutil.which("uv"):
@@ -170,6 +171,7 @@ def _install_package_wheel_first(
                 "--no-build-isolation",
                 "--no-deps",
             ]
+            # Avoid stale cache artifacts from partial HIP source builds
             if is_hip:
                 pypi_cmd.append("--no-cache")
             pypi_cmd.append(pypi_spec)
@@ -215,6 +217,7 @@ def _install_package_wheel_first(
 
     if result.returncode != 0:
         if is_hip:
+            # Surface a clear error for ROCm source build failures
             error_lines = (result.stdout or "").strip().splitlines()
             snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
             logger.error(

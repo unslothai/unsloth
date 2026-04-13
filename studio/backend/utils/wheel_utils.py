@@ -24,6 +24,7 @@ def linux_wheel_platform_tag() -> str | None:
             return "linux_x86_64"
         if machine in {"aarch64", "arm64"}:
             return "linux_aarch64"
+    # No prebuilt wheels published for macOS or Windows
     return None
 
 
@@ -127,6 +128,7 @@ def install_wheel(
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
 
+    # Try uv first if available, then fall back to pip
     if use_uv and shutil.which("uv"):
         uv_cmd = ["uv", "pip", "install"]
         if uv_needs_system:

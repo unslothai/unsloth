@@ -376,6 +376,7 @@ NO_TORCH = _infer_no_torch()
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
 # Progress bar state -- updated by _progress() as each install step runs.
+# _TOTAL counts: pip-upgrade + 7 shared steps + triton (non-Windows) + local-plugin + finalize
 # Update _TOTAL here if you add or remove install steps in install_python_stack().
 _STEP: int = 0
 _TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
@@ -556,8 +557,28 @@ def _print_optional_install_failure(label: str, result: subprocess.CompletedProc
         print(result.stdout.strip())
 
 
+def _ensure_ninja_available() -> None:
+    if shutil.which("ninja"):
+        return
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "ninja"],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
+    if result.returncode != 0:
+        _print_optional_install_failure("Installing ninja for flash-attn builds", result)
+
+
 def _flash_attn_install_disabled() -> bool:
     return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
+
+
+def _flash_attn_install_spec(package_version: str | None) -> str:
+    if package_version is None:
+        return "flash-attn"
+    return f"flash-attn=={package_version}"
 
 
 def _ensure_flash_attn() -> None:
@@ -573,6 +594,7 @@ def _ensure_flash_attn() -> None:
         return
 
     env = probe_torch_wheel_env()
+    package_version = None if env is None else flash_attn_package_version(env["torch_mm"])
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and url_exists(wheel_url):
         for installer, wheel_result in install_wheel(
@@ -587,13 +609,56 @@ def _ensure_flash_attn() -> None:
                 f"Installing flash-attn prebuilt wheel with {installer}",
                 wheel_result,
             )
-        _step("warning", "Continuing without flash-attn", _cyan)
-        return
 
     if wheel_url is None:
         _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
     else:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+
+    _ensure_ninja_available()
+    fallback_spec = _flash_attn_install_spec(package_version)
+    if USE_UV and shutil.which("uv"):
+        uv_cmd = _build_uv_cmd(
+            (
+                "--no-build-isolation",
+                "--no-cache",
+                "--no-binary",
+                "flash-attn",
+                fallback_spec,
+            )
+        )
+        fallback_result = subprocess.run(
+            uv_cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+        )
+        if fallback_result.returncode == 0:
+            return
+        _print_optional_install_failure(
+            "Installing flash-attn from source with uv", fallback_result
+        )
+
+    pip_cmd = _build_pip_cmd(
+        (
+            "--no-build-isolation",
+            "--no-cache-dir",
+            "--no-binary=flash-attn",
+            fallback_spec,
+        )
+    )
+    fallback_result = subprocess.run(
+        pip_cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
+    if fallback_result.returncode == 0:
+        return
+    _print_optional_install_failure(
+        'Falling back to "pip install flash-attn"', fallback_result
+    )
+    _step("warning", "Continuing without flash-attn", _cyan)
 
 # -- uv bootstrap ------------------------------------------------------
 
@@ -822,6 +887,8 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
+    # ROCm torch check steps (Linux only, non-macOS, non-no-torch):
+    # one early check (step 2b) and one final repair (step 13).
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         base_total += 3
     _TOTAL = (base_total - 1) if skip_base else base_total
