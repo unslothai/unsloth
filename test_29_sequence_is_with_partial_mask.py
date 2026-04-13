@@ -19,10 +19,17 @@ mask[1, :6] = 1.0
 mask[2, :9] = 1.0
 mask[3, :12] = 1.0
 
-new = torch.randn(B, S, requires_grad=True)
+new = torch.randn(B, S, requires_grad = True)
 result = grpo_compute_loss(
-    ref, new, old, None, input_ids, mask, beta, advantages,
-    importance_sampling_level="sequence",
+    ref,
+    new,
+    old,
+    None,
+    input_ids,
+    mask,
+    beta,
+    advantages,
+    importance_sampling_level = "sequence",
 )
 assert len(result) == 7
 loss, comp_len, mean_kl = result[0], result[1], result[2]
@@ -39,4 +46,6 @@ for i in range(B):
         # through the sequence-level aggregation, but the final loss mask zeros them
         pass
 
-print(f"PASS: sequence IS + partial mask, loss={loss.item():.4f}, comp_len={comp_len.item():.1f}")
+print(
+    f"PASS: sequence IS + partial mask, loss={loss.item():.4f}, comp_len={comp_len.item():.1f}"
+)

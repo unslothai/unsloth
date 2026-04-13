@@ -7,7 +7,7 @@ from unsloth_zoo.rl_replacements import grpo_compute_loss
 
 B, S = 4, 16
 ref = torch.randn(B, S)
-new = torch.randn(B, S, requires_grad=True)
+new = torch.randn(B, S, requires_grad = True)
 old = torch.randn(B, S)
 input_ids = torch.randint(0, 100, (B, S))
 beta = 0.1
@@ -26,7 +26,9 @@ loss, comp_len, mean_kl, _, _, coef_1, out_mask = result
 assert torch.isfinite(loss), f"Loss not finite: {loss}"
 assert torch.isfinite(mean_kl), f"mean_kl not finite: {mean_kl}"
 # Completion length should be mean of [4, 8, 12, 16] = 10.0
-assert abs(comp_len.item() - 10.0) < 0.01, f"Expected comp_len=10.0, got {comp_len.item()}"
+assert (
+    abs(comp_len.item() - 10.0) < 0.01
+), f"Expected comp_len=10.0, got {comp_len.item()}"
 
 loss.backward()
 assert new.grad is not None

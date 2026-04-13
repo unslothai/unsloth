@@ -17,11 +17,15 @@ new_base = torch.randn(B, S)
 
 # GRPO: mean over samples of (per-sample mean)
 new1 = new_base.clone().requires_grad_(True)
-r_grpo = grpo_compute_loss(ref, new1, old, None, input_ids, mask, beta, advantages, loss_type="grpo")
+r_grpo = grpo_compute_loss(
+    ref, new1, old, None, input_ids, mask, beta, advantages, loss_type = "grpo"
+)
 
 # BNPO: sum / total_mask_count (global mean, not per-sample then mean)
 new2 = new_base.clone().requires_grad_(True)
-r_bnpo = grpo_compute_loss(ref, new2, old, None, input_ids, mask, beta, advantages, loss_type="bnpo")
+r_bnpo = grpo_compute_loss(
+    ref, new2, old, None, input_ids, mask, beta, advantages, loss_type = "bnpo"
+)
 
 assert torch.isfinite(r_grpo[0]) and torch.isfinite(r_bnpo[0])
 
@@ -33,12 +37,20 @@ mask2[2, :6] = 1.0
 mask2[3, :8] = 1.0
 
 new3 = new_base.clone().requires_grad_(True)
-r_grpo2 = grpo_compute_loss(ref, new3, old, None, input_ids, mask2, beta, advantages, loss_type="grpo")
+r_grpo2 = grpo_compute_loss(
+    ref, new3, old, None, input_ids, mask2, beta, advantages, loss_type = "grpo"
+)
 
 new4 = new_base.clone().requires_grad_(True)
-r_bnpo2 = grpo_compute_loss(ref, new4, old, None, input_ids, mask2, beta, advantages, loss_type="bnpo")
+r_bnpo2 = grpo_compute_loss(
+    ref, new4, old, None, input_ids, mask2, beta, advantages, loss_type = "bnpo"
+)
 
 assert torch.isfinite(r_grpo2[0]) and torch.isfinite(r_bnpo2[0])
 # With non-uniform mask, GRPO and BNPO should differ
-assert r_grpo2[0].item() != r_bnpo2[0].item(), "GRPO and BNPO should differ with non-uniform mask"
-print(f"PASS: grpo={r_grpo2[0].item():.4f}, bnpo={r_bnpo2[0].item():.4f} (differ with non-uniform mask)")
+assert (
+    r_grpo2[0].item() != r_bnpo2[0].item()
+), "GRPO and BNPO should differ with non-uniform mask"
+print(
+    f"PASS: grpo={r_grpo2[0].item():.4f}, bnpo={r_bnpo2[0].item():.4f} (differ with non-uniform mask)"
+)

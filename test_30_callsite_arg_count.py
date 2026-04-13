@@ -26,14 +26,20 @@ for i, call in enumerate(calls_found):
     kwarg_names = [kw.arg for kw in call.keywords]
 
     # Must have exactly 8 positional args
-    assert n_positional == 8, \
-        f"Call {i}: expected 8 positional args, got {n_positional}"
+    assert (
+        n_positional == 8
+    ), f"Call {i}: expected 8 positional args, got {n_positional}"
 
     # sampling_per_token_logps must NOT be in kwargs (it's positional now)
-    assert "sampling_per_token_logps" not in kwarg_names, \
-        f"Call {i}: sampling_per_token_logps should not be a kwarg"
+    assert (
+        "sampling_per_token_logps" not in kwarg_names
+    ), f"Call {i}: sampling_per_token_logps should not be a kwarg"
 
-    print(f"PASS: Call {i} at line {call.lineno}: {n_positional} positional args, "
-          f"{len(kwarg_names)} kwargs, no duplicate sampling_per_token_logps")
+    print(
+        f"PASS: Call {i} at line {call.lineno}: {n_positional} positional args, "
+        f"{len(kwarg_names)} kwargs, no duplicate sampling_per_token_logps"
+    )
 
-print(f"PASS: All {len(calls_found)} grpo_compute_loss_slow calls have correct arg structure")
+print(
+    f"PASS: All {len(calls_found)} grpo_compute_loss_slow calls have correct arg structure"
+)

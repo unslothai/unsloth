@@ -22,12 +22,23 @@ configs = [
 ]
 
 for label, eps_low, eps_high in configs:
-    new = torch.randn(B, S, requires_grad=True)
+    new = torch.randn(B, S, requires_grad = True)
     r = grpo_compute_loss(
-        ref, new, old, None, input_ids, mask, beta, advantages,
-        loss_type="grpo", epsilon_low=eps_low, epsilon_high=eps_high,
+        ref,
+        new,
+        old,
+        None,
+        input_ids,
+        mask,
+        beta,
+        advantages,
+        loss_type = "grpo",
+        epsilon_low = eps_low,
+        epsilon_high = eps_high,
     )
     assert torch.isfinite(r[0]), f"{label}: loss not finite"
-    print(f"PASS: {label} (eps_low={eps_low}, eps_high={eps_high}), loss={r[0].item():.4f}")
+    print(
+        f"PASS: {label} (eps_low={eps_low}, eps_high={eps_high}), loss={r[0].item():.4f}"
+    )
 
 print("PASS: All asymmetric epsilon configs OK")
