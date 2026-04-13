@@ -162,6 +162,7 @@ async function* mergedModelIterator(
     ? cachedModelInfo({
         name: pinnedId,
         additionalFields: ["safetensors", "tags"],
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }).catch(() => null)
     : null;
@@ -232,6 +233,7 @@ async function* priorityThenListingIterator(
       cachedModelInfo({
         name: id,
         additionalFields: ["safetensors", "tags"],
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }),
     ),
@@ -297,6 +299,7 @@ export function useHfModelSearch(
           search: { owner: "unsloth", ...(task ? { task } : {}) },
           additionalFields: ["safetensors", "tags"],
           fetch: withPopularitySort,
+          hubUrl: getHfEndpoint(),
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
