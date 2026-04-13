@@ -25,9 +25,9 @@ def _missing_flash_attn_import():
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(32767) is False
-    assert worker._should_try_runtime_flash_attn_install(32768) is sys.platform.startswith(
-        "linux"
-    )
+    assert worker._should_try_runtime_flash_attn_install(
+        32768
+    ) is sys.platform.startswith("linux")
 
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
     assert worker._should_try_runtime_flash_attn_install(32768) is False
