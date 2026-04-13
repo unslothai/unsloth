@@ -42,6 +42,12 @@ function formatBytes(n: number): string {
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
+function formatCachePath(path: string): string {
+  return path
+    .replace(/^\/(?:home|Users)\/[^/]+/, "~")
+    .replace(/^[A-Za-z]:[/\\]Users[/\\][^/\\]+/, "~");
+}
+
 type DownloadState = {
   downloadedBytes: number;
   totalBytes: number;
@@ -146,25 +152,54 @@ type DownloadRowProps = {
 
 function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
+  const isComplete = state.totalBytes > 0 && state.percent >= 100;
+  const statusLabel = isComplete
+    ? "Ready"
+    : state.totalBytes > 0
+      ? "Downloading"
+      : state.downloadedBytes === 0
+        ? "Preparing"
+        : null;
   const sizeLabel =
     state.totalBytes > 0
-      ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)} · ${state.percent}%`
+      ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}`
       : state.downloadedBytes > 0
         ? `${formatBytes(state.downloadedBytes)} downloaded`
-        : "preparing...";
+        : null;
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span>{label}</span>
-        <span className="tabular-nums">{sizeLabel}</span>
+    <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-foreground/90">{label}</span>
+          {statusLabel ? (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
+            >
+              {statusLabel}
+            </span>
+          ) : null}
+        </div>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {state.totalBytes > 0 ? `${state.percent}%` : ""}
+        </span>
       </div>
-      {state.totalBytes > 0 ? <Progress value={state.percent} /> : null}
+      {sizeLabel ? (
+        <div className="text-[11px] tabular-nums text-muted-foreground">
+          {sizeLabel}
+        </div>
+      ) : null}
+      {state.totalBytes > 0 ? (
+        <Progress
+          value={state.percent}
+          indicatorClassName="bg-[linear-gradient(90deg,oklch(0.66_0.142_166.6)_0%,oklch(0.705_0.132_166.6)_55%,oklch(0.75_0.122_166.6)_100%)]"
+        />
+      ) : null}
       {state.cachePath ? (
         <div
-          className="truncate text-[10px] text-muted-foreground/70"
+          className="truncate rounded bg-muted/50 px-2 py-1 text-[10px] text-muted-foreground/70"
           title={state.cachePath}
         >
-          {state.cachePath}
+          {formatCachePath(state.cachePath)}
         </div>
       ) : null}
     </div>
@@ -272,7 +307,7 @@ export function TrainingStartOverlay({
           {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Downloading dataset..."
+                label="Dataset"
                 state={datasetDownload}
               />
             </AnimatedSpan>
@@ -280,7 +315,7 @@ export function TrainingStartOverlay({
           {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Downloading model weights..."
+                label="Model weights"
                 state={modelDownload}
               />
             </AnimatedSpan>
