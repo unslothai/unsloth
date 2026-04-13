@@ -644,11 +644,18 @@ export function ChatSettingsPanel({
       const builtinPreset = BUILTIN_PRESETS.find(
         (preset) => preset.name === name,
       );
-      if (!builtinPreset) {
-        setActivePreset("Default");
+      const fallbackPreset =
+        builtinPreset ??
+        BUILTIN_PRESETS.find((preset) => preset.name === "Default");
+      if (fallbackPreset) {
+        onParamsChange({
+          ...fallbackPreset.params,
+          checkpoint: params.checkpoint,
+        });
+        setActivePreset(fallbackPreset.name);
         if (canUseStorage()) {
           try {
-            localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
+            localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, fallbackPreset.name);
           } catch {
             // ignore
           }

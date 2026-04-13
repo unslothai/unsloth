@@ -21,6 +21,9 @@ import { db } from "@/features/chat/db";
 import type { MessageRecord } from "@/features/chat/types";
 
 function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+  if (typeof content === "string") {
+    return content;
+  }
   return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
 }
 
@@ -76,12 +79,15 @@ async function syncExportedRepositoryToDexie(
   await db.transaction("rw", db.messages, async () => {
     const keepIds = new Set(exp.messages.map((x) => x.message.id));
     const existing = await db.messages.where("threadId").equals(remoteId).toArray();
-    await Promise.all(
-      existing.filter((m) => !keepIds.has(m.id)).map((m) => db.messages.delete(m.id)),
-    );
-    await Promise.all(
+    const idsToDelete = existing
+      .filter((m) => !keepIds.has(m.id))
+      .map((m) => m.id);
+    if (idsToDelete.length > 0) {
+      await db.messages.bulkDelete(idsToDelete);
+    }
+    await db.messages.bulkPut(
       exp.messages.map(({ message, parentId }) =>
-        db.messages.put(exportedItemToRecord(remoteId, parentId, message)),
+        exportedItemToRecord(remoteId, parentId, message),
       ),
     );
   });
