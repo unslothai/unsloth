@@ -41,6 +41,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   CodeIcon,
@@ -194,6 +195,79 @@ function saveSystemPrompts(templates: SystemPromptTemplate[]) {
   } catch {
     // ignore
   }
+}
+
+type PresetSaveMode =
+  | "disabled"
+  | "reserved"
+  | "overwrite-active"
+  | "overwrite-other"
+  | "create";
+
+interface PresetSaveState {
+  mode: PresetSaveMode;
+  canSubmit: boolean;
+  isSaveReady: boolean;
+  buttonLabel: string;
+  title: string;
+}
+
+function getPresetSaveState({
+  rawName,
+  activePreset,
+  customPresets,
+}: {
+  rawName: string;
+  activePreset: string;
+  customPresets: Preset[];
+}): PresetSaveState {
+  const trimmedName = rawName.trim();
+  if (!trimmedName) {
+    return {
+      mode: "disabled",
+      canSubmit: false,
+      isSaveReady: false,
+      buttonLabel: "Save",
+      title: "Enter a preset name",
+    };
+  }
+
+  if (BUILTIN_PRESETS.some((preset) => preset.name === trimmedName)) {
+    return {
+      mode: "reserved",
+      canSubmit: true,
+      isSaveReady: false,
+      buttonLabel: "Reserved",
+      title: `"${trimmedName}" is reserved. Pick a different name.`,
+    };
+  }
+
+  const matchingCustomPreset = customPresets.find(
+    (preset) => preset.name === trimmedName,
+  );
+  if (matchingCustomPreset) {
+    return {
+      mode:
+        matchingCustomPreset.name === activePreset
+          ? "overwrite-active"
+          : "overwrite-other",
+      canSubmit: true,
+      isSaveReady: true,
+      buttonLabel: "Overwrite",
+      title:
+        matchingCustomPreset.name === activePreset
+          ? "Save current settings to this preset"
+          : `Overwrite preset "${trimmedName}"`,
+    };
+  }
+
+  return {
+    mode: "create",
+    canSubmit: true,
+    isSaveReady: true,
+    buttonLabel: "Save as New",
+    title: `Save current settings as "${trimmedName}"`,
+  };
 }
 
 function ParamSlider({
@@ -401,6 +475,24 @@ export function ChatSettingsPanel({
     [customPresets],
   );
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
+  const presetSaveState = useMemo(
+    () =>
+      getPresetSaveState({
+        rawName: presetNameInput,
+        activePreset,
+        customPresets,
+      }),
+    [activePreset, customPresets, presetNameInput],
+  );
+  const selectedSystemPrompt = useMemo(
+    () =>
+      systemPrompts.find((item) => item.id === selectedSystemPromptId) ?? null,
+    [selectedSystemPromptId, systemPrompts],
+  );
+  const systemPromptTemplateDirty =
+    selectedSystemPrompt != null &&
+    (selectedSystemPrompt.name !== systemPromptNameDraft ||
+      selectedSystemPrompt.content !== systemPromptContentDraft);
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => onParamsChange({ ...params, [key]: v });
@@ -513,11 +605,12 @@ export function ChatSettingsPanel({
   function saveCurrentSystemPromptTemplate() {
     if (!selectedSystemPromptId) return;
     const now = Date.now();
+    const normalizedName = systemPromptNameDraft.trim() || "Untitled prompt";
     const next = systemPrompts.map((item) =>
       item.id === selectedSystemPromptId
         ? {
             ...item,
-            name: systemPromptNameDraft.trim() || "Untitled prompt",
+            name: normalizedName,
             content: systemPromptContentDraft,
             updatedAt: now,
           }
@@ -525,6 +618,7 @@ export function ChatSettingsPanel({
     );
     setSystemPrompts(next);
     saveSystemPrompts(next);
+    setSystemPromptNameDraft(normalizedName);
   }
 
   function createSystemPromptTemplate() {
@@ -635,7 +729,7 @@ export function ChatSettingsPanel({
                     value={presetNameInput}
                     onChange={(e) => setPresetNameInput(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      if (e.key === "Enter" && presetSaveState.canSubmit) {
                         e.preventDefault();
                         savePresetWithName(presetNameInput);
                       }
@@ -643,7 +737,11 @@ export function ChatSettingsPanel({
                     placeholder="Preset name"
                     maxLength={80}
                     autoComplete="off"
-                    className="!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm"
+                    className={cn(
+                      "!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm",
+                      presetSaveState.isSaveReady &&
+                        "text-foreground placeholder:text-primary/45",
+                    )}
                     aria-label="Inference preset name"
                   />
                   <InputGroupAddon
@@ -692,23 +790,34 @@ export function ChatSettingsPanel({
               </DropdownMenu>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
-              <button
+              <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
-                disabled={presetNameInput.trim().length === 0}
-                className="inline-flex h-8 shrink-0 items-center justify-center gap-0 rounded-4xl border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title="Save current settings under this name"
+                disabled={!presetSaveState.canSubmit}
+                variant={presetSaveState.isSaveReady ? "default" : "outline"}
+                size="sm"
+                className={cn(
+                  "h-8 shrink-0 text-xs",
+                  presetSaveState.isSaveReady &&
+                    "bg-primary/92 text-primary-foreground hover:bg-primary",
+                  presetSaveState.mode === "reserved" &&
+                    "border-border bg-input/20 text-muted-foreground hover:bg-input/30 hover:text-foreground",
+                )}
+                title={presetSaveState.title}
+                aria-label={presetSaveState.title}
               >
                 <span className="inline-flex shrink-0 items-center pr-1.5">
                   <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
                 </span>
-                Save
-              </button>
-              <button
+                {presetSaveState.buttonLabel}
+              </Button>
+              <Button
                 type="button"
                 onClick={() => deletePreset(activePreset)}
                 disabled={isBuiltinPreset}
-                className="inline-flex h-8 shrink-0 items-center justify-center gap-0 rounded-4xl border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 text-xs text-muted-foreground"
                 title={
                   isBuiltinPreset
                     ? "Built-in presets cannot be deleted"
@@ -719,7 +828,7 @@ export function ChatSettingsPanel({
                   <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                 </span>
                 Delete
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -735,8 +844,9 @@ export function ChatSettingsPanel({
               size="sm"
               className="h-6 px-2 text-[11px]"
               onClick={openSystemPromptManager}
+              title="Open saved prompt templates"
             >
-              Manage
+              Templates
             </Button>
           </div>
           <Textarea
@@ -1038,18 +1148,25 @@ export function ChatSettingsPanel({
       >
         <DialogContent className="corner-squircle sm:max-w-[50.4rem]">
           <DialogHeader>
-            <DialogTitle>System Prompt Manager</DialogTitle>
+            <DialogTitle>Saved Prompt Templates</DialogTitle>
             <DialogDescription>
-              Save and reuse system prompts for chat sessions.
+              Edit reusable templates here, then apply one to the current chat
+              when ready.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-[13rem_minmax(0,1fr)]">
             <div className="space-y-2">
+              <div className="space-y-0.5 px-0.5">
+                <div className="text-[11px] font-medium">Saved templates</div>
+                <p className="text-[11px] text-muted-foreground">
+                  Reusable prompt presets for future chats.
+                </p>
+              </div>
               <div className="flex gap-1.5">
                 <Button
                   type="button"
                   variant="outline"
-                  size="sm"
+                  size="xs"
                   className="h-7 flex-1 text-[11px]"
                   onClick={createSystemPromptTemplate}
                 >
@@ -1058,7 +1175,7 @@ export function ChatSettingsPanel({
                 <Button
                   type="button"
                   variant="outline"
-                  size="sm"
+                  size="xs"
                   className="h-7 flex-1 text-[11px]"
                   onClick={duplicateSystemPromptTemplate}
                   disabled={!selectedSystemPromptId}
@@ -1076,10 +1193,10 @@ export function ChatSettingsPanel({
                       setSystemPromptNameDraft(item.name);
                       setSystemPromptContentDraft(item.content);
                     }}
-                    className={`w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
+                    className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
                       selectedSystemPromptId === item.id
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/60"
+                        ? "border-primary/20 bg-primary/10 text-primary"
+                        : "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                     }`}
                   >
                     <span className="block truncate">{item.name}</span>
@@ -1088,6 +1205,12 @@ export function ChatSettingsPanel({
               </div>
             </div>
             <div className="space-y-2">
+              <div className="space-y-0.5 px-0.5">
+                <div className="text-[11px] font-medium">Template editor</div>
+                <p className="text-[11px] text-muted-foreground">
+                  Changes stay here until you save or apply them to this chat.
+                </p>
+              </div>
               <Input
                 value={systemPromptNameDraft}
                 onChange={(event) => setSystemPromptNameDraft(event.target.value)}
@@ -1106,7 +1229,8 @@ export function ChatSettingsPanel({
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
+              className="text-muted-foreground hover:text-destructive"
               onClick={deleteCurrentSystemPromptTemplate}
               disabled={!selectedSystemPromptId}
             >
@@ -1117,7 +1241,7 @@ export function ChatSettingsPanel({
                 type="button"
                 variant="outline"
                 onClick={saveCurrentSystemPromptTemplate}
-                disabled={!selectedSystemPromptId}
+                disabled={!(selectedSystemPromptId && systemPromptTemplateDirty)}
               >
                 Save
               </Button>
@@ -1126,7 +1250,7 @@ export function ChatSettingsPanel({
                 onClick={applySystemPromptTemplate}
                 disabled={!selectedSystemPromptId}
               >
-                Apply
+                Apply to Chat
               </Button>
             </div>
           </DialogFooter>
@@ -1274,7 +1398,7 @@ function ChatTemplateSection({
         <Textarea
           value={displayValue}
           onChange={(e) => setOverride(e.target.value)}
-          className="min-h-32 font-mono text-[8px] leading-relaxed md:text-[8px] corner-squircle"
+          className="min-h-32 font-mono text-[10px] leading-relaxed md:text-[10px] corner-squircle"
           rows={6}
           spellCheck={false}
         />
