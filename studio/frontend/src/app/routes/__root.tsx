@@ -13,7 +13,14 @@ import { AnimatePresence, motion } from "motion/react";
 import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
-const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
+const CHAT_ONLY_ALLOWED = new Set([
+  "/",
+  "/chat",
+  "/login",
+  "/signup",
+  "/change-password",
+  "/api-keys",
+]);
 
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
