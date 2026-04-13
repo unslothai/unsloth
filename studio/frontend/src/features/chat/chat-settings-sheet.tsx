@@ -789,7 +789,7 @@ export function ChatSettingsPanel({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
               <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
@@ -797,7 +797,7 @@ export function ChatSettingsPanel({
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
-                  "h-8 shrink-0 text-xs",
+                  "h-8 w-full text-xs",
                   presetSaveState.isSaveReady &&
                     "bg-primary/92 text-primary-foreground hover:bg-primary",
                   presetSaveState.mode === "reserved" &&
@@ -817,7 +817,7 @@ export function ChatSettingsPanel({
                 disabled={isBuiltinPreset}
                 variant="outline"
                 size="sm"
-                className="h-8 shrink-0 text-xs text-muted-foreground"
+                className="h-8 w-full text-xs text-muted-foreground"
                 title={
                   isBuiltinPreset
                     ? "Built-in presets cannot be deleted"
