@@ -4,8 +4,8 @@
 """
 End-to-end tests for ``unsloth studio run`` and API key authentication.
 
-Starts a Studio server via the ``run`` subcommand, then exercises the
-usage examples shown on the API Keys page plus the Anthropic Messages API:
+Exercises the usage examples shown on the API Keys page plus the Anthropic
+Messages API:
 
     1. curl -- basic chat completions (non-streaming)
     2. curl -- streaming chat completions
@@ -19,8 +19,26 @@ usage examples shown on the API Keys page plus the Anthropic Messages API:
 The test also validates the ``--help`` output and the server banner.
 
 Usage:
-    python test_studio_run.py                        # default model
-    python test_studio_run.py --model unsloth/...    # custom model
+
+    # Script mode — launches its own server via ``unsloth studio run``.
+    python tests/test_studio_run.py
+    python tests/test_studio_run.py --model unsloth/... --gguf-variant ...
+
+    # Pytest mode, external server — start a Studio server yourself,
+    # then point pytest at it. Fastest iteration loop.
+    unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL &
+    export UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8080
+    export UNSLOTH_E2E_API_KEY=sk-unsloth-...   # from the server banner
+    pytest tests/test_studio_run.py -v
+
+    # Pytest mode, fixture-managed server — pytest launches and tears
+    # down the server itself. One-shot verification, CI-friendly.
+    pytest tests/test_studio_run.py -v \\
+        --unsloth-model unsloth/Qwen3-1.7B-GGUF \\
+        --unsloth-gguf-variant UD-Q4_K_XL
+
+The ``base_url`` / ``api_key`` parameters on the test functions resolve
+via the ``studio_server`` session fixture in ``conftest.py``.
 
 Requires a GPU and ~2 GB of disk for the GGUF download.
 """
