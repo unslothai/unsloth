@@ -1348,7 +1348,7 @@ def save_to_gguf(
                             f"Error: {e}"
                         )
         print("Unsloth: Model files cleanup...")
-        if quants_created:
+        if quants_created and first_conversion not in frozenset(quantization_method):
             all_saved_locations.remove(base_gguf)
             Path(base_gguf).unlink(missing_ok = True)
 
