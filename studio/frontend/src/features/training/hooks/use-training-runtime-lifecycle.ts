@@ -167,11 +167,12 @@ export function useTrainingRuntimeLifecycle(): void {
 
     const isIdle = () => {
       const s = runtimeStore.getState();
-      return s.phase === "idle" && s.hasHydrated && !s.isTrainingRunning;
+      return s.phase === "idle" && !s.isTrainingRunning;
     };
 
     const statusTimer = setInterval(() => {
-      if (isIdle()) return;
+      const s = runtimeStore.getState();
+      if (isIdle() && s.hasHydrated) return;
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
 
