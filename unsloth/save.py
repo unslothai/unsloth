@@ -1348,9 +1348,10 @@ def save_to_gguf(
                             f"Error: {e}"
                         )
         print("Unsloth: Model files cleanup...")
-        if quants_created and first_conversion not in frozenset(quantization_method):
-            all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink(missing_ok = True)
+        if quants_created:
+            if first_conversion not in frozenset(quantization_method):
+                all_saved_locations.remove(base_gguf)
+                Path(base_gguf).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
