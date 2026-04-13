@@ -134,6 +134,7 @@ class TrainingBackend:
         # Build config dict for the subprocess
         config = {
             "model_name": kwargs["model_name"],
+            "project_name": kwargs.get("project_name"),
             "training_type": kwargs.get("training_type", "LoRA/QLoRA"),
             "hf_token": kwargs.get("hf_token", ""),
             "load_in_4bit": kwargs.get("load_in_4bit", True),

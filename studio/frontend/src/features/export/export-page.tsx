@@ -77,6 +77,14 @@ import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
+function toPathSegment(value: string | null | undefined, fallback = "model"): string {
+  const segment = (value ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return segment || fallback;
+}
+
 export function ExportPage() {
   const { hfToken, setHfToken } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -408,11 +416,29 @@ export function ExportPage() {
 
     // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
     // For other formats, nest under training-run/checkpoint
-    const saveDir =
-      exportMethod === "gguf"
-        ? `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-          .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
-        : `${selectedModelIdx ?? "model"}/${checkpoint}`;
+    const saveDir = (() => {
+      if (sourceMode === "checkpoint") {
+        const runSegment = toPathSegment(selectedModelIdx, "model");
+        const checkpointSegment = toPathSegment(
+          selectedCp?.display_name ?? checkpoint,
+          "checkpoint",
+        );
+
+        if (exportMethod === "gguf") {
+          return checkpointSegment === runSegment
+            ? `${runSegment}-gguf`
+            : `${runSegment}-${checkpointSegment}-gguf`;
+        }
+
+        return `${runSegment}/${checkpointSegment}`;
+      }
+
+      const modelSegment = toPathSegment(
+        sourceBaseModelName.split("/").pop() ?? selectedSourceModel,
+        "model",
+      );
+      return exportMethod === "gguf" ? `${modelSegment}-gguf` : modelSegment;
+    })();
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`
@@ -775,7 +801,7 @@ export function ExportPage() {
                                   ) : (
                                     <ComboboxEmpty>No models found</ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  <ComboboxList className="p-1 max-h-none! overflow-visible!">
                                     {(id: string) => (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">

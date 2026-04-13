@@ -3,6 +3,7 @@
 
 export interface TrainingStartRequest {
   model_name: string;
+  project_name: string | null;
   training_type: string;
   hf_token: string | null;
   load_in_4bit: boolean;

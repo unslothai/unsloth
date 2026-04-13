@@ -30,6 +30,7 @@ import urllib.request
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.training_runs import build_default_output_dir_name
 
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
@@ -827,7 +828,10 @@ def run_training_process(
         # Generate output dir
         output_dir = config.get("output_dir")
         if not output_dir:
-            output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
+            output_dir = build_default_output_dir_name(
+                model_name,
+                config.get("project_name"),
+            )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
@@ -1180,7 +1184,12 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     output_dir = config.get("output_dir")
     if not output_dir:
         output_dir = str(
-            resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}")
+            resolve_output_dir(
+                build_default_output_dir_name(
+                    model_name,
+                    config.get("project_name"),
+                )
+            )
         )
 
     num_epochs = config.get("num_epochs", 2)

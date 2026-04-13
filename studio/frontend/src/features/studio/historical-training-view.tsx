@@ -78,6 +78,7 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.model_name,
+    projectName: run.project_name,
     trainingMethod: normalizeTrainingMethod(detail.config),
     lossHistory,
     lrHistory,

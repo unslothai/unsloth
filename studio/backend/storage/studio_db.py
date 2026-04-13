@@ -23,6 +23,16 @@ from typing import Optional
 
 
 from utils.paths import studio_db_path, ensure_dir
+from utils.training_runs import extract_project_name
+
+
+def _extract_project_name_from_config_json(config_json: Optional[str]) -> Optional[str]:
+    if not config_json:
+        return None
+    try:
+        return extract_project_name(json.loads(config_json))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -267,7 +277,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         total = conn.execute("SELECT COUNT(*) FROM training_runs").fetchone()[0]
         rows = conn.execute(
             """
-            SELECT id, status, model_name, dataset_name, started_at, ended_at,
+            SELECT id, status, model_name, dataset_name, config_json, started_at, ended_at,
                    total_steps, final_step, final_loss, output_dir,
                    duration_seconds, error_message, loss_sparkline
             FROM training_runs
@@ -279,6 +289,9 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
+            run["project_name"] = _extract_project_name_from_config_json(
+                run.pop("config_json", None)
+            )
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
@@ -301,6 +314,9 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
+        run["project_name"] = _extract_project_name_from_config_json(
+            run.get("config_json")
+        )
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:

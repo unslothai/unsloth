@@ -156,6 +156,7 @@ async def start_training(
         # Convert request to kwargs for backend
         training_kwargs = {
             "model_name": request.model_name,
+            "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,

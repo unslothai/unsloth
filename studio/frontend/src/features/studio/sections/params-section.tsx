@@ -171,6 +171,24 @@ export function ParamsSection(): ReactElement {
           : "h-studio-config-column"} duration-150`}
       >
         <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Project Name
+              <span className="text-[10px] font-normal text-muted-foreground/70">
+                Optional
+              </span>
+            </span>
+            <Input
+              value={store.projectName}
+              onChange={(event) => store.setProjectName(event.target.value)}
+              placeholder="customer-support-lora"
+              maxLength={80}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Used in training output folder names, export defaults, and history.
+            </p>
+          </div>
+
           {/* Max Steps / Epochs */}
           <div className="flex flex-col gap-2">
             <div
@@ -592,7 +610,7 @@ export function ParamsSection(): ReactElement {
                 <TabsList className="w-full">
                   <TabsTrigger
                     value="optimization"
-                    className="flex-1 !corner-squircle text-xs cursor-pointer"
+                    className="flex-1 corner-squircle! text-xs cursor-pointer"
                   >
                     Optimization
                   </TabsTrigger>
