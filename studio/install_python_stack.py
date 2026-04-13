@@ -43,6 +43,128 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
 }
 _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 
+# Windows AMD ROCm torch wheels live at repo.radeon.com because PyTorch
+# does NOT publish Windows ROCm wheels on download.pytorch.org (and says so
+# on pytorch.org/get-started/locally: "ROCm is not available on Windows").
+# Every wheel under download.pytorch.org/whl/rocm{6.4,7.1,7.2}/ is
+# manylinux_2_28_x86_64 only. Upstream work to ship Windows ROCm wheels is
+# tracked at pytorch/pytorch#159520, targeted for torch 2.10/2.11 but not
+# yet delivered. Until then repo.radeon.com is the only source.
+#
+# AMD's official install procedure
+# (rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html) is a
+# TWO-STEP pip install:
+#   Step 1: rocm_sdk_core + rocm_sdk_devel + rocm_sdk_libraries_custom +
+#           rocm-<ver>.tar.gz. The three wheels ship the ROCm runtime
+#           libraries torch links against at import time; the tar.gz is a
+#           tiny (~15 KB) Python sdist for a meta-package named "rocm"
+#           that requires the other three. The HIP SDK developer toolkit
+#           (HIP_PATH) is NOT a substitute -- torch imports the
+#           Python-packaged runtime from rocm_sdk_*. Step 1 download size
+#           varies dramatically by release: 7.2.1 is about 1.3 GB total
+#           (sdk_core ~615 MB, sdk_devel ~222 MB, sdk_libraries ~467 MB)
+#           while 7.1.1 is about 3.2 GB total -- its sdk_devel wheel is a
+#           massive 2.4 GB (debug symbols / unstripped libraries).
+#   Step 2: torch + torchvision + torchaudio. About 780 MB for 7.2.1
+#           (torch itself is 783 MB; vision/audio are small), 692 MB for
+#           7.1.1.
+#
+# All URLs in _ROCM_WINDOWS_TORCH_WHEELS below were verified live on
+# 2026-04-11 with HEAD requests; see temp/windows_amd_tests for the
+# verification script.
+#
+# As of 2026-04, repo.radeon.com/rocm/windows/ contains four release dirs:
+#   rocm-rel-6.4.4/  -- PEP 503 simple index (torch/, torchvision/, torchaudio/
+#                       sub-indexes; wheels themselves live at the top of the
+#                       release dir). Wheels carry alpha + git-hash build tags
+#                       like torch-2.8.0a0+gitfc14c65-cp312-cp312-win_amd64.whl,
+#                       so the filename changes whenever AMD rebuilds and we
+#                       cannot hardcode a URL for it. Supporting 6.4.4 would
+#                       require parsing the PEP 503 index at install time --
+#                       out of scope here.
+#   rocm-rel-7.1.1/  -- flat layout, torch stable `+rocmsdk20251116` tag,
+#                       SDK wheels stamped `0.1.dev0` (pre-release marker).
+#   rocm-rel-7.2/    -- flat layout, torch stable `+rocmsdk20260116` tag.
+#   rocm-rel-7.2.1/  -- flat layout, torch stable `+rocm7.2.1` tag, SDK
+#                       wheels stamped `7.2.1`. Newest 7.2.x release as of
+#                       writing; superset of rocm-rel-7.2.
+#
+# HIP SDK detection via HIP_PATH is an OPTIONAL version hint, not a
+# prerequisite. Users only need an AMD graphics driver (26.2.2+ for 7.2.1)
+# and Python 3.12. When HIP_PATH is absent or points at an unsupported
+# version, we default to the newest stable release (7.2.1).
+_ROCM_WINDOWS_TORCH_WHEELS: dict[tuple[int, int], dict[str, str]] = {
+    (7, 2): {
+        # Step 1: ROCm SDK wheels (ship the runtime torch imports)
+        "sdk_core": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl"
+        ),
+        "sdk_devel": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl"
+        ),
+        "sdk_libraries": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl"
+        ),
+        "sdk_tarball": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/" "rocm-7.2.1.tar.gz"
+        ),
+        # Step 2: torch wheels
+        "torch": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
+        ),
+        "torchvision": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
+        ),
+        "torchaudio": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+            "torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
+        ),
+    },
+    (7, 1): {
+        # Step 1: ROCm SDK wheels -- note 7.1.1 stamps the SDK wheels with
+        # `0.1.dev0` while keeping the torch wheels at 2.9.0.
+        "sdk_core": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl"
+        ),
+        "sdk_devel": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm_sdk_devel-0.1.dev0-py3-none-win_amd64.whl"
+        ),
+        "sdk_libraries": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl"
+        ),
+        "sdk_tarball": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "rocm-0.1.dev0.tar.gz"
+        ),
+        # Step 2: torch wheels
+        "torch": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "torch-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl"
+        ),
+        "torchvision": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "torchvision-0.24.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl"
+        ),
+        "torchaudio": (
+            "https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/"
+            "torchaudio-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl"
+        ),
+    },
+}
+# Default Windows ROCm release when HIP_PATH is absent or unreadable. Users
+# only need a recent AMD graphics driver and Python 3.12 -- the HIP SDK
+# developer toolkit is NOT required for running torch.
+_DEFAULT_WINDOWS_ROCM_VERSION: tuple[int, int] = (7, 2)
+_AMD_RADEON_DRIVER_URL = "https://www.amd.com/en/support/download/drivers.html"
+
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
 # AMD GPU. Drop the pin once bnb 0.50+ ships on PyPI.
@@ -200,9 +322,138 @@ def _has_rocm_gpu() -> bool:
     return False
 
 
+def _detect_rocm_version_windows() -> tuple[int, int] | None:
+    """Return (major, minor) of the installed HIP SDK on Windows, or None.
+
+    Primary signal: HIP_PATH env var set by the HIP SDK installer, e.g.
+    ``C:\\Program Files\\AMD\\ROCm\\7.2\\``. The trailing component is the
+    version. We also sanity-check that ``<HIP_PATH>\\bin`` exists so we do
+    not trust a stale env var pointing at a half-uninstalled SDK.
+
+    Fallback: scan ``C:\\Program Files\\AMD\\ROCm\\`` and return the highest
+    numeric subdirectory.
+    """
+    if not IS_WINDOWS:
+        return None
+    # Use ntpath explicitly rather than os.path so the logic is also
+    # testable on Linux runners where os.path is posixpath (basename of
+    # "C:\\foo\\7.2" returns the whole string on posix, breaking version
+    # extraction even though real Windows handles it correctly).
+    import ntpath as _ntpath
+    import re as _re
+
+    def _parse_component(name: str) -> tuple[int, int] | None:
+        # Accept "7.2" and "7.2.1", ignore anything else.
+        m = _re.match(r"^(\d+)\.(\d+)", name.strip())
+        if not m:
+            return None
+        return int(m.group(1)), int(m.group(2))
+
+    hip_path = os.environ.get("HIP_PATH", "").strip()
+    if hip_path:
+        trimmed = hip_path.rstrip("\\/")
+        bin_dir = _ntpath.join(trimmed, "bin")
+        # Only trust HIP_PATH when the bin folder is actually present. A
+        # broken uninstall can leave the env var pointing at a ghost dir.
+        if os.path.isdir(bin_dir):
+            ver = _parse_component(_ntpath.basename(trimmed))
+            if ver is not None:
+                return ver
+
+    rocm_root = os.path.join(
+        os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+    )
+    if os.path.isdir(rocm_root):
+        best: tuple[int, int] | None = None
+        try:
+            entries = os.listdir(rocm_root)
+        except OSError:
+            entries = []
+        for entry in entries:
+            sub = _ntpath.join(rocm_root, entry)
+            if not os.path.isdir(sub):
+                continue
+            ver = _parse_component(entry)
+            if ver is None:
+                continue
+            if os.path.isdir(_ntpath.join(sub, "bin")):
+                if best is None or ver > best:
+                    best = ver
+        if best is not None:
+            return best
+
+    return None
+
+
+_HAS_ROCM_GPU_WINDOWS: bool | None = None  # module-level cache
+
+
+def _has_rocm_gpu_windows() -> bool:
+    """Return True when a Radeon/AMD GPU is visible in WMI Win32_VideoController.
+
+    We deliberately avoid ``hipinfo.exe`` here because it lives inside the
+    HIP SDK -- if we used it to decide whether to prompt the user to install
+    the HIP SDK we would never trigger the prompt on the hosts that need it
+    most. WMI is always available on Windows and needs no elevation.
+
+    Result is cached so repeated calls (steps 2b and 13) do not spawn
+    a second PowerShell process (~0.5-2 s per call).
+    """
+    global _HAS_ROCM_GPU_WINDOWS
+    if _HAS_ROCM_GPU_WINDOWS is not None:
+        return _HAS_ROCM_GPU_WINDOWS
+    if not IS_WINDOWS:
+        _HAS_ROCM_GPU_WINDOWS = False
+        return False
+    ps_cmd = (
+        "Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue "
+        "| Where-Object { $_.Name -match 'AMD|Radeon' } "
+        "| Measure-Object | Select-Object -ExpandProperty Count"
+    )
+    for exe_name in ("pwsh", "powershell"):
+        exe = shutil.which(exe_name)
+        if not exe:
+            continue
+        try:
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 15,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0:
+            continue
+        raw = (result.stdout or "").strip()
+        if raw.isdigit() and int(raw) > 0:
+            _HAS_ROCM_GPU_WINDOWS = True
+            return True
+    _HAS_ROCM_GPU_WINDOWS = False
+    return False
+
+
 def _has_usable_nvidia_gpu() -> bool:
     """Return True only when nvidia-smi exists AND reports at least one GPU."""
     exe = shutil.which("nvidia-smi")
+    if not exe and IS_WINDOWS:
+        # nvidia-smi.exe is often not on PATH on Windows; match the
+        # fallback paths in install.ps1 / setup.ps1.
+        _candidates = [
+            os.path.join(
+                os.environ.get("ProgramFiles", r"C:\Program Files"),
+                r"NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+            ),
+            os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                r"System32\nvidia-smi.exe",
+            ),
+        ]
+        for _c in _candidates:
+            if os.path.isfile(_c):
+                exe = _c
+                break
     if not exe:
         return False
     try:
@@ -218,25 +469,181 @@ def _has_usable_nvidia_gpu() -> bool:
     return result.returncode == 0 and "GPU " in result.stdout
 
 
+def _ensure_rocm_torch_windows() -> None:
+    """Install Radeon's Windows ROCm SDK + torch wheels when an AMD GPU is
+    present. Called from _ensure_rocm_torch().
+
+    AMD's documented install procedure
+    (rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html) is
+    a TWO-STEP sequence: first the rocm_sdk_* wheels (which ship the ROCm
+    runtime libraries torch links against at import time), then the torch
+    wheels themselves. Both steps are mandatory -- torch import fails
+    with missing-DLL errors without the SDK wheels, even on a host that
+    has the HIP SDK developer toolkit installed, because torch imports
+    the Python-packaged runtime.
+
+    HIP_PATH is treated as an OPTIONAL version hint, not a prerequisite.
+    Regular users only need the AMD graphics driver (26.2.2+ for 7.2.1)
+    and Python 3.12, as documented by AMD. When HIP_PATH is missing or
+    points at an unsupported version, we default to the newest stable
+    release (_DEFAULT_WINDOWS_ROCM_VERSION) rather than erroring out.
+
+    NVIDIA takes precedence on mixed AMD+NVIDIA hosts. Silently returns
+    when no AMD GPU is visible so NVIDIA and CPU-only Windows hosts are
+    never touched. Both pip installs pass force_pip=True because uv's
+    installer has known problems with these wheels -- matches the fix in
+    unslothai/unsloth#4966 for bitsandbytes on Linux ROCm, and AMD's own
+    troubleshooting notes flag pip dep-resolver overwrite scenarios on
+    this procedure.
+    """
+    # Cheap idempotency probe first -- skip GPU detection when torch
+    # already links against ROCm (common at step 13 and on updates).
+    try:
+        _probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import torch; print(getattr(torch.version,'hip','') or '')",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+        )
+        if _probe.returncode == 0 and _probe.stdout.decode().strip():
+            return  # already has ROCm torch
+    except Exception:
+        pass
+
+    # NVIDIA wins on mixed hosts -- matches the Linux branch and avoids
+    # overwriting a freshly installed CUDA torch with ROCm wheels.
+    if _has_usable_nvidia_gpu():
+        return
+    if not _has_rocm_gpu_windows():
+        return
+
+    # Radeon wheels are cp312 only. Hard-exit so the caller sees a
+    # non-zero code instead of silently leaving CPU-only torch.
+    if (sys.version_info.major, sys.version_info.minor) != (3, 12):
+        _safe_print(
+            _red(
+                f"   Radeon Windows ROCm wheels require Python 3.12. "
+                f"Found Python {sys.version_info.major}.{sys.version_info.minor}. "
+                f"Install Python 3.12 from https://python.org and re-run."
+            )
+        )
+        sys.exit(1)
+
+    # Prefer HIP_PATH as a version hint when available, but fall back to
+    # the newest stable release so users without the developer SDK still
+    # get a working install.
+    detected = _detect_rocm_version_windows()
+    ver: tuple[int, int]
+    using_default = False
+    if detected is not None and detected in _ROCM_WINDOWS_TORCH_WHEELS:
+        ver = detected
+    elif detected is not None:
+        # Detected but unsupported (e.g. 6.4): fall back to newest with a
+        # visible notice so the user knows what happened.
+        _safe_print(
+            _dim(
+                f"   HIP SDK {detected[0]}.{detected[1]} is too old; "
+                f"falling back to newest stable wheels "
+                f"({_DEFAULT_WINDOWS_ROCM_VERSION[0]}.{_DEFAULT_WINDOWS_ROCM_VERSION[1]})"
+            )
+        )
+        ver = _DEFAULT_WINDOWS_ROCM_VERSION
+        using_default = True
+    else:
+        ver = _DEFAULT_WINDOWS_ROCM_VERSION
+        using_default = True
+
+    wheels = _ROCM_WINDOWS_TORCH_WHEELS.get(ver)
+    if wheels is None:
+        _safe_print(
+            _red(
+                f"   No Windows ROCm wheel map for version {ver[0]}.{ver[1]}. "
+                f"Please file an issue at github.com/unslothai/unsloth/issues."
+            )
+        )
+        return
+
+    source = "default" if using_default else "HIP_PATH"
+    _safe_print(
+        _dim(
+            f"   Installing Radeon ROCm wheels for Windows "
+            f"(rocm-rel-{ver[0]}.{ver[1]}.x, {source}) from repo.radeon.com"
+        )
+    )
+    if using_default:
+        _safe_print(
+            _dim(
+                f"   Ensure your AMD graphics driver is recent; get the "
+                f"latest from {_AMD_RADEON_DRIVER_URL}"
+            )
+        )
+
+    # Install all 7 Radeon artefacts (4 SDK + 3 torch) in a SINGLE pip call.
+    #
+    # Why one call instead of AMD's documented two steps? torch's metadata
+    # declares `Requires-Dist: rocm[libraries]==<ver>` which cascades to
+    # `rocm-sdk-libraries-custom==<ver>`. That package does NOT exist on
+    # PyPI; it is only reachable via the direct URL at repo.radeon.com.
+    # Similarly, `rocm-sdk-core==<ver>` on PyPI is stuck at 0.1.0, wrong
+    # version. If we split the install and use --force-reinstall on the
+    # torch step, pip's resolver cascades to re-resolve all transitive
+    # deps, searches PyPI for rocm-sdk-libraries-custom, fails to find
+    # it, and aborts the whole install.
+    #
+    # Passing every URL in one command gives pip's resolver the full dep
+    # graph upfront. pip picks the right sources, builds the tarball via
+    # default build isolation, and --force-reinstall works correctly.
+    # Total download: ~2.1 GB for 7.2.1, ~3.9 GB for 7.1.1 (7.1.1's
+    # sdk_devel wheel is a massive 2.4 GB -- appears to ship debug
+    # symbols or unstripped libraries).
+    pip_install(
+        f"ROCm SDK + PyTorch (Windows, {ver[0]}.{ver[1]})",
+        "--force-reinstall",
+        "--no-cache-dir",
+        # SDK artefacts (AMD docs call this Step 1)
+        wheels["sdk_core"],
+        wheels["sdk_devel"],
+        wheels["sdk_libraries"],
+        wheels["sdk_tarball"],
+        # torch artefacts (AMD docs call this Step 2)
+        wheels["torch"],
+        wheels["torchvision"],
+        wheels["torchaudio"],
+        constrain = False,
+        force_pip = True,
+    )
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
-    Runs only on Linux x86_64 hosts where an AMD GPU is present and the
-    ROCm runtime is detectable (rocminfo / amd-smi / hipconfig /
-    rocm-core package).  No-op when torch already links against HIP
-    (ROCm), on Windows / macOS, on non-x86_64 Linux (PyTorch does not
-    publish ROCm wheels for aarch64 / arm64), or on mixed AMD+NVIDIA
-    hosts (NVIDIA takes precedence).
+    Linux x86_64: downloads ROCm wheels from download.pytorch.org for the
+    detected /opt/rocm version. Windows x86_64: downloads ROCm wheels from
+    repo.radeon.com for the detected HIP SDK version (requires Python 3.12
+    because Radeon only publishes cp312 wheels). No-op on macOS, on
+    non-x86_64 hosts (PyTorch does not publish ROCm wheels for aarch64 /
+    arm64), or on mixed AMD+NVIDIA hosts (NVIDIA takes precedence). No-op
+    when torch already links against HIP on Linux.
+
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
     # Explicit OS / architecture guards so the helper is safe to call
-    # from any context -- PyTorch only publishes ROCm wheels for
-    # linux_x86_64, so aarch64 / arm64 hosts must skip this repair path
-    # instead of failing the update with a missing-wheel error.
-    if IS_WINDOWS or IS_MACOS:
+    # from any context -- PyTorch only publishes ROCm wheels for x86_64,
+    # so aarch64 / arm64 hosts must skip this repair path instead of
+    # failing the update with a missing-wheel error.
+    if IS_MACOS:
         return
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
+
+    if IS_WINDOWS:
+        _ensure_rocm_torch_windows()
+        return
+
     # NVIDIA takes precedence on mixed hosts -- but only if an actual GPU is usable
     if _has_usable_nvidia_gpu():
         return
@@ -313,7 +720,20 @@ def _ensure_rocm_torch() -> None:
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix) and falls
     # back to PyPI when the pre-release URL is unreachable.
+    #
+    # Both installs pass force_pip=True so uv is bypassed entirely. uv's
+    # installer corrupts the bitsandbytes wheel on ROCm even when the
+    # command reports success, leaving the venv with a broken bnb import
+    # at runtime. install.sh has the same fix in unslothai/unsloth#4966.
+    # We apply it to both the pre-release URL and the PyPI fallback so the
+    # fix stays consistent regardless of which branch runs.
     if rocm_torch_ready:
+        # bitsandbytes has no official Windows ROCm wheel
+        # (bitsandbytes-foundation/bitsandbytes#1844), so skip it entirely
+        # on Windows AMD. 4-bit quantization is not available on that path
+        # yet -- callers should install 16-bit or use GGUF inference.
+        if IS_WINDOWS:
+            return
         _bnb_url = _bnb_rocm_prerelease_url()
         _bnb_installed = False
         if _bnb_url is not None:
@@ -324,6 +744,7 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _bnb_url,
                 constrain = False,
+                force_pip = True,
             )
             if not _bnb_installed:
                 print(
@@ -340,6 +761,7 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _BNB_ROCM_PYPI_FALLBACK,
                 constrain = False,
+                force_pip = True,
             )
 
 
@@ -639,15 +1061,21 @@ def pip_install_try(
     label: str,
     *args: str,
     constrain: bool = True,
+    force_pip: bool = False,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs with a follow-up fallback.
+
+    ``force_pip`` skips uv entirely and goes straight to ``python -m pip
+    install``. Used for wheels that uv installs incorrectly -- notably
+    the bitsandbytes continuous-release_main wheel on ROCm, see
+    unslothai/unsloth#4966.
     """
     constraint_args: list[str] = []
     if constrain and CONSTRAINTS.is_file():
         constraint_args = ["-c", str(CONSTRAINTS)]
 
-    if USE_UV:
+    if USE_UV and not force_pip:
         cmd = _build_uv_cmd(args) + constraint_args
     else:
         cmd = _build_pip_cmd(args) + constraint_args
@@ -671,8 +1099,15 @@ def pip_install(
     *args: str,
     req: Path | None = None,
     constrain: bool = True,
+    force_pip: bool = False,
 ) -> None:
-    """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    """Build and run a pip install command (uses uv when available, falls back to pip).
+
+    ``force_pip`` skips the uv attempt entirely and goes straight to
+    ``python -m pip install``. Use this for wheels that uv installs
+    incorrectly -- bitsandbytes pre-release ROCm wheels are the known
+    culprit, see unslothai/unsloth#4966.
+    """
     constraint_args: list[str] = []
     if constrain and CONSTRAINTS.is_file():
         constraint_args = ["-c", str(CONSTRAINTS)]
@@ -690,7 +1125,7 @@ def pip_install(
         req_args = ["-r", str(actual_req)]
 
     try:
-        if USE_UV:
+        if USE_UV and not force_pip:
             uv_cmd = _build_uv_cmd(args) + constraint_args + req_args
             if VERBOSE:
                 print(f"   {label}...")
@@ -706,7 +1141,7 @@ def pip_install(
                 print(result.stdout.decode(errors = "replace"))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
-        run(f"{label} (pip)" if USE_UV else label, pip_cmd)
+        run(f"{label} (pip)" if USE_UV and not force_pip else label, pip_cmd)
     finally:
         for temp_req in temp_reqs:
             temp_req.unlink(missing_ok = True)
@@ -762,9 +1197,9 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
-    # ROCm torch check steps (Linux only, non-macOS, non-no-torch):
+    # ROCm torch check steps (Linux + Windows, non-macOS, non-no-torch):
     # one early check (step 2b) and one final repair (step 13).
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    if not IS_MACOS and not NO_TORCH:
         base_total += 2
     _TOTAL = (base_total - 1) if skip_base else base_total
 
@@ -892,49 +1327,11 @@ def install_python_stack() -> int:
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
     #     venv received CPU-only torch (common when pip resolves torch from PyPI).
     #     Must come immediately after base packages so torch is present for inspection.
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    #     On Linux this pulls from download.pytorch.org; on Windows from
+    #     repo.radeon.com. _ensure_rocm_torch() dispatches internally.
+    if not IS_MACOS and not NO_TORCH:
         _progress("ROCm torch check")
         _ensure_rocm_torch()
-
-    # Windows + AMD GPU: PyTorch does not publish ROCm wheels for Windows.
-    # Detect and warn so users know manual steps are needed for GPU training.
-    if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
-        # Validate actual AMD GPU presence (not just tool existence)
-        import re as _re_win
-
-        def _win_amd_smi_has_gpu(stdout: str) -> bool:
-            return bool(_re_win.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
-
-        _win_amd_gpu = False
-        for _wcmd, _check_fn in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _win_amd_smi_has_gpu),
-        ):
-            _wexe = shutil.which(_wcmd[0])
-            if not _wexe:
-                continue
-            try:
-                _wr = subprocess.run(
-                    [_wexe, *_wcmd[1:]],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    text = True,
-                    timeout = 10,
-                )
-            except Exception:
-                continue
-            if _wr.returncode == 0 and _check_fn(_wr.stdout):
-                _win_amd_gpu = True
-                break
-        if _win_amd_gpu:
-            _safe_print(
-                _dim("  Note:"),
-                "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
-            )
-            _safe_print(
-                " " * 8,
-                "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
-            )
 
     # 3. Extra dependencies
     _progress("unsloth extras")
@@ -1050,11 +1447,12 @@ def install_python_stack() -> int:
     )
 
     # 13. AMD ROCm: final torch repair.  Multiple install steps above can
-    #     pull in CUDA torch from PyPI (base packages, extras, overrides,
-    #     studio deps, etc.).  Running the repair as the very last step
-    #     ensures ROCm torch is in place at runtime, regardless of which
-    #     intermediate step clobbered it.
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    #     pull in CUDA / CPU torch from PyPI (base packages, extras,
+    #     overrides, studio deps, etc.).  Running the repair as the very
+    #     last step ensures ROCm torch is in place at runtime, regardless
+    #     of which intermediate step clobbered it. Same behavior on Linux
+    #     (download.pytorch.org wheels) and Windows (repo.radeon.com).
+    if not IS_MACOS and not NO_TORCH:
         _progress("ROCm torch (final)")
         _ensure_rocm_torch()
 

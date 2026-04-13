@@ -199,6 +199,110 @@ function Install-UnslothStudio {
         }
     }
 
+    # ── AMD Windows ROCm helpers ──
+    # Detect AMD HIP SDK 7.1.x / 7.2.x on Windows. Returns a hashtable
+    # @{ Major = 7; Minor = 2; Path = "C:\Program Files\AMD\ROCm\7.2" }
+    # or $null when the SDK is missing, unreadable, or at an unsupported
+    # version. Callers differentiate "not installed" vs "installed but wrong
+    # version" by re-parsing $env:HIP_PATH themselves.
+    function Get-HipSdkVersion {
+        # Primary signal: HIP_PATH env var, e.g. "C:\Program Files\AMD\ROCm\7.2\"
+        # The final path component is the version. Validate bin\ exists so
+        # a stale env var pointing at a half-uninstalled SDK is rejected.
+        $parseComponent = {
+            param($name)
+            if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+            $m = [regex]::Match($name.Trim(), '^(\d+)\.(\d+)')
+            if ($m.Success) {
+                return @{ Major = [int]$m.Groups[1].Value; Minor = [int]$m.Groups[2].Value }
+            }
+            return $null
+        }
+
+        $hipPath = $env:HIP_PATH
+        if ($hipPath) {
+            $trimmed = $hipPath.TrimEnd('\','/')
+            if (Test-Path (Join-Path $trimmed 'bin')) {
+                $parsed = & $parseComponent (Split-Path $trimmed -Leaf)
+                if ($parsed) {
+                    $parsed.Path = $trimmed
+                    return $parsed
+                }
+            }
+        }
+
+        # Fallback: scan C:\Program Files\AMD\ROCm\
+        $rocmRoot = Join-Path $env:ProgramFiles 'AMD\ROCm'
+        if (Test-Path $rocmRoot) {
+            $best = $null
+            try {
+                $dirs = Get-ChildItem -Path $rocmRoot -Directory -ErrorAction SilentlyContinue
+            } catch { $dirs = @() }
+            foreach ($d in $dirs) {
+                if (-not (Test-Path (Join-Path $d.FullName 'bin'))) { continue }
+                $parsed = & $parseComponent $d.Name
+                if ($null -eq $parsed) { continue }
+                if ($null -eq $best -or
+                    $parsed.Major -gt $best.Major -or
+                    ($parsed.Major -eq $best.Major -and $parsed.Minor -gt $best.Minor)) {
+                    $parsed.Path = $d.FullName
+                    $best = $parsed
+                }
+            }
+            if ($best) { return $best }
+        }
+
+        return $null
+    }
+
+    # Map a ROCm release version to the full Radeon Windows wheel set.
+    # Returns @{ SdkCore, SdkDevel, SdkLibraries, SdkTarball, Torch,
+    # Torchvision, Torchaudio } or $null when unsupported. AMD's docs at
+    # rocm.docs.amd.com/projects/radeon-ryzen/.../install-pytorch.html
+    # require a two-step install: first the rocm_sdk_* wheels (~1.3 GB
+    # for 7.2.1; ~3.2 GB for 7.1.1 whose sdk_devel is 2.4 GB) that ship
+    # the runtime torch links against, then torch itself (~780 MB for
+    # 7.2.1, ~692 MB for 7.1.1). Both are mandatory -- torch import
+    # fails with missing DLLs otherwise. Wheels are cp312 only.
+    function Get-RocmWheelUrls {
+        param([Parameter(Mandatory = $true)]$Version)
+        $base721 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/'
+        $base711 = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.1.1/'
+        if ($Version.Major -eq 7 -and $Version.Minor -eq 2) {
+            return @{
+                SdkCore       = $base721 + 'rocm_sdk_core-7.2.1-py3-none-win_amd64.whl'
+                SdkDevel      = $base721 + 'rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl'
+                SdkLibraries  = $base721 + 'rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl'
+                SdkTarball    = $base721 + 'rocm-7.2.1.tar.gz'
+                Torch         = $base721 + 'torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+                Torchvision   = $base721 + 'torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+                Torchaudio    = $base721 + 'torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+            }
+        }
+        if ($Version.Major -eq 7 -and $Version.Minor -eq 1) {
+            # 7.1.1 stamps SDK wheels with `0.1.dev0`; torch gets rocmsdk date tag.
+            return @{
+                SdkCore       = $base711 + 'rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl'
+                SdkDevel      = $base711 + 'rocm_sdk_devel-0.1.dev0-py3-none-win_amd64.whl'
+                SdkLibraries  = $base711 + 'rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl'
+                SdkTarball    = $base711 + 'rocm-0.1.dev0.tar.gz'
+                Torch         = $base711 + 'torch-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+                Torchvision   = $base711 + 'torchvision-0.24.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+                Torchaudio    = $base711 + 'torchaudio-2.9.0%2Brocmsdk20251116-cp312-cp312-win_amd64.whl'
+            }
+        }
+        return $null
+    }
+
+    # Default Windows ROCm release when HIP_PATH is absent. HIP_PATH is an
+    # optional hint, NOT a prerequisite -- regular torch users only need
+    # an AMD graphics driver (26.2.2+ for 7.2.1) and Python 3.12. PyTorch
+    # does not publish Windows ROCm wheels on download.pytorch.org (see
+    # the "ROCm is not available on Windows" note on pytorch.org), so
+    # repo.radeon.com is the only source until pytorch/pytorch#159520
+    # lands upstream Windows ROCm hosting in a future release.
+    $DefaultWindowsRocmVersion = @{ Major = 7; Minor = 2 }
+
     function New-StudioShortcuts {
         param(
             [Parameter(Mandatory = $true)][string]$UnslothExePath
@@ -523,6 +627,75 @@ shell.Run cmd, 0, False
         return
     }
 
+    # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
+    # Runs before Python detection so the AMD/ROCm path can require Python
+    # 3.12 (the only cp tag Radeon publishes Windows wheels for).
+    $HasNvidiaSmi = $false
+    $NvidiaSmiExe = $null
+    try {
+        $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($nvSmiCmd) {
+            & $nvSmiCmd.Source *> $null
+            if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
+        }
+    } catch {}
+    if (-not $HasNvidiaSmi) {
+        foreach ($p in @(
+            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+            "$env:SystemRoot\System32\nvidia-smi.exe"
+        )) {
+            if (Test-Path $p) {
+                try {
+                    & $p *> $null
+                    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
+                } catch {}
+            }
+        }
+    }
+
+    # AMD GPU presence via WMI -- always available on Windows, no elevation,
+    # no dependency on HIP SDK being installed. We deliberately avoid
+    # hipinfo.exe here because it ships inside the HIP SDK and would create
+    # a chicken-and-egg where we cannot prompt "install HIP SDK" on the hosts
+    # that need the prompt.
+    $HasAmdGpu = $false
+    try {
+        $videoControllers = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+        if ($videoControllers) {
+            $amdMatches = @($videoControllers | Where-Object { $_.Name -match 'AMD|Radeon' })
+            if ($amdMatches.Count -gt 0) { $HasAmdGpu = $true }
+        }
+    } catch {}
+    # NVIDIA wins on mixed systems -- matches Linux install.sh behaviour so
+    # users with both cards get the NVIDIA torch path they expect.
+    if ($HasNvidiaSmi) { $HasAmdGpu = $false }
+
+    # Probe HIP SDK as an OPTIONAL version hint. The HIP SDK developer
+    # toolkit is NOT a prerequisite for running torch on Windows -- AMD's
+    # install docs only require the graphics driver (26.2.2+ for 7.2.1)
+    # and Python 3.12. We use $HipSdkVersion when present to select a
+    # matching ROCm wheel release; otherwise we fall back to the newest
+    # stable release ($DefaultWindowsRocmVersion).
+    $HipSdkVersion = $null
+    if ($HasAmdGpu) {
+        $HipSdkVersion = Get-HipSdkVersion
+    }
+
+    if ($HasNvidiaSmi) {
+        step "gpu" "NVIDIA GPU detected"
+    } elseif ($HasAmdGpu) {
+        if ($HipSdkVersion) {
+            step "gpu" ("AMD GPU detected (HIP SDK {0}.{1} hint)" -f $HipSdkVersion.Major, $HipSdkVersion.Minor)
+        } else {
+            step "gpu" ("AMD GPU detected (will use rocm-rel-{0}.{1}.x)" -f $DefaultWindowsRocmVersion.Major, $DefaultWindowsRocmVersion.Minor)
+            substep "HIP SDK not found (optional). Ensure AMD graphics driver is up to date:" "DarkGray"
+            substep "https://www.amd.com/en/support/download/drivers.html" "DarkGray"
+        }
+    } else {
+        step "gpu" "none (chat-only / GGUF)" "Yellow"
+        substep "Training and GPU inference require an NVIDIA or AMD GPU with drivers installed." "Yellow"
+    }
+
     # ── Helper: detect a working Python 3.11-3.13 on the system ──
     # Returns the version string (e.g. "3.13") or "" if none found.
     # Uses try-catch + stderr redirection so that App Execution Alias stubs
@@ -551,15 +724,31 @@ shell.Run cmd, 0, False
     # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
+    #
+    # $PreferredVersions is a list of minor versions to search, in priority
+    # order. Defaults to 3.13, 3.12, 3.11. AMD/ROCm callers pass @("3.12")
+    # because Radeon's Windows wheels are cp312 only.
     function Find-CompatiblePython {
+        param([string[]]$PreferredVersions = @("3.13", "3.12", "3.11"))
+
+        # Build a version regex from the requested minor list. We accept
+        # "3.<minor>.<patch>" where <minor> is in the preferred list.
+        $minors = @()
+        foreach ($v in $PreferredVersions) {
+            if ($v -match '^3\.(\d+)$') { $minors += $Matches[1] }
+        }
+        if ($minors.Count -eq 0) { return $null }
+        $minorAlt = ($minors | Sort-Object -Unique) -join '|'
+        $verRegex = "Python (3\.(?:$minorAlt))\.\d+"
+
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
         if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            foreach ($minor in @("3.13", "3.12", "3.11")) {
+            foreach ($minor in $PreferredVersions) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") {
+                    if ($out -match $verRegex) {
                         $ver = $Matches[1]
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
@@ -584,7 +773,7 @@ shell.Run cmd, 0, False
                 if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") {
+                    if ($out -match $verRegex) {
                         return @{ Version = $Matches[1]; Path = $cmd.Source }
                     }
                 } catch {}
@@ -593,9 +782,16 @@ shell.Run cmd, 0, False
         return $null
     }
 
-    # ── Install Python if no compatible version (3.11-3.13) found ──
+    # ── Install Python if no compatible version found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
-    $DetectedPython = Find-CompatiblePython
+    # AMD + torch requires Python 3.12 (Radeon wheels are cp312 only).
+    if ($HasAmdGpu -and -not $SkipTorch) {
+        $PythonPreferred = @("3.12")
+        $PythonVersion = "3.12"
+    } else {
+        $PythonPreferred = @("3.13", "3.12", "3.11")
+    }
+    $DetectedPython = Find-CompatiblePython -PreferredVersions $PythonPreferred
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
     }
@@ -615,7 +811,7 @@ shell.Run cmd, 0, False
         Refresh-SessionPath
 
         # Re-detect after install (PATH may have changed)
-        $DetectedPython = Find-CompatiblePython
+        $DetectedPython = Find-CompatiblePython -PreferredVersions $PythonPreferred
 
         if (-not $DetectedPython) {
             # Python still not functional after winget -- force reinstall.
@@ -630,7 +826,7 @@ shell.Run cmd, 0, False
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
-            $DetectedPython = Find-CompatiblePython
+            $DetectedPython = Find-CompatiblePython -PreferredVersions $PythonPreferred
         }
 
         if (-not $DetectedPython) {
@@ -721,35 +917,9 @@ shell.Run cmd, 0, False
         substep "$VenvDir"
     }
 
-    # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
-    $HasNvidiaSmi = $false
-    $NvidiaSmiExe = $null
-    try {
-        $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        if ($nvSmiCmd) {
-            & $nvSmiCmd.Source *> $null
-            if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
-        }
-    } catch {}
-    if (-not $HasNvidiaSmi) {
-        foreach ($p in @(
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-            "$env:SystemRoot\System32\nvidia-smi.exe"
-        )) {
-            if (Test-Path $p) {
-                try {
-                    & $p *> $null
-                    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
-                } catch {}
-            }
-        }
-    }
-    if ($HasNvidiaSmi) {
-        step "gpu" "NVIDIA GPU detected"
-    } else {
-        step "gpu" "none (chat-only / GGUF)" "Yellow"
-        substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
-    }
+    # GPU detection moved earlier in the flow (see "Detect GPU" block above
+    # the Python detection); $HasNvidiaSmi, $NvidiaSmiExe, $HasAmdGpu, and
+    # $HipSdkVersion are already populated by this point.
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
@@ -771,10 +941,36 @@ shell.Run cmd, 0, False
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
     }
-    $TorchIndexUrl = Get-TorchIndexUrl
+
+    # The AMD/ROCm path does not use a --index-url; instead it installs
+    # explicit wheel URLs from repo.radeon.com. $TorchIndexUrl stays $null
+    # on that branch so the NVIDIA/CPU path is visibly bypassed. HIP_PATH
+    # is a hint only -- we fall back to $DefaultWindowsRocmVersion when
+    # it is absent or points at an unsupported version, because the HIP
+    # SDK is NOT a runtime prerequisite for torch on Windows.
+    $TorchIndexUrl = $null
+    $RocmWheelUrls = $null
+    $RocmReleaseVersion = $null
+    if ($HasAmdGpu) {
+        if ($HipSdkVersion) {
+            $RocmWheelUrls = Get-RocmWheelUrls -Version $HipSdkVersion
+            if ($RocmWheelUrls) {
+                $RocmReleaseVersion = $HipSdkVersion
+            }
+        }
+        if (-not $RocmWheelUrls) {
+            if ($HipSdkVersion) {
+                substep ("HIP SDK {0}.{1} is too old; falling back to rocm-rel-{2}.{3}.x" -f $HipSdkVersion.Major, $HipSdkVersion.Minor, $DefaultWindowsRocmVersion.Major, $DefaultWindowsRocmVersion.Minor) "Yellow"
+            }
+            $RocmWheelUrls = Get-RocmWheelUrls -Version $DefaultWindowsRocmVersion
+            $RocmReleaseVersion = $DefaultWindowsRocmVersion
+        }
+    } else {
+        $TorchIndexUrl = Get-TorchIndexUrl
+    }
 
     # ── Print CPU-only hint when no GPU detected ──
-    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+    if (-not $SkipTorch -and -not $HasAmdGpu -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         substep "No NVIDIA GPU detected." "Yellow"
         substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
@@ -833,6 +1029,123 @@ shell.Run cmd, 0, False
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
             return
         }
+        if ($StudioLocalInstall) {
+            substep "overlaying local repo (editable)..."
+            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            if ($overlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                return
+            }
+        }
+    } elseif ($HasAmdGpu) {
+        if ($SkipTorch) {
+            substep "skipping PyTorch (--no-torch flag set)." "Yellow"
+        } elseif (-not $RocmWheelUrls) {
+            # Should be unreachable because the detection block above
+            # always falls back to $DefaultWindowsRocmVersion, but guard
+            # anyway so a future refactor that drops the fallback does
+            # not install CPU torch on an AMD host.
+            Write-Host "[ERROR] Could not resolve Windows ROCm wheel URLs." -ForegroundColor Red
+            Write-Host "        This is a bug; please file it at github.com/unslothai/unsloth/issues" -ForegroundColor Yellow
+            return
+        } else {
+            # Verify the venv's Python is 3.12 -- Radeon's wheels are cp312
+            # only and pip would fail with a confusing error otherwise.
+            $venvPyVer = ''
+            try {
+                $venvPyVer = (& $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Out-String).Trim()
+            } catch {}
+            if (-not $venvPyVer) {
+                Write-Host "[ERROR] Could not determine venv Python version." -ForegroundColor Red
+                return
+            }
+            if ($venvPyVer -ne "3.12") {
+                Write-Host "[ERROR] Radeon Windows ROCm wheels require Python 3.12 (venv has $venvPyVer)." -ForegroundColor Red
+                Write-Host "        Install Python 3.12 from https://www.python.org/downloads/ and re-run." -ForegroundColor Yellow
+                return
+            }
+
+            substep ("installing Radeon ROCm SDK + PyTorch wheels for rocm-rel-{0}.{1}.x" -f $RocmReleaseVersion.Major, $RocmReleaseVersion.Minor)
+            # Total download size is release-dependent: 7.2.1 is ~2.1 GB
+            # (1.3 GB SDK + 780 MB torch) and 7.1.1 is ~3.9 GB (3.2 GB
+            # SDK + 692 MB torch; 7.1.1's sdk_devel alone is 2.4 GB).
+            # Show the number so a user on a metered connection is not
+            # surprised.
+            if ($RocmReleaseVersion.Major -eq 7 -and $RocmReleaseVersion.Minor -eq 1) {
+                substep "Downloading ~3.9 GB from repo.radeon.com (7.1.1 sdk_devel is 2.4 GB)"
+            } else {
+                substep "Downloading ~2.1 GB from repo.radeon.com"
+            }
+            # Bootstrap pip + setuptools + wheel into the venv before
+            # running `& $VenvPython -m pip install`. uv venvs do not
+            # ship pip by default. setuptools is needed because the
+            # rocm-<ver>.tar.gz artefact is a source distribution that
+            # pip must build with setuptools as its backend.
+            substep "bootstrapping pip, setuptools, wheel into venv..."
+            $bootstrapExit = Invoke-InstallCommand { uv pip install --python $VenvPython pip setuptools wheel }
+            if ($bootstrapExit -ne 0) {
+                Write-Host "[ERROR] Failed to bootstrap pip/setuptools/wheel into venv (exit $bootstrapExit)" -ForegroundColor Red
+                return
+            }
+            # Install all 7 Radeon artefacts in a SINGLE pip call. AMD's
+            # docs document a two-step install, but torch's metadata has
+            # `Requires-Dist: rocm[libraries]==<ver>` which cascades to
+            # rocm-sdk-libraries-custom==<ver> -- a package that does NOT
+            # exist on PyPI (PyPI has rocm/rocm-sdk-core/rocm-sdk-devel
+            # only at version 0.1.0, wrong version). Splitting the
+            # install and using --force-reinstall on the torch step makes
+            # pip cascade-resolve the rocm dep chain against PyPI and
+            # fail. Passing every URL in one command gives pip's resolver
+            # the full dep graph upfront, so --force-reinstall works and
+            # pip never tries to reach PyPI for the missing packages.
+            #
+            # We use `$VenvPython -m pip install` (not uv) because:
+            # (a) AMD's docs validate pip specifically;
+            # (b) uv has known wheel-corruption issues on similar large
+            #     ROCm wheels (unslothai/unsloth#4966 for bitsandbytes);
+            # (c) pip's default build-isolation is required to build the
+            #     rocm-<ver>.tar.gz source distribution and uv's pip
+            #     shim does not set this up the same way.
+            $rocmInstallExit = Invoke-InstallCommand {
+                & $VenvPython -m pip install --no-cache-dir --force-reinstall `
+                    $RocmWheelUrls.SdkCore `
+                    $RocmWheelUrls.SdkDevel `
+                    $RocmWheelUrls.SdkLibraries `
+                    $RocmWheelUrls.SdkTarball `
+                    $RocmWheelUrls.Torch `
+                    $RocmWheelUrls.Torchvision `
+                    $RocmWheelUrls.Torchaudio
+            }
+            if ($rocmInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install ROCm wheels (exit code $rocmInstallExit)" -ForegroundColor Red
+                Write-Host "        Update your AMD graphics driver: https://www.amd.com/en/support/download/drivers.html" -ForegroundColor Yellow
+                return
+            }
+        }
+
+        substep "installing unsloth (this may take a few minutes)..."
+        # --no-deps prevents uv from re-resolving torch back to default PyPI
+        # (which would strip the +rocm suffix). bitsandbytes has no Windows
+        # ROCm wheel so it is deliberately NOT installed here; 4-bit
+        # quantization is not available on Windows AMD yet.
+        if ($SkipTorch) {
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.4.4" unsloth-zoo }
+            if ($baseInstallExit -eq 0) {
+                $NoTorchReq = Find-NoTorchRuntimeFile
+                if ($NoTorchReq) {
+                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                }
+            }
+        } elseif ($StudioLocalInstall) {
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.4" unsloth-zoo }
+        } else {
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName" }
+        }
+        if ($baseInstallExit -ne 0) {
+            Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+            return
+        }
+
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
