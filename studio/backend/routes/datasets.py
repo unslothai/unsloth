@@ -383,7 +383,7 @@ def get_splits(
         logger.warning(f"Failed to fetch splits for {request.dataset!r}: {detail}")
         raise HTTPException(status_code = upstream_status, detail = detail)
 
-    except Exception as e:
+    except http_requests.RequestException as e:
         logger.error(
             f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True
         )
