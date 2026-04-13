@@ -11,12 +11,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -24,12 +30,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Sheet,
   SheetContent,
@@ -72,11 +72,9 @@ export interface Preset {
   params: InferenceParams;
 }
 
-interface SystemPromptTemplate {
-  id: string;
+interface LegacySystemPromptTemplate {
   name: string;
   content: string;
-  updatedAt: number;
 }
 
 const BUILTIN_PRESETS: Preset[] = [
@@ -107,20 +105,134 @@ const BUILTIN_PRESETS: Preset[] = [
 
 const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
-const CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
+const LEGACY_CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
+const LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY =
+  "unsloth_chat_system_prompts_migrated";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
+}
+
+function getUniquePresetName(baseName: string, usedNames: Set<string>): string {
+  const normalizedBase = baseName.trim() || "Imported Prompt";
+  let nextName = normalizedBase;
+  let suffix = 2;
+  while (usedNames.has(nextName)) {
+    nextName = `${normalizedBase} ${suffix}`;
+    suffix += 1;
+  }
+  usedNames.add(nextName);
+  return nextName;
+}
+
+function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
+  if (!canUseStorage()) return presets;
+  try {
+    const raw = localStorage.getItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
+    if (!raw) return presets;
+    if (localStorage.getItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY) === raw) {
+      return presets;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
+      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
+      return presets;
+    }
+    if (!Array.isArray(parsed)) {
+      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
+      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
+      return presets;
+    }
+    const usedNames = new Set([
+      ...BUILTIN_PRESETS.map((preset) => preset.name),
+      ...presets.map((preset) => preset.name),
+    ]);
+    const seenImportedConfigKeys = new Set(
+      [...BUILTIN_PRESETS, ...presets].map((preset) =>
+        JSON.stringify({
+          temperature: preset.params.temperature,
+          topP: preset.params.topP,
+          topK: preset.params.topK,
+          minP: preset.params.minP,
+          repetitionPenalty: preset.params.repetitionPenalty,
+          presencePenalty: preset.params.presencePenalty,
+          maxSeqLength: preset.params.maxSeqLength,
+          maxTokens: preset.params.maxTokens,
+          systemPrompt: preset.params.systemPrompt,
+          trustRemoteCode: preset.params.trustRemoteCode ?? false,
+        }),
+      ),
+    );
+    const importedPresets = parsed
+      .filter((item): item is LegacySystemPromptTemplate => {
+        if (!item || typeof item !== "object") return false;
+        const maybe = item as Partial<LegacySystemPromptTemplate>;
+        return (
+          typeof maybe.name === "string" && typeof maybe.content === "string"
+        );
+      })
+      .map((template) => ({
+        template,
+        importedParams: {
+          ...defaultInferenceParams,
+          systemPrompt: template.content,
+        },
+      }))
+      .filter(({ importedParams }) => {
+        const configKey = JSON.stringify({
+          temperature: importedParams.temperature,
+          topP: importedParams.topP,
+          topK: importedParams.topK,
+          minP: importedParams.minP,
+          repetitionPenalty: importedParams.repetitionPenalty,
+          presencePenalty: importedParams.presencePenalty,
+          maxSeqLength: importedParams.maxSeqLength,
+          maxTokens: importedParams.maxTokens,
+          systemPrompt: importedParams.systemPrompt,
+          trustRemoteCode: importedParams.trustRemoteCode ?? false,
+        });
+        if (seenImportedConfigKeys.has(configKey)) return false;
+        seenImportedConfigKeys.add(configKey);
+        return true;
+      })
+      .map(({ template, importedParams }) => ({
+        name: getUniquePresetName(`${template.name} Prompt`, usedNames),
+        params: importedParams,
+      }));
+    if (importedPresets.length === 0) {
+      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
+      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
+      return presets;
+    }
+    const mergedPresets = [...presets, ...importedPresets];
+    localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(mergedPresets));
+    try {
+      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
+      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
+    } catch {
+      // ignore cleanup failure after successful import write
+    }
+    return mergedPresets;
+  } catch {
+    return presets;
+  }
 }
 
 function loadSavedCustomPresets(): Preset[] {
   if (!canUseStorage()) return [];
   try {
     const raw = localStorage.getItem(CHAT_PRESETS_KEY);
-    if (!raw) return [];
+    if (!raw) {
+      return migrateLegacySystemPromptTemplates([]);
+    }
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
+    if (!Array.isArray(parsed)) {
+      return migrateLegacySystemPromptTemplates([]);
+    }
+    const presets = parsed
       .filter((item): item is Preset => {
         if (!item || typeof item !== "object") return false;
         const maybe = item as Partial<Preset>;
@@ -133,13 +245,10 @@ function loadSavedCustomPresets(): Preset[] {
           ...preset.params,
         },
       }))
-      .filter(
-        (preset) =>
-          preset.name.length > 0 &&
-          !BUILTIN_PRESETS.some((builtin) => builtin.name === preset.name),
-      );
+      .filter((preset) => preset.name.length > 0);
+    return migrateLegacySystemPromptTemplates(presets);
   } catch {
-    return [];
+    return migrateLegacySystemPromptTemplates([]);
   }
 }
 
@@ -152,54 +261,8 @@ function loadSavedActivePreset(): string {
   }
 }
 
-function createSystemPromptId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function loadSavedSystemPrompts(): SystemPromptTemplate[] {
-  if (!canUseStorage()) return [];
-  try {
-    const raw = localStorage.getItem(CHAT_SYSTEM_PROMPTS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is SystemPromptTemplate => {
-        if (!item || typeof item !== "object") return false;
-        const maybe = item as Partial<SystemPromptTemplate>;
-        return (
-          typeof maybe.id === "string" &&
-          typeof maybe.name === "string" &&
-          typeof maybe.content === "string"
-        );
-      })
-      .map((item) => ({
-        id: item.id.trim(),
-        name: item.name.trim() || "Untitled prompt",
-        content: item.content,
-        updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
-      }))
-      .filter((item) => item.id.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-function saveSystemPrompts(templates: SystemPromptTemplate[]) {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(CHAT_SYSTEM_PROMPTS_KEY, JSON.stringify(templates));
-  } catch {
-    // ignore
-  }
-}
-
 type PresetSaveMode =
   | "disabled"
-  | "reserved"
   | "overwrite-active"
   | "overwrite-other"
   | "create";
@@ -212,14 +275,31 @@ interface PresetSaveState {
   title: string;
 }
 
+function isSamePresetConfig(a: InferenceParams, b: InferenceParams): boolean {
+  return (
+    a.temperature === b.temperature &&
+    a.topP === b.topP &&
+    a.topK === b.topK &&
+    a.minP === b.minP &&
+    a.repetitionPenalty === b.repetitionPenalty &&
+    a.presencePenalty === b.presencePenalty &&
+    a.maxSeqLength === b.maxSeqLength &&
+    a.maxTokens === b.maxTokens &&
+    a.systemPrompt === b.systemPrompt &&
+    (a.trustRemoteCode ?? false) === (b.trustRemoteCode ?? false)
+  );
+}
+
 function getPresetSaveState({
   rawName,
   activePreset,
-  customPresets,
+  presets,
+  activePresetDirty,
 }: {
   rawName: string;
   activePreset: string;
-  customPresets: Preset[];
+  presets: Preset[];
+  activePresetDirty: boolean;
 }): PresetSaveState {
   const trimmedName = rawName.trim();
   if (!trimmedName) {
@@ -232,32 +312,19 @@ function getPresetSaveState({
     };
   }
 
-  if (BUILTIN_PRESETS.some((preset) => preset.name === trimmedName)) {
+  const matchingPreset = presets.find((preset) => preset.name === trimmedName);
+  if (matchingPreset) {
+    const isActiveMatch = matchingPreset.name === activePreset;
     return {
-      mode: "reserved",
-      canSubmit: true,
-      isSaveReady: false,
-      buttonLabel: "Reserved",
-      title: `"${trimmedName}" is reserved. Pick a different name.`,
-    };
-  }
-
-  const matchingCustomPreset = customPresets.find(
-    (preset) => preset.name === trimmedName,
-  );
-  if (matchingCustomPreset) {
-    return {
-      mode:
-        matchingCustomPreset.name === activePreset
-          ? "overwrite-active"
-          : "overwrite-other",
-      canSubmit: true,
-      isSaveReady: true,
-      buttonLabel: "Overwrite",
-      title:
-        matchingCustomPreset.name === activePreset
+      mode: isActiveMatch ? "overwrite-active" : "overwrite-other",
+      canSubmit: !isActiveMatch || activePresetDirty,
+      isSaveReady: !isActiveMatch || activePresetDirty,
+      buttonLabel: isActiveMatch && !activePresetDirty ? "Saved" : "Overwrite",
+      title: isActiveMatch
+        ? activePresetDirty
           ? "Save current settings to this preset"
-          : `Overwrite preset "${trimmedName}"`,
+          : "No unsaved changes"
+        : `Overwrite preset "${trimmedName}"`,
     };
   }
 
@@ -460,39 +527,49 @@ export function ChatSettingsPanel({
     loadSavedActivePreset(),
   );
   const presetControlRowRef = useRef<HTMLDivElement>(null);
-  const [presetMenuWidthPx, setPresetMenuWidthPx] = useState<number | undefined>(
-    undefined,
+  const [presetMenuWidthPx, setPresetMenuWidthPx] = useState<
+    number | undefined
+  >(undefined);
+  const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
+  const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  const presets = useMemo(() => {
+    const overrides = new Set(customPresets.map((preset) => preset.name));
+    return [
+      ...BUILTIN_PRESETS.filter((preset) => !overrides.has(preset.name)),
+      ...customPresets,
+    ];
+  }, [customPresets]);
+  const activePresetDefinition = useMemo(
+    () => presets.find((preset) => preset.name === activePreset) ?? null,
+    [activePreset, presets],
   );
-  const [systemPromptManagerOpen, setSystemPromptManagerOpen] = useState(false);
-  const [systemPrompts, setSystemPrompts] = useState<SystemPromptTemplate[]>(
-    () => loadSavedSystemPrompts(),
+  const activeCustomPreset = useMemo(
+    () => customPresets.find((preset) => preset.name === activePreset) ?? null,
+    [activePreset, customPresets],
   );
-  const [selectedSystemPromptId, setSelectedSystemPromptId] = useState<string | null>(null);
-  const [systemPromptNameDraft, setSystemPromptNameDraft] = useState("");
-  const [systemPromptContentDraft, setSystemPromptContentDraft] = useState("");
-  const presets = useMemo(
-    () => [...BUILTIN_PRESETS, ...customPresets],
-    [customPresets],
+  const activeBuiltinPreset = useMemo(
+    () =>
+      BUILTIN_PRESETS.find((preset) => preset.name === activePreset) ?? null,
+    [activePreset],
   );
-  const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
+  const activePresetDirty = useMemo(
+    () =>
+      activePresetDefinition == null
+        ? false
+        : !isSamePresetConfig(activePresetDefinition.params, params),
+    [activePresetDefinition, params],
+  );
   const presetSaveState = useMemo(
     () =>
       getPresetSaveState({
         rawName: presetNameInput,
         activePreset,
-        customPresets,
+        presets,
+        activePresetDirty,
       }),
-    [activePreset, customPresets, presetNameInput],
+    [activePreset, activePresetDirty, presetNameInput, presets],
   );
-  const selectedSystemPrompt = useMemo(
-    () =>
-      systemPrompts.find((item) => item.id === selectedSystemPromptId) ?? null,
-    [selectedSystemPromptId, systemPrompts],
-  );
-  const systemPromptTemplateDirty =
-    selectedSystemPrompt != null &&
-    (selectedSystemPrompt.name !== systemPromptNameDraft ||
-      selectedSystemPrompt.content !== systemPromptContentDraft);
+  const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => onParamsChange({ ...params, [key]: v });
@@ -503,9 +580,7 @@ export function ChatSettingsPanel({
     if (p) {
       onParamsChange({
         ...p.params,
-        systemPrompt: params.systemPrompt,
         checkpoint: params.checkpoint,
-        trustRemoteCode: params.trustRemoteCode,
       });
       setActivePreset(name);
       if (canUseStorage()) {
@@ -522,10 +597,6 @@ export function ChatSettingsPanel({
     const trimmed = rawName.trim();
     if (!trimmed) {
       toast.error("Enter a preset name");
-      return;
-    }
-    if (BUILTIN_PRESETS.some((preset) => preset.name === trimmed)) {
-      toast.error(`"${trimmed}" is reserved. Pick a different name.`);
       return;
     }
     setCustomPresets((prev) => {
@@ -552,7 +623,10 @@ export function ChatSettingsPanel({
   }
 
   function deletePreset(name: string) {
-    if (BUILTIN_PRESETS.some((p) => p.name === name)) {
+    const hasCustomPreset = customPresets.some(
+      (preset) => preset.name === name,
+    );
+    if (!hasCustomPreset) {
       return;
     }
     setCustomPresets((prev) => {
@@ -567,114 +641,30 @@ export function ChatSettingsPanel({
       return next;
     });
     if (activePreset === name) {
-      setActivePreset("Default");
-      if (canUseStorage()) {
-        try {
-          localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
-        } catch {
-          // ignore
+      const builtinPreset = BUILTIN_PRESETS.find(
+        (preset) => preset.name === name,
+      );
+      if (!builtinPreset) {
+        setActivePreset("Default");
+        if (canUseStorage()) {
+          try {
+            localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
+          } catch {
+            // ignore
+          }
         }
       }
     }
   }
 
-  function openSystemPromptManager() {
-    const available =
-      systemPrompts.length > 0
-        ? systemPrompts
-        : [
-            {
-              id: createSystemPromptId(),
-              name: "Prompt 1",
-              content: params.systemPrompt,
-              updatedAt: Date.now(),
-            },
-          ];
-    if (systemPrompts.length === 0) {
-      setSystemPrompts(available);
-      saveSystemPrompts(available);
-    }
-    const selected =
-      available.find((item) => item.id === selectedSystemPromptId) ?? available[0];
-    setSelectedSystemPromptId(selected.id);
-    setSystemPromptNameDraft(selected.name);
-    setSystemPromptContentDraft(selected.content);
-    setSystemPromptManagerOpen(true);
+  function openSystemPromptEditor() {
+    setSystemPromptDraft(params.systemPrompt);
+    setSystemPromptEditorOpen(true);
   }
 
-  function saveCurrentSystemPromptTemplate() {
-    if (!selectedSystemPromptId) return;
-    const now = Date.now();
-    const normalizedName = systemPromptNameDraft.trim() || "Untitled prompt";
-    const next = systemPrompts.map((item) =>
-      item.id === selectedSystemPromptId
-        ? {
-            ...item,
-            name: normalizedName,
-            content: systemPromptContentDraft,
-            updatedAt: now,
-          }
-        : item,
-    );
-    setSystemPrompts(next);
-    saveSystemPrompts(next);
-    setSystemPromptNameDraft(normalizedName);
-  }
-
-  function createSystemPromptTemplate() {
-    const created: SystemPromptTemplate = {
-      id: createSystemPromptId(),
-      name: "Untitled prompt",
-      content: "",
-      updatedAt: Date.now(),
-    };
-    const next = [created, ...systemPrompts];
-    setSystemPrompts(next);
-    saveSystemPrompts(next);
-    setSelectedSystemPromptId(created.id);
-    setSystemPromptNameDraft(created.name);
-    setSystemPromptContentDraft(created.content);
-  }
-
-  function duplicateSystemPromptTemplate() {
-    const duplicate: SystemPromptTemplate = {
-      id: createSystemPromptId(),
-      name: `${(systemPromptNameDraft.trim() || "Prompt")} copy`,
-      content: systemPromptContentDraft,
-      updatedAt: Date.now(),
-    };
-    const next = [duplicate, ...systemPrompts];
-    setSystemPrompts(next);
-    saveSystemPrompts(next);
-    setSelectedSystemPromptId(duplicate.id);
-    setSystemPromptNameDraft(duplicate.name);
-    setSystemPromptContentDraft(duplicate.content);
-  }
-
-  function deleteCurrentSystemPromptTemplate() {
-    if (!selectedSystemPromptId) return;
-    const remaining = systemPrompts.filter((item) => item.id !== selectedSystemPromptId);
-    const next =
-      remaining.length > 0
-        ? remaining
-        : [
-            {
-              id: createSystemPromptId(),
-              name: "Prompt 1",
-              content: params.systemPrompt,
-              updatedAt: Date.now(),
-            },
-          ];
-    setSystemPrompts(next);
-    saveSystemPrompts(next);
-    const selected = next[0];
-    setSelectedSystemPromptId(selected.id);
-    setSystemPromptNameDraft(selected.name);
-    setSystemPromptContentDraft(selected.content);
-  }
-
-  function applySystemPromptTemplate() {
-    set("systemPrompt")(systemPromptContentDraft);
+  function saveSystemPromptEditor() {
+    set("systemPrompt")(systemPromptDraft);
+    setSystemPromptEditorOpen(false);
   }
 
   useEffect(() => {
@@ -693,9 +683,15 @@ export function ChatSettingsPanel({
     setPresetNameInput(activePreset);
   }, [activePreset]);
 
+  useEffect(() => {
+    if (!open) {
+      setSystemPromptEditorOpen(false);
+    }
+  }, [open]);
+
   useLayoutEffect(() => {
     const el = presetControlRowRef.current;
-    if (!el) return;
+    if (!el || !open) return;
     const measure = () => {
       setPresetMenuWidthPx(el.getBoundingClientRect().width);
     };
@@ -800,8 +796,6 @@ export function ChatSettingsPanel({
                   "h-8 w-full text-xs",
                   presetSaveState.isSaveReady &&
                     "bg-primary/92 text-primary-foreground hover:bg-primary",
-                  presetSaveState.mode === "reserved" &&
-                    "border-border bg-input/20 text-muted-foreground hover:bg-input/30 hover:text-foreground",
                 )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
@@ -814,14 +808,16 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={() => deletePreset(activePreset)}
-                disabled={isBuiltinPreset}
+                disabled={!activeCustomPreset}
                 variant="outline"
                 size="sm"
                 className="h-8 w-full text-xs text-muted-foreground"
                 title={
-                  isBuiltinPreset
-                    ? "Built-in presets cannot be deleted"
-                    : "Delete selected preset"
+                  activeCustomPreset
+                    ? activeBuiltinPreset
+                      ? "Reset selected preset to built-in defaults"
+                      : "Delete selected preset"
+                    : "No saved override to delete"
                 }
               >
                 <span className="inline-flex shrink-0 items-center pr-1.5">
@@ -835,7 +831,10 @@ export function ChatSettingsPanel({
 
         <div className="px-2 pb-4">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <label htmlFor="system-prompt" className="block text-xs font-medium">
+            <label
+              htmlFor="system-prompt"
+              className="block text-xs font-medium"
+            >
               System Prompt
             </label>
             <Button
@@ -843,10 +842,10 @@ export function ChatSettingsPanel({
               variant="outline"
               size="sm"
               className="h-6 px-2 text-[11px]"
-              onClick={openSystemPromptManager}
-              title="Open saved prompt templates"
+              onClick={openSystemPromptEditor}
+              title="Open the full system prompt editor"
             >
-              Templates
+              Edit
             </Button>
           </div>
           <Textarea
@@ -924,7 +923,9 @@ export function ChatSettingsPanel({
                     typeof ctxDisplayValue === "number" &&
                     ctxDisplayValue > ggufMaxContextLength && (
                       <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity ({ggufMaxContextLength.toLocaleString()} tokens). The model may use system RAM.
+                        Exceeds estimated VRAM capacity (
+                        {ggufMaxContextLength.toLocaleString()} tokens). The
+                        model may use system RAM.
                       </p>
                     )}
                 </div>
@@ -1141,118 +1142,56 @@ export function ChatSettingsPanel({
         <ChatTemplateSection onReloadModel={onReloadModel} />
       </div>
       <Dialog
-        open={systemPromptManagerOpen}
+        open={systemPromptEditorOpen}
         onOpenChange={(nextOpen) => {
-          setSystemPromptManagerOpen(nextOpen);
+          setSystemPromptEditorOpen(nextOpen);
         }}
       >
-        <DialogContent className="corner-squircle sm:max-w-[50.4rem]">
+        <DialogContent
+          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
           <DialogHeader>
-            <DialogTitle>Saved Prompt Templates</DialogTitle>
+            <DialogTitle>Edit System Prompt</DialogTitle>
             <DialogDescription>
-              Edit reusable templates here, then apply one to the current chat
-              when ready.
+              This prompt is part of the current configuration and saves with
+              the preset.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 sm:grid-cols-[13rem_minmax(0,1fr)]">
-            <div className="space-y-2">
-              <div className="space-y-0.5 px-0.5">
-                <div className="text-[11px] font-medium">Saved templates</div>
-                <p className="text-[11px] text-muted-foreground">
-                  Reusable prompt presets for future chats.
-                </p>
-              </div>
-              <div className="flex gap-1.5">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  className="h-7 flex-1 text-[11px]"
-                  onClick={createSystemPromptTemplate}
-                >
-                  New
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  className="h-7 flex-1 text-[11px]"
-                  onClick={duplicateSystemPromptTemplate}
-                  disabled={!selectedSystemPromptId}
-                >
-                  Duplicate
-                </Button>
-              </div>
-              <div className="max-h-[16.8rem] space-y-1 overflow-y-auto rounded-md border p-1.5">
-                {systemPrompts.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedSystemPromptId(item.id);
-                      setSystemPromptNameDraft(item.name);
-                      setSystemPromptContentDraft(item.content);
-                    }}
-                    className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
-                      selectedSystemPromptId === item.id
-                        ? "border-primary/20 bg-primary/10 text-primary"
-                        : "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                    }`}
-                  >
-                    <span className="block truncate">{item.name}</span>
-                  </button>
-                ))}
-              </div>
+          <div className="space-y-2">
+            <div className="space-y-0.5 px-0.5">
+              <div className="text-[11px] font-medium">Prompt editor</div>
+              <p className="text-[11px] text-muted-foreground">
+                Use this for longer edits. Save writes back to the active
+                configuration only.
+              </p>
             </div>
-            <div className="space-y-2">
-              <div className="space-y-0.5 px-0.5">
-                <div className="text-[11px] font-medium">Template editor</div>
-                <p className="text-[11px] text-muted-foreground">
-                  Changes stay here until you save or apply them to this chat.
-                </p>
-              </div>
-              <Input
-                value={systemPromptNameDraft}
-                onChange={(event) => setSystemPromptNameDraft(event.target.value)}
-                placeholder="Prompt name"
-                maxLength={80}
-              />
-              <Textarea
-                value={systemPromptContentDraft}
-                onChange={(event) => setSystemPromptContentDraft(event.target.value)}
-                placeholder="You are a helpful assistant..."
-                className="min-h-[14.7rem] text-xs corner-squircle"
-                rows={10}
-              />
-            </div>
+            <Textarea
+              value={systemPromptDraft}
+              onChange={(event) => setSystemPromptDraft(event.target.value)}
+              placeholder="You are a helpful assistant..."
+              className="min-h-[24rem] text-sm leading-6 corner-squircle"
+              rows={14}
+            />
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
               type="button"
               variant="ghost"
-              className="text-muted-foreground hover:text-destructive"
-              onClick={deleteCurrentSystemPromptTemplate}
-              disabled={!selectedSystemPromptId}
+              onClick={() => {
+                setSystemPromptDraft(params.systemPrompt);
+                setSystemPromptEditorOpen(false);
+              }}
             >
-              Delete
+              Cancel
             </Button>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={saveCurrentSystemPromptTemplate}
-                disabled={!(selectedSystemPromptId && systemPromptTemplateDirty)}
-              >
-                Save
-              </Button>
-              <Button
-                type="button"
-                onClick={applySystemPromptTemplate}
-                disabled={!selectedSystemPromptId}
-              >
-                Apply to Chat
-              </Button>
-            </div>
+            <Button
+              type="button"
+              onClick={saveSystemPromptEditor}
+              disabled={!systemPromptEditorDirty}
+            >
+              Save
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
