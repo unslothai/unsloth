@@ -26,12 +26,11 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(1, str(_BACKEND_DIR))
 
 from backend.utils.wheel_utils import (
+    FLASH_ATTN_SPEC,
     flash_attn_package_version,
     flash_attn_wheel_url,
     has_blackwell_gpu,
-    install_wheel,
-    probe_torch_wheel_env,
-    url_exists,
+    install_optional_kernel,
 )
 
 IS_WINDOWS = sys.platform == "win32"
@@ -616,14 +615,6 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
     return flash_attn_wheel_url(env)
 
 
-def _print_optional_install_failure(
-    label: str, result: subprocess.CompletedProcess[str]
-) -> None:
-    _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
-    if result.stdout:
-        print(result.stdout.strip())
-
-
 def _flash_attn_install_disabled() -> bool:
     return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
 
@@ -642,38 +633,22 @@ def _ensure_flash_attn() -> None:
         return
     if IS_WINDOWS or IS_MACOS:
         return
-    if (
-        subprocess.run(
-            [sys.executable, "-c", "import flash_attn"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        ).returncode
-        == 0
-    ):
-        return
 
-    env = probe_torch_wheel_env()
-    wheel_url = _build_flash_attn_wheel_url(env) if env else None
-    if wheel_url and url_exists(wheel_url):
-        for installer, wheel_result in install_wheel(
-            wheel_url,
-            python_executable = sys.executable,
-            use_uv = USE_UV,
-            uv_needs_system = UV_NEEDS_SYSTEM,
-        ):
-            if wheel_result.returncode == 0:
-                return
-            _print_optional_install_failure(
-                f"Installing flash-attn prebuilt wheel with {installer}",
-                wheel_result,
-            )
-        _step("warning", "Continuing without flash-attn", _cyan)
-        return
+    def _status(message: str) -> None:
+        if message.startswith("Installing prebuilt"):
+            if VERBOSE:
+                _step(_LABEL, message, _dim)
+            return
+        _step("warning", message, _cyan)
 
-    if wheel_url is None:
-        _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
-    else:
-        _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+    install_optional_kernel(
+        FLASH_ATTN_SPEC,
+        python_executable = sys.executable,
+        use_uv = USE_UV,
+        uv_needs_system = UV_NEEDS_SYSTEM,
+        allow_pypi_fallback = False,
+        status = _status,
+    )
 
 
 # -- uv bootstrap ------------------------------------------------------

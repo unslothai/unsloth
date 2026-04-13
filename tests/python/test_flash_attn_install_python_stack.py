@@ -182,167 +182,78 @@ class TestFlashAttnWheelSelection:
 
 
 class TestEnsureFlashAttn:
-    def _import_check(self, code: int = 1):
-        return subprocess.CompletedProcess(["python", "-c", "import flash_attn"], code)
-
-    def test_prefers_exact_match_wheel(self):
-        install_calls = []
-
-        def fake_install_wheel(*args, **kwargs):
-            install_calls.append((args, kwargs))
-            return [("uv", subprocess.CompletedProcess(["uv"], 0, ""))]
-
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "USE_UV", True),
-            mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "12",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
-            mock.patch("subprocess.run", return_value = self._import_check()),
-        ):
-            ips._ensure_flash_attn()
-
-        assert len(install_calls) == 1
-        args, kwargs = install_calls[0]
-        assert args == (
-            "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
-        )
-        assert kwargs["python_executable"] == sys.executable
-        assert kwargs["use_uv"] is True
-        assert kwargs["uv_needs_system"] is False
-
-    def test_uv_install_respects_system_flag(self):
-        install_calls = []
-
-        def fake_install_wheel(*args, **kwargs):
-            install_calls.append((args, kwargs))
-            return [("uv", subprocess.CompletedProcess(["uv"], 0, ""))]
-
+    def test_setup_calls_generic_flash_attn_installer_without_pypi_fallback(self):
+        install_mock = mock.Mock(return_value = False)
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", True),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "12",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
+            mock.patch.object(ips, "install_optional_kernel", install_mock),
         ):
             ips._ensure_flash_attn()
 
-        assert len(install_calls) == 1
-        _, kwargs = install_calls[0]
+        install_mock.assert_called_once()
+        args, kwargs = install_mock.call_args
+        assert args == (ips.FLASH_ATTN_SPEC,)
+        assert kwargs["python_executable"] == sys.executable
+        assert kwargs["use_uv"] is True
         assert kwargs["uv_needs_system"] is True
+        assert kwargs["allow_pypi_fallback"] is False
+        assert callable(kwargs["status"])
 
-    def test_wheel_failure_warns_and_continues(self):
-        step_messages: list[tuple[str, str]] = []
-        printed_failures: list[str] = []
-
-        def fake_step(label: str, value: str, color_fn = None):
-            step_messages.append((label, value))
-
+    def test_setup_never_installs_fla(self):
+        install_mock = mock.Mock(return_value = False)
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "12",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [
-                    ("uv", subprocess.CompletedProcess(["uv"], 1, "uv wheel failed")),
-                    (
-                        "pip",
-                        subprocess.CompletedProcess(["pip"], 1, "pip wheel failed"),
-                    ),
-                ],
-            ),
-            mock.patch.object(
-                ips,
-                "_print_optional_install_failure",
-                side_effect = lambda label, result: printed_failures.append(label),
-            ),
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
+            mock.patch.object(ips, "install_optional_kernel", install_mock),
         ):
             ips._ensure_flash_attn()
 
-        assert printed_failures == [
-            "Installing flash-attn prebuilt wheel with uv",
-            "Installing flash-attn prebuilt wheel with pip",
-        ]
-        assert ("warning", "Continuing without flash-attn") in step_messages
+        specs = [call.args[0] for call in install_mock.call_args_list]
+        assert specs == [ips.FLASH_ATTN_SPEC]
 
-    def test_wheel_missing_skips_install_at_setup_time(self):
-        step_messages: list[tuple[str, str]] = []
+    def test_setup_skips_generic_install_when_no_torch(self):
+        with (
+            mock.patch.object(ips, "NO_TORCH", True),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
+        ):
+            ips._ensure_flash_attn()
 
-        def fake_step(label: str, value: str, color_fn = None):
-            step_messages.append((label, value))
+        install_mock.assert_not_called()
 
+    def test_setup_skips_generic_install_on_macos(self):
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = False),
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "IS_MACOS", True),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
         ):
             ips._ensure_flash_attn()
 
-        mock_install_wheel.assert_not_called()
-        assert (
-            "warning",
-            "No published flash-attn prebuilt wheel found",
-        ) in step_messages
+        install_mock.assert_not_called()
+
+    def test_setup_skips_generic_install_on_windows(self):
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
+        ):
+            ips._ensure_flash_attn()
+
+        install_mock.assert_not_called()
 
     def test_skip_env_disables_setup_install(self):
         with (
@@ -350,14 +261,11 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.dict(os.environ, {"UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL": "1"}),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
+        install_mock.assert_not_called()
 
     def test_blackwell_gpu_skips_install_with_warning(self):
         step_messages: list[tuple[str, str]] = []
@@ -370,15 +278,12 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
             mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
+        install_mock.assert_not_called()
         assert any(
             label == "warning" and "Blackwell" in msg for label, msg in step_messages
         )
@@ -394,15 +299,12 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
             mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
+        install_mock.assert_not_called()
         assert any(
             label == "warning" and "Blackwell" in msg for label, msg in step_messages
         )
@@ -418,15 +320,12 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
+            mock.patch.object(ips, "install_optional_kernel") as install_mock,
             mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
+        install_mock.assert_not_called()
         assert not any("Blackwell" in msg for _, msg in step_messages)
 
 
@@ -465,13 +364,25 @@ class TestInstallPythonStackFlashAttnIntegration:
         return flash_attn_calls
 
     def test_linux_torch_install_calls_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = False) == 1
+        assert (
+            self._run_install(no_torch = False, is_macos = False, is_windows = False)
+            == 1
+        )
 
     def test_no_torch_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = True, is_macos = False, is_windows = False) == 0
+        assert (
+            self._run_install(no_torch = True, is_macos = False, is_windows = False)
+            == 0
+        )
 
     def test_macos_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
+        assert (
+            self._run_install(no_torch = False, is_macos = True, is_windows = False)
+            == 0
+        )
 
     def test_windows_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
+        assert (
+            self._run_install(no_torch = False, is_macos = False, is_windows = True)
+            == 0
+        )

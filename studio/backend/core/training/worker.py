@@ -13,27 +13,26 @@ Pattern follows core/data_recipe/jobs/worker.py.
 
 from __future__ import annotations
 
-import structlog
-from loggers import get_logger
 import math
 import os
-import shutil
 import sys
 import time
 import traceback
-import subprocess as _sp
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+import structlog
+from loggers import get_logger
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 from utils.wheel_utils import (
-    direct_wheel_url,
-    flash_attn_wheel_url,
+    CAUSAL_CONV1D_SPEC,
+    FLASH_ATTN_SPEC,
+    FLASH_LINEAR_ATTN_SPEC,
+    MAMBA_SSM_SPEC,
     has_blackwell_gpu,
-    install_wheel,
-    probe_torch_wheel_env,
-    url_exists,
+    install_optional_kernel,
 )
 
 
@@ -46,15 +45,11 @@ def _output_dir_from_resume_checkpoint(
     return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
-_CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
-_CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
-_MAMBA_SSM_RELEASE_TAG = "v2.3.1"
-_MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
-_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
+_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 16384
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
 
 
-def _model_wants_causal_conv1d(model_name: str) -> bool:
+def _model_needs_causal_conv1d_and_fla(model_name: str) -> bool:
     name = model_name.lower()
     return any(
         key in name
@@ -77,204 +72,6 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
     )
 
 
-def _install_package_wheel_first(
-    *,
-    event_queue: Any,
-    import_name: str,
-    display_name: str,
-    pypi_name: str,
-    pypi_version: str | None = None,
-    filename_prefix: str | None = None,
-    release_tag: str | None = None,
-    release_base_url: str | None = None,
-    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
-    pypi_spec: str | None = None,
-    pypi_status_message: str | None = None,
-) -> bool:
-    try:
-        __import__(import_name)
-        logger.info("%s already installed", display_name)
-        return True
-    except ImportError:
-        pass
-
-    env = probe_torch_wheel_env(timeout = 30)
-    if wheel_url_builder is not None:
-        wheel_url = wheel_url_builder(env)
-    else:
-        wheel_url = direct_wheel_url(
-            filename_prefix = filename_prefix,
-            package_version = pypi_version,
-            release_tag = release_tag,
-            release_base_url = release_base_url,
-            env = env,
-        )
-
-    if wheel_url is None:
-        logger.info("No compatible %s wheel candidate", display_name)
-    elif url_exists(wheel_url):
-        _send_status(event_queue, f"Installing prebuilt {display_name} wheel...")
-        for installer, result in install_wheel(
-            wheel_url,
-            python_executable = sys.executable,
-            use_uv = bool(shutil.which("uv")),
-            run = _sp.run,
-        ):
-            if result.returncode == 0:
-                logger.info("Installed prebuilt %s wheel successfully", display_name)
-                return True
-            logger.warning(
-                "%s failed to install %s wheel:\n%s",
-                installer,
-                display_name,
-                result.stdout,
-            )
-    else:
-        logger.info("No published %s wheel found: %s", display_name, wheel_url)
-
-    is_hip = env and env.get("hip_version")
-    if is_hip and not shutil.which("hipcc"):
-        logger.error(
-            "%s requires hipcc for source compilation on ROCm. "
-            "Install the ROCm HIP SDK: https://rocm.docs.amd.com",
-            display_name,
-        )
-        _send_status(
-            event_queue,
-            f"{display_name}: hipcc not found (ROCm HIP SDK required)",
-        )
-        return False
-
-    if pypi_spec is None:
-        pypi_spec = f"{pypi_name}=={pypi_version}"
-
-    if pypi_status_message is None:
-        if is_hip:
-            pypi_status_message = (
-                f"Compiling {display_name} from source for ROCm "
-                "(this may take several minutes)..."
-            )
-        else:
-            pypi_status_message = f"Installing {display_name} from PyPI..."
-
-    _send_status(event_queue, pypi_status_message)
-
-    # Prefer uv for faster dependency resolution when available
-    plain_pypi_install = pypi_version is None
-    if plain_pypi_install:
-        if shutil.which("uv"):
-            pypi_cmd = [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                pypi_spec,
-            ]
-        else:
-            pypi_cmd = [sys.executable, "-m", "pip", "install", pypi_spec]
-    else:
-        if shutil.which("uv"):
-            pypi_cmd = [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--no-build-isolation",
-                "--no-deps",
-            ]
-            # Avoid stale cache artifacts from partial HIP source builds
-            if is_hip:
-                pypi_cmd.append("--no-cache")
-            pypi_cmd.append(pypi_spec)
-        else:
-            pypi_cmd = [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--no-build-isolation",
-                "--no-deps",
-                "--no-cache-dir",
-                pypi_spec,
-            ]
-
-    # Source compilation on ROCm can take 10-30 minutes; use a generous
-    # timeout. Non-HIP installs preserve the pre-existing "no timeout"
-    # behaviour so unrelated slow installs (e.g. causal-conv1d source
-    # build on Linux aarch64 or unsupported torch/CUDA combinations)
-    # are not aborted at 5 minutes by this PR.
-    _run_kwargs: dict[str, Any] = {
-        "stdout": _sp.PIPE,
-        "stderr": _sp.STDOUT,
-        "text": True,
-    }
-    if is_hip:
-        _run_kwargs["timeout"] = 1800
-
-    try:
-        result = _sp.run(pypi_cmd, **_run_kwargs)
-    except _sp.TimeoutExpired:
-        logger.error(
-            "%s installation timed out after %ds",
-            display_name,
-            _run_kwargs.get("timeout"),
-        )
-        _send_status(
-            event_queue,
-            f"{display_name} installation timed out after "
-            f"{_run_kwargs.get('timeout')}s",
-        )
-        return False
-
-    if result.returncode != 0:
-        if is_hip:
-            # Surface a clear error for ROCm source build failures
-            error_lines = (result.stdout or "").strip().splitlines()
-            snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
-            logger.error(
-                "Failed to compile %s for ROCm:\n%s",
-                display_name,
-                result.stdout,
-            )
-            _send_status(
-                event_queue,
-                f"Failed to compile {display_name} for ROCm. "
-                "Check that hipcc and ROCm development headers are installed.\n"
-                f"{snippet}",
-            )
-        else:
-            logger.error(
-                "Failed to install %s from PyPI:\n%s",
-                display_name,
-                result.stdout,
-            )
-        return False
-
-    if is_hip:
-        logger.info("Compiled and installed %s from source for ROCm", display_name)
-    else:
-        logger.info("Installed %s from PyPI", display_name)
-    return True
-
-
-def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
-    if not _model_wants_causal_conv1d(model_name):
-        return
-
-    _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "causal_conv1d",
-        display_name = "causal-conv1d",
-        pypi_name = "causal-conv1d",
-        pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
-        filename_prefix = "causal_conv1d",
-        release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-        release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
-    )
-
-
 _SSM_MODEL_SUBSTRINGS = (
     "nemotron_h",
     "nemotron-h",
@@ -286,52 +83,52 @@ _SSM_MODEL_SUBSTRINGS = (
 )
 
 
-def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
-        return
-
-    logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-    _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "mamba_ssm",
-        display_name = "mamba-ssm",
-        pypi_name = "mamba-ssm",
-        pypi_version = _MAMBA_SSM_PACKAGE_VERSION,
-        filename_prefix = "mamba_ssm",
-        release_tag = _MAMBA_SSM_RELEASE_TAG,
-        release_base_url = "https://github.com/state-spaces/mamba/releases/download",
-    )
+def _model_needs_mamba(model_name: str) -> bool:
+    return any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS)
 
 
 def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
     if os.getenv(_FLASH_ATTN_SKIP_ENV) == "1":
         return False
-    if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
+    if max_seq_length <= _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
     return sys.platform.startswith("linux")
 
 
-def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
-    if not _should_try_runtime_flash_attn_install(max_seq_length):
-        return
-    if has_blackwell_gpu():
-        _send_status(
-            event_queue,
-            "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-        )
-        return
-
-    installed = _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "flash_attn",
-        display_name = "flash-attn",
-        pypi_name = "flash-attn",
-        wheel_url_builder = flash_attn_wheel_url,
-        pypi_spec = "flash-attn",
-        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+def _install_train_time_optional_kernels(
+    event_queue: Any,
+    *,
+    model_name: str,
+    max_seq_length: int,
+) -> None:
+    needs_causal_conv1d = _model_needs_causal_conv1d_and_fla(model_name)
+    optional_installs = (
+        (needs_causal_conv1d, CAUSAL_CONV1D_SPEC),
+        (needs_causal_conv1d, FLASH_LINEAR_ATTN_SPEC),
+        (_model_needs_mamba(model_name), MAMBA_SSM_SPEC),
+        (_should_try_runtime_flash_attn_install(max_seq_length), FLASH_ATTN_SPEC),
     )
-    if not installed:
-        _send_status(event_queue, "Continuing without flash-attn")
+
+    for should_install, spec in optional_installs:
+        if not should_install:
+            continue
+        if spec is MAMBA_SSM_SPEC:
+            logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
+        if spec is FLASH_ATTN_SPEC and has_blackwell_gpu():
+            _send_status(
+                event_queue,
+                "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+            )
+            continue
+        installed = install_optional_kernel(
+            spec,
+            python_executable = sys.executable,
+            use_uv = True,
+            allow_pypi_fallback = True,
+            status = lambda message: _send_status(event_queue, message),
+        )
+        if spec is FLASH_ATTN_SPEC and not installed:
+            _send_status(event_queue, "Continuing without flash-attn")
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -1111,13 +908,12 @@ def run_training_process(
             model_name,
         )
 
-    # ── 1b. Set up causal-conv1d first, then install mamba-ssm if needed ──
+    # ── 1b. Set up optional train-time kernels before ML imports ──
     try:
-        _ensure_causal_conv1d_fast_path(event_queue, model_name)
-        _ensure_mamba_ssm(event_queue, model_name)
-        _ensure_flash_attn_for_long_context(
+        _install_train_time_optional_kernels(
             event_queue,
-            int(config.get("max_seq_length", 2048)),
+            model_name = model_name,
+            max_seq_length = int(config.get("max_seq_length", 2048)),
         )
     except Exception as exc:
         event_queue.put(
@@ -1125,7 +921,7 @@ def run_training_process(
                 "type": "error",
                 "error": (
                     f"Please choose another model to train, since "
-                    f"causal-conv1d / mamba-ssm failed to install "
+                    f"an optional training kernel failed to install "
                     f"with error: {exc}"
                 ),
                 "stack": traceback.format_exc(limit = 20),

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Callable
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -21,6 +22,44 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = (
     "https://github.com/Dao-AILab/flash-attention/releases/download"
 )
+CAUSAL_CONV1D_RELEASE_BASE_URL = (
+    "https://github.com/Dao-AILab/causal-conv1d/releases/download"
+)
+MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
+FLASH_LINEAR_ATTN_RELEASE_BASE_URL = (
+    "https://github.com/fla-org/flash-linear-attention/releases/download"
+)
+
+
+@dataclass(frozen = True)
+class KernelPackageSpec:
+    import_name: str
+    display_name: str
+    pypi_spec: str
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None
+    filename_prefix: str | None = None
+    package_version: str | None = None
+    release_tag: str | None = None
+    release_base_url: str | None = None
+    pypi_status_message: str | None = None
+
+    def build_wheel_url(self, env: dict[str, str] | None) -> str | None:
+        if self.wheel_url_builder is not None:
+            return self.wheel_url_builder(env)
+        if (
+            self.filename_prefix is None
+            or self.package_version is None
+            or self.release_tag is None
+            or self.release_base_url is None
+        ):
+            return None
+        return direct_wheel_url(
+            filename_prefix = self.filename_prefix,
+            package_version = self.package_version,
+            release_tag = self.release_tag,
+            release_base_url = self.release_base_url,
+            env = env,
+        )
 
 
 @functools.lru_cache(maxsize = 1)
@@ -168,6 +207,45 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+CAUSAL_CONV1D_SPEC = KernelPackageSpec(
+    import_name = "causal_conv1d",
+    display_name = "causal-conv1d",
+    pypi_spec = "causal-conv1d==1.6.1",
+    filename_prefix = "causal_conv1d",
+    package_version = "1.6.1",
+    release_tag = "v1.6.1.post4",
+    release_base_url = CAUSAL_CONV1D_RELEASE_BASE_URL,
+)
+
+MAMBA_SSM_SPEC = KernelPackageSpec(
+    import_name = "mamba_ssm",
+    display_name = "mamba-ssm",
+    pypi_spec = "mamba-ssm==2.3.1",
+    filename_prefix = "mamba_ssm",
+    package_version = "2.3.1",
+    release_tag = "v2.3.1",
+    release_base_url = MAMBA_SSM_RELEASE_BASE_URL,
+)
+
+FLASH_ATTN_SPEC = KernelPackageSpec(
+    import_name = "flash_attn",
+    display_name = "flash-attn",
+    pypi_spec = "flash-attn",
+    wheel_url_builder = flash_attn_wheel_url,
+    pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+)
+
+FLASH_LINEAR_ATTN_SPEC = KernelPackageSpec(
+    import_name = "fla",
+    display_name = "flash-linear-attention",
+    pypi_spec = "flash-linear-attention==0.5.0",
+    filename_prefix = "flash_linear_attention",
+    package_version = "0.5.0",
+    release_tag = "v0.5.0",
+    release_base_url = FLASH_LINEAR_ATTN_RELEASE_BASE_URL,
+)
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -205,6 +283,211 @@ def install_wheel(
     )
     attempts.append(("pip", result))
     return attempts
+
+
+def _package_is_importable(import_name: str) -> bool:
+    try:
+        __import__(import_name)
+    except ImportError:
+        return False
+    return True
+
+
+def _default_pypi_status_message(
+    spec: KernelPackageSpec,
+    *,
+    is_hip: bool,
+) -> str:
+    if spec.pypi_status_message is not None:
+        return spec.pypi_status_message
+    if is_hip:
+        return (
+            f"Compiling {spec.display_name} from source for ROCm "
+            "(this may take several minutes)..."
+        )
+    return f"Installing {spec.display_name} from PyPI..."
+
+
+def _pypi_install_command(
+    spec: KernelPackageSpec,
+    *,
+    python_executable: str,
+    use_uv: bool,
+    uv_needs_system: bool,
+    is_hip: bool,
+) -> list[str]:
+    has_uv = use_uv and shutil.which("uv")
+    plain_pypi_install = spec.package_version is None
+
+    if plain_pypi_install:
+        if has_uv:
+            cmd = ["uv", "pip", "install"]
+            if uv_needs_system:
+                cmd.append("--system")
+            cmd.extend(["--python", python_executable, spec.pypi_spec])
+            return cmd
+        return [python_executable, "-m", "pip", "install", spec.pypi_spec]
+
+    if has_uv:
+        cmd = ["uv", "pip", "install"]
+        if uv_needs_system:
+            cmd.append("--system")
+        cmd.extend(
+            [
+                "--python",
+                python_executable,
+                "--no-build-isolation",
+                "--no-deps",
+            ]
+        )
+        if is_hip:
+            cmd.append("--no-cache")
+        cmd.append(spec.pypi_spec)
+        return cmd
+
+    cmd = [
+        python_executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-build-isolation",
+        "--no-deps",
+        "--no-cache-dir",
+        spec.pypi_spec,
+    ]
+    return cmd
+
+
+def install_optional_kernel(
+    spec: KernelPackageSpec,
+    *,
+    python_executable: str,
+    use_uv: bool,
+    uv_needs_system: bool = False,
+    allow_pypi_fallback: bool,
+    status: Callable[[str], None] | None = None,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> bool:
+    if _package_is_importable(spec.import_name):
+        _logger.info("%s already installed", spec.display_name)
+        return True
+
+    env = probe_torch_wheel_env(timeout = 30)
+    wheel_url = spec.build_wheel_url(env)
+
+    if wheel_url is None:
+        _logger.info("No compatible %s wheel candidate", spec.display_name)
+        if status is not None and not allow_pypi_fallback:
+            status(f"No compatible {spec.display_name} prebuilt wheel found")
+    elif url_exists(wheel_url):
+        if status is not None:
+            status(f"Installing prebuilt {spec.display_name} wheel...")
+        for installer, result in install_wheel(
+            wheel_url,
+            python_executable = python_executable,
+            use_uv = use_uv,
+            uv_needs_system = uv_needs_system,
+            run = run,
+        ):
+            if result.returncode == 0:
+                _logger.info(
+                    "Installed prebuilt %s wheel successfully",
+                    spec.display_name,
+                )
+                return True
+            _logger.warning(
+                "%s failed to install %s wheel:\n%s",
+                installer,
+                spec.display_name,
+                result.stdout,
+            )
+            if status is not None and not allow_pypi_fallback:
+                status(
+                    f"Installing {spec.display_name} prebuilt wheel with "
+                    f"{installer} failed (exit code {result.returncode})"
+                )
+    else:
+        _logger.info("No published %s wheel found: %s", spec.display_name, wheel_url)
+        if status is not None and not allow_pypi_fallback:
+            status(f"No published {spec.display_name} prebuilt wheel found")
+
+    if not allow_pypi_fallback:
+        return False
+
+    is_hip = bool(env and env.get("hip_version"))
+    if is_hip and not shutil.which("hipcc"):
+        _logger.error(
+            "%s requires hipcc for source compilation on ROCm. "
+            "Install the ROCm HIP SDK: https://rocm.docs.amd.com",
+            spec.display_name,
+        )
+        if status is not None:
+            status(f"{spec.display_name}: hipcc not found (ROCm HIP SDK required)")
+        return False
+
+    if status is not None:
+        status(_default_pypi_status_message(spec, is_hip = is_hip))
+
+    pypi_cmd = _pypi_install_command(
+        spec,
+        python_executable = python_executable,
+        use_uv = use_uv,
+        uv_needs_system = uv_needs_system,
+        is_hip = is_hip,
+    )
+
+    run_kwargs: dict[str, object] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "env": child_env_without_native_path_secret(),
+    }
+    if is_hip:
+        run_kwargs["timeout"] = 1800
+
+    try:
+        result = run(pypi_cmd, **run_kwargs)
+    except subprocess.TimeoutExpired:
+        _logger.error(
+            "%s installation timed out after %ds",
+            spec.display_name,
+            run_kwargs.get("timeout"),
+        )
+        if status is not None:
+            status(
+                f"{spec.display_name} installation timed out after "
+                f"{run_kwargs.get('timeout')}s"
+            )
+        return False
+
+    if result.returncode != 0:
+        if is_hip:
+            error_lines = (result.stdout or "").strip().splitlines()
+            snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
+            _logger.error(
+                "Failed to compile %s for ROCm:\n%s",
+                spec.display_name,
+                result.stdout,
+            )
+            if status is not None:
+                status(
+                    f"Failed to compile {spec.display_name} for ROCm. "
+                    "Check that hipcc and ROCm development headers are installed.\n"
+                    f"{snippet}"
+                )
+        else:
+            _logger.error(
+                "Failed to install %s from PyPI:\n%s",
+                spec.display_name,
+                result.stdout,
+            )
+        return False
+
+    if is_hip:
+        _logger.info("Compiled and installed %s from source for ROCm", spec.display_name)
+    else:
+        _logger.info("Installed %s from PyPI", spec.display_name)
+    return True
 
 
 def url_exists(url: str) -> bool:
