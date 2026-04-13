@@ -6,6 +6,7 @@ SQLite storage for authentication data (user credentials + JWT secret).
 """
 
 import hashlib
+import hmac
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -72,7 +73,19 @@ def clear_bootstrap_password() -> None:
 
 
 def _hash_token(token: str) -> str:
-    """SHA-256 hash helper used for refresh token storage."""
+    """SHA-256 hash helper used for refresh token storage.
+
+    Plain SHA-256 is intentional here: refresh tokens are high-entropy
+    random strings from ``secrets.token_urlsafe(48)`` (384 bits of
+    entropy), so a slow KDF (Argon2 / bcrypt / PBKDF2) provides zero
+    additional security — no attacker can brute-force 2^384 regardless
+    of hash speed — while adding tens of ms of CPU to every refresh.
+    See the OWASP Password Storage Cheat Sheet on fast-vs-slow hashing
+    of high-entropy inputs.
+
+    API keys use the separate ``_hmac_api_key`` helper below, which
+    keyed-hashes with a persistent server secret for defense-in-depth.
+    """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -118,6 +131,14 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_secrets (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -125,6 +146,71 @@ def get_connection() -> sqlite3.Connection:
         )
     conn.commit()
     return conn
+
+
+# ── API-key HMAC secret ────────────────────────────────────────────────
+#
+# Module-level cache for the persistent API-key HMAC secret. Populated
+# lazily on first use via ``_get_or_create_api_key_hmac_secret``. Not
+# protected by a lock because (a) the ``INSERT OR IGNORE`` provides
+# atomicity at the SQLite layer and (b) concurrent populations converge
+# on the same value, so the worst case is a harmless duplicate read on
+# startup.
+_api_key_hmac_secret_cache: Optional[bytes] = None
+
+
+def _get_or_create_api_key_hmac_secret() -> bytes:
+    """Return the persistent API-key HMAC secret, generating it once if missing.
+
+    Stored as a hex-encoded 32-byte random value in the ``app_secrets``
+    table under key ``"api_key_hmac"``. Regenerated only if the row is
+    missing (i.e. fresh install, or operator manually deleted the row
+    and accepts invalidating existing API keys).
+    """
+    global _api_key_hmac_secret_cache
+    if _api_key_hmac_secret_cache is not None:
+        return _api_key_hmac_secret_cache
+
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            ("api_key_hmac",),
+        )
+        row = cur.fetchone()
+        if row is None:
+            new_value = secrets.token_hex(32)  # 32 bytes -> 64 hex chars
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                ("api_key_hmac", new_value),
+            )
+            conn.commit()
+            cur = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                ("api_key_hmac",),
+            )
+            row = cur.fetchone()
+        secret = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _api_key_hmac_secret_cache = secret
+    return secret
+
+
+def _hmac_api_key(raw_key: str) -> str:
+    """HMAC-SHA256 an API key with the persistent server-side secret.
+
+    Used for API-key storage ONLY, not refresh tokens. API keys are
+    cryptographically random 128-bit tokens (via ``secrets.token_hex``),
+    so a slow KDF would buy zero security — 2^128 is unreachable by
+    brute force regardless of hash speed. HMAC with a persistent secret
+    adds defense-in-depth vs. plain SHA-256: an attacker dumping the
+    ``api_keys`` table alone cannot compute hashes for candidate
+    tokens without also obtaining the ``app_secrets`` row.
+    """
+    secret = _get_or_create_api_key_hmac_secret()
+    return hmac.new(secret, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def is_initialized() -> bool:
@@ -392,7 +478,7 @@ def create_api_key(
     exactly once.  The database only stores the SHA-256 hash.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
-    key_hash = _hash_token(raw_key)
+    key_hash = _hmac_api_key(raw_key)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
     now = datetime.now(timezone.utc).isoformat()
 
@@ -450,7 +536,7 @@ def validate_api_key(raw_key: str) -> Optional[str]:
 
     Also updates ``last_used_at`` on success.
     """
-    key_hash = _hash_token(raw_key)
+    key_hash = _hmac_api_key(raw_key)
     conn = get_connection()
     try:
         cur = conn.execute(
