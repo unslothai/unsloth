@@ -1352,7 +1352,7 @@ def save_to_gguf(
             if first_conversion not in quantization_method:
                 all_saved_locations.remove(base_gguf)
                 Path(base_gguf).unlink(missing_ok = True)
-            elif len(initial_files) > 1:
+            elif is_vlm:
                 # For VLMs, move base_gguf so mmproj becomes index 0 before reversal.
                 # This ensures mmproj remains at the end of the list after reversal.
                 all_saved_locations.insert(1, all_saved_locations.pop(0))
