@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { useTranslation } from "react-i18next";
 import {
   Sheet,
   SheetContent,
@@ -199,16 +200,16 @@ export function ChartSettingsSheet(): ReactElement {
           <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-6">
             <div className="space-y-3">
               <div>
-                <p className="text-sm font-medium">View window</p>
+                <p className="text-sm font-medium">{t("studio.viewWindow")}</p>
                 <p className="text-xs text-muted-foreground">
-                  Show latest steps only or the full history.
+                  {t("studio.showLatestOrHistory")}
                 </p>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Window</span>
+                  <span>{t("studio.window")}</span>
                   <span className="tabular-nums">
-                    {showingAll ? "All" : effectiveWindowSize}
+                    {showingAll ? t("common.all") : effectiveWindowSize}
                   </span>
                 </div>
                 <Slider
@@ -224,14 +225,14 @@ export function ChartSettingsSheet(): ReactElement {
             <Separator />
             <div className="space-y-4">
               <div>
-                <p className="text-sm font-medium">Training loss</p>
+                <p className="text-sm font-medium">{t("studio.trainingLoss")}</p>
                 <p className="text-xs text-muted-foreground">
-                  Control overlays and EMA smoothing.
+                  {t("studio.controlOverlaysSmoothing")}
                 </p>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Smoothing</span>
+                  <span>{t("studio.smoothing")}</span>
                   <span className="tabular-nums">{smoothing.toFixed(2)}</span>
                 </div>
                 <Slider
@@ -242,11 +243,11 @@ export function ChartSettingsSheet(): ReactElement {
                   step={0.01}
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Move right for more smoothing. `0` = raw.
+                  {t("studio.smoothingHint")}
                 </p>
               </div>
               <SettingRow
-                label="Show raw loss"
+                label={t("studio.showRawLoss")}
                 control={
                   <Switch checked={showRaw} onCheckedChange={setShowRaw} />
                 }

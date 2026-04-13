@@ -9,6 +9,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { usePlatformStore } from "@/config/env";
 import { refreshSession } from "../api";
 
@@ -75,6 +76,7 @@ type AuthFormProps = {
 const HIDDEN_LOGIN_USERNAME = "unsloth";
 
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
@@ -164,21 +166,21 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
   let helperText: string | null = null;
   if (initialized === false) {
-    helperText = "Auth is still bootstrapping the default admin account.";
+    helperText = t("errors.internalError");
   } else if (isLoginMode && requiresPasswordChange) {
-    helperText = "Sign in once with the seeded credentials to change the password.";
+    helperText = t("auth.helperText");
   } else if (!isLoginMode && !requiresPasswordChange && !mustChangePassword()) {
-    helperText = "Password already updated. Use the login screen.";
+    helperText = t("auth.passwordSetup");
   }
-  const title = isLoginMode ? "Welcome back" : "Setup your account";
+  const title = isLoginMode ? t("auth.welcomeBack") : t("auth.setupAccount");
   const subtitle = isLoginMode  
-    ? "Sign in with your password."
-    : "Choose a new password";
-  const submitLabel = isLoginMode ? "Login" : "Change password";
+    ? t("auth.helperText")
+    : t("auth.newPassword");
+  const submitLabel = isLoginMode ? t("auth.login") : t("auth.changePassword");
   const showSwitchLink = !isLoginMode;
-  const switchText = "Password already setup? ";
+  const switchText = t("auth.passwordSetup");
   const switchLinkTo = "/login";
-  const switchLinkText = "Back to login";
+  const switchLinkText = t("auth.backToLogin");
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
   const invalidChangePasswordForm =
     !isLoginMode &&
@@ -195,19 +197,19 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
     if (!isLoginMode) {
       if (!currentPassword) {
-        setError("Unable to initialize setup. Reload the page and try again.");
+        setError(t("errors.internalError"));
         return;
       }
       if (newPassword.length < 8) {
-        setError("New password must be at least 8 characters.");
+        setError(t("auth.passwordTooShort"));
         return;
       }
       if (newPassword !== confirmPassword) {
-        setError("Passwords do not match.");
+        setError(t("auth.passwordMismatch"));
         return;
       }
       if (currentPassword === newPassword) {
-        setError("New password must be different from your current password.");
+        setError(t("auth.newPassword"));
         return;
       }
     }
@@ -254,7 +256,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         });
 
         if (!response.ok) {
-          let message = "Password update failed.";
+          let message = t("auth.changePassword") + " " + t("errors.authFailed");
           const errorPayload = (await response
             .json()
             .catch(() => null)) as { detail?: string } | null;
@@ -279,7 +281,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       );
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      let msg = err instanceof Error ? err.message : "Auth failed.";
+      let msg = err instanceof Error ? err.message : t("errors.authFailed");
       if (msg.includes("unsloth studio reset-password") && usePlatformStore.getState().deviceType === "windows") {
         msg = msg.replace(
           "unsloth studio reset-password",
@@ -308,7 +310,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       <form className="space-y-5" onSubmit={handleSubmit}>
         {isLoginMode && (
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
+            <Label htmlFor="password">{t("auth.password")}</Label>
             <div className="relative">
               <Input
                 id="password"
@@ -340,7 +342,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         {!isLoginMode && (
           <>
             <div className="space-y-2">
-              <Label htmlFor="new-password">New password</Label>
+              <Label htmlFor="new-password">{t("auth.newPassword")}</Label>
               <div className="relative">
                 <Input
                   id="new-password"
@@ -368,7 +370,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="confirm-password">Confirm password</Label>
+              <Label htmlFor="confirm-password">{t("auth.confirmPassword")}</Label>
               <Input
                 id="confirm-password"
                 type="password"
@@ -386,8 +388,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               aria-live="polite"
             >
               {showPasswordMismatchWarning
-                ? "Please ensure passwords match."
-                : "Must be at least 8 characters."}
+                ? t("auth.passwordMismatch")
+                : t("auth.passwordTooShort")}
             </p>
           </>
         )}
@@ -408,7 +410,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             invalidChangePasswordForm
           }
         >
-          {loading ? "Please wait..." : submitLabel}
+          {loading ? t("common.loading") : submitLabel}
         </Button>
       </form>
 

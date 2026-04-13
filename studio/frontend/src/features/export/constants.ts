@@ -5,33 +5,24 @@ import type { TrainingMethod } from "@/types/training";
 
 export type ExportMethod = "merged" | "lora" | "gguf";
 
-export const EXPORT_METHODS: {
-  value: ExportMethod;
-  title: string;
-  description: string;
-  tooltip: string;
-  badge?: string;
-}[] = [
+export const EXPORT_METHODS = (t: (key: string) => string) => [
   {
     value: "merged",
-    title: "Merged Model",
-    description: "Full 16-bit model ready for inference.",
-    tooltip:
-      "Merges adapter weights into the base model. Best for direct deployment with vLLM or TGI.",
+    title: t("export.mergedModel"),
+    description: t("export.mergedModelDesc"),
+    tooltip: t("export.mergedModelTooltip"),
   },
   {
     value: "lora",
-    title: "LoRA Only",
-    description: "Lightweight adapter files (~100 MB). Needs base model.",
-    tooltip:
-      "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
+    title: t("export.loraOnly"),
+    description: t("export.loraOnlyDesc"),
+    tooltip: t("export.loraOnlyTooltip"),
   },
   {
     value: "gguf",
-    title: "GGUF / Llama.cpp",
-    description: "Quantized formats for local AI runners.",
-    tooltip:
-      "Converts to GGUF for llama.cpp, Ollama, and other local runners. Pick a quantization level below.",
+    title: t("export.ggufLlamaCpp"),
+    description: t("export.ggufLlamaCppDesc"),
+    tooltip: t("export.ggufLlamaCppTooltip"),
   },
 ];
 

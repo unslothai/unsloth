@@ -6,6 +6,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 import type { FC } from "react";
 
 const formatTokenCount = (n: number): string => {
@@ -34,6 +35,7 @@ export const ContextUsageBar: FC<{
   completionTokens?: number;
   className?: string;
 }> = ({ used, total, cached, promptTokens, completionTokens, className }) => {
+  const { t } = useTranslation();
   if (total <= 0) return null;
 
   const percent = Math.min((used / total) * 100, 100);
@@ -83,7 +85,7 @@ export const ContextUsageBar: FC<{
           )}
           {completionTokens !== undefined && (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Completion</span>
+              <span className="text-muted-foreground">{t("chat.completion")}</span>
               <span className="font-mono tabular-nums">
                 {formatTokenCountFull(completionTokens)}
               </span>
@@ -91,7 +93,7 @@ export const ContextUsageBar: FC<{
           )}
           {cached !== undefined && cached > 0 && (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Cache hits</span>
+              <span className="text-muted-foreground">{t("chat.cacheHits")}</span>
               <span className="font-mono tabular-nums">
                 {formatTokenCountFull(cached)}
               </span>
@@ -99,7 +101,7 @@ export const ContextUsageBar: FC<{
           )}
           <div className="my-0.5 border-t border-border/40" />
           <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">Total</span>
+            <span className="text-muted-foreground">{t("common.total")}</span>
             <span className="font-mono tabular-nums">
               {formatTokenCountFull(used)} / {formatTokenCountFull(total)}
             </span>

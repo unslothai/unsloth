@@ -22,6 +22,7 @@ import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -231,7 +232,7 @@ const GeneratingSpinner: FC = () => {
     <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
+        <span>{t("chat.generating")}</span>
       </div>
     </div>
   );
@@ -368,16 +369,13 @@ const ReasoningToggle: FC = () => {
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const disabled = !modelLoaded || !supportsReasoning;
+  const { t } = useTranslation();
 
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => {
-        const next = !reasoningEnabled;
-        setReasoningEnabled(next);
-        applyQwenThinkingParams(next);
-      }}
+      onClick={() => setReasoningEnabled(!reasoningEnabled)}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
         disabled
@@ -393,7 +391,7 @@ const ReasoningToggle: FC = () => {
       ) : (
         <LightbulbOffIcon className="size-3.5" />
       )}
-      <span>Think</span>
+      <span>{t("chat.think")}</span>
     </button>
   );
 };
@@ -406,6 +404,7 @@ const WebSearchToggle: FC = () => {
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const disabled = !modelLoaded || !supportsTools;
+  const { t } = useTranslation();
 
   return (
     <button
@@ -423,7 +422,7 @@ const WebSearchToggle: FC = () => {
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <GlobeIcon className="size-3.5" />
-      <span>Search</span>
+      <span>{t("chat.search")}</span>
     </button>
   );
 };
@@ -438,6 +437,7 @@ const CodeToolsToggle: FC = () => {
     (s) => s.setCodeToolsEnabled,
   );
   const disabled = !modelLoaded || !supportsTools;
+  const { t } = useTranslation();
 
   return (
     <button
@@ -455,7 +455,7 @@ const CodeToolsToggle: FC = () => {
       aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
     >
       <TerminalIcon className="size-3.5" />
-      <span>Code</span>
+      <span>{t("chat.code")}</span>
     </button>
   );
 };

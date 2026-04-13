@@ -43,13 +43,18 @@ import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
+import { useTranslation } from "react-i18next";
+import { LanguageToggle } from "@/components/ui/language-toggle";
 
-const NAV_ITEMS = [
-  { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
-  { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: true },
-  { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
-  { label: "Chat", href: "/chat", icon: BubbleChatIcon, enabled: true },
-];
+function useNavItems() {
+  const { t } = useTranslation();
+  return [
+    { label: t("nav.studio"), href: "/studio", icon: ZapIcon, enabled: true },
+    { label: t("nav.recipes"), href: "/data-recipes", icon: ChefHatIcon, enabled: true },
+    { label: t("nav.export"), href: "/export", icon: PackageIcon, enabled: true },
+    { label: t("nav.chat"), href: "/chat", icon: BubbleChatIcon, enabled: true },
+  ];
+}
 
 const STUDIO_UPDATE_CMD = "unsloth studio update";
 const STUDIO_UPDATE_FALLBACK_UNIX_CMD =
@@ -132,6 +137,7 @@ function UpdateStudioInstructions({
   defaultShell: UpdateShell;
   showTitle?: boolean;
 }): ReactElement {
+  const { t } = useTranslation();
   const [shell, setShell] = useState<UpdateShell>(defaultShell);
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
@@ -156,7 +162,7 @@ function UpdateStudioInstructions({
       >
         {showTitle ? (
           <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
-            Update Unsloth Studio
+            {t("update.title")}
           </p>
         ) : null}
         <div className="flex shrink-0 items-center gap-0.5 text-[11px]">
@@ -171,7 +177,7 @@ function UpdateStudioInstructions({
             )}
             aria-pressed={windows}
           >
-            Windows
+            {t("common.windows")}
           </button>
           <span className="text-border">/</span>
           <button
@@ -185,7 +191,7 @@ function UpdateStudioInstructions({
             )}
             aria-pressed={!windows}
           >
-            macOS/Linux
+            {t("common.macOSLinux")}
           </button>
         </div>
       </div>
@@ -198,12 +204,12 @@ function UpdateStudioInstructions({
           transition={fadeTransition}
           className="text-xs text-muted-foreground leading-relaxed"
         >
-          {getStudioUpdateInstructionLine(shell)}
+          {windows ? t("update.instructionWindows") : t("update.instruction")}
         </motion.p>
       </AnimatePresence>
-      <CopyableCommand command={STUDIO_UPDATE_CMD} copyLabel="update command" />
+      <CopyableCommand command={STUDIO_UPDATE_CMD} copyLabel={t("common.updateCommand")} />
       <p className="text-xs text-muted-foreground leading-relaxed">
-        If that fails or unsloth studio update is unavailable, run:
+        {t("update.fallback")}
       </p>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
@@ -219,12 +225,12 @@ function UpdateStudioInstructions({
                 ? STUDIO_UPDATE_FALLBACK_WINDOWS_CMD
                 : STUDIO_UPDATE_FALLBACK_UNIX_CMD
             }
-            copyLabel="fallback command"
+            copyLabel={t("common.fallbackCommand")}
           />
         </motion.div>
       </AnimatePresence>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Restart Studio after updating for changes to take effect.
+        {t("update.restart")}
       </p>
     </div>
   );
@@ -238,6 +244,8 @@ function getTourId(pathname: string): "studio" | "chat" | "export" | null {
 }
 
 export function Navbar() {
+  const { t } = useTranslation();
+  const NAV_ITEMS = useNavItems();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -375,10 +383,13 @@ export function Navbar() {
         {/* Right: docs/tour desktop — one wrapper per control so flex gap is even (HoverCard roots can confuse flex spacing). */}
         <div className="hidden items-center justify-self-end gap-0 md:flex">
           <div className="flex shrink-0 items-center">
+            <LanguageToggle />
+          </div>
+          <div className="flex shrink-0 items-center">
             <AnimatedThemeToggler
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
-              title="Toggle theme"
-              aria-label="Toggle theme"
+              title={t("common.toggleTheme")}
+              aria-label={t("common.toggleTheme")}
             />
           </div>
           <div className="flex shrink-0 items-center">
@@ -391,7 +402,7 @@ export function Navbar() {
                   className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-emerald-600 transition-colors hover:bg-accent hover:text-emerald-700 dark:hover:text-emerald-400"
                 >
                   <HugeiconsIcon icon={Book03Icon} className="size-4" />
-                  Learn more
+                  {t("nav.learnMore")}
                 </a>
               </HoverCardTrigger>
               <HoverCardContent align="end" className="w-80 p-0">
@@ -402,14 +413,13 @@ export function Navbar() {
                   className="group/card flex flex-col gap-1 p-4 no-underline"
                 >
                   <p className="text-sm font-semibold font-heading">
-                    Unsloth Documentation
+                    {t("nav.docs")}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Guides on fine-tuning LLMs 2x faster with 70% less memory.
-                    Covers LoRA, QLoRA, data formatting, and deployment.
+                    {t("update.fallback")}
                   </p>
                   <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
-                    Visit docs
+                    {t("common.visitDocs")}
                     <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
                   </span>
                 </a>
@@ -422,10 +432,10 @@ export function Navbar() {
                 type="button"
                 onClick={openTour}
                 className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title="Tour"
+                title={t("common.tour")}
               >
                 <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-                <span className="text-sm font-medium">Tour</span>
+                <span className="text-sm font-medium">{t("nav.tour")}</span>
               </button>
             </div>
           ) : null}
@@ -435,10 +445,10 @@ export function Navbar() {
                 <button
                   type="button"
                   className="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  aria-label="How to update Unsloth Studio"
+                  aria-label={t("nav.update")}
                 >
                   <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
-                  Update
+                  {t("nav.update")}
                 </button>
               </HoverCardTrigger>
               <HoverCardContent align="end" className="w-[22.5rem] p-0">
@@ -454,8 +464,8 @@ export function Navbar() {
               type="button"
               onClick={() => setShutdownOpen(true)}
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="Shut down Unsloth Studio server"
-              aria-label="Shut down Unsloth Studio server"
+              title={t("common.shutDownServer")}
+              aria-label={t("common.shutDownServer")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
             </button>
@@ -469,7 +479,7 @@ export function Navbar() {
               type="button"
               onClick={openTour}
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="Tour"
+              title={t("common.tour")}
             >
               <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
             </button>
@@ -485,14 +495,14 @@ export function Navbar() {
               <button
                 type="button"
                 className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground"
-                aria-label="Open navigation menu"
+                aria-label={t("nav.menu")}
               >
-                Menu
+                {t("nav.menu")}
               </button>
             </SheetTrigger>
             <SheetContent side="right" className="w-[300px] p-4">
               <SheetHeader>
-                <SheetTitle>Navigate</SheetTitle>
+                <SheetTitle>{t("nav.navigate")}</SheetTitle>
               </SheetHeader>
               <div className="mt-6 flex max-h-[calc(100dvh-8rem)] flex-col gap-2 overflow-y-auto pr-1">
                 {NAV_ITEMS.filter((item) => item.enabled).map((item) => {
@@ -537,7 +547,7 @@ export function Navbar() {
                   onClick={() => setMobileOpen(false)}
                 >
                   <HugeiconsIcon icon={Book03Icon} className="size-4" />
-                  Learn more (Docs)
+                  {t("nav.learnMore")} ({t("nav.docs")})
                 </a>
                 {tourId ? (
                   <button
@@ -549,7 +559,7 @@ export function Navbar() {
                     }}
                   >
                     <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-                    Start tour
+                    {t("studio.startTour")}
                   </button>
                 ) : null}
                 <Collapsible
@@ -561,11 +571,11 @@ export function Navbar() {
                     <button
                       type="button"
                       className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-foreground transition-colors hover:bg-accent"
-                      aria-label="Toggle update instructions"
+                      aria-label={t("nav.update")}
                     >
                       <span className="flex items-center gap-2">
                         <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
-                        Update Unsloth Studio
+                        {t("update.title")}
                       </span>
                       <HugeiconsIcon
                         icon={ArrowRight01Icon}
@@ -592,14 +602,14 @@ export function Navbar() {
                   }}
                 >
                   <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
-                  Quit Unsloth Studio
+                  {t("common.quit")}
                 </button>
                 <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
-                  <span className="text-sm font-medium text-foreground">Theme</span>
+                  <span className="text-sm font-medium text-foreground">{t("common.theme")}</span>
                   <AnimatedThemeToggler
                     className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
-                    title="Toggle theme"
-                    aria-label="Toggle theme"
+                    title={t("common.toggleTheme")}
+                    aria-label={t("common.toggleTheme")}
                   />
                 </div>
               </div>

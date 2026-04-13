@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
@@ -27,6 +28,7 @@ import { HistoryCardGrid } from "./history-card-grid";
 const STUDIO_TOUR_KEY = "tour:studio:v1";
 
 export function StudioPage(): ReactElement {
+  const { t } = useTranslation();
   useTrainingRuntimeLifecycle();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
@@ -99,10 +101,10 @@ export function StudioPage(): ReactElement {
   }
 
   const subtitle = (() => {
-    if (activeTab === "current-run") return runtimeMessage || "Training in progress";
+    if (activeTab === "current-run") return runtimeMessage || t("studio.trainingInProgress");
     if (activeTab === "history")
-      return selectedHistoryRunId ? "Viewing past run" : "View past training runs";
-    return "Configure and start training";
+      return selectedHistoryRunId ? t("studio.viewingPastRun") : t("studio.pastRuns");
+    return t("studio.configureTraining");
   })();
 
   return (
@@ -129,14 +131,14 @@ export function StudioPage(): ReactElement {
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Fine-tuning Studio
+            {t("studio.title")}
           </h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
 
         {!hasHydratedRuntime && isHydratingRuntime ? (
           <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
-            Loading training runtime...
+            {t("studio.loadingRuntime")}
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
@@ -147,19 +149,19 @@ export function StudioPage(): ReactElement {
                   size="icon-sm"
                   className="rounded-full text-muted-foreground"
                   onClick={() => setSelectedHistoryRunId(null)}
-                  aria-label="Back to history"
+                  aria-label={t("studio.backToHistory")}
                 >
                   <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
                 </Button>
               )}
               <TabsList variant="line">
                 <TabsTrigger value="configure" disabled={isTrainingRunning}>
-                  Configure
+                  {t("studio.configure")}
                 </TabsTrigger>
                 <TabsTrigger value="current-run" disabled={!showTrainingView}>
-                  Current Run
+                  {t("studio.currentRun")}
                 </TabsTrigger>
-                <TabsTrigger value="history">History</TabsTrigger>
+                <TabsTrigger value="history">{t("studio.history")}</TabsTrigger>
               </TabsList>
             </div>
 

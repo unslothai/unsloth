@@ -14,6 +14,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
+import { useTranslation } from "react-i18next";
 
 interface MethodPickerProps {
   value: ExportMethod | null;
@@ -25,10 +26,12 @@ interface MethodPickerProps {
 }
 
 export function MethodPicker({ value, onChange, disabledMethods = [], disabledReason }: MethodPickerProps) {
+  const { t } = useTranslation();
+  
   return (
     <div data-tour="export-method" className="flex flex-col gap-3">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        Export Method
+        {t("export.exportMethod")}
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
@@ -39,20 +42,20 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
             </button>
           </TooltipTrigger>
           <TooltipContent>
-            How your model is packaged for deployment.{" "}
+            {t("export.ggufLlamaCppDesc")}{" "}
             <a
               href="https://unsloth.ai/docs/basics/inference-and-deployment"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary underline"
             >
-              Read more
+              {t("export.readMore")}
             </a>
           </TooltipContent>
         </Tooltip>
       </span>
       <div className="grid grid-cols-3 gap-3">
-        {EXPORT_METHODS.map((m) => {
+        {EXPORT_METHODS(t).map((m) => {
           const selected = value === m.value;
           const isDisabled = disabledMethods.includes(m.value);
 
@@ -115,7 +118,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("export.readMore")}
                       </a>
                     </TooltipContent>
                   </Tooltip>

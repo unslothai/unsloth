@@ -10,6 +10,7 @@ import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon
 import { toast } from "sonner";
 import { loadModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useTranslation } from "react-i18next";
 import {
   type KeyboardEvent,
   type MutableRefObject,
@@ -223,6 +224,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
 }): ReactElement {
+  const { t } = useTranslation();
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -557,7 +559,7 @@ export function SharedComposer({
             ) : (
               <LightbulbOffIcon className="size-3" />
             )}
-            <span>Think</span>
+            <span>{t("chat.think")}</span>
           </button>
           <button
             type="button"
@@ -574,7 +576,7 @@ export function SharedComposer({
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
             <GlobeIcon className="size-3.5" />
-            <span>Search</span>
+            <span>{t("chat.search")}</span>
           </button>
           <button
             type="button"
@@ -591,7 +593,7 @@ export function SharedComposer({
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
             <TerminalIcon className="size-3.5" />
-            <span>Code</span>
+            <span>{t("chat.code")}</span>
           </button>
         </div>
         <div className="flex items-center gap-1">

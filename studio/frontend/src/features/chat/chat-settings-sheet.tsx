@@ -44,6 +44,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   DEFAULT_INFERENCE_PARAMS,
@@ -278,6 +279,7 @@ export function ChatSettingsPanel({
   onAutoTitleChange,
   onReloadModel,
 }: ChatSettingsPanelProps) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -457,10 +459,10 @@ export function ChatSettingsPanel({
               type="button"
               onClick={openSavePresetDialog}
               className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
-              title="Save preset"
+              title={t("chat.savePreset")}
             >
               <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-              Save
+              {t("common.save")}
             </button>
             <button
               type="button"
@@ -469,12 +471,12 @@ export function ChatSettingsPanel({
               className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 isBuiltinPreset
-                  ? "Built-in presets cannot be deleted"
-                  : "Delete selected preset"
+                  ? t("common.delete")
+                  : t("chat.delete")
               }
             >
               <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-              Delete
+              {t("common.delete")}
             </button>
           </div>
         </div>
@@ -484,13 +486,13 @@ export function ChatSettingsPanel({
             htmlFor="system-prompt"
             className="mb-1.5 block text-xs font-medium"
           >
-            System Prompt
+            {t("chat.systemPrompt")}
           </label>
           <Textarea
             id="system-prompt"
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
-            placeholder="You are a helpful assistant..."
+            placeholder={t("chat.youAreHelpfulAssistant")}
             className="min-h-20 text-xs corner-squircle"
             rows={3}
           />
@@ -498,7 +500,7 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection
           icon={Settings02Icon}
-          label="Model"
+          label={t("chat.model")}
           defaultOpen={true}
         >
           <div className="flex flex-col gap-3 py-1">
@@ -506,7 +508,7 @@ export function ChatSettingsPanel({
               <>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">Context Length</span>
+                    <span className="text-xs font-medium">{t("chat.contextLength")}</span>
                     <Input
                       type="number"
                       value={
@@ -660,12 +662,12 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection
           icon={SlidersHorizontalIcon}
-          label="Sampling"
+          label={t("chat.sampling")}
           defaultOpen={true}
         >
           <div className="flex flex-col gap-5">
             <ParamSlider
-              label="Temperature"
+              label={t("chat.temperature")}
               value={params.temperature}
               min={0}
               max={2}
@@ -673,25 +675,25 @@ export function ChatSettingsPanel({
               onChange={set("temperature")}
             />
             <ParamSlider
-              label="Top P"
+              label={t("chat.topP")}
               value={params.topP}
               min={0}
               max={1}
               step={0.05}
               onChange={set("topP")}
-              displayValue={params.topP === 1 ? "Off" : undefined}
+              displayValue={params.topP === 1 ? t("common.off") : undefined}
             />
             <ParamSlider
-              label="Top K"
+              label={t("chat.topK")}
               value={params.topK}
               min={0}
               max={100}
               step={1}
               onChange={set("topK")}
-              displayValue={params.topK === 0 ? "Off" : undefined}
+              displayValue={params.topK === 0 ? t("common.off") : undefined}
             />
             <ParamSlider
-              label="Min P"
+              label={t("chat.minP")}
               value={params.minP}
               min={0}
               max={1}
@@ -699,26 +701,26 @@ export function ChatSettingsPanel({
               onChange={set("minP")}
             />
             <ParamSlider
-              label="Repetition Penalty"
+              label={t("chat.repetitionPenalty")}
               value={params.repetitionPenalty}
               min={1}
               max={2}
               step={0.05}
               onChange={set("repetitionPenalty")}
-              displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
+              displayValue={params.repetitionPenalty === 1 ? t("common.off") : undefined}
             />
             <ParamSlider
-              label="Presence Penalty"
+              label={t("chat.presencePenalty")}
               value={params.presencePenalty}
               min={0}
               max={2}
               step={0.1}
               onChange={set("presencePenalty")}
-              displayValue={params.presencePenalty === 0 ? "Off" : undefined}
+              displayValue={params.presencePenalty === 0 ? t("common.off") : undefined}
             />
             {!isGguf && (
               <ParamSlider
-                label="Max Seq Length"
+                label={t("chat.maxSeqLength")}
                 value={params.maxSeqLength}
                 min={128}
                 max={32768}
@@ -727,7 +729,7 @@ export function ChatSettingsPanel({
               />
             )}
             <ParamSlider
-              label="Max Tokens"
+              label={t("chat.maxTokens")}
               value={params.maxTokens}
               min={64}
               max={isGguf && ggufContextLength ? ggufContextLength : 32768}
@@ -737,14 +739,14 @@ export function ChatSettingsPanel({
                 isGguf &&
                 ggufContextLength &&
                 params.maxTokens >= ggufContextLength
-                  ? "Max"
+                  ? t("common.max")
                   : undefined
               }
             />
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection icon={Wrench01Icon} label="Tools">
+        <CollapsibleSection icon={Wrench01Icon} label={t("chat.tools")}>
           <div className="flex flex-col gap-3 py-1">
             <AutoHealToolCallsToggle />
             <MaxToolCallsSlider />
@@ -754,15 +756,15 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection
           icon={UserSettings01Icon}
-          label="Preferences"
+          label={t("chat.preferences")}
           defaultOpen={true}
         >
           <div className="flex flex-col gap-3 py-1">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-xs font-medium">Auto title</div>
+                <div className="text-xs font-medium">{t("chat.autoTitle")}</div>
                 <div className="text-[11px] text-muted-foreground">
-                  Generate short title after reply.
+                  {t("chat.generateTitleAfterReply")}
                 </div>
               </div>
               <Switch checked={autoTitle} onCheckedChange={onAutoTitleChange} />
@@ -784,9 +786,9 @@ export function ChatSettingsPanel({
       >
         <DialogContent className="corner-squircle sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Save Preset</DialogTitle>
+            <DialogTitle>{t("chat.savePreset")}</DialogTitle>
             <DialogDescription>
-              Enter a name for this inference preset.
+              {t("chat.enterNameForPreset")}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -800,7 +802,7 @@ export function ChatSettingsPanel({
               autoFocus={true}
               value={presetNameDraft}
               onChange={(event) => setPresetNameDraft(event.target.value)}
-              placeholder="Preset name"
+              placeholder={t("chat.presetName")}
               maxLength={80}
             />
             <DialogFooter>
@@ -809,13 +811,13 @@ export function ChatSettingsPanel({
                 variant="outline"
                 onClick={() => setSavePresetOpen(false)}
               >
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button
                 type="submit"
                 disabled={presetNameDraft.trim().length === 0}
               >
-                Save
+                {t("common.save")}
               </Button>
             </DialogFooter>
           </form>
@@ -829,8 +831,8 @@ export function ChatSettingsPanel({
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent side="right" className="w-[18rem] p-0">
           <SheetHeader className="sr-only">
-            <SheetTitle>Configuration</SheetTitle>
-            <SheetDescription>Chat inference settings</SheetDescription>
+            <SheetTitle>{t("chat.configuration")}</SheetTitle>
+            <SheetDescription>{t("chat.chatInferenceSettings")}</SheetDescription>
           </SheetHeader>
           <div className="flex h-full flex-col">{settingsContent}</div>
         </SheetContent>

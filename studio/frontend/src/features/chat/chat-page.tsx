@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/tooltip";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 import {
   ColumnInsertIcon,
   PencilEdit02Icon,
@@ -456,6 +457,7 @@ function TopBarActions({
   showCompare: boolean;
 }) {
   const { state } = useSidebar();
+  const { t } = useTranslation();
   if (state !== "collapsed") {
     return null;
   }
@@ -467,7 +469,7 @@ function TopBarActions({
             <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="bottom">New Chat</TooltipContent>
+        <TooltipContent side="bottom">{t("chat.newChat")}</TooltipContent>
       </Tooltip>
       {showCompare ? (
         <Tooltip>
@@ -476,7 +478,7 @@ function TopBarActions({
               <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">Compare</TooltipContent>
+          <TooltipContent side="bottom">{t("chat.compare")}</TooltipContent>
         </Tooltip>
       ) : null}
     </>
