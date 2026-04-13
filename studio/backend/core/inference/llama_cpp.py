@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import re
 import struct
 import structlog
 from loggers import get_logger
@@ -21,10 +22,63 @@ import threading
 import time
 from pathlib import Path
 from typing import Generator, Optional
+from urllib.parse import urlparse
 
 import httpx
 
 logger = get_logger(__name__)
+
+# ── Pre-compiled patterns for plan-without-action re-prompt ──
+# Forward-looking intent signals that indicate the model is
+# describing what it *will* do rather than giving a final answer.
+_INTENT_SIGNAL = re.compile(
+    r"(?i)("
+    # Direct intent: "I'll ...", "I will ...", "Let me ...", "I am going to ..."
+    # Handles both straight and curly apostrophes.
+    # Excludes "I can", "I should", "I want to", "let's" which
+    # appear frequently in direct answers / explanations.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    r"|"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
+    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    r"|"
+    # "Now I" / "Next I" patterns
+    r"\b(?:now i|next i)\b"
+    r")"
+)
+_MAX_REPROMPTS = 3
+_REPROMPT_MAX_CHARS = 2000
+
+# ── Pre-compiled patterns for GGUF shard detection ───────────
+_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+
+
+# Model size extraction — lazy import to avoid pulling in transformers
+# at module level.  See PR description for the full explanation.
+def _extract_model_size_b(model_id: str):
+    from utils.models import extract_model_size_b
+
+    return extract_model_size_b(model_id)
+
+
+# ── Pre-compiled patterns for tool XML stripping ─────────────
+_TOOL_CLOSED_PATS = [
+    re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
+    re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
+]
+_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
+    re.compile(r"<tool_call>.*$", re.DOTALL),
+    re.compile(r"<function=\w+>.*$", re.DOTALL),
+]
+
+# ── Pre-compiled patterns for tool-call XML parsing ──────────
+_TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
+_TC_FUNC_START_RE = re.compile(r"<function=(\w+)>\s*")
+_TC_END_TAG_RE = re.compile(r"</tool_call>")
+_TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
+_TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
+_TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 
 class LlamaCppBackend:
@@ -48,17 +102,28 @@ class LlamaCppBackend:
         self._healthy = False
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
+        self._max_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        self._speculative_type: Optional[str] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
+        # Architecture-aware KV fields (8 new fields for 5-path estimation)
+        self._kv_key_length: Optional[int] = None
+        self._kv_value_length: Optional[int] = None
+        self._sliding_window: Optional[int] = None
+        self._full_attention_interval: Optional[int] = None
+        self._kv_lora_rank: Optional[int] = None
+        self._key_length_mla: Optional[int] = None
+        self._ssm_inner_size: Optional[int] = None
+        self._ssm_state_size: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -101,6 +166,16 @@ class LlamaCppBackend:
         return self._effective_context_length or self._context_length
 
     @property
+    def max_context_length(self) -> Optional[int]:
+        """Return the maximum context currently available on this hardware."""
+        return self._max_context_length or self._context_length
+
+    @property
+    def native_context_length(self) -> Optional[int]:
+        """Return the model's native context length from GGUF metadata."""
+        return self._context_length
+
+    @property
     def chat_template(self) -> Optional[str]:
         return self._chat_template
 
@@ -123,6 +198,10 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def speculative_type(self) -> Optional[str]:
+        return self._speculative_type
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -221,14 +300,11 @@ class LlamaCppBackend:
     @staticmethod
     def _get_gguf_size_bytes(model_path: str) -> int:
         """Get total GGUF size in bytes, including split shards."""
-        import re
-
         main = Path(model_path)
         total = main.stat().st_size
 
         # Check for split shards (e.g., model-00001-of-00003.gguf)
-        shard_pat = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
-        m = shard_pat.match(main.name)
+        m = _SHARD_FULL_RE.match(main.name)
         if m:
             prefix, _, num_total = m.group(1), m.group(2), m.group(3)
             sibling_pat = re.compile(
@@ -287,7 +363,8 @@ class LlamaCppBackend:
                         continue
                     gpus.append((idx, free_mib))
             return gpus
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
             return []
 
     @staticmethod
@@ -298,11 +375,11 @@ class LlamaCppBackend:
         """Pick GPU(s) for a model based on estimated VRAM and free memory.
 
         ``model_size_bytes`` should include both model weights and estimated
-        KV cache.  The 70% threshold provides headroom for compute buffers,
+        KV cache.  The 90% threshold provides headroom for compute buffers,
         CUDA context, and other runtime overhead.
 
         Returns (gpu_indices, use_fit):
-          - ([1], False)       model fits on 1 GPU at 70% of free
+          - ([1], False)       model fits on 1 GPU at 90% of free
           - ([1, 2], False)    model needs 2 GPUs
           - (None, True)       model too large, let --fit handle it
         """
@@ -314,8 +391,8 @@ class LlamaCppBackend:
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
 
-        # Try fitting on 1 GPU (70% of free memory threshold)
-        if ranked[0][1] * 0.70 >= model_size_mib:
+        # Try fitting on 1 GPU (90% of free memory threshold)
+        if ranked[0][1] * 0.90 >= model_size_mib:
             return [ranked[0][0]], False
 
         # Try fitting on N GPUs (accumulate free memory from most-free)
@@ -323,21 +400,33 @@ class LlamaCppBackend:
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
-            cumulative += free_mib * 0.70
+            cumulative += free_mib * 0.90
             if cumulative >= model_size_mib:
                 return sorted(selected), False
 
         # Model is too large even for all GPUs, let --fit handle it
+        logger.debug(
+            "Model does not fit in available GPU memory, falling back to --fit",
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
+        )
         return None, True
 
     # ── KV cache VRAM estimation ─────────────────────────────────────
 
     def _can_estimate_kv(self) -> bool:
         """True if we have enough GGUF metadata to estimate KV cache size."""
-        return (
-            self._n_layers is not None
-            and self._embedding_length is not None
-            and (self._n_kv_heads is not None or self._n_heads is not None)
+        if self._n_layers is None:
+            return False
+        # MLA: kv_lora_rank is sufficient (K-only cache)
+        if self._kv_lora_rank is not None:
+            return True
+        # New-style: need both explicit key AND value dimensions
+        if self._kv_key_length is not None and self._kv_value_length is not None:
+            return True
+        # Legacy: need embedding_length + head count
+        return self._embedding_length is not None and (
+            self._n_kv_heads is not None or self._n_heads is not None
         )
 
     def _estimate_kv_cache_bytes(
@@ -345,14 +434,20 @@ class LlamaCppBackend:
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
 
+        Uses 5-path architecture-aware estimation:
+          1. MLA      -- compressed KV latent + RoPE, K-only (no separate V)
+          2. Hybrid   -- only attention layers need KV (Mamba layers don't)
+          3. SWA      -- sliding-window layers cache min(ctx, window) tokens
+          4. GQA      -- standard full KV with explicit key/value dimensions
+          5. Legacy   -- fallback using embed // n_heads
+
         Returns 0 if metadata is insufficient for estimation.
         """
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
         n_layers = self._n_layers  # type: ignore[assignment]
-        n_kv_heads = self._n_kv_heads or self._n_heads  # type: ignore[assignment]
-        head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+        n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
 
         # Bytes per element depends on KV cache quantization
         bpe = {
@@ -367,8 +462,60 @@ class LlamaCppBackend:
             "iq4_nl": 0.5625,
         }.get(cache_type_kv or "f16", 2.0)
 
-        # K + V caches: 2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe
-        return int(2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe)
+        # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
+        # MLA stores one compressed KV latent per token/layer (shared across heads).
+        # V is reconstructed from the latent on the fly -- no separate V cache.
+        # key_length = kv_lora_rank + rope_dim (the full compressed representation).
+        # MLA GGUFs set head_count_kv=1; default to 1 if absent to avoid
+        # falling back to n_heads (e.g., 128 for DeepSeek-V3) which would 128x.
+        if self._kv_lora_rank is not None:
+            n_kv_mla = self._n_kv_heads or 1
+            rope_dim = self._key_length_mla or 64
+            key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
+            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe)
+
+        key_len = self._kv_key_length
+        val_len = self._kv_value_length
+
+        # Path 2: Hybrid Mamba/Attention (Qwen3.5-27B, Qwen3.5-35B-A3B)
+        # Only 1 in N layers is attention; the rest are Mamba (no KV cache).
+        if (
+            self._ssm_inner_size is not None
+            and self._full_attention_interval is not None
+        ):
+            fai = self._full_attention_interval
+            n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
+            if key_len is not None and val_len is not None:
+                return int(n_attn * n_ctx * n_kv * (key_len + val_len) * bpe)
+            head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+            return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
+
+        # Path 3: Sliding Window (Gemma-3, gpt-oss)
+        # SWA layers only cache min(ctx, window) tokens; global layers cache full ctx.
+        # Most SWA architectures use few global layers (e.g., Gemma-3 uses 1 in 6).
+        # Without an explicit field, we conservatively assume 1/4 of layers are global
+        # which is still far more accurate than the legacy formula (which ignores SWA).
+        if (
+            self._sliding_window is not None
+            and self._sliding_window > 0
+            and key_len is not None
+            and val_len is not None
+        ):
+            swa = self._sliding_window
+            n_global = max(1, n_layers // 4)
+            n_swa = n_layers - n_global
+            kv_per_token = n_kv * (key_len + val_len) * bpe
+            return int(
+                n_global * n_ctx * kv_per_token + n_swa * min(n_ctx, swa) * kv_per_token
+            )
+
+        # Path 4: Standard GQA with explicit key/value dimensions
+        if key_len is not None and val_len is not None:
+            return int(n_layers * n_ctx * n_kv * (key_len + val_len) * bpe)
+
+        # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
+        head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+        return int(2 * n_kv * head_dim * n_layers * n_ctx * bpe)
 
     def _fit_context_to_vram(
         self,
@@ -380,15 +527,20 @@ class LlamaCppBackend:
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
-        Uses 70% of available VRAM as the budget (matching _select_gpus
-        threshold -- 30% reserved for compute buffers, CUDA context,
+        Uses 90% of available VRAM as the budget (matching _select_gpus
+        threshold -- 10% reserved for compute buffers, CUDA context,
         scratch space, flash-attn workspace, etc.).
         If the model weights alone don't fit, returns min_ctx unchanged.
         """
         if not self._can_estimate_kv():
+            logger.debug(
+                "Skipping context fit because KV cache metadata is unavailable",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+            )
             return requested_ctx
 
-        budget_bytes = available_mib * 1024 * 1024 * 0.70
+        budget_bytes = available_mib * 1024 * 1024 * 0.90
         model_footprint = model_size_bytes
 
         # Check if requested context already fits
@@ -399,6 +551,12 @@ class LlamaCppBackend:
         # Model weights alone exceed budget -- can't help by reducing ctx.
         # Return requested_ctx unchanged; --fit will handle VRAM management.
         if model_footprint >= budget_bytes:
+            logger.debug(
+                "Model footprint exceeds GPU budget before KV cache",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
+            )
             return requested_ctx
 
         # Binary search for max context that fits
@@ -436,8 +594,6 @@ class LlamaCppBackend:
 
         Returns (first_shard_filename, total_size_bytes) or None if nothing fits.
         """
-        import re
-
         try:
             from huggingface_hub import get_paths_info, list_repo_files
 
@@ -453,10 +609,9 @@ class LlamaCppBackend:
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group files by variant: shards share a prefix before -NNNNN-of-NNNNN
-            shard_pat = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
             variants: dict[str, list[str]] = {}
             for f in gguf_files:
-                m = shard_pat.match(f)
+                m = _SHARD_RE.match(f)
                 key = m.group(1) if m else f
                 variants.setdefault(key, []).append(f)
 
@@ -561,6 +716,14 @@ class LlamaCppBackend:
         self._n_kv_heads = None
         self._n_heads = None
         self._embedding_length = None
+        self._kv_key_length = None
+        self._kv_value_length = None
+        self._sliding_window = None
+        self._full_attention_interval = None
+        self._kv_lora_rank = None
+        self._key_length_mla = None
+        self._ssm_inner_size = None
+        self._ssm_state_size = None
 
         try:
             WANTED = {"general.architecture", "tokenizer.chat_template"}
@@ -595,6 +758,15 @@ class LlamaCppBackend:
                                     f"{arch}.attention.head_count_kv": "n_kv_heads",
                                     f"{arch}.attention.head_count": "n_heads",
                                     f"{arch}.embedding_length": "embedding_length",
+                                    # Architecture-aware KV cache fields
+                                    f"{arch}.attention.key_length": "kv_key_length",
+                                    f"{arch}.attention.value_length": "kv_value_length",
+                                    f"{arch}.attention.sliding_window": "sliding_window",
+                                    f"{arch}.full_attention_interval": "full_attention_interval",
+                                    f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
+                                    f"{arch}.attention.key_length_mla": "key_length_mla",
+                                    f"{arch}.ssm.inner_size": "ssm_inner_size",
+                                    f"{arch}.ssm.state_size": "ssm_state_size",
                                 }
                             elif key == "tokenizer.chat_template":
                                 self._chat_template = val_s
@@ -650,7 +822,9 @@ class LlamaCppBackend:
                 # Detect tool calling support from chat template
                 tool_markers = [
                     "{%- if tools %}",
+                    "{%- if tools -%}",
                     "{% if tools %}",
+                    "{% if tools -%}",
                     '"role" == "tool"',
                     "'role' == 'tool'",
                     'message.role == "tool"',
@@ -690,7 +864,6 @@ class LlamaCppBackend:
         gguf_extra_shards: list[str] = []
         if hf_variant:
             try:
-                import re
                 from huggingface_hub import list_repo_files
 
                 files = list_repo_files(hf_repo, token = hf_token)
@@ -705,11 +878,10 @@ class LlamaCppBackend:
                 )
                 if gguf_files:
                     gguf_filename = gguf_files[0]
-                    shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
-                    m = shard_pat.match(gguf_filename)
+                    m = _SHARD_FULL_RE.match(gguf_filename)
                     if m:
                         prefix = m.group(1)
-                        total = m.group(2)
+                        total = m.group(3)
                         sibling_pat = re.compile(
                             r"^"
                             + re.escape(prefix)
@@ -766,10 +938,7 @@ class LlamaCppBackend:
                             f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                         )
                         gguf_filename = fallback_file
-                        import re as _re
-
-                        _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
-                        _m = _shard_pat.match(gguf_filename)
+                        _m = _SHARD_RE.match(gguf_filename)
                         _prefix = _m.group(1) if _m else None
                         if _prefix:
                             gguf_extra_shards = sorted(
@@ -891,6 +1060,7 @@ class LlamaCppBackend:
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
+        speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -960,7 +1130,11 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size + estimated KV cache
+            # Select GPU(s) based on model size + estimated KV cache.
+            # Seed safe defaults before GPU probing so the except path
+            # still has valid state to publish.
+            effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+            max_available_ctx = self._context_length or effective_ctx
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
@@ -975,6 +1149,9 @@ class LlamaCppBackend:
                 else:
                     effective_ctx = 0
                 original_ctx = effective_ctx
+                # Default UI ceiling to the model's native context length.
+                # GPU/VRAM-fit logic below may shrink this if hardware is limited.
+                max_available_ctx = self._context_length or effective_ctx
 
                 # Auto-cap context to fit in GPU VRAM and select GPUs.
                 #
@@ -993,6 +1170,29 @@ class LlamaCppBackend:
                 explicit_ctx = n_ctx > 0
 
                 if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                    # Compute the largest hardware-aware cap from the model's
+                    # native context across all usable GPU subsets (for UI
+                    # bounds), independent of the currently requested context.
+                    native_ctx_for_cap = self._context_length or effective_ctx
+                    if native_ctx_for_cap > 0:
+                        ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        best_cap = 0
+                        for n_gpus in range(1, len(ranked_for_cap) + 1):
+                            subset = ranked_for_cap[:n_gpus]
+                            pool_mib = sum(free for _, free in subset)
+                            capped = self._fit_context_to_vram(
+                                native_ctx_for_cap,
+                                pool_mib,
+                                model_size,
+                                cache_type_kv,
+                            )
+                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            total_mib = (model_size + kv) / (1024 * 1024)
+                            if total_mib <= pool_mib * 0.90:
+                                best_cap = max(best_cap, capped)
+                        if best_cap > 0:
+                            max_available_ctx = best_cap
+
                     if explicit_ctx:
                         # Try to honor the user's requested context exactly.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
@@ -1017,7 +1217,7 @@ class LlamaCppBackend:
                                     capped, cache_type_kv
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.70:
+                                if total_mib <= pool_mib * 0.90:
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
                                     use_fit = False
@@ -1036,14 +1236,20 @@ class LlamaCppBackend:
                             )
                             kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
                             total_mib = (model_size + kv) / (1024 * 1024)
-                            if total_mib <= pool_mib * 0.70:
+                            if total_mib <= pool_mib * 0.90:
                                 effective_ctx = capped
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
 
                 elif gpus:
-                    # Can't estimate KV -- fall back to file-size-only check
+                    # Can't estimate KV -- fall back to file-size-only check.
+                    # Without KV estimation we cannot prove a hardware cap, so
+                    # keep the ceiling at the native context (already the default).
+                    logger.debug(
+                        "Falling back to file-size-only GPU selection",
+                        model_size_gb = round(model_size / (1024**3), 2),
+                    )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
 
                 if effective_ctx < original_ctx:
@@ -1115,6 +1321,46 @@ class LlamaCppBackend:
             else:
                 self._cache_type_kv = None
 
+            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+            # variable draft lengths.  Helps most when the model repeats
+            # existing text (code refactoring, summarization, reasoning).
+            # For general chat with low repetition, overhead is ~5 ms.
+            #
+            # Benchmarks from llama.cpp PRs #18471, #19164:
+            #   Scenario                        | Without | With    | Speedup
+            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+            #
+            # Params from llama.cpp docs (docs/speculative.md):
+            #   --spec-ngram-size-n 24  (small n not recommended)
+            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+            #     dense models can reduce these)
+            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            _valid_spec_types = {"ngram-simple", "ngram-mod"}
+            if speculative_type and speculative_type in _valid_spec_types:
+                if not is_vision:  # spec decoding disabled for vision models
+                    cmd.extend(["--spec-type", speculative_type])
+                    if speculative_type == "ngram-mod":
+                        cmd.extend(
+                            [
+                                "--spec-ngram-size-n",
+                                "24",
+                                "--draft-min",
+                                "48",
+                                "--draft-max",
+                                "64",
+                            ]
+                        )
+                    self._speculative_type = speculative_type
+                else:
+                    self._speculative_type = None
+            else:
+                self._speculative_type = None
+
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
@@ -1136,17 +1382,12 @@ class LlamaCppBackend:
             # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
             # Only 9B and larger enable thinking.
             if self._supports_reasoning:
-                import re
-
                 thinking_default = True
                 mid = (model_identifier or "").lower()
                 if "qwen3.5" in mid:
-                    # Extract size like "0.8b", "4b", "35b" etc.
-                    size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
-                    if size_match:
-                        size_val = float(size_match.group(1))
-                        if size_val < 9:
-                            thinking_default = False
+                    size_val = _extract_model_size_b(mid)
+                    if size_val is not None and size_val < 9:
+                        thinking_default = False
                 self._reasoning_default = thinking_default
                 cmd.extend(
                     [
@@ -1313,6 +1554,11 @@ class LlamaCppBackend:
             self._effective_context_length = (
                 effective_ctx if effective_ctx > 0 else self._context_length
             )
+            self._max_context_length = (
+                max_available_ctx
+                if max_available_ctx > 0
+                else self._effective_context_length
+            )
 
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
@@ -1347,15 +1593,25 @@ class LlamaCppBackend:
             self._healthy = False
             self._context_length = None
             self._effective_context_length = None
+            self._max_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_heads = None
             self._embedding_length = None
+            self._kv_key_length = None
+            self._kv_value_length = None
+            self._sliding_window = None
+            self._full_attention_interval = None
+            self._kv_lora_rank = None
+            self._key_length_mla = None
+            self._ssm_inner_size = None
+            self._ssm_state_size = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -1605,13 +1861,11 @@ class LlamaCppBackend:
         Closing tags (</tool_call>, </function>, </parameter>) are all optional
         since models frequently omit them.
         """
-        import re
-
         tool_calls = []
 
         # Pattern 1: JSON inside <tool_call> tags.
         # Use balanced-brace extraction that skips braces inside JSON strings.
-        for m in re.finditer(r"<tool_call>\s*\{", content):
+        for m in _TC_JSON_START_RE.finditer(content):
             brace_start = m.end() - 1  # position of the opening {
             depth, i = 0, brace_start
             in_string = False
@@ -1661,7 +1915,7 @@ class LlamaCppBackend:
             # boundaries.  We avoid using </function> as a boundary because
             # code parameter values can contain that literal string.
             # After extracting, we trim a trailing </function> if present.
-            func_starts = list(re.finditer(r"<function=(\w+)>\s*", content))
+            func_starts = list(_TC_FUNC_START_RE.finditer(content))
             for idx, fm in enumerate(func_starts):
                 func_name = fm.group(1)
                 body_start = fm.end()
@@ -1671,7 +1925,7 @@ class LlamaCppBackend:
                     if idx + 1 < len(func_starts)
                     else len(content)
                 )
-                end_tag = re.search(r"</tool_call>", content[body_start:])
+                end_tag = _TC_END_TAG_RE.search(content[body_start:])
                 if end_tag:
                     body_end = body_start + end_tag.start()
                 else:
@@ -1679,20 +1933,20 @@ class LlamaCppBackend:
                 body_end = min(body_end, next_func)
                 body = content[body_start:body_end]
                 # Trim trailing </function> if present (it's the real closing tag)
-                body = re.sub(r"\s*</function>\s*$", "", body)
+                body = _TC_FUNC_CLOSE_RE.sub("", body)
 
                 # Step 2: Extract parameters from body.
                 # For single-parameter functions (the common case: code, command,
                 # query), use body end as the only boundary to avoid false matches
                 # on </parameter> inside code strings.
                 arguments = {}
-                param_starts = list(re.finditer(r"<parameter=(\w+)>\s*", body))
+                param_starts = list(_TC_PARAM_START_RE.finditer(body))
                 if len(param_starts) == 1:
                     # Single parameter: value is everything from after the tag
                     # to end of body, trimming any trailing </parameter>.
                     pm = param_starts[0]
                     val = body[pm.end() :]
-                    val = re.sub(r"\s*</parameter>\s*$", "", val)
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)
                     arguments[pm.group(1)] = val.strip()
                 else:
                     for pidx, pm in enumerate(param_starts):
@@ -1706,7 +1960,7 @@ class LlamaCppBackend:
                         )
                         val = body[val_start:next_param]
                         # Trim trailing </parameter> if present
-                        val = re.sub(r"\s*</parameter>\s*$", "", val)
+                        val = _TC_PARAM_CLOSE_RE.sub("", val)
                         arguments[param_name] = val.strip()
 
                 tc = {
@@ -2055,7 +2309,7 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-        max_tool_iterations: int = 10,
+        max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
@@ -2064,7 +2318,7 @@ class LlamaCppBackend:
         Agentic loop: let the model call tools, execute them, and continue.
 
         Yields dicts with:
-          {"type": "status", "text": "Searching: ..."}   -- tool status updates
+          {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
@@ -2079,22 +2333,10 @@ class LlamaCppBackend:
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
 
-        # ── Shared patterns for stripping tool XML from streamed content ──
-        import re as _re_tool
-
-        _TOOL_CLOSED_PATTERNS = [
-            _re_tool.compile(r"<tool_call>.*?</tool_call>", _re_tool.DOTALL),
-            _re_tool.compile(r"<function=\w+>.*?</function>", _re_tool.DOTALL),
-        ]
-        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
-            _re_tool.compile(r"<tool_call>.*$", _re_tool.DOTALL),
-            _re_tool.compile(r"<function=\w+>.*$", _re_tool.DOTALL),
-        ]
-
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
-            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
+            patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
             for pat in patterns:
                 text = pat.sub("", text)
             return text.strip() if final else text
@@ -2107,7 +2349,26 @@ class LlamaCppBackend:
         )
         _MAX_BUFFER_CHARS = 32
 
-        for iteration in range(max_tool_iterations):
+        # ── Duplicate tool-call detection ────────────────────────
+        # Track recent (tool_name, arguments) hashes to detect loops
+        # where the model repeats the exact same call.  Retries after
+        # a transient failure are allowed (only block when the previous
+        # identical call succeeded).
+        _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
+
+        # ── Re-prompt on plan-without-action ─────────────────
+        # When the model describes what it intends to do (forward-looking
+        # language) without actually calling a tool, re-prompt once.
+        # Only triggers on responses that signal intent/planning -- a
+        # direct answer like "4" or "Hello!" will not match.
+        # Pattern is compiled once at module level (_INTENT_SIGNAL).
+        _reprompt_count = 0
+
+        # Reserve extra iterations for re-prompts so they don't
+        # consume the caller's tool-call budget.  Only add the
+        # extra slot when tool iterations are actually allowed.
+        _extra = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+        for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
 
@@ -2418,6 +2679,57 @@ class LlamaCppBackend:
                             content_accum,
                         )
                     if not _safety_tc:
+                        # ── Re-prompt on plan-without-action ──
+                        # If the model described what it intends to do
+                        # (forward-looking language) without calling any
+                        # tool, nudge it to act.  Only fires once per
+                        # request and only on short responses that
+                        # contain intent signals -- a direct answer
+                        # like "4" or "Hello!" won't trigger this.
+                        # Use content if available, otherwise fall back
+                        # to reasoning text (reasoning-only stalls).
+                        _stripped = content_accum.strip()
+                        if not _stripped:
+                            _stripped = reasoning_accum.strip()
+                        if (
+                            tools
+                            and _reprompt_count < _MAX_REPROMPTS
+                            and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
+                            and _INTENT_SIGNAL.search(_stripped)
+                        ):
+                            _reprompt_count += 1
+                            logger.info(
+                                f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "
+                                f"model responded without calling tools "
+                                f"({len(_stripped)} chars)"
+                            )
+                            conversation.append(
+                                {
+                                    "role": "assistant",
+                                    "content": _stripped,
+                                }
+                            )
+                            conversation.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "STOP. Do NOT write code or explain. "
+                                        "You MUST call a tool NOW. "
+                                        "Call web_search or python immediately."
+                                    ),
+                                }
+                            )
+                            # Accumulate tokens and timing from this iteration
+                            _fu_r = _iter_usage or {}
+                            _accumulated_completion_tokens += _fu_r.get(
+                                "completion_tokens", 0
+                            )
+                            _it_r = _iter_timings or {}
+                            _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            yield {"type": "status", "text": ""}
+                            continue
+
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
                         _fu = _iter_usage or {}
@@ -2504,6 +2816,11 @@ class LlamaCppBackend:
                         # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
+                            # Strip leaked tool-call XML before yielding
+                            content_accum = _strip_tool_markup(
+                                content_accum, final = True
+                            )
+                        if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _fu = _iter_usage or {}
                         _fc = _fu.get("completion_tokens", 0)
@@ -2568,7 +2885,18 @@ class LlamaCppBackend:
                         arguments = raw_args
 
                     if tool_name == "web_search":
-                        status_text = f"Searching: {arguments.get('query', '')}"
+                        _ws_url = (arguments.get("url") or "").strip()
+                        if _ws_url:
+                            _parsed = urlparse(_ws_url)
+                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
+                                _ws_host = _parsed.hostname
+                                if _ws_host.startswith("www."):
+                                    _ws_host = _ws_host[4:]
+                                status_text = f"Reading: {_ws_host}"
+                            else:
+                                status_text = "Reading page..."
+                        else:
+                            status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
                         preview = (
                             (arguments.get("code") or "").strip().split("\n")[0][:60]
@@ -2596,16 +2924,32 @@ class LlamaCppBackend:
                         "arguments": arguments,
                     }
 
-                    _effective_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
-                    result = execute_tool(
-                        tool_name,
-                        arguments,
-                        cancel_event = cancel_event,
-                        timeout = _effective_timeout,
-                        session_id = session_id,
-                    )
+                    # ── Duplicate call detection ──────────────
+                    # str(dict) is stable here: arguments always comes from
+                    # json.loads on the same model output within one request,
+                    # so insertion order is deterministic (Python 3.7+).
+                    _tc_key = tool_name + str(arguments)
+                    _prev = _tool_call_history[-1] if _tool_call_history else None
+                    if _prev and _prev[0] == _tc_key and not _prev[1]:
+                        result = (
+                            "You already made this exact call. "
+                            "Do not repeat the same tool call. "
+                            "Try a different approach: fetch a URL "
+                            "from previous results, use Python to "
+                            "process data you already have, or "
+                            "provide your final answer now."
+                        )
+                    else:
+                        _effective_timeout = (
+                            None if tool_call_timeout >= 9999 else tool_call_timeout
+                        )
+                        result = execute_tool(
+                            tool_name,
+                            arguments,
+                            cancel_event = cancel_event,
+                            timeout = _effective_timeout,
+                            session_id = session_id,
+                        )
 
                     yield {
                         "type": "tool_end",
@@ -2614,16 +2958,45 @@ class LlamaCppBackend:
                         "result": result,
                     }
 
+                    # Nudge model to try a different approach on errors
+                    _error_prefixes = (
+                        "Error",
+                        "Search failed",
+                        "Execution error",
+                        "Blocked:",
+                        "Exit code",
+                        "Failed to fetch",
+                        "Failed to resolve",
+                        "No query provided",
+                    )
+                    _is_error = isinstance(result, str) and result.lstrip().startswith(
+                        _error_prefixes
+                    )
+                    _tool_call_history.append((_tc_key, _is_error))
+                    # Strip image sentinel before feeding result to the LLM
+                    # (the full result with sentinel is still yielded via
+                    # tool_end so the frontend can extract image paths).
+                    _result_content = result
+                    if "\n__IMAGES__:" in _result_content:
+                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
+                    if _is_error:
+                        _result_content = (
+                            _result_content + "\n\nThe tool call encountered an issue. "
+                            "Please try a different approach or rephrase your request."
+                        )
+
                     tool_msg = {
                         "role": "tool",
                         "name": tool_name,
-                        "content": result,
+                        "content": _result_content,
                     }
                     tool_call_id = tc.get("id")
                     if tool_call_id:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
 
+                # Clear tool status badge before next generation iteration
+                yield {"type": "status", "text": ""}
                 # Continue the loop to let model respond with context
                 continue
 
@@ -2633,6 +3006,22 @@ class LlamaCppBackend:
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 raise
+
+        # ── Tool iteration cap reached -- synthesize final answer ──
+        # The model used all iterations without producing a final text
+        # response. Inject a nudge so the final streaming pass produces
+        # a useful answer instead of continuing to request tools.
+        if max_tool_iterations > 0:
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You have used all available tool calls. Based on "
+                        "everything you have found so far, provide your final "
+                        "answer now. Do not call any more tools."
+                    ),
+                }
+            )
 
         # Clear status
         yield {"type": "status", "text": ""}

@@ -542,6 +542,37 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
         function = patched
 
+    # Transformers 5.x: Extend mm_token_type_ids for completion tokens (Qwen3VL M-RoPE).
+    # TRL handles token_type_ids but not mm_token_type_ids.
+    _tt_search = (
+        'if "token_type_ids" in forward_kwargs:\n'
+        '            token_type_ids = forward_kwargs["token_type_ids"]\n'
+        '            forward_kwargs["token_type_ids"] = torch.cat(\n'
+        "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
+        "            )"
+    )
+    _tt_replace = (
+        _tt_search + "\n"
+        '        if "mm_token_type_ids" in forward_kwargs:\n'
+        '            mm_tti = forward_kwargs["mm_token_type_ids"]\n'
+        '            forward_kwargs["mm_token_type_ids"] = torch.cat(\n'
+        "                [mm_tti, mm_tti.new_zeros(completion_ids.shape)], dim=1\n"
+        "            )"
+    )
+    function = function.replace(_tt_search, _tt_replace)
+
+    # Save mm_token_type_ids to output dict alongside token_type_ids
+    _save_search = (
+        'if "token_type_ids" in forward_kwargs:\n'
+        '            output["token_type_ids"] = forward_kwargs["token_type_ids"]'
+    )
+    _save_replace = (
+        _save_search + "\n"
+        '        if "mm_token_type_ids" in forward_kwargs:\n'
+        '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
+    )
+    function = function.replace(_save_search, _save_replace)
+
     return function
 
 
@@ -714,6 +745,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+            token_type_ids = kwargs.get("token_type_ids", None)
+            mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -821,15 +855,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_sizes_chunks = chunk_optional(image_sizes, B)
 
             temperature = self.temperature
-            logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
-            if logit_softcapping is None:
-                logit_softcapping = 0
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
             logit_scale_divide = getattr(model.config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
+
+            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+            token_type_ids_chunks = chunk_optional(token_type_ids, B)
+            mm_token_type_ids_chunks = chunk_optional(mm_token_type_ids, B)
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -838,6 +874,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_grid_thw_chunks,
                 pixel_attention_mask_chunks,
                 image_sizes_chunks,
+                token_type_ids_chunks,
+                mm_token_type_ids_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -849,7 +887,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_grid_thw_chunk,
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
+                    token_type_ids_chunk,
+                    mm_token_type_ids_chunk,
                 ) in zipped_inputs:
+                    _extra_vision_kwargs = {}
+                    if token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
+                    if mm_token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["mm_token_type_ids"] = (
+                            mm_token_type_ids_chunk
+                        )
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
                     ):
@@ -861,6 +908,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_grid_thw = image_grid_thw_chunk,
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             completion_input_ids_chunk = input_ids_chunk[
@@ -893,6 +941,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             logits_chunk = logits_chunk[:, :-1, :]
@@ -953,11 +1002,38 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
+
+def _unsloth_get_final_logit_softcapping(config):
+    """Return final_logit_softcapping for a model config, falling back to the
+    nested text sub-config for composite models. Handles both:
+      - Gemma-4-style configs where the attribute lives on ``config.text_config``
+      - T5Gemma-style composite configs where the text sub-config is only
+        reachable via ``config.get_text_config()``
+    Returns 0 if unset, matching the previous behaviour.
+    """
+    softcap = getattr(config, "final_logit_softcapping", None)
+    if softcap is None:
+        text_cfg = getattr(config, "text_config", None)
+        if text_cfg is None:
+            get_text_config = getattr(config, "get_text_config", None)
+            if callable(get_text_config):
+                try:
+                    text_cfg = get_text_config()
+                except (TypeError, ValueError):
+                    text_cfg = None
+        if text_cfg is not None and text_cfg is not config:
+            softcap = getattr(text_cfg, "final_logit_softcapping", None)
+    return 0 if softcap is None else softcap
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_unsloth_get_final_logit_softcapping)
+)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -993,6 +1069,9 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+        token_type_ids = inputs.get("token_type_ids", None)
+        mm_token_type_ids = inputs.get("mm_token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
@@ -1053,9 +1132,7 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)  # Gemma
-        if logit_softcapping is None:
-            logit_softcapping = 0
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
         logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
@@ -1136,6 +1213,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                     num_processes = num_processes,
                     sampling_per_token_logps = sampling_per_token_logps,
+                    token_type_ids = token_type_ids,
+                    mm_token_type_ids = mm_token_type_ids,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -1154,6 +1233,8 @@ def grpo_trainer_compute_loss(function_name, function):
                         logit_scale_multiply = logit_scale_multiply,
                         logit_scale_divide = logit_scale_divide,
                         attention_mask = attention_mask,
+                        token_type_ids = token_type_ids,
+                        mm_token_type_ids = mm_token_type_ids,
                     )
                 )
         if "train" in self._metrics:

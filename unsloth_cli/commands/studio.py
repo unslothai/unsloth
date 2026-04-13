@@ -267,10 +267,7 @@ def setup(
         help = "Full pip/build output during setup for troubleshooting.",
     ),
 ):
-    """Deprecated: use 'unsloth studio update' or re-run install.sh."""
-    typer.echo(
-        "Note: 'unsloth studio setup' is deprecated. Use 'unsloth studio update' or re-run install.sh."
-    )
+    """Run Studio setup (called by install.ps1 / install.sh)."""
     _run_setup_script(verbose = verbose)
 
 
@@ -290,13 +287,18 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
-    os.environ["STUDIO_LOCAL_INSTALL"] = "1" if local else "0"
+    # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
+    os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
     if local:
+        os.environ["STUDIO_LOCAL_INSTALL"] = "1"
         # Pass the repo root explicitly so install_python_stack.py doesn't
         # have to guess from SCRIPT_DIR (which may be inside site-packages).
         repo_root = Path(__file__).resolve().parents[2]
         os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
+    else:
+        os.environ["STUDIO_LOCAL_INSTALL"] = "0"
+        os.environ.pop("STUDIO_LOCAL_REPO", None)
     _run_setup_script(verbose = verbose)
 
 

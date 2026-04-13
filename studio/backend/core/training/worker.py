@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 logger = get_logger(__name__)
+from utils.hardware import apply_gpu_ids
 
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
@@ -85,6 +86,7 @@ def _probe_causal_conv1d_env() -> dict[str, str] | None:
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
                     "'torch_mm': torch_mm, "
                     "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                    "'hip_version': str(torch.version.hip) if getattr(torch.version, 'hip', None) else '', "
                     "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
                     "}))"
                 ),
@@ -236,28 +238,111 @@ def _install_package_wheel_first(
         else:
             logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
-    _send_status(event_queue, f"Installing {display_name} from PyPI...")
-    pypi_cmd = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--no-build-isolation",
-        "--no-deps",
-        "--no-cache-dir",
-        f"{pypi_name}=={pypi_version}",
-    ]
-    result = _sp.run(
-        pypi_cmd,
-        stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
-        text = True,
-    )
-    if result.returncode != 0:
-        logger.error("Failed to install %s from PyPI:\n%s", display_name, result.stdout)
+    is_hip = env and env.get("hip_version")
+    if is_hip and not shutil.which("hipcc"):
+        logger.error(
+            "%s requires hipcc for source compilation on ROCm. "
+            "Install the ROCm HIP SDK: https://rocm.docs.amd.com",
+            display_name,
+        )
+        _send_status(
+            event_queue,
+            f"{display_name}: hipcc not found (ROCm HIP SDK required)",
+        )
         return
 
-    logger.info("Installed %s from PyPI", display_name)
+    if is_hip:
+        _send_status(
+            event_queue,
+            f"Compiling {display_name} from source for ROCm "
+            "(this may take several minutes)...",
+        )
+    else:
+        _send_status(event_queue, f"Installing {display_name} from PyPI...")
+
+    # Prefer uv for faster dependency resolution when available
+    if shutil.which("uv"):
+        pypi_cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--no-build-isolation",
+            "--no-deps",
+        ]
+        # Avoid stale cache artifacts from partial HIP source builds
+        if is_hip:
+            pypi_cmd.append("--no-cache")
+        pypi_cmd.append(f"{pypi_name}=={pypi_version}")
+    else:
+        pypi_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-build-isolation",
+            "--no-deps",
+            "--no-cache-dir",
+            f"{pypi_name}=={pypi_version}",
+        ]
+
+    # Source compilation on ROCm can take 10-30 minutes; use a generous
+    # timeout. Non-HIP installs preserve the pre-existing "no timeout"
+    # behaviour so unrelated slow installs (e.g. causal-conv1d source
+    # build on Linux aarch64 or unsupported torch/CUDA combinations)
+    # are not aborted at 5 minutes by this PR.
+    _run_kwargs: dict[str, Any] = {
+        "stdout": _sp.PIPE,
+        "stderr": _sp.STDOUT,
+        "text": True,
+    }
+    if is_hip:
+        _run_kwargs["timeout"] = 1800
+
+    try:
+        result = _sp.run(pypi_cmd, **_run_kwargs)
+    except _sp.TimeoutExpired:
+        logger.error(
+            "%s installation timed out after %ds",
+            display_name,
+            _run_kwargs.get("timeout"),
+        )
+        _send_status(
+            event_queue,
+            f"{display_name} installation timed out after "
+            f"{_run_kwargs.get('timeout')}s",
+        )
+        return
+
+    if result.returncode != 0:
+        if is_hip:
+            # Surface a clear error for ROCm source build failures
+            error_lines = (result.stdout or "").strip().splitlines()
+            snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
+            logger.error(
+                "Failed to compile %s for ROCm:\n%s",
+                display_name,
+                result.stdout,
+            )
+            _send_status(
+                event_queue,
+                f"Failed to compile {display_name} for ROCm. "
+                "Check that hipcc and ROCm development headers are installed.\n"
+                f"{snippet}",
+            )
+        else:
+            logger.error(
+                "Failed to install %s from PyPI:\n%s",
+                display_name,
+                result.stdout,
+            )
+        return
+
+    if is_hip:
+        logger.info("Compiled and installed %s from source for ROCm", display_name)
+    else:
+        logger.info("Installed %s from PyPI", display_name)
 
 
 def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
@@ -305,37 +390,15 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
-    """
+    """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def run_training_process(
@@ -367,6 +430,8 @@ def run_training_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
+    apply_gpu_ids(config.get("resolved_gpu_ids"))
+
     model_name = config["model_name"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
@@ -383,20 +448,22 @@ def run_training_process(
         )
         return
 
-    # ── 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models ──
-    # Some newer architectures (e.g. NemotronH) have config parsing bugs in
-    # transformers that require trust_remote_code=True as a workaround.
-    # Only auto-enable for unsloth/* prefixed models (trusted source).
-    from utils.transformers_version import needs_transformers_5
-
+    # ── 1a. Auto-enable trust_remote_code for NemotronH/Nano models ──
+    # NemotronH has config parsing bugs in transformers that require
+    # trust_remote_code=True as a workaround. Other transformers 5.x models
+    # (Qwen3.5, Gemma 4, etc.) are native and do NOT need it — enabling it
+    # bypasses the compiler (disabling fused CE).
+    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+    _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+    _lowered = model_name.lower()
     if (
-        needs_transformers_5(model_name)
-        and model_name.lower().startswith("unsloth/")
+        any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+        and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
         logger.info(
-            "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+            "Auto-enabled trust_remote_code for Nemotron model: %s",
             model_name,
         )
 
@@ -682,6 +749,7 @@ def run_training_process(
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
+            gpu_ids = config.get("resolved_gpu_ids"),
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:
@@ -791,7 +859,7 @@ def run_training_process(
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
-            weight_decay = config.get("weight_decay", 0.01),
+            weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
             train_on_completions = config.get("train_on_completions", False),
@@ -1137,7 +1205,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
         "optim": config.get("optim", "adamw_8bit"),
-        "weight_decay": config.get("weight_decay", 0.01),
+        "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
     }
 

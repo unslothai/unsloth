@@ -22,6 +22,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { db, useLiveQuery } from "./db";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView, ThreadRecord } from "./types";
 
 interface SidebarItem {
@@ -76,12 +77,17 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
-  const allThreads = useLiveQuery(
-    () => db.threads.orderBy("createdAt").reverse().toArray(),
-    [],
-  );
+  const allThreads = useLiveQuery(async () => {
+    const threadIdsWithMessage = new Set(
+      (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
+    );
+    const rows = await db.threads.orderBy("createdAt").reverse().toArray();
+    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
+  }, []);
   const items = groupThreads(allThreads ?? []);
-  const activeId = view.mode === "single" ? view.threadId : view.pairId;
+  const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const activeId =
+    view.mode === "single" ? (view.threadId ?? storeThreadId) : view.pairId;
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
@@ -101,7 +107,11 @@ export function ThreadSidebar({
       }
     }
     if (activeId === item.id) {
-      onSelect({ mode: "single" });
+      // Directly set a new view with a nonce rather than going through
+      // onNewThread(), which may return early if the guard sees no
+      // threadId and no activeThreadId (after we just cleared it).
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
     }
   }
 

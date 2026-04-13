@@ -23,9 +23,22 @@ if _backend_dir not in sys.path:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
+import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
+
+# Fix broken Windows registry MIME types.  Some Windows installs map .js to
+# "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
+# module reads from the registry, and FastAPI/Starlette's StaticFiles uses
+# mimetypes.guess_type() to set Content-Type headers.  Browsers enforce strict
+# MIME checking for ES module scripts (<script type="module">) and will refuse
+# to execute .js files served as text/plain — resulting in a blank page.
+# Calling add_type() *before* StaticFiles is instantiated ensures the correct
+# types are used regardless of the OS registry.
+if sys.platform == "win32":
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
 
 # Suppress annoying dependency warnings in production
 if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
@@ -54,7 +67,12 @@ from routes import (
 )
 from auth import storage
 from auth.authentication import get_current_subject
-from utils.hardware import detect_hardware, get_device, DeviceType
+from utils.hardware import (
+    detect_hardware,
+    get_device,
+    DeviceType,
+    get_backend_visible_gpu_info,
+)
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
@@ -103,13 +121,13 @@ async def lifespan(app: FastAPI):
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
+
+        bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(
-            "Sign in with the seeded credentials and change the password immediately:\n"
-        )
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password: {bootstrap_pw}\n")
+        print(f"    password saved to: {bootstrap_path}")
+        print("    Open the Studio UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
@@ -217,69 +235,15 @@ async def shutdown_server(
 async def get_system_info():
     """Get system information"""
     import platform
-    import subprocess
     import psutil
-    from utils.hardware import get_device, get_gpu_memory_info, DeviceType
+    from utils.hardware import get_device
+    from utils.hardware.hardware import _backend_label
 
-    # GPU Info — query nvidia-smi for physical GPUs, filtered by
-    # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF
-    # fit estimation and llama-server respects CVD too).
-    import os
-
-    gpu_info: dict = {"available": False, "devices": []}
-
-    device = get_device()
-    if device == DeviceType.CUDA:
-        # Parse CUDA_VISIBLE_DEVICES allowlist
-        allowed_indices = None
-        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if cvd is not None and cvd.strip():
-            try:
-                allowed_indices = set(int(x.strip()) for x in cvd.split(","))
-            except ValueError:
-                pass  # Non-numeric (e.g. GPU-uuid), show all
-
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=index,name,memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output = True,
-                text = True,
-                timeout = 10,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().splitlines():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) == 3:
-                        idx = int(parts[0])
-                        if allowed_indices is not None and idx not in allowed_indices:
-                            continue
-                        gpu_info["devices"].append(
-                            {
-                                "index": idx,
-                                "name": parts[1],
-                                "memory_total_gb": round(int(parts[2]) / 1024, 2),
-                            }
-                        )
-                gpu_info["available"] = len(gpu_info["devices"]) > 0
-        except Exception:
-            pass
-
-    # Fallback to torch-based single-GPU detection
-    if not gpu_info["available"]:
-        mem_info = get_gpu_memory_info()
-        if mem_info.get("available"):
-            gpu_info["available"] = True
-            gpu_info["devices"].append(
-                {
-                    "index": mem_info.get("device", 0),
-                    "name": mem_info.get("device_name", "Unknown"),
-                    "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-                }
-            )
+    visibility_info = get_backend_visible_gpu_info()
+    gpu_info = {
+        "available": visibility_info["available"],
+        "devices": visibility_info["devices"],
+    }
 
     # CPU & Memory
     memory = psutil.virtual_memory()
@@ -287,7 +251,10 @@ async def get_system_info():
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        "device_backend": get_device().value,
+        # Use the centralized _backend_label helper so the /api/system
+        # endpoint reports "rocm" on AMD hosts instead of "cuda", matching
+        # the /api/hardware and /api/gpu-visibility endpoints.
+        "device_backend": _backend_label(get_device()),
         "cpu_count": psutil.cpu_count(),
         "memory": {
             "total_gb": round(memory.total / 1e9, 2),
@@ -296,6 +263,13 @@ async def get_system_info():
         },
         "gpu": gpu_info,
     }
+
+
+@app.get("/api/system/gpu-visibility")
+async def get_gpu_visibility(
+    current_subject: str = Depends(get_current_subject),
+):
+    return get_backend_visible_gpu_info()
 
 
 @app.get("/api/system/hardware")

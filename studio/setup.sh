@@ -8,6 +8,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Maintainer-editable defaults ──────────────────────────────────────────
+# Change these in the GitHub-hosted script so all users get updated defaults.
+# User environment variables always override these baked-in values.
+#
+#   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
+#   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
+#   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
+#                             "master" = bleeding-edge, "bNNNN" = specific tag)
+#                             Prefer "latest" over "master" -- "master" bypasses
+#                             the prebuilt resolver (no matching GitHub release),
+#                             forces a source build, and causes HTTP 422 errors.
+#                             Only use "master" temporarily when the latest release
+#                             is missing support for a new model architecture.
+# ──────────────────────────────────────────────────────────────────────────
+_DEFAULT_LLAMA_PR_FORCE=""
+_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
+_DEFAULT_LLAMA_TAG="latest"
+_DEFAULT_LLAMA_FORCE_COMPILE_REF="master"
+
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
@@ -28,11 +47,42 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
 
+_is_verbose() {
+    [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
+}
+
+verbose_substep() {
+    if _is_verbose; then
+        substep "$1"
+    fi
+    return 0
+}
+
+run_maybe_quiet() {
+    if _is_verbose; then
+        "$@"
+    else
+        "$@" > /dev/null 2>&1
+    fi
+}
+
 # ── Helper: run command quietly, show output only on failure ──
 _run_quiet() {
     local on_fail=$1
     local label=$2
     shift 2
+
+    if _is_verbose; then
+        local exit_code
+        "$@" && return 0
+        exit_code=$?
+        step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
+    fi
 
     local tmplog
     tmplog=$(mktemp) || {
@@ -65,11 +115,61 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
+print_llama_error_log() {
+    local log_file=$1
+    [ -s "$log_file" ] || return 0
+    substep "llama.cpp diagnostics (last 120 lines):"
+    tail -n 120 "$log_file" | sed 's/^/   | /' >&2
+}
+
+installed_llama_prebuilt_release() {
+    local install_dir=${1:-}
+    local metadata_path="$install_dir/UNSLOTH_PREBUILT_INFO.json"
+    [ -f "$metadata_path" ] || return 0
+    python - "$metadata_path" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+repo = str(payload.get("published_repo") or "").strip()
+release_tag = str(payload.get("release_tag") or "").strip()
+llama_tag = str(payload.get("tag") or "").strip()
+if not repo or not release_tag:
+    raise SystemExit(0)
+
+message = f"installed release: {repo}@{release_tag}"
+if llama_tag and llama_tag != release_tag:
+    message += f" (tag {llama_tag})"
+print(message)
+PY
+}
+
+print_installed_llama_prebuilt_release() {
+    local install_dir=${1:-}
+    local installed_release
+    installed_release="$(installed_llama_prebuilt_release "$install_dir")"
+    if [ -n "$installed_release" ]; then
+        substep "$installed_release"
+    fi
+}
+
 # ── Banner ──
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-
+verbose_substep "verbose diagnostics enabled"
+_LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
+if [ "$_LLAMA_ONLY" = "1" ]; then
+    substep "llama.cpp only mode"
+fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
@@ -82,6 +182,7 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
 
+if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Frontend ──
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
@@ -97,6 +198,7 @@ fi
 
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     step "frontend" "up to date"
+    verbose_substep "frontend dist is newer than source inputs"
 else
 
 # ── Node ──
@@ -117,7 +219,7 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
             # In Colab, just upgrade npm directly - nvm doesn't work well
             if [ "$NPM_MAJOR" -lt 11 ]; then
                 substep "upgrading npm..."
-                npm install -g npm@latest > /dev/null 2>&1
+                run_maybe_quiet npm install -g npm@latest
             fi
             NEED_NODE=false
         fi
@@ -127,7 +229,11 @@ fi
 if [ "$NEED_NODE" = true ]; then
     substep "installing nvm..."
     export NODE_OPTIONS=--dns-result-order=ipv4first
-    curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    if _is_verbose; then
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    else
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    fi
 
     export NVM_DIR="$HOME/.nvm"
     set +u
@@ -141,7 +247,11 @@ if [ "$NEED_NODE" = true ]; then
 
     substep "installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
-    nvm use --lts > /dev/null 2>&1
+    if _is_verbose; then
+        nvm use --lts
+    else
+        nvm use --lts > /dev/null 2>&1
+    fi
     set -u
 
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -158,13 +268,14 @@ if [ "$NEED_NODE" = true ]; then
 fi
 
 step "node" "$(node -v) | npm $(npm -v)"
+verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NPM_MAJOR=${NPM_MAJOR:-unknown}"
 
 # ── Install bun (optional, faster package installs) ──
 # Uses npm to install bun globally -- Node is already guaranteed above,
 # avoids platform-specific installers, PATH issues, and admin requirements.
 if ! command -v bun &>/dev/null; then
     substep "installing bun..."
-    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
+    if run_maybe_quiet npm install -g bun && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
@@ -209,7 +320,10 @@ _try_bun_install() {
     _log=$(mktemp)
     bun install >"$_log" 2>&1 || _exit_code=$?
 
-    if [ "$_exit_code" -eq 0 ] && [ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/vite ]; then
+    # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
+    if [ "$_exit_code" -eq 0 ] \
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
         rm -f "$_log"
         return 0
     fi
@@ -228,21 +342,25 @@ _try_bun_install() {
 
 _bun_install_ok=false
 if command -v bun &>/dev/null; then
-    echo "   Using bun for package install (faster)"
+    substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
     else
         # First attempt failed, likely due to corrupt cache entries.
         # Clear the cache and retry once.
         echo "   Clearing bun cache and retrying..."
-        bun pm cache rm > /dev/null 2>&1 || true
+        run_maybe_quiet bun pm cache rm || true
         if _try_bun_install; then
             _bun_install_ok=true
         fi
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet "npm install" npm install
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
+    _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ]; then
+        exit "$_npm_install_rc"
+    fi
 fi
 run_quiet "npm run build" npm run build
 
@@ -265,18 +383,25 @@ fi  # end frontend build check
 # ── oxc-validator runtime ──
 if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    run_quiet "npm install (oxc validator runtime)" npm install
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
+    _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ]; then
+        exit "$_oxc_install_rc"
+    fi
     cd "$SCRIPT_DIR"
 fi
 
 # ── Python venv + deps ──
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
+VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
+VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+[ -d "$REPO_ROOT/.venv_t5_530" ] && rm -rf "$REPO_ROOT/.venv_t5_530"
+[ -d "$REPO_ROOT/.venv_t5_550" ] && rm -rf "$REPO_ROOT/.venv_t5_550"
 # Note: do NOT delete $STUDIO_HOME/.venv here — install.sh handles migration
 
 _COLAB_NO_VENV=false
@@ -287,9 +412,19 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         # packages (huggingface-hub, datasets, transformers) and only pulls
         # in genuinely missing ones (structlog, fastapi, etc.).
         substep "Colab detected, installing Studio backend dependencies..."
+        _COLAB_REQS_TMP="$(mktemp)"
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
-            | grep -v '^#' | grep -v '^$' \
-            | pip install -q -r /dev/stdin 2>/dev/null || true
+            | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
+        if [ -s "$_COLAB_REQS_TMP" ]; then
+            if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
+                rm -f "$_COLAB_REQS_TMP"
+                step "python" "Colab backend dependency install failed" "$C_ERR"
+                exit 1
+            fi
+        else
+            step "python" "no Colab backend dependencies resolved from requirements file" "$C_WARN"
+        fi
+        rm -f "$_COLAB_REQS_TMP"
         _COLAB_NO_VENV=true
     else
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
@@ -308,7 +443,13 @@ install_python_stack() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
-elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
+elif {
+    if _is_verbose; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    else
+        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    fi
+}; then
     export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
 fi
@@ -325,7 +466,8 @@ cd "$SCRIPT_DIR"
 # On Colab without a venv, skip venv-dependent Python deps sections but
 # continue to llama.cpp install so GGUF inference is available.
 if [ "$_COLAB_NO_VENV" = true ]; then
-    echo "✅ Studio backend dependencies installed into system Python"
+    step "python" "backend deps installed into system Python"
+    substep "continuing to llama.cpp install for GGUF inference support"
 fi
 
 # ── Check if Python deps need updating ──
@@ -362,19 +504,47 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
-
-    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
-    # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
-    # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-    mkdir -p "$VENV_T5_DIR"
-    run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
-    run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
-    step "transformers" "5.x pre-installed"
 else
     step "python" "dependencies up to date"
+    verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
+fi
+
+# ── 6b. Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
+# Gemma 4 models need transformers>=5.5.0.
+# Pre-install into separate directories to avoid runtime pip overhead.
+# The training subprocess prepends the appropriate dir to sys.path.
+#
+# Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
+# single .venv_t5 are always migrated to the tiered layout.
+_NEED_T5_INSTALL=false
+if [ -d "$STUDIO_HOME/.venv_t5" ]; then
+    # Legacy layout — migrate
+    rm -rf "$STUDIO_HOME/.venv_t5"
+    _NEED_T5_INSTALL=true
+fi
+[ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
+[ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
+# Also reinstall when python deps were updated (packages may need rebuild)
+[ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
+
+if [ "$_NEED_T5_INSTALL" = true ]; then
+    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
+    mkdir -p "$VENV_T5_530_DIR"
+    run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
+    run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
+    step "transformers" "5.3.0 pre-installed"
+
+    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
+    mkdir -p "$VENV_T5_550_DIR"
+    run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
+    run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
+    step "transformers" "5.5.0 pre-installed"
+fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
@@ -383,84 +553,111 @@ mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
+_LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
-_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-latest}"
-_HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
-_RESOLVE_LLAMA_LOG="$(mktemp)"
-set +e
-python "$SCRIPT_DIR/install_llama_prebuilt.py" \
-    --resolve-install-tag "$_REQUESTED_LLAMA_TAG" \
-    --published-repo "$_HELPER_RELEASE_REPO" >"$_RESOLVE_LLAMA_LOG" 2>&1
-_RESOLVE_LLAMA_STATUS=$?
-set -e
-if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
-    _RESOLVED_LLAMA_TAG="$(tail -n 1 "$_RESOLVE_LLAMA_LOG" | tr -d '\r')"
+_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
+_HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
-    _RESOLVED_LLAMA_TAG=""
+    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
-if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-    step "llama.cpp" "failed to resolve prebuilt tag via $_HELPER_RELEASE_REPO" "$C_WARN"
-    cat "$_RESOLVE_LLAMA_LOG" >&2 || true
-    set +e
-    # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
-    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
-    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
-    _RESOLVE_UPSTREAM_STATUS=$?
-    set -e
-    if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-        if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
-            # Try Unsloth release repo first, then fall back to ggml-org upstream
-            _RESOLVED_LLAMA_TAG="$(curl -fsSL "https://api.github.com/repos/${_HELPER_RELEASE_REPO}/releases/latest" 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
-            if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-                _RESOLVED_LLAMA_TAG="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
-            fi
-        fi
-        if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-        fi
-    fi
+_LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
+_SKIP_PREBUILT_INSTALL=false
+_LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
+_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"
+_LLAMA_SOURCE="${_LLAMA_SOURCE%.git}"  # normalize: strip trailing .git
+_RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+_RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+_RESOLVED_SOURCE_REF_KIND="tag"
+_RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+
+if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
 fi
-rm -f "$_RESOLVE_LLAMA_LOG"
 
-substep "resolved llama.cpp tag: $_RESOLVED_LLAMA_TAG"
+# Baked-in PR_FORCE promotes to _LLAMA_PR when user hasn't set one.
+if [ -z "$_LLAMA_PR" ] && [ -n "$_LLAMA_PR_FORCE" ] && \
+   [[ "$_LLAMA_PR_FORCE" =~ ^[0-9]+$ ]] && [ "$_LLAMA_PR_FORCE" -gt 0 ]; then
+    _LLAMA_PR="$_LLAMA_PR_FORCE"
+    step "llama.cpp" "baked-in PR_FORCE=$_LLAMA_PR_FORCE" "$C_WARN"
+fi
+
+if [ -n "$_LLAMA_PR" ]; then
+    if ! [[ "$_LLAMA_PR" =~ ^[0-9]+$ ]] || [ "$_LLAMA_PR" -le 0 ]; then
+        step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number" "$C_ERR"
+        exit 1
+    fi
+    step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
+    _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
+    _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+    _RESOLVED_SOURCE_REF="pr-$_LLAMA_PR"
+    _RESOLVED_SOURCE_REF_KIND="pull"
+    _NEED_LLAMA_SOURCE_BUILD=true
+    _SKIP_PREBUILT_INSTALL=true
+fi
+
+verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
 if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
+elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
+    substep "prebuilt install skipped -- falling back to source build"
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
-    if [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
-        substep "prebuilt tag resolution failed -- falling back to source build"
+    _PREBUILT_CMD=(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py"
+        --install-dir "$LLAMA_CPP_DIR"
+        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --published-repo "$_HELPER_RELEASE_REPO"
+        --simple-policy
+    )
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+    fi
+    _PREBUILT_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+        _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
-        _PREBUILT_CMD=(
-            python "$SCRIPT_DIR/install_llama_prebuilt.py"
-            --install-dir "$LLAMA_CPP_DIR"
-            --llama-tag "$_RESOLVED_LLAMA_TAG"
-            --published-repo "$_HELPER_RELEASE_REPO"
-        )
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        set +e
-        "${_PREBUILT_CMD[@]}"
+        "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
         _PREBUILT_STATUS=$?
-        set -e
+    fi
+    set -e
 
-        if [ "$_PREBUILT_STATUS" -eq 0 ]; then
-            step "llama.cpp" "prebuilt installed and validated"
+    if [ "$_PREBUILT_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_PREBUILT_LOG"; then
+            step "llama.cpp" "prebuilt up to date and validated"
         else
-            if [ -d "$LLAMA_CPP_DIR" ]; then
-                substep "prebuilt update failed; existing install restored"
-            fi
-            substep "falling back to source build"
-            _NEED_LLAMA_SOURCE_BUILD=true
+            step "llama.cpp" "prebuilt installed and validated"
         fi
+        print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+        verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
+        rm -f "$_PREBUILT_LOG"
+    elif [ "$_PREBUILT_STATUS" -eq 3 ]; then
+        step "llama.cpp" "install blocked by active llama.cpp process" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored"
+        fi
+        substep "close Studio or other llama.cpp users and retry"
+        exit 3
+    else
+        step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "prebuilt update failed; existing install restored"
+        fi
+        substep "falling back to source build"
+        _NEED_LLAMA_SOURCE_BUILD=true
     fi
 fi
 
@@ -523,28 +720,117 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = false ]; then
     :
 elif [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
     step "llama.cpp" "skipped (missing build deps)" "$C_WARN"
+    [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
 else
 {
     if ! command -v cmake &>/dev/null; then
         step "llama.cpp" "skipped (cmake not found)" "$C_WARN"
+        [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     elif ! command -v git &>/dev/null; then
         step "llama.cpp" "skipped (git not found)" "$C_WARN"
+        [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     else
-        BUILD_OK=true
-        _CLONE_BRANCH_ARGS=()
-        if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-            _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
+        if [ -z "$_LLAMA_PR" ]; then
+            _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+            if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+                if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+                    _RESOLVED_SOURCE_REF="${UNSLOTH_LLAMA_FORCE_COMPILE_REF:-${_DEFAULT_LLAMA_FORCE_COMPILE_REF}}"
+                    _RESOLVED_SOURCE_REF_KIND="branch"
+                else
+                    _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+                    _RESOLVED_SOURCE_REF_KIND="tag"
+                fi
+            elif [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+                _RESOLVE_TAG_ARGS=(--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp" --output-format json)
+                set +e
+                _RESOLVE_TAG_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
+                _RESOLVE_TAG_STATUS=$?
+                set -e
+                if [ "$_RESOLVE_TAG_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
+                    _RESOLVED_SOURCE_REF="$(
+                        printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
+                    )"
+                else
+                    _RESOLVED_SOURCE_REF=""
+                fi
+                if [ -z "$_RESOLVED_SOURCE_REF" ]; then
+                    _RESOLVED_SOURCE_REF="latest"
+                fi
+                _RESOLVED_SOURCE_REF_KIND="tag"
+            else
+                _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+                _RESOLVED_SOURCE_REF_KIND="tag"
+            fi
+            if [ -z "$_RESOLVED_SOURCE_URL" ]; then
+                _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+            fi
+            if [ -z "$_RESOLVED_SOURCE_REF" ]; then
+                _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+            fi
         fi
+        verbose_substep "source build repo: $_RESOLVED_SOURCE_URL"
+        verbose_substep "source build ref: ${_RESOLVED_SOURCE_REF:-latest} (${_RESOLVED_SOURCE_REF_KIND})"
+        BUILD_OK=true
+        mkdir -p "$(dirname "$LLAMA_CPP_DIR")"
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
-        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_BUILD_TMP" || BUILD_OK=false
+        if [ -n "$_LLAMA_PR" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_LLAMA_SOURCE}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch PR #$_LLAMA_PR" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "pull/$_LLAMA_PR/head:pr-$_LLAMA_PR" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout PR #$_LLAMA_PR" \
+                    git -C "$_BUILD_TMP" checkout "pr-$_LLAMA_PR" || BUILD_OK=false
+            fi
+        elif [ "$_RESOLVED_SOURCE_REF_KIND" = "pull" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch source PR ref" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "$_RESOLVED_SOURCE_REF" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout source PR ref" \
+                    git -C "$_BUILD_TMP" checkout -B unsloth-llama-build FETCH_HEAD || BUILD_OK=false
+            fi
+        elif [ "$_RESOLVED_SOURCE_REF_KIND" = "commit" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch source commit" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "$_RESOLVED_SOURCE_REF" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout source commit" \
+                    git -C "$_BUILD_TMP" checkout -B unsloth-llama-build FETCH_HEAD || BUILD_OK=false
+            fi
+        else
+            _CLONE_ARGS=(git clone --depth 1)
+            if [ "$_RESOLVED_SOURCE_REF" != "latest" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+                _CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")
+            fi
+            _CLONE_ARGS+=("${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP")
+            run_quiet_no_exit "clone llama.cpp" \
+                "${_CLONE_ARGS[@]}" || BUILD_OK=false
+        fi
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            _TRY_METAL_CPU_FALLBACK=false
+            _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+            _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+            _IS_MACOS_ARM64=false
+            if [ "$_HOST_SYSTEM" = "Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }; then
+                _IS_MACOS_ARM64=true
+            fi
 
             if command -v ccache &>/dev/null; then
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
             fi
+            CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
 
             GPU_BACKEND=""
             NVCC_PATH=""
@@ -580,7 +866,13 @@ else
             fi
 
             _BUILD_DESC="building"
-            if [ -n "$NVCC_PATH" ]; then
+            if [ "$_IS_MACOS_ARM64" = true ]; then
+                # Metal takes precedence on Apple Silicon (CUDA/ROCm not functional on macOS)
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+                _TRY_METAL_CPU_FALLBACK=true
+            elif [ -n "$NVCC_PATH" ]; then
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                 CUDA_ARCHS=""
@@ -636,6 +928,20 @@ else
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
                         if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            # Drop bare family-level targets (gfx10, gfx11, gfx12, ...)
+                            # when a specific sibling is present in the same list.
+                            # rocminfo on ROCm 6.1+ emits both the specific GPU and
+                            # the LLVM generic family line (e.g. gfx1100 alongside
+                            # gfx11-generic), and the outer grep above captures the
+                            # bare family prefix from the generic line. Passing that
+                            # bare prefix to -DGPU_TARGETS breaks the HIP/llama.cpp
+                            # build because clang only accepts specific gfxNNN ids.
+                            # No real AMD GPU has a 2-digit gfx id, so this filter
+                            # can only ever drop family prefixes, never real targets.
+                            if [[ "$_gfx" =~ ^gfx[0-9]{2}$ ]] \
+                               && echo "$_gfx_list" | grep -qE "^${_gfx}[0-9][0-9a-z]?$"; then
+                                continue
+                            fi
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done
@@ -662,11 +968,37 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS || BUILD_OK=false
+            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
+                    substep "Metal configure failed; retrying CPU build..." "$C_WARN"
+                    rm -rf "$_BUILD_TMP/build"
+                    run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
+                    if [ "$BUILD_OK" = true ]; then
+                        _BUILD_DESC="building (CPU fallback)"
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            if ! run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
+                    substep "Metal build failed; retrying CPU build..." "$C_WARN"
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback)"
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                    else
+                        BUILD_OK=false
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
         fi
 
         if [ "$BUILD_OK" = true ]; then
@@ -691,25 +1023,57 @@ else
             [ -f "$LLAMA_CPP_DIR/llama-quantize" ] && step "llama-quantize" "built"
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
+            _LLAMA_CPP_DEGRADED=true
         else
             step "llama.cpp" "build failed" "$C_ERR"
+            [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
         fi
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
 
 # ── Footer ──
-if [ "$IS_COLAB" = true ]; then
+if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_WARN}%s${C_RST}\n" "llama.cpp update finished (limited: llama.cpp unavailable)"
+    else
+        printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
+    fi
+    printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+elif [ "$IS_COLAB" = true ]; then
+    echo ""
+    printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Setup Complete (limited: llama.cpp unavailable)"
+    else
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
+    fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
     substep "from colab import start"
     substep "start()"
 else
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Installed (limited: llama.cpp unavailable)"
+    else
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
+    fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+    else
+        printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+    fi
 fi
 echo ""
+
+# When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
+# installer can report the GGUF failure after finishing PATH/shortcut setup.
+# When called directly via 'unsloth studio update', keep the install
+# successful -- the footer above already reports the limitation and Studio
+# is still usable for non-GGUF workflows.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
+    exit 1
+fi

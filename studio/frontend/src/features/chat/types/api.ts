@@ -41,6 +41,7 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  speculative_type?: string | null;
 }
 
 export interface ValidateModelResponse {
@@ -86,11 +87,14 @@ export interface LoadModelResponse {
     trust_remote_code?: boolean;
   };
   context_length?: number | null;
+  max_context_length?: number | null;
+  native_context_length?: number | null;
   supports_reasoning?: boolean;
   reasoning_always_on?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
+  speculative_type?: string | null;
 }
 
 export interface UnloadModelRequest {
@@ -119,6 +123,9 @@ export interface InferenceStatusResponse {
   reasoning_always_on?: boolean;
   supports_tools?: boolean;
   context_length?: number | null;
+  max_context_length?: number | null;
+  native_context_length?: number | null;
+  speculative_type?: string | null;
 }
 
 export interface AudioGenerationResponse {

@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
-import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,6 +10,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   ArrowDown01Icon,
   CodeIcon,
@@ -33,22 +42,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { useIsMobile } from "@/hooks/use-mobile";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "./types/runtime";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import { Switch } from "@/components/ui/switch";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 export type { InferenceParams } from "./types/runtime";
@@ -174,7 +174,11 @@ function loadCollapsibleState(): Record<string, boolean> {
     const raw = localStorage.getItem(COLLAPSIBLE_STATE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
       return {};
     }
     return Object.fromEntries(
@@ -276,21 +280,42 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
+  const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
+  const loadedSpeculativeType = useChatRuntimeStore(
+    (s) => s.loadedSpeculativeType,
+  );
+  const currentModels = useChatRuntimeStore((s) => s.models);
+  const currentCheckpoint = params.checkpoint;
+  const currentModelIsVision =
+    currentModels.find((m) => m.id === currentCheckpoint)?.isVision ?? false;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufMaxContextLength = useChatRuntimeStore(
+    (s) => s.ggufMaxContextLength,
+  );
+  const ggufNativeContextLength = useChatRuntimeStore(
+    (s) => s.ggufNativeContextLength,
+  );
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
-  const setCustomContextLength = useChatRuntimeStore((s) => s.setCustomContextLength);
+  const setCustomContextLength = useChatRuntimeStore(
+    (s) => s.setCustomContextLength,
+  );
 
   const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
+  const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
-  const modelSettingsDirty = kvDirty || ctxDirty;
+  const specDirty = speculativeType !== loadedSpeculativeType;
+  const modelSettingsDirty = kvDirty || ctxDirty || specDirty;
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
-  const [activePreset, setActivePreset] = useState(() => loadSavedActivePreset());
+  const [activePreset, setActivePreset] = useState(() =>
+    loadSavedActivePreset(),
+  );
   const [savePresetOpen, setSavePresetOpen] = useState(false);
   const [presetNameDraft, setPresetNameDraft] = useState("");
   const presets = useMemo(
@@ -415,325 +440,388 @@ export function ChatSettingsPanel({
       <div className="flex-1 overflow-y-auto px-1.5">
         {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
         <div className="mt-4 px-2 pb-3">
-            <div className="flex items-center gap-2">
-              <Select value={activePreset} onValueChange={applyPreset}>
-                <SelectTrigger className="h-8 flex-1 corner-squircle text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {presets.map((p) => (
-                    <SelectItem key={p.name} value={p.name}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <button
-                type="button"
-                onClick={openSavePresetDialog}
-                className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
-                title="Save preset"
-              >
-                <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-                Save
-              </button>
-              <button
-                type="button"
-                onClick={() => deletePreset(activePreset)}
-                disabled={isBuiltinPreset}
-                className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  isBuiltinPreset
-                    ? "Built-in presets cannot be deleted"
-                    : "Delete selected preset"
-                }
-              >
-                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                Delete
-              </button>
-            </div>
-          </div>
-
-          <div className="px-2 pb-4">
-            <label
-              htmlFor="system-prompt"
-              className="mb-1.5 block text-xs font-medium"
+          <div className="flex items-center gap-2">
+            <Select value={activePreset} onValueChange={applyPreset}>
+              <SelectTrigger className="h-8 flex-1 corner-squircle text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {presets.map((p) => (
+                  <SelectItem key={p.name} value={p.name}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <button
+              type="button"
+              onClick={openSavePresetDialog}
+              className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
+              title="Save preset"
             >
-              System Prompt
-            </label>
-            <Textarea
-              id="system-prompt"
-              value={params.systemPrompt}
-              onChange={(e) => set("systemPrompt")(e.target.value)}
-              placeholder="You are a helpful assistant..."
-              className="min-h-20 text-xs corner-squircle"
-              rows={3}
-            />
+              <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => deletePreset(activePreset)}
+              disabled={isBuiltinPreset}
+              className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                isBuiltinPreset
+                  ? "Built-in presets cannot be deleted"
+                  : "Delete selected preset"
+              }
+            >
+              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              Delete
+            </button>
           </div>
+        </div>
 
-          <CollapsibleSection icon={Settings02Icon} label="Model" defaultOpen={true}>
-            <div className="flex flex-col gap-3 py-1">
-              {isGguf && (
-                <>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium">Context Length</span>
-                      <Input
-                        type="number"
-                        value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
-                        placeholder="..."
-                        min={128}
-                        max={ggufContextLength ?? undefined}
-                        step={1024}
-                        className="h-6 w-[100px] text-right text-xs tabular-nums"
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          if (raw === "") {
-                            setCustomContextLength(null);
-                            return;
-                          }
-                          const v = parseInt(raw, 10);
-                          if (!Number.isNaN(v) && v >= 0) {
-                            const maxCtx = ggufContextLength ?? Infinity;
-                            const clamped = Math.min(v, maxCtx);
-                            setCustomContextLength(clamped === (ggufContextLength ?? 0) ? null : clamped);
-                          }
-                        }}
-                      />
-                    </div>
-                    <Slider
-                      min={1024}
-                      max={ggufContextLength ?? 4096}
+        <div className="px-2 pb-4">
+          <label
+            htmlFor="system-prompt"
+            className="mb-1.5 block text-xs font-medium"
+          >
+            System Prompt
+          </label>
+          <Textarea
+            id="system-prompt"
+            value={params.systemPrompt}
+            onChange={(e) => set("systemPrompt")(e.target.value)}
+            placeholder="You are a helpful assistant..."
+            className="min-h-20 text-xs corner-squircle"
+            rows={3}
+          />
+        </div>
+
+        <CollapsibleSection
+          icon={Settings02Icon}
+          label="Model"
+          defaultOpen={true}
+        >
+          <div className="flex flex-col gap-3 py-1">
+            {isGguf && (
+              <>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">Context Length</span>
+                    <Input
+                      type="number"
+                      value={
+                        typeof ctxDisplayValue === "number"
+                          ? ctxDisplayValue
+                          : (ggufContextLength ?? "")
+                      }
+                      placeholder="..."
+                      min={128}
+                      max={ctxMaxValue ?? undefined}
                       step={1024}
-                      value={[Math.min(typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096), ggufContextLength ?? 4096)]}
-                      onValueChange={([v]) => {
-                        setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                      className="h-6 w-[100px] text-right text-xs tabular-nums"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw === "") {
+                          setCustomContextLength(null);
+                          return;
+                        }
+                        const v = Number.parseInt(raw, 10);
+                        if (!Number.isNaN(v) && v >= 0) {
+                          const maxCtx =
+                            ctxMaxValue ?? Number.POSITIVE_INFINITY;
+                          const clamped = Math.min(v, maxCtx);
+                          setCustomContextLength(
+                            clamped === (ggufContextLength ?? 0)
+                              ? null
+                              : clamped,
+                          );
+                        }
                       }}
                     />
                   </div>
+                  <Slider
+                    min={1024}
+                    max={ctxMaxValue ?? 4096}
+                    step={1024}
+                    value={[
+                      Math.min(
+                        typeof ctxDisplayValue === "number"
+                          ? ctxDisplayValue
+                          : (ggufContextLength ?? 4096),
+                        ctxMaxValue ?? 4096,
+                      ),
+                    ]}
+                    onValueChange={([v]) => {
+                      setCustomContextLength(
+                        v === (ggufContextLength ?? 0) ? null : v,
+                      );
+                    }}
+                  />
+                  {ggufMaxContextLength != null &&
+                    typeof ctxDisplayValue === "number" &&
+                    ctxDisplayValue > ggufMaxContextLength && (
+                      <p className="text-[11px] text-amber-500">
+                        Exceeds estimated VRAM capacity ({ggufMaxContextLength.toLocaleString()} tokens). The model may use system RAM.
+                      </p>
+                    )}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">KV Cache Dtype</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Quantize KV cache to reduce VRAM.
+                    </div>
+                  </div>
+                  <Select
+                    value={kvCacheDtype ?? "f16"}
+                    onValueChange={(v) => {
+                      setKvCacheDtype(v === "f16" ? null : v);
+                    }}
+                  >
+                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="f16">f16</SelectItem>
+                      <SelectItem value="bf16">bf16</SelectItem>
+                      <SelectItem value="q8_0">q8_0</SelectItem>
+                      <SelectItem value="q5_1">q5_1</SelectItem>
+                      <SelectItem value="q4_1">q4_1</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {!currentModelIsVision && (
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-xs font-medium">KV Cache Dtype</div>
+                      <div className="text-xs font-medium">
+                        Speculative Decoding
+                      </div>
                       <div className="text-[11px] text-muted-foreground">
-                        Quantize KV cache to reduce VRAM.
+                        Speed up generation with no VRAM cost.
                       </div>
                     </div>
                     <Select
-                      value={kvCacheDtype ?? "f16"}
+                      value={speculativeType ?? "off"}
                       onValueChange={(v) => {
-                        setKvCacheDtype(v === "f16" ? null : v);
+                        setSpeculativeType(v === "off" ? null : v);
                       }}
                     >
-                      <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectTrigger className="h-7 w-[120px] text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="f16">f16</SelectItem>
-                        <SelectItem value="bf16">bf16</SelectItem>
-                        <SelectItem value="q8_0">q8_0</SelectItem>
-                        <SelectItem value="q5_1">q5_1</SelectItem>
-                        <SelectItem value="q4_1">q4_1</SelectItem>
+                        <SelectItem value="ngram-mod">On</SelectItem>
+                        <SelectItem value="off">Off</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                  {modelSettingsDirty && (
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => onReloadModel?.()}
-                        className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                      >
-                        Apply
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCustomContextLength(null);
-                          setKvCacheDtype(loadedKvCacheDtype);
-                        }}
-                        className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
-                      >
-                        Reset
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-              {!isGguf && params.checkpoint && (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">Enable custom code</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only enable if sure.
-                    </div>
+                )}
+                {modelSettingsDirty && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => onReloadModel?.()}
+                      className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                    >
+                      Apply
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomContextLength(null);
+                        setKvCacheDtype(loadedKvCacheDtype);
+                        setSpeculativeType(loadedSpeculativeType);
+                      }}
+                      className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+                    >
+                      Reset
+                    </button>
                   </div>
-                  <Switch
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-              )}
-            </div>
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            icon={SlidersHorizontalIcon}
-            label="Sampling"
-            defaultOpen={true}
-          >
-            <div className="flex flex-col gap-5">
-              <ParamSlider
-                label="Temperature"
-                value={params.temperature}
-                min={0}
-                max={2}
-                step={0.1}
-                onChange={set("temperature")}
-              />
-              <ParamSlider
-                label="Top P"
-                value={params.topP}
-                min={0}
-                max={1}
-                step={0.05}
-                onChange={set("topP")}
-                displayValue={params.topP === 1 ? "Off" : undefined}
-              />
-              <ParamSlider
-                label="Top K"
-                value={params.topK}
-                min={0}
-                max={100}
-                step={1}
-                onChange={set("topK")}
-                displayValue={params.topK === 0 ? "Off" : undefined}
-              />
-              <ParamSlider
-                label="Min P"
-                value={params.minP}
-                min={0}
-                max={1}
-                step={0.01}
-                onChange={set("minP")}
-              />
-              <ParamSlider
-                label="Repetition Penalty"
-                value={params.repetitionPenalty}
-                min={1}
-                max={2}
-                step={0.05}
-                onChange={set("repetitionPenalty")}
-                displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
-              />
-              <ParamSlider
-                label="Presence Penalty"
-                value={params.presencePenalty}
-                min={0}
-                max={2}
-                step={0.1}
-                onChange={set("presencePenalty")}
-                displayValue={params.presencePenalty === 0 ? "Off" : undefined}
-              />
-              {!isGguf && (
-                <ParamSlider
-                  label="Max Seq Length"
-                  value={params.maxSeqLength}
-                  min={128}
-                  max={32768}
-                  step={128}
-                  onChange={set("maxSeqLength")}
-                />
-              )}
-              <ParamSlider
-                label="Max Tokens"
-                value={params.maxTokens}
-                min={64}
-                max={isGguf && ggufContextLength ? ggufContextLength : 32768}
-                step={64}
-                onChange={set("maxTokens")}
-                displayValue={
-                  isGguf && ggufContextLength && params.maxTokens >= ggufContextLength
-                    ? "Max"
-                    : undefined
-                }
-              />
-            </div>
-          </CollapsibleSection>
-
-          <CollapsibleSection icon={Wrench01Icon} label="Tools">
-            <div className="flex flex-col gap-3 py-1">
-              <AutoHealToolCallsToggle />
-              <MaxToolCallsSlider />
-              <ToolCallTimeoutSlider />
-            </div>
-          </CollapsibleSection>
-
-          <CollapsibleSection icon={UserSettings01Icon} label="Preferences" defaultOpen={true}>
-            <div className="flex flex-col gap-3 py-1">
+                )}
+              </>
+            )}
+            {!isGguf && params.checkpoint && (
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium">Auto title</div>
+                  <div className="text-xs font-medium">Enable custom code</div>
                   <div className="text-[11px] text-muted-foreground">
-                    Generate short title after reply.
+                    Allow models with custom code (e.g. Nemotron). Only enable
+                    if sure.
                   </div>
                 </div>
                 <Switch
-                  checked={autoTitle}
-                  onCheckedChange={onAutoTitleChange}
+                  checked={params.trustRemoteCode ?? false}
+                  onCheckedChange={set("trustRemoteCode")}
                 />
               </div>
-              <HfTokenField />
-            </div>
-          </CollapsibleSection>
+            )}
+          </div>
+        </CollapsibleSection>
 
-          <ChatTemplateSection onReloadModel={onReloadModel} />
-        </div>
-        <Dialog
-          open={savePresetOpen}
-          onOpenChange={(nextOpen) => {
-            setSavePresetOpen(nextOpen);
-            if (!nextOpen) {
-              setPresetNameDraft("");
-            }
-          }}
+        <CollapsibleSection
+          icon={SlidersHorizontalIcon}
+          label="Sampling"
+          defaultOpen={true}
         >
-          <DialogContent className="corner-squircle sm:max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Save Preset</DialogTitle>
-              <DialogDescription>
-                Enter a name for this inference preset.
-              </DialogDescription>
-            </DialogHeader>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                savePresetWithName(presetNameDraft);
-              }}
-              className="space-y-4"
-            >
-              <Input
-                autoFocus={true}
-                value={presetNameDraft}
-                onChange={(event) => setPresetNameDraft(event.target.value)}
-                placeholder="Preset name"
-                maxLength={80}
+          <div className="flex flex-col gap-5">
+            <ParamSlider
+              label="Temperature"
+              value={params.temperature}
+              min={0}
+              max={2}
+              step={0.1}
+              onChange={set("temperature")}
+            />
+            <ParamSlider
+              label="Top P"
+              value={params.topP}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={set("topP")}
+              displayValue={params.topP === 1 ? "Off" : undefined}
+            />
+            <ParamSlider
+              label="Top K"
+              value={params.topK}
+              min={0}
+              max={100}
+              step={1}
+              onChange={set("topK")}
+              displayValue={params.topK === 0 ? "Off" : undefined}
+            />
+            <ParamSlider
+              label="Min P"
+              value={params.minP}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={set("minP")}
+            />
+            <ParamSlider
+              label="Repetition Penalty"
+              value={params.repetitionPenalty}
+              min={1}
+              max={2}
+              step={0.05}
+              onChange={set("repetitionPenalty")}
+              displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
+            />
+            <ParamSlider
+              label="Presence Penalty"
+              value={params.presencePenalty}
+              min={0}
+              max={2}
+              step={0.1}
+              onChange={set("presencePenalty")}
+              displayValue={params.presencePenalty === 0 ? "Off" : undefined}
+            />
+            {!isGguf && (
+              <ParamSlider
+                label="Max Seq Length"
+                value={params.maxSeqLength}
+                min={128}
+                max={32768}
+                step={128}
+                onChange={set("maxSeqLength")}
               />
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setSavePresetOpen(false)}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={presetNameDraft.trim().length === 0}>
-                  Save
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </>
+            )}
+            <ParamSlider
+              label="Max Tokens"
+              value={params.maxTokens}
+              min={64}
+              max={isGguf && ggufContextLength ? ggufContextLength : 32768}
+              step={64}
+              onChange={set("maxTokens")}
+              displayValue={
+                isGguf &&
+                ggufContextLength &&
+                params.maxTokens >= ggufContextLength
+                  ? "Max"
+                  : undefined
+              }
+            />
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection icon={Wrench01Icon} label="Tools">
+          <div className="flex flex-col gap-3 py-1">
+            <AutoHealToolCallsToggle />
+            <MaxToolCallsSlider />
+            <ToolCallTimeoutSlider />
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          icon={UserSettings01Icon}
+          label="Preferences"
+          defaultOpen={true}
+        >
+          <div className="flex flex-col gap-3 py-1">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-medium">Auto title</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Generate short title after reply.
+                </div>
+              </div>
+              <Switch checked={autoTitle} onCheckedChange={onAutoTitleChange} />
+            </div>
+            <HfTokenField />
+          </div>
+        </CollapsibleSection>
+
+        <ChatTemplateSection onReloadModel={onReloadModel} />
+      </div>
+      <Dialog
+        open={savePresetOpen}
+        onOpenChange={(nextOpen) => {
+          setSavePresetOpen(nextOpen);
+          if (!nextOpen) {
+            setPresetNameDraft("");
+          }
+        }}
+      >
+        <DialogContent className="corner-squircle sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Save Preset</DialogTitle>
+            <DialogDescription>
+              Enter a name for this inference preset.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              savePresetWithName(presetNameDraft);
+            }}
+            className="space-y-4"
+          >
+            <Input
+              autoFocus={true}
+              value={presetNameDraft}
+              onChange={(event) => setPresetNameDraft(event.target.value)}
+              placeholder="Preset name"
+              maxLength={80}
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSavePresetOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={presetNameDraft.trim().length === 0}
+              >
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 
   if (isMobile) {
@@ -761,7 +849,9 @@ export function ChatSettingsPanel({
 
 function MaxToolCallsSlider() {
   const maxToolCalls = useChatRuntimeStore((s) => s.maxToolCallsPerMessage);
-  const setMaxToolCalls = useChatRuntimeStore((s) => s.setMaxToolCallsPerMessage);
+  const setMaxToolCalls = useChatRuntimeStore(
+    (s) => s.setMaxToolCallsPerMessage,
+  );
 
   // Slider range 0-41; 41 maps to 9999 ("Max")
   const sliderValue = maxToolCalls >= 9999 ? 41 : Math.min(maxToolCalls, 40);
@@ -774,7 +864,9 @@ function MaxToolCallsSlider() {
       max={41}
       step={1}
       onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
-      displayValue={sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined}
+      displayValue={
+        sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined
+      }
     />
   );
 }
@@ -808,7 +900,9 @@ function ToolCallTimeoutSlider() {
 
 function AutoHealToolCallsToggle() {
   const autoHealToolCalls = useChatRuntimeStore((s) => s.autoHealToolCalls);
-  const setAutoHealToolCalls = useChatRuntimeStore((s) => s.setAutoHealToolCalls);
+  const setAutoHealToolCalls = useChatRuntimeStore(
+    (s) => s.setAutoHealToolCalls,
+  );
 
   return (
     <div className="flex items-center justify-between gap-3">

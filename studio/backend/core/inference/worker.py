@@ -22,6 +22,7 @@ from loggers import get_logger
 import os
 import queue as _queue
 import sys
+import threading
 import time
 import traceback
 from io import BytesIO
@@ -29,40 +30,19 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+from utils.hardware import apply_gpu_ids
 
 
 def _activate_transformers_version(model_name: str) -> None:
-    """Activate the correct transformers version BEFORE any ML imports.
-
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
-    """
+    """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import (
-        needs_transformers_5,
-        _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
-    )
+    from utils.transformers_version import activate_transformers_for_subprocess
 
-    resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
-            raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
-            )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
-        _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
-    else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+    activate_transformers_for_subprocess(model_name)
 
 
 def _decode_image(image_base64: str):
@@ -113,6 +93,157 @@ def _build_model_config(config: dict):
     return mc
 
 
+def _get_hf_download_state(
+    model_names: list[str] | None = None,
+) -> tuple[int, bool] | None:
+    """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
+
+    When *model_names* is provided, only those models' ``blobs/``
+    directories are checked instead of scanning every cached model --
+    much faster on systems with many models. Accepts multiple names so
+    that LoRA loads can watch both the adapter repo and the base model
+    repo simultaneously.
+
+    *has_incomplete* is True when any ``*.incomplete`` files exist in the
+    watched blobs directories, indicating that ``huggingface_hub`` is
+    actively downloading.
+
+    Returns None if the state cannot be determined (import error,
+    permission error, etc.) so callers can skip stall logic.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        cache = Path(HF_HUB_CACHE)
+        if not cache.exists():
+            return (0, False)
+
+        total = 0
+        has_incomplete = False
+        blobs_dirs: list[Path] = []
+
+        if model_names:
+            from utils.paths import resolve_cached_repo_id_case
+
+            for name in model_names:
+                if not name:
+                    continue
+                # Skip local filesystem paths -- HF model IDs use forward
+                # slashes (org/model) but never start with / . ~ or contain
+                # backslashes. This distinguishes them from absolute paths,
+                # relative paths, and Windows paths.
+                if name.startswith(("/", ".", "~")) or "\\" in name:
+                    continue
+                name = resolve_cached_repo_id_case(name)
+                # HF cache dir format: models--org--name (slashes -> --)
+                cache_dir_name = "models--" + name.replace("/", "--")
+                blobs_dir = cache / cache_dir_name / "blobs"
+                if blobs_dir.exists():
+                    blobs_dirs.append(blobs_dir)
+        else:
+            blobs_dirs = list(cache.glob("models--*/blobs"))
+
+        for bdir in blobs_dirs:
+            for f in bdir.iterdir():
+                try:
+                    if f.is_file():
+                        total += f.stat().st_size
+                        if f.name.endswith(".incomplete"):
+                            has_incomplete = True
+                except OSError:
+                    pass
+
+        return (total, has_incomplete)
+    except Exception as e:
+        logger.debug("Failed to determine HF download state: %s", e)
+        return None
+
+
+def _start_heartbeat(
+    resp_queue: Any,
+    interval: float = 30.0,
+    stall_timeout: float = 180.0,
+    xet_disabled: bool = False,
+    model_names: list[str] | None = None,
+) -> threading.Event:
+    """Start a daemon thread that sends periodic status heartbeats.
+
+    Monitors the HF Hub cache directory for download activity. A stall
+    is only reported when ``*.incomplete`` files are present (indicating
+    ``huggingface_hub`` is actively downloading) **and** the total cache
+    size has not changed for *stall_timeout* seconds.
+
+    Once the download finishes (no more ``.incomplete`` files), the stall
+    timer resets, so post-download initialization (quantization, GPU
+    weight loading) is never misclassified as a stalled download.
+
+    Returns a stop event -- set it to terminate the heartbeat thread.
+    """
+    stop = threading.Event()
+    transport = "https" if xet_disabled else "xet"
+
+    def _beat():
+        state = _get_hf_download_state(model_names)
+        last_size = state[0] if state is not None else 0
+        last_change = time.monotonic()
+
+        while not stop.wait(interval):
+            state = _get_hf_download_state(model_names)
+            now = time.monotonic()
+
+            # Skip stall logic if we cannot measure the cache
+            if state is None:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "status",
+                        "message": f"Loading model ({transport} transport)...",
+                        "ts": time.time(),
+                    },
+                )
+                continue
+
+            current_size, has_incomplete = state
+
+            if current_size != last_size:
+                last_size = current_size
+                last_change = now
+
+            # Only fire stall when .incomplete files are present,
+            # confirming a download is actively in progress.
+            # Once downloads finish (no .incomplete), reset the timer
+            # so model init time is not counted as a stall.
+            if not has_incomplete:
+                last_change = now
+            elif now - last_change >= stall_timeout:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "stall",
+                        "message": (
+                            f"Download appears stalled ({transport} transport) "
+                            f"-- no progress for {int(now - last_change)}s"
+                        ),
+                        "ts": time.time(),
+                    },
+                )
+                # Only fire once -- the orchestrator will kill us
+                return
+
+            _send_response(
+                resp_queue,
+                {
+                    "type": "status",
+                    "message": f"Loading model ({transport} transport)...",
+                    "ts": time.time(),
+                },
+            )
+
+    t = threading.Thread(target = _beat, daemon = True)
+    t.start()
+    return stop
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -156,29 +287,52 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
-        # Auto-enable trust_remote_code for unsloth/* transformers 5.x models
-        # (matches the training worker logic in core/training/worker.py)
+        # Auto-enable trust_remote_code for NemotronH/Nano models only.
+        # NemotronH has config parsing bugs requiring trust_remote_code=True.
+        # Other transformers 5.x models are native and do NOT need it.
+        # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code:
-            from utils.transformers_version import needs_transformers_5
-
             model_name = config["model_name"]
-            if needs_transformers_5(model_name) and model_name.lower().startswith(
-                "unsloth/"
+            _mn_lower = model_name.lower()
+            if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+                _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
             ):
                 trust_remote_code = True
                 logger.info(
-                    "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+                    "Auto-enabled trust_remote_code for Nemotron model: %s",
                     model_name,
                 )
 
-        success = backend.load_model(
-            config = mc,
-            max_seq_length = config.get("max_seq_length", 2048),
-            load_in_4bit = load_in_4bit,
-            hf_token = hf_token,
-            trust_remote_code = trust_remote_code,
+        # Send heartbeats every 30s so the orchestrator knows we're still alive
+        # (download / weight loading can take a long time on slow connections)
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
+
+        # Watch both the model repo and base model repo (for LoRA loads
+        # where the base model download is the actual bottleneck)
+        watch_repos = [mc.identifier]
+        base = getattr(mc, "base_model", None)
+        if base and str(base) != mc.identifier:
+            watch_repos.append(str(base))
+
+        heartbeat_stop = _start_heartbeat(
+            resp_queue,
+            interval = 30.0,
+            xet_disabled = xet_disabled,
+            model_names = watch_repos,
         )
+        try:
+            success = backend.load_model(
+                config = mc,
+                max_seq_length = config.get("max_seq_length", 2048),
+                load_in_4bit = load_in_4bit,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+                gpu_ids = config.get("resolved_gpu_ids"),
+            )
+        finally:
+            heartbeat_stop.set()
 
         if success:
             # Build model_info for the parent to mirror
@@ -490,6 +644,10 @@ def run_inference_process(
         "ignore"  # Suppress warnings at C-level before imports
     )
 
+    if config.get("disable_xet"):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
+
     import warnings
     from loggers.config import LogConfig
 
@@ -500,6 +658,8 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+
+    apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     model_name = config["model_name"]
 

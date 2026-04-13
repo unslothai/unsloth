@@ -44,6 +44,14 @@ class LoadRequest(BaseModel):
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -132,6 +140,13 @@ class LoadResponse(BaseModel):
     context_length: Optional[int] = Field(
         None, description = "Model's native context length (from GGUF metadata)"
     )
+    max_context_length: Optional[int] = Field(
+        None, description = "Maximum context length currently available on this hardware"
+    )
+    native_context_length: Optional[int] = Field(
+        None,
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
@@ -151,6 +166,10 @@ class LoadResponse(BaseModel):
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
 
 
@@ -205,6 +224,18 @@ class InferenceStatusResponse(BaseModel):
     )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
+    )
+    max_context_length: Optional[int] = Field(
+        None,
+        description = "Maximum context length currently available for the active model",
+    )
+    native_context_length: Optional[int] = Field(
+        None,
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
 
 
@@ -333,7 +364,7 @@ class ChatCompletionRequest(BaseModel):
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
     max_tool_calls_per_message: Optional[int] = Field(
-        10,
+        25,
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
