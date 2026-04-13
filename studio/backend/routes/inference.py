@@ -198,6 +198,9 @@ async def load_model(
                     if _gguf_audio
                     else False,
                     inference = inference_config,
+                    requires_trust_remote_code = bool(
+                        inference_config.get("trust_remote_code", False)
+                    ),
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
                     native_context_length = llama_backend.native_context_length,
@@ -235,6 +238,9 @@ async def load_model(
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
                     inference = inference_config,
+                    requires_trust_remote_code = bool(
+                        inference_config.get("trust_remote_code", False)
+                    ),
                     chat_template = _chat_template,
                 )
 
@@ -341,6 +347,9 @@ async def load_model(
                 audio_type = _gguf_audio,
                 has_audio_input = is_audio_input_type(_gguf_audio),
                 inference = inference_config,
+                requires_trust_remote_code = bool(
+                    inference_config.get("trust_remote_code", False)
+                ),
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
@@ -479,6 +488,9 @@ async def load_model(
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
             inference = inference_config,
+            requires_trust_remote_code = bool(
+                inference_config.get("trust_remote_code", False)
+            ),
             chat_template = _chat_template,
         )
 
@@ -534,6 +546,9 @@ async def validate_model(
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
+            requires_trust_remote_code = bool(
+                load_inference_config(config.identifier).get("trust_remote_code", False)
+            ),
         )
 
     except HTTPException:
@@ -679,6 +694,9 @@ async def get_status(
                 loading = [],
                 loaded = [_model_id],
                 inference = _inference_cfg,
+                requires_trust_remote_code = bool(
+                    (_inference_cfg or {}).get("trust_remote_code", False)
+                ),
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
@@ -706,6 +724,11 @@ async def get_status(
         supports_reasoning = False
         if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
             supports_reasoning = backend._is_gpt_oss_model()
+        inference_config = (
+            load_inference_config(backend.active_model_name)
+            if backend.active_model_name
+            else None
+        )
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
@@ -716,6 +739,10 @@ async def get_status(
             has_audio_input = has_audio_input,
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
+            inference = inference_config,
+            requires_trust_remote_code = bool(
+                (inference_config or {}).get("trust_remote_code", False)
+            ),
             supports_reasoning = supports_reasoning,
         )
 
