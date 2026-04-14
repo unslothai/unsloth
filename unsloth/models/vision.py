@@ -1126,7 +1126,13 @@ class FastBaseModel:
         # Fix gradient accumulation
         from transformers.trainer import Trainer
 
-        patch_gradient_accumulation_fix(Trainer)
+        if trust_remote_code or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1":
+            force_model_accepts_loss_kwargs = False
+        else:
+            force_model_accepts_loss_kwargs = True
+        patch_gradient_accumulation_fix(
+            Trainer, force_model_accepts_loss_kwargs = force_model_accepts_loss_kwargs
+        )
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left"  # Force inference

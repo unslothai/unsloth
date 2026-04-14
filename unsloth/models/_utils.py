@@ -1956,7 +1956,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
-def patch_gradient_accumulation_fix(Trainer):
+def patch_gradient_accumulation_fix(Trainer, force_model_accepts_loss_kwargs = False):
     # Fixes gradient accumulation
     # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
@@ -2108,15 +2108,30 @@ def patch_gradient_accumulation_fix(Trainer):
                 "def __init__", "def _unsloth___init__", 1
             )
 
-            # Respect an inner wrapped model's explicit accepts_loss_kwargs flag before inferring from forward(**kwargs).
-            # https://github.com/unslothai/unsloth/issues/4982 Gemma4ForConditionalGeneration had issues with grad_acc
-            init_function = init_function.replace(
-                "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n    else:",
-                "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n"
-                '    elif hasattr(getattr(unwrapped_model, "model", None), "accepts_loss_kwargs"):\n'
-                "        self.model_accepts_loss_kwargs = unwrapped_model.model.accepts_loss_kwargs\n"
-                "    else:",
-            )
+            # If we successfully patch in unsloth fused cross entropy loss
+            # then the model should accept loss kwargs
+            # if we don't successfully patch in unsloth fused cross entropy loss
+            # or UNSLOTH_COMPILE_DISABLE=1 is set or trust_remote_code is True
+            # we want native HF logic
+            # right now we don't know if we successfully patched in unsloth fused cross entropy loss
+            # so this is a current gap
+            if force_model_accepts_loss_kwargs:
+                # Force else branch
+                init_function = re.sub(
+                    r'if[\s]+hasattr\(\s*unwrapped_model\s*,\s*"accepts_loss_kwargs"\s*\)\s*:',
+                    'if hasattr(unwrapped_model, "accepts_loss_kwargs") and False:',
+                    init_function,
+                )
+            else:
+                # Respect an inner wrapped model's explicit accepts_loss_kwargs flag before inferring from forward(**kwargs).
+                # https://github.com/unslothai/unsloth/issues/4982 Gemma4ForConditionalGeneration had issues with grad_acc
+                init_function = init_function.replace(
+                    "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n    else:",
+                    "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n"
+                    '    elif hasattr(getattr(unwrapped_model, "model", None), "accepts_loss_kwargs"):\n'
+                    "        self.model_accepts_loss_kwargs = unwrapped_model.model.accepts_loss_kwargs\n"
+                    "    else:",
+                )
             exec(init_function, globals())
             Trainer.__init__ = _unsloth___init__
 
