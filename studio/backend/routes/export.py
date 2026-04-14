@@ -38,6 +38,7 @@ from models import (
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
 )
+from models.export import normalize_gguf_quantization_method
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -254,10 +255,17 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     try:
+        normalized_methods = normalize_gguf_quantization_method(
+            request.quantization_method,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+
+    try:
         backend = get_export_backend()
         success, message = backend.export_gguf(
             save_directory = request.save_directory,
-            quantization_method = request.quantization_method,
+            quantization_method = normalized_methods,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
             hf_token = request.hf_token,
