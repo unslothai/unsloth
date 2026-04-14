@@ -1350,6 +1350,8 @@ import socket
 def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
     if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1":
         return False
+    if os.environ.get("HF_HUB_OFFLINE", "0") == "1":
+        return False
     try:
         socket.setdefaulttimeout(timeout)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1468,8 +1470,7 @@ def _get_statistics(statistics = None, force_download = True):
                     "```"
                 )
             except Exception:
-                # Try no time limit check
-                stats_check()
+                pass  # Don't retry without a time limit — would freeze offline
 
 
 def get_statistics(local_files_only = False):
