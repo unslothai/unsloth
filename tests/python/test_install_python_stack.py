@@ -29,7 +29,7 @@ class TestBuildUvCmdTorchBackend:
         """Without UV_TORCH_BACKEND env var, no --torch-backend flag."""
         env = os.environ.copy()
         env.pop("UV_TORCH_BACKEND", None)
-        with mock.patch.dict(os.environ, env, clear = True):
+        with mock.patch.dict(os.environ, env, clear=True):
             cmd = self._call(("somepackage",))
         assert not any(
             a.startswith("--torch-backend") for a in cmd

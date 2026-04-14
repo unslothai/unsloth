@@ -88,7 +88,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 GIB = 1024**3
 
 
-def _make_backend(native_ctx = 131072):
+def _make_backend(native_ctx=131072):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._context_length = native_ctx
     inst._n_layers = 80
@@ -105,16 +105,16 @@ def _make_backend(native_ctx = 131072):
     return inst
 
 
-def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes = 325_000):
+def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes=325_000):
     """Run the ceiling-probe block from load_model and return the final
     ``max_available_ctx`` value the backend would assign to
     ``_max_context_length``.
     """
-    inst = _make_backend(native_ctx = native_ctx)
+    inst = _make_backend(native_ctx=native_ctx)
     model_size = int(model_gib * GIB)
 
     inst._estimate_kv_cache_bytes = (
-        lambda n, _t = None: 0 if n <= 0 else n * kv_per_token_bytes
+        lambda n, _t=None: 0 if n <= 0 else n * kv_per_token_bytes
     )
     inst._can_estimate_kv = lambda: True
 
@@ -125,7 +125,7 @@ def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes =
     cache_type_kv = None
     native_ctx_for_cap = context_length
 
-    ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
+    ranked_for_cap = sorted(gpus, key=lambda g: g[1], reverse=True)
     best_cap = 0
     for n_gpus in range(1, len(ranked_for_cap) + 1):
         subset = ranked_for_cap[:n_gpus]
@@ -161,18 +161,18 @@ class TestMaxContextLengthForWeightsExceedVRAM:
     def test_minimax_like(self):
         """131 GB weights, single 97 GB GPU, native ctx 196608."""
         got = _compute_max_available_ctx(
-            native_ctx = 196608,
-            model_gib = 131,
-            gpus = [(0, 97_000)],
+            native_ctx=196608,
+            model_gib=131,
+            gpus=[(0, 97_000)],
         )
         assert got == 4096
 
     def test_multi_gpu_all_subsets_fail(self):
         """400 GB weights across a 4x80 GB pool (320 GB total, still too small)."""
         got = _compute_max_available_ctx(
-            native_ctx = 131072,
-            model_gib = 400,
-            gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
+            native_ctx=131072,
+            model_gib=400,
+            gpus=[(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
         )
         assert got == 4096
 
@@ -180,9 +180,9 @@ class TestMaxContextLengthForWeightsExceedVRAM:
         """If the model's native ctx is itself smaller than 4096, do not
         advertise a larger value than the model supports."""
         got = _compute_max_available_ctx(
-            native_ctx = 2048,
-            model_gib = 200,
-            gpus = [(0, 80_000)],
+            native_ctx=2048,
+            model_gib=200,
+            gpus=[(0, 80_000)],
         )
         assert got == 2048
 
@@ -198,10 +198,10 @@ class TestMaxContextLengthForFittableModels:
     def test_small_model_fits_easily(self):
         """8 GB model on 24 GB GPU: should auto-pick a large ctx."""
         got = _compute_max_available_ctx(
-            native_ctx = 131072,
-            model_gib = 8,
-            gpus = [(0, 24_000)],
-            kv_per_token_bytes = 8192,
+            native_ctx=131072,
+            model_gib=8,
+            gpus=[(0, 24_000)],
+            kv_per_token_bytes=8192,
         )
         assert got > 4096
         assert got <= 131072
@@ -209,20 +209,20 @@ class TestMaxContextLengthForFittableModels:
     def test_medium_model_multi_gpu(self):
         """60 GB model split across 2 GPUs: picks a fitting ctx."""
         got = _compute_max_available_ctx(
-            native_ctx = 131072,
-            model_gib = 60,
-            gpus = [(0, 40_000), (1, 40_000)],
-            kv_per_token_bytes = 8192,
+            native_ctx=131072,
+            model_gib=60,
+            gpus=[(0, 40_000), (1, 40_000)],
+            kv_per_token_bytes=8192,
         )
         assert got > 4096
 
     def test_tiny_model_on_huge_gpu_near_native(self):
         """2 GB model, 80 GB GPU, negligible KV: should approach native."""
         got = _compute_max_available_ctx(
-            native_ctx = 131072,
-            model_gib = 2,
-            gpus = [(0, 80_000)],
-            kv_per_token_bytes = 64,
+            native_ctx=131072,
+            model_gib=2,
+            gpus=[(0, 80_000)],
+            kv_per_token_bytes=64,
         )
         assert got >= 131072 - 256  # rounded to 256 boundary
 
@@ -234,11 +234,11 @@ class TestMaxContextLengthForFittableModels:
 
 class TestMaxContextLengthProperty:
     def test_falls_back_to_native_when_unset(self):
-        inst = _make_backend(native_ctx = 131072)
+        inst = _make_backend(native_ctx=131072)
         inst._max_context_length = None
         assert inst.max_context_length == 131072
 
     def test_returns_stored_value_when_set(self):
-        inst = _make_backend(native_ctx = 131072)
+        inst = _make_backend(native_ctx=131072)
         inst._max_context_length = 4096
         assert inst.max_context_length == 4096

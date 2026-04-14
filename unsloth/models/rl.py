@@ -159,7 +159,7 @@ def PatchRL(FastLanguageModel):
 
             @_cm
             def unwrap_model_for_generation(
-                model, accelerator, gather_deepspeed3_params = True
+                model, accelerator, gather_deepspeed3_params=True
             ):
                 unwrapped_model = accelerator.unwrap_model(model)
                 is_gc = getattr(unwrapped_model, "is_gradient_checkpointing", False)
@@ -284,8 +284,8 @@ def PatchRL(FastLanguageModel):
                     loss, outputs = self.compute_loss(
                         model,
                         inputs,
-                        return_outputs = True,
-                        num_items_in_batch = num_items_in_batch,
+                        return_outputs=True,
+                        num_items_in_batch=num_items_in_batch,
                     )
                 loss = loss.mean().detach()
 
@@ -300,9 +300,9 @@ def PatchRL(FastLanguageModel):
                 with self.compute_loss_context_manager():
                     tokenized_output = self.processing_class(
                         inputs["prompt"],
-                        padding = True,
-                        truncation = True,
-                        return_tensors = "pt",
+                        padding=True,
+                        truncation=True,
+                        return_tensors="pt",
                     ).to(model.device)
                     outputs = model(**tokenized_output)
                 if isinstance(outputs, dict):
@@ -539,7 +539,7 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
-def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
@@ -1358,33 +1358,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     sanitize_logprob_code = inspect.getsource(sanitize_logprob)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
-        RLTrainer_name = RLTrainer_name,
-        __RLTrainer_doc__ = __RLTrainer_doc__,
-        RLTrainer_arguments = RLTrainer_arguments,
-        RLTrainer_extra_args = RLTrainer_extra_args,
-        RLTrainer_call_args = RLTrainer_call_args,
-        RLTrainer_kwargs = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0 :],
-        RLConfig_name = RLConfig_name,
-        __RLConfig_doc__ = __RLConfig_doc__,
-        RLConfig_arguments = RLConfig_arguments,
-        RLConfig_extra_args = RLConfig_extra_args,
-        RLConfig_call_args = RLConfig_call_args,
-        RLConfig_kwargs = ",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
-        RLConfig_post = RLConfig_post,
-        RLTrainer_extras = RLTrainer_extras,
-        RLTrainer_post = RLTrainer_post,
-        RL_pre = RL_pre,
-        max_seq_length_pre = max_seq_length_pre,
-        max_seq_length_call = max_seq_length_call,
-        max_seq_length_post = max_seq_length_post,
-        selective_log_softmax_code = selective_log_softmax_code,
-        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
-        calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
-        create_completion_attention_mask_code = create_completion_attention_mask_code,
-        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
-        left_pack_padding_code = left_pack_padding_code,
-        align_logprobs_with_mask_code = align_logprobs_with_mask_code,
-        sanitize_logprob_code = sanitize_logprob_code,
+        RLTrainer_name=RLTrainer_name,
+        __RLTrainer_doc__=__RLTrainer_doc__,
+        RLTrainer_arguments=RLTrainer_arguments,
+        RLTrainer_extra_args=RLTrainer_extra_args,
+        RLTrainer_call_args=RLTrainer_call_args,
+        RLTrainer_kwargs=",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0 :],
+        RLConfig_name=RLConfig_name,
+        __RLConfig_doc__=__RLConfig_doc__,
+        RLConfig_arguments=RLConfig_arguments,
+        RLConfig_extra_args=RLConfig_extra_args,
+        RLConfig_call_args=RLConfig_call_args,
+        RLConfig_kwargs=",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
+        RLConfig_post=RLConfig_post,
+        RLTrainer_extras=RLTrainer_extras,
+        RLTrainer_post=RLTrainer_post,
+        RL_pre=RL_pre,
+        max_seq_length_pre=max_seq_length_pre,
+        max_seq_length_call=max_seq_length_call,
+        max_seq_length_post=max_seq_length_post,
+        selective_log_softmax_code=selective_log_softmax_code,
+        grpo_selective_log_softmax_code=grpo_selective_log_softmax_code,
+        calculate_pad_tokens_in_prompt_code=calculate_pad_tokens_in_prompt_code,
+        create_completion_attention_mask_code=create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code=autotune_batch_and_chunks_code,
+        left_pack_padding_code=left_pack_padding_code,
+        align_logprobs_with_mask_code=align_logprobs_with_mask_code,
+        sanitize_logprob_code=sanitize_logprob_code,
     )
 
     if RLTrainer_name == "GRPOTrainer":
@@ -1421,7 +1421,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 
         RLTrainer_source = re.sub(
-            pattern, new_options, RLTrainer_source, flags = re.DOTALL
+            pattern, new_options, RLTrainer_source, flags=re.DOTALL
         )
 
         if trl_version >= Version("0.27.0"):
@@ -1434,7 +1434,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
 
             RLTrainer_source = re.sub(
-                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+                peft_pattern, replacement_comment, RLTrainer_source, flags=re.DOTALL
             )
 
         elif trl_version >= Version("0.26.0"):
@@ -1448,7 +1448,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 peft_block_pattern,
                 "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
                 RLTrainer_source,
-                flags = re.DOTALL,
+                flags=re.DOTALL,
             )
 
     # Remove TRL's unconditional bfloat16 cast of trainable params (added in
@@ -1516,7 +1516,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
         _prep_replacement = r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
         RLTrainer_source = re.sub(
-            _prep_pattern, _prep_replacement, RLTrainer_source, count = 1
+            _prep_pattern, _prep_replacement, RLTrainer_source, count=1
         )
 
     # Silence TRL's noisy batch_size=1 + padding-free warning (handles both
@@ -1564,7 +1564,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         _model_location,
         imports,
-        overwrite = False,
+        overwrite=False,
     )
     patched_trainer = getattr(created_module, f"Unsloth{RLTrainer_name}")
     if trainer_file == "grpo_trainer":
@@ -1680,7 +1680,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 commented_lines.append(line)
         return "\n".join(commented_lines)
 
-    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags=re.DOTALL)
 
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
@@ -1688,7 +1688,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         replacer = re.findall(
             r"def __init__\(.*?\).*?\:\n",
             init,
-            flags = re.MULTILINE | re.DOTALL,
+            flags=re.MULTILINE | re.DOTALL,
         )
         if len(replacer) != 0:
             replacer = replacer[0]
@@ -1723,24 +1723,24 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     vllm_part = re.findall(
         r"(\n[\s]{8}" r"if (self|args)\.use_vllm\:.*?" r"\n[\s]{8}" "else:\n)",
         init,
-        flags = re.MULTILINE | re.DOTALL,
+        flags=re.MULTILINE | re.DOTALL,
     )
 
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         # Strip all comments
         new_vllm_part = re.sub(
-            r"^\s*\#[^\n]*\n?", "", vllm_part, flags = re.MULTILINE
+            r"^\s*\#[^\n]*\n?", "", vllm_part, flags=re.MULTILINE
         )  # to also remove whole comment line instead of just starting at #
         new_vllm_part = re.sub(
-            r"\s*\#.*$", "", new_vllm_part, flags = re.MULTILINE
+            r"\s*\#.*$", "", new_vllm_part, flags=re.MULTILINE
         )  # remove comments that occur after code
 
         # Get SamplingParams
         sampling_params = re.findall(
             r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}" r"SamplingParams\(.+?\))",
             new_vllm_part,
-            flags = re.MULTILINE | re.DOTALL,
+            flags=re.MULTILINE | re.DOTALL,
         )
 
         if len(sampling_params) == 1:
@@ -1797,7 +1797,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 vllm_llm_init_pattern,
                 vllm_llm_replacement,
                 new_vllm_part,
-                flags = re.DOTALL,  # Ensure . matches newlines [[5]]
+                flags=re.DOTALL,  # Ensure . matches newlines [[5]]
             )
 
         init = init.replace(vllm_part, new_vllm_part)
@@ -1986,7 +1986,7 @@ def patch_trl_disable_gradient_checkpointing():
         return
 
     @contextmanager
-    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs = None):
+    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs=None):
         yield
 
     _noop_disable_gradient_checkpointing._unsloth_noop_patched = True
@@ -2057,7 +2057,7 @@ def patch_trl_vllm_generation():
     return
 
 
-def PatchFastRL(algorithm = None, FastLanguageModel = None):
+def PatchFastRL(algorithm=None, FastLanguageModel=None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     # Install the disable_gradient_checkpointing noop BEFORE

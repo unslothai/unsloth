@@ -25,9 +25,9 @@ def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
-            capture_output = True,
-            text = True,
-            timeout = timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("amd-smi query failed: %s", e)

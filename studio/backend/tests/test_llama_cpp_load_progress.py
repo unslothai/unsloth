@@ -131,7 +131,7 @@ class TestLoadProgressEmptyStates:
 
     def test_returns_none_when_process_has_no_pid(self):
         inst = _make_instance()
-        inst._process = _FakeProc(pid = None)  # type: ignore[arg-type]
+        inst._process = _FakeProc(pid=None)  # type: ignore[arg-type]
         assert inst.load_progress() is None
 
 
@@ -142,7 +142,7 @@ class TestLoadProgressSingleShard:
         _write_sparse_file(gguf, 40 * 1024**3)  # 40 GB
 
         inst = _make_instance()
-        inst._process = _FakeProc(pid = os.getpid())  # use our own pid
+        inst._process = _FakeProc(pid=os.getpid())  # use our own pid
         inst._gguf_path = str(gguf)
         inst._healthy = False
 
@@ -154,7 +154,7 @@ class TestLoadProgressSingleShard:
                 return io.StringIO(f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)  # fall through
 
-        with patch("builtins.open", side_effect = fake_open):
+        with patch("builtins.open", side_effect=fake_open):
             out = inst.load_progress()
 
         assert out is not None
@@ -168,7 +168,7 @@ class TestLoadProgressSingleShard:
         _write_sparse_file(gguf, 8 * 1024**3)
 
         inst = _make_instance()
-        inst._process = _FakeProc(pid = os.getpid())
+        inst._process = _FakeProc(pid=os.getpid())
         inst._gguf_path = str(gguf)
         inst._healthy = True
 
@@ -179,7 +179,7 @@ class TestLoadProgressSingleShard:
                 return io.StringIO(f"VmRSS:\t{8 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)
 
-        with patch("builtins.open", side_effect = fake_open):
+        with patch("builtins.open", side_effect=fake_open):
             out = inst.load_progress()
 
         assert out is not None
@@ -197,13 +197,13 @@ class TestLoadProgressMultiShard:
         for i in range(1, 5):
             _write_sparse_file(
                 tmp_path / f"model-{i:05d}-of-00004.gguf",
-                size_bytes = 20 * 1024**3,
+                size_bytes=20 * 1024**3,
             )
         # Drop an unrelated .gguf in the same folder -- must not be counted.
         _write_sparse_file(tmp_path / "mmproj-BF16.gguf", 2 * 1024**3)
 
         inst = _make_instance()
-        inst._process = _FakeProc(pid = os.getpid())
+        inst._process = _FakeProc(pid=os.getpid())
         inst._gguf_path = str(tmp_path / "model-00001-of-00004.gguf")
         inst._healthy = False
 
@@ -214,7 +214,7 @@ class TestLoadProgressMultiShard:
                 return io.StringIO("VmRSS:\t0\tkB\n")
             return open(path, *args, **kwargs)
 
-        with patch("builtins.open", side_effect = fake_open):
+        with patch("builtins.open", side_effect=fake_open):
             out = inst.load_progress()
 
         assert out is not None
@@ -226,7 +226,7 @@ class TestLoadProgressDegradation:
 
     def test_missing_gguf_path_still_reports_rss(self, tmp_path):
         inst = _make_instance()
-        inst._process = _FakeProc(pid = os.getpid())
+        inst._process = _FakeProc(pid=os.getpid())
         inst._gguf_path = None
         inst._healthy = False
 
@@ -237,7 +237,7 @@ class TestLoadProgressDegradation:
                 return io.StringIO("VmRSS:\t1024\tkB\n")
             return open(path, *args, **kwargs)
 
-        with patch("builtins.open", side_effect = fake_open):
+        with patch("builtins.open", side_effect=fake_open):
             out = inst.load_progress()
 
         assert out is not None
@@ -249,7 +249,7 @@ class TestLoadProgressDegradation:
     def test_unreadable_proc_returns_none(self, tmp_path):
         inst = _make_instance()
         # Pid that doesn't exist -> /proc read fails.
-        inst._process = _FakeProc(pid = 999_999_999)
+        inst._process = _FakeProc(pid=999_999_999)
         inst._gguf_path = str(tmp_path / "model.gguf")  # doesn't need to exist
         inst._healthy = False
 

@@ -132,6 +132,6 @@ def test_flag_sits_inside_the_base_cmd_list():
 def _iter_lines_with_offset(text: str):
     """Yield (offset, line) pairs over ``text`` without losing offsets."""
     offset = 0
-    for line in text.splitlines(keepends = True):
+    for line in text.splitlines(keepends=True):
         yield offset, line
         offset += len(line)

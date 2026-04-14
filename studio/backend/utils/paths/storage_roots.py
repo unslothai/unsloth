@@ -79,7 +79,7 @@ def tensorboard_root() -> Path:
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents = True, exist_ok = True)
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -158,7 +158,7 @@ def _setup_cache_env() -> None:
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value
-            Path(value).mkdir(parents = True, exist_ok = True)
+            Path(value).mkdir(parents=True, exist_ok=True)
 
 
 def ensure_studio_directories() -> None:
@@ -202,31 +202,31 @@ def resolve_under_root(
     if path.is_absolute():
         return path
 
-    cleaned = _clean_relative_path(str(path), strip_prefixes = strip_prefixes)
+    cleaned = _clean_relative_path(str(path), strip_prefixes=strip_prefixes)
     return root / cleaned
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root = outputs_root(),
-        strip_prefixes = ("outputs",),
+        root=outputs_root(),
+        strip_prefixes=("outputs",),
     )
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root = exports_root(),
-        strip_prefixes = ("exports",),
+        root=exports_root(),
+        strip_prefixes=("exports",),
     )
 
 
 def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root = tensorboard_root(),
-        strip_prefixes = ("runs", "tensorboard"),
+        root=tensorboard_root(),
+        strip_prefixes=("runs", "tensorboard"),
     )
 
 

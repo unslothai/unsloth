@@ -42,10 +42,10 @@ import shutil
 def _save_pretrained_torchao(
     self,
     save_directory,
-    tokenizer = None,
-    torchao_config = None,
-    push_to_hub = False,
-    token = None,
+    tokenizer=None,
+    torchao_config=None,
+    push_to_hub=False,
+    token=None,
 ):
     self.save_pretrained(save_directory)
 
@@ -97,24 +97,24 @@ def _save_pretrained_torchao(
         unsloth_save_pretrained_torchao(
             inner_model,
             transformer_dir,
-            tokenizer = tokenizer,
-            torchao_config = torchao_config,
-            push_to_hub = push_to_hub,
-            token = token,
+            tokenizer=tokenizer,
+            torchao_config=torchao_config,
+            push_to_hub=push_to_hub,
+            token=token,
         )
 
     # avoid `0_Transformer-torchao`, it was either this or fix modules.json
     torchao_dir = transformer_dir + "-torchao"
     if os.path.exists(torchao_dir):
         if not os.path.exists(transformer_dir):
-            os.makedirs(transformer_dir, exist_ok = True)
+            os.makedirs(transformer_dir, exist_ok=True)
 
         # move contents
         for item in os.listdir(torchao_dir):
             s = os.path.join(torchao_dir, item)
             d = os.path.join(transformer_dir, item)
             if os.path.isdir(s):
-                shutil.copytree(s, d, dirs_exist_ok = True)
+                shutil.copytree(s, d, dirs_exist_ok=True)
             else:
                 shutil.copy2(s, d)
 
@@ -140,14 +140,14 @@ def _save_pretrained_torchao(
 def _save_pretrained_gguf(
     self,
     save_directory,
-    tokenizer = None,
-    quantization_method = "fast_quantized",
-    first_conversion = None,
-    push_to_hub = False,
-    token = None,
-    max_shard_size = "5GB",
-    temporary_location = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage = 0.85,
+    tokenizer=None,
+    quantization_method="fast_quantized",
+    first_conversion=None,
+    push_to_hub=False,
+    token=None,
+    max_shard_size="5GB",
+    temporary_location="_unsloth_temporary_saved_buffers",
+    maximum_memory_usage=0.85,
     **kwargs,
 ):
     """
@@ -201,15 +201,15 @@ def _save_pretrained_gguf(
     with patch_unsloth_gguf_save():
         result = unsloth_save_pretrained_gguf(
             inner_model,
-            save_directory = transformer_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # Force local first to move files
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
+            save_directory=transformer_dir,
+            tokenizer=tokenizer,
+            quantization_method=quantization_method,
+            first_conversion=first_conversion,
+            push_to_hub=False,  # Force local first to move files
+            token=token,
+            max_shard_size=max_shard_size,
+            temporary_location=temporary_location,
+            maximum_memory_usage=maximum_memory_usage,
         )
 
     # 6. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
@@ -255,7 +255,7 @@ def _save_pretrained_gguf(
         # Add GGUF details to README
         readme_path = os.path.join(save_directory, "README.md")
         if os.path.exists(readme_path):
-            with open(readme_path, "a", encoding = "utf-8") as f:
+            with open(readme_path, "a", encoding="utf-8") as f:
                 f.write("\n## GGUF Quantization\n")
                 f.write(
                     f"This model contains GGUF quantized versions in: {', '.join([os.path.basename(f) for f in new_gguf_locations])}\n"
@@ -268,18 +268,18 @@ def _save_pretrained_gguf(
         if token is None:
             token = get_token()
 
-        api = HfApi(token = token)
+        api = HfApi(token=token)
         repo_id = save_directory  # Assuming save_directory is the repo name if pushing
 
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
             api.create_repo(
-                repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False)
+                repo_id=repo_id, exist_ok=True, private=kwargs.get("private", False)
             )
             api.upload_folder(
-                folder_path = save_directory,
-                repo_id = repo_id,
-                commit_message = "Upload GGUF and SentenceTransformer model",
+                folder_path=save_directory,
+                repo_id=repo_id,
+                commit_message="Upload GGUF and SentenceTransformer model",
             )
             print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
         except Exception as e:
@@ -291,19 +291,19 @@ def _save_pretrained_gguf(
 def _push_to_hub_gguf(
     self,
     repo_id,
-    tokenizer = None,
-    quantization_method = "fast_quantized",
-    first_conversion = None,
-    token = None,
-    private = None,
-    commit_message = "Upload GGUF SentenceTransformer model trained with Unsloth",
-    commit_description = "Upload GGUF model trained with Unsloth 2x faster",
-    max_shard_size = "5GB",
-    temporary_location = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage = 0.85,
-    create_pr = False,
-    revision = None,
-    tags = None,
+    tokenizer=None,
+    quantization_method="fast_quantized",
+    first_conversion=None,
+    token=None,
+    private=None,
+    commit_message="Upload GGUF SentenceTransformer model trained with Unsloth",
+    commit_description="Upload GGUF model trained with Unsloth 2x faster",
+    max_shard_size="5GB",
+    temporary_location="_unsloth_temporary_saved_buffers",
+    maximum_memory_usage=0.85,
+    create_pr=False,
+    revision=None,
+    tags=None,
     **kwargs,
 ):
     """
@@ -360,7 +360,7 @@ def _push_to_hub_gguf(
             "No HF token provided. Please provide a token or login with `huggingface-cli login`"
         )
 
-    api = HfApi(token = token)
+    api = HfApi(token=token)
 
     # Determine full repo_id
     if "/" not in repo_id:
@@ -374,30 +374,30 @@ def _push_to_hub_gguf(
     # Create repo
     try:
         api.create_repo(
-            repo_id = full_repo_id,
-            private = private,
-            exist_ok = True,
-            repo_type = "model",
+            repo_id=full_repo_id,
+            private=private,
+            exist_ok=True,
+            repo_type="model",
         )
     except Exception as e:
         print(f"Unsloth Warning: Could not create repo: {e}")
 
     # Save to temporary directory first
-    with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="unsloth_st_gguf_") as temp_dir:
         print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
 
         # Call save_pretrained_gguf to do the local conversion
         result = _save_pretrained_gguf(
             self,
-            save_directory = temp_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # We handle upload ourselves
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
+            save_directory=temp_dir,
+            tokenizer=tokenizer,
+            quantization_method=quantization_method,
+            first_conversion=first_conversion,
+            push_to_hub=False,  # We handle upload ourselves
+            token=token,
+            max_shard_size=max_shard_size,
+            temporary_location=temporary_location,
+            maximum_memory_usage=maximum_memory_usage,
         )
 
         gguf_files = result.get("gguf_files", [])
@@ -413,27 +413,27 @@ def _push_to_hub_gguf(
                 filename = os.path.basename(file_location)
                 print(f"  Uploading {filename}...")
                 api.upload_file(
-                    path_or_fileobj = file_location,
-                    path_in_repo = filename,
-                    repo_id = full_repo_id,
-                    repo_type = "model",
-                    commit_message = commit_message,
-                    commit_description = commit_description,
-                    create_pr = create_pr,
-                    revision = revision,
+                    path_or_fileobj=file_location,
+                    path_in_repo=filename,
+                    repo_id=full_repo_id,
+                    repo_type="model",
+                    commit_message=commit_message,
+                    commit_description=commit_description,
+                    create_pr=create_pr,
+                    revision=revision,
                 )
 
         # Upload Modelfile if exists
         if modelfile_location and os.path.exists(modelfile_location):
             print("  Uploading Ollama Modelfile...")
             api.upload_file(
-                path_or_fileobj = modelfile_location,
-                path_in_repo = "Modelfile",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - Ollama Modelfile",
-                create_pr = create_pr,
-                revision = revision,
+                path_or_fileobj=modelfile_location,
+                path_in_repo="Modelfile",
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=f"{commit_message} - Ollama Modelfile",
+                create_pr=create_pr,
+                revision=revision,
             )
 
         # Upload config.json if exists
@@ -441,13 +441,13 @@ def _push_to_hub_gguf(
         if os.path.exists(config_path):
             print("  Uploading config.json...")
             api.upload_file(
-                path_or_fileobj = config_path,
-                path_in_repo = "config.json",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - config",
-                create_pr = create_pr,
-                revision = revision,
+                path_or_fileobj=config_path,
+                path_in_repo="config.json",
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=f"{commit_message} - config",
+                create_pr=create_pr,
+                revision=revision,
             )
 
         # Create and upload README
@@ -486,17 +486,17 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
         )
 
         readme_path = os.path.join(temp_dir, "README.md")
-        with open(readme_path, "w", encoding = "utf-8") as f:
+        with open(readme_path, "w", encoding="utf-8") as f:
             f.write(readme_content)
 
         api.upload_file(
-            path_or_fileobj = readme_path,
-            path_in_repo = "README.md",
-            repo_id = full_repo_id,
-            repo_type = "model",
-            commit_message = "Add README",
-            create_pr = create_pr,
-            revision = revision,
+            path_or_fileobj=readme_path,
+            path_in_repo="README.md",
+            repo_id=full_repo_id,
+            repo_type="model",
+            commit_message="Add README",
+            create_pr=create_pr,
+            revision=revision,
         )
 
     # Add tags
@@ -509,7 +509,7 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
         else:
             all_tags.append(tags)
     try:
-        api.add_tags(repo_id = full_repo_id, tags = all_tags, repo_type = "model")
+        api.add_tags(repo_id=full_repo_id, tags=all_tags, repo_type="model")
     except:
         pass
 
@@ -532,7 +532,7 @@ class FastSentenceTransformer(FastModel):
                 modules_json_path = os.path.join(model_name, "modules.json")
             else:
                 modules_json_path = hf_hub_download(
-                    model_name, "modules.json", token = token
+                    model_name, "modules.json", token=token
                 )
 
             with open(modules_json_path, "r") as f:
@@ -554,7 +554,7 @@ class FastSentenceTransformer(FastModel):
                             pooling_config_path = hf_hub_download(
                                 model_name,
                                 os.path.join(pooling_path, "config.json"),
-                                token = token,
+                                token=token,
                             )
                         break
 
@@ -596,7 +596,7 @@ class FastSentenceTransformer(FastModel):
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
         # add _set_gradient_checkpointing method
-        def _set_gradient_checkpointing(self, module = None, value = True):
+        def _set_gradient_checkpointing(self, module=None, value=True):
             if module is None:
                 module = self.encoder
             if isinstance(module, modeling_mpnet.MPNetEncoder):
@@ -633,7 +633,7 @@ class FastSentenceTransformer(FastModel):
                     def create_custom_forward(module):
                         # bog standard checkpoint
                         def custom_forward(*inputs):
-                            return module(*inputs, output_attentions = output_attentions)
+                            return module(*inputs, output_attentions=output_attentions)
 
                         return custom_forward
 
@@ -643,7 +643,7 @@ class FastSentenceTransformer(FastModel):
                         attention_mask,
                         head_mask[i] if head_mask is not None else None,
                         position_bias,
-                        use_reentrant = True,  # fix for torch 2.9
+                        use_reentrant=True,  # fix for torch 2.9
                     )
                 else:
                     # original code from here on
@@ -652,7 +652,7 @@ class FastSentenceTransformer(FastModel):
                         attention_mask,
                         head_mask[i] if head_mask is not None else None,
                         position_bias,
-                        output_attentions = output_attentions,
+                        output_attentions=output_attentions,
                         **kwargs,
                     )
 
@@ -671,9 +671,9 @@ class FastSentenceTransformer(FastModel):
                     if v is not None
                 )
             return BaseModelOutput(
-                last_hidden_state = hidden_states,
-                hidden_states = all_hidden_states,
-                attentions = all_attentions,
+                last_hidden_state=hidden_states,
+                hidden_states=all_hidden_states,
+                attentions=all_attentions,
             )
 
         # assign the patched forward
@@ -691,7 +691,7 @@ class FastSentenceTransformer(FastModel):
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
         # add _set_gradient_checkpointing method
-        def _set_gradient_checkpointing(self, module = None, value = True):
+        def _set_gradient_checkpointing(self, module=None, value=True):
             if module is None:
                 module = self.encoder
             if isinstance(module, modeling_mpnet.MPNetEncoder):
@@ -727,7 +727,7 @@ class FastSentenceTransformer(FastModel):
                     def create_custom_forward(module):
                         # checkpoint
                         def custom_forward(*inputs):
-                            return module(*inputs, output_attentions = output_attentions)
+                            return module(*inputs, output_attentions=output_attentions)
 
                         return custom_forward
 
@@ -736,7 +736,7 @@ class FastSentenceTransformer(FastModel):
                         hidden_states,
                         attention_mask,
                         position_bias,
-                        use_reentrant = True,  # required for torch >= 2.9
+                        use_reentrant=True,  # required for torch >= 2.9
                     )
                 else:
                     # original code from here on
@@ -763,9 +763,9 @@ class FastSentenceTransformer(FastModel):
                     if v is not None
                 )
             return BaseModelOutput(
-                last_hidden_state = hidden_states,
-                hidden_states = all_hidden_states,
-                attentions = all_attentions,
+                last_hidden_state=hidden_states,
+                hidden_states=all_hidden_states,
+                attentions=all_attentions,
             )
 
         modeling_mpnet.MPNetEncoder.forward = forward
@@ -838,7 +838,7 @@ class FastSentenceTransformer(FastModel):
             else:
                 if attention_mask is None:
                     attention_mask = torch.ones(
-                        input_shape, device = device
+                        input_shape, device=device
                     )  # (bs, seq_length)
 
                 if (
@@ -847,7 +847,7 @@ class FastSentenceTransformer(FastModel):
                     and not output_attentions
                 ):
                     attention_mask = _prepare_4d_attention_mask_for_sdpa(
-                        attention_mask, embeddings.dtype, tgt_len = input_shape[1]
+                        attention_mask, embeddings.dtype, tgt_len=input_shape[1]
                     )
             # patch here, change kwargs to positional args:
             return self.transformer(
@@ -862,7 +862,7 @@ class FastSentenceTransformer(FastModel):
         modeling_distilbert.DistilBertModel.forward = forward
 
     @staticmethod
-    def _has_add_pooling_layer(config, auto_model_class = None):
+    def _has_add_pooling_layer(config, auto_model_class=None):
         """
         Checks if the model class supports the `add_pooling_layer` argument
         """
@@ -907,9 +907,9 @@ class FastSentenceTransformer(FastModel):
             embeddings = self.embeddings(input_ids, inputs_embeds, position_ids)
 
             attention_mask = create_bidirectional_mask(
-                config = self.config,
-                input_embeds = embeddings,
-                attention_mask = attention_mask,
+                config=self.config,
+                input_embeds=embeddings,
+                attention_mask=attention_mask,
             )
 
             # patch here: unsloth gradient checkpointing hook needs positional arguments
@@ -922,21 +922,21 @@ class FastSentenceTransformer(FastModel):
         modeling_distilbert.DistilBertModel.forward = forward
 
     @staticmethod
-    def _add_unsloth_tags(repo_id, token, tags = None):
+    def _add_unsloth_tags(repo_id, token, tags=None):
         """
         Add Unsloth and sentence-transformers tags to the Hugging Face Hub repository.
         """
         from huggingface_hub import HfApi
 
-        api = HfApi(token = token)
+        api = HfApi(token=token)
         if tags is None:
             tags = []
         tags.extend(["unsloth", "sentence-transformers"])
         try:
             api.add_tags(
-                repo_id = repo_id,
-                tags = tags,
-                repo_type = "model",
+                repo_id=repo_id,
+                tags=tags,
+                repo_type="model",
             )
         except:
             pass
@@ -950,7 +950,7 @@ class FastSentenceTransformer(FastModel):
         if not os.path.exists(readme_path):
             return
 
-        with open(readme_path, "r", encoding = "utf-8") as f:
+        with open(readme_path, "r", encoding="utf-8") as f:
             content = f.read()
 
         # add unsloth tag to frontmatter
@@ -961,7 +961,7 @@ class FastSentenceTransformer(FastModel):
             pattern = r"(^tags:\s*\n)"
             if re.search(pattern, content, re.MULTILINE):
                 content = re.sub(
-                    pattern, r"\1- unsloth\n", content, count = 1, flags = re.MULTILINE
+                    pattern, r"\1- unsloth\n", content, count=1, flags=re.MULTILINE
                 )
 
         # add branding badge and text
@@ -977,11 +977,11 @@ class FastSentenceTransformer(FastModel):
         else:
             content += branding
 
-        with open(readme_path, "w", encoding = "utf-8") as f:
+        with open(readme_path, "w", encoding="utf-8") as f:
             f.write(content)
 
     @staticmethod
-    def _module_path(model_name, token = None):
+    def _module_path(model_name, token=None):
         """
         Returns the path to the modules.json file or None
         """
@@ -991,7 +991,7 @@ class FastSentenceTransformer(FastModel):
                 return path if os.path.exists(path) else None
             else:
                 try:
-                    return hf_hub_download(model_name, "modules.json", token = token)
+                    return hf_hub_download(model_name, "modules.json", token=token)
                 except:
                     return None
         except:
@@ -1021,9 +1021,9 @@ class FastSentenceTransformer(FastModel):
             # Initialize Transformer
             transformer_module = Transformer(
                 model_name,
-                max_seq_length = max_seq_length,
-                model_args = {"trust_remote_code": trust_remote_code},
-                config_args = {"trust_remote_code": trust_remote_code},
+                max_seq_length=max_seq_length,
+                model_args={"trust_remote_code": trust_remote_code},
+                config_args={"trust_remote_code": trust_remote_code},
             )
         finally:
             # Restore original functionality immediately
@@ -1069,7 +1069,7 @@ class FastSentenceTransformer(FastModel):
         tokenizer,
         max_seq_length,
         pooling_mode,
-        trust_remote_code = False,
+        trust_remote_code=False,
     ) -> tuple[OrderedDict, bool]:
         """
         Load modules from modules.json if available, otherwise fallback to hard-coded modules.
@@ -1084,7 +1084,7 @@ class FastSentenceTransformer(FastModel):
         modules_json_path = FastSentenceTransformer._module_path(model_name, token)
 
         if modules_json_path:
-            with open(modules_json_path, encoding = "utf8") as f:
+            with open(modules_json_path, encoding="utf8") as f:
                 modules_config = json.load(f)
 
             for module_config in modules_config:
@@ -1112,7 +1112,7 @@ class FastSentenceTransformer(FastModel):
                     else:
                         try:
                             load_path = load_dir_path(
-                                model_name, module_path, token = token
+                                model_name, module_path, token=token
                             )
                         except Exception as e:
                             print(
@@ -1147,7 +1147,7 @@ class FastSentenceTransformer(FastModel):
             pooling_mode = FastSentenceTransformer._read_pooling_mode(model_name, token)
 
         modules["1"] = Pooling(
-            word_embedding_dimension = hidden_size, pooling_mode = pooling_mode
+            word_embedding_dimension=hidden_size, pooling_mode=pooling_mode
         )
         modules["2"] = Normalize()
 
@@ -1168,9 +1168,9 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _estimate_compile_threshold(
         model,
-        batch_size = None,
-        grad_accum = None,
-        max_seq_length = None,
+        batch_size=None,
+        grad_accum=None,
+        max_seq_length=None,
     ):
         """
         Estimate the minimum training steps needed for torch.compile to be beneficial.
@@ -1288,14 +1288,14 @@ class FastSentenceTransformer(FastModel):
         return int(max(20, final_threshold))
 
     @staticmethod
-    def _apply_torch_compile(model, mode = "default"):
+    def _apply_torch_compile(model, mode="default"):
         """
         Apply torch.compile to a SentenceTransformer model.
         Includes workaround for accelerate's unwrap_model bug.
         """
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
-            compiled = torch.compile(inner_model, mode = mode)
+            compiled = torch.compile(inner_model, mode=mode)
             model[0].auto_model = compiled
             # Fix for accelerate unwrap_model bug:
             # When SentenceTransformer contains a compiled inner model,
@@ -1304,35 +1304,35 @@ class FastSentenceTransformer(FastModel):
             # This workaround sets _orig_mod to satisfy accelerate.
             model.__dict__["_orig_mod"] = model
         else:
-            model = torch.compile(model, mode = mode)
+            model = torch.compile(model, mode=mode)
         return model
 
     @staticmethod
     def from_pretrained(
         model_name,
-        max_seq_length = None,
-        dtype = None,
-        load_in_4bit = False,  # Changed default: 4-bit is slow for encoders
-        load_in_8bit = False,
-        load_in_16bit = True,  # Changed default: 16-bit is optimal for encoders
-        full_finetuning = False,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
-        trust_remote_code = False,
-        use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
-        resize_model_vocab = None,
-        revision = None,
-        use_exact_model_name = False,
-        offload_embedding = False,
-        random_state = 3407,
-        max_lora_rank = 64,
-        disable_log_stats = True,
-        qat_scheme = None,
-        unsloth_tiled_mlp = False,
-        pooling_mode = "mean",
-        for_inference = False,
+        max_seq_length=None,
+        dtype=None,
+        load_in_4bit=False,  # Changed default: 4-bit is slow for encoders
+        load_in_8bit=False,
+        load_in_16bit=True,  # Changed default: 16-bit is optimal for encoders
+        full_finetuning=False,
+        token=None,
+        device_map="sequential",
+        rope_scaling=None,
+        fix_tokenizer=True,
+        trust_remote_code=False,
+        use_gradient_checkpointing=False,  # Changed default: conflicts with torch.compile
+        resize_model_vocab=None,
+        revision=None,
+        use_exact_model_name=False,
+        offload_embedding=False,
+        random_state=3407,
+        max_lora_rank=64,
+        disable_log_stats=True,
+        qat_scheme=None,
+        unsloth_tiled_mlp=False,
+        pooling_mode="mean",
+        for_inference=False,
         **kwargs,
     ):
         try:
@@ -1406,7 +1406,7 @@ class FastSentenceTransformer(FastModel):
         config = None
         try:
             config = AutoConfig.from_pretrained(
-                model_name, token = token, trust_remote_code = trust_remote_code
+                model_name, token=token, trust_remote_code=trust_remote_code
             )
             model_type = getattr(config, "model_type", "")
         except:
@@ -1489,10 +1489,10 @@ class FastSentenceTransformer(FastModel):
                 from transformers import BitsAndBytesConfig
 
                 bnb_config = BitsAndBytesConfig(
-                    load_in_4bit = True,
-                    bnb_4bit_compute_dtype = dtype,
-                    bnb_4bit_quant_type = "nf4",
-                    bnb_4bit_use_double_quant = True,
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
                 )
                 model_kwargs["quantization_config"] = bnb_config
                 # When using quantization, device must be handled by accelerate
@@ -1517,11 +1517,11 @@ class FastSentenceTransformer(FastModel):
             # Load via native SentenceTransformer (bypasses Unsloth patching)
             st_model = SentenceTransformer(
                 model_name,
-                device = st_device,
-                trust_remote_code = trust_remote_code,
-                token = token,
-                revision = revision,
-                model_kwargs = model_kwargs,
+                device=st_device,
+                trust_remote_code=trust_remote_code,
+                token=token,
+                revision=revision,
+                model_kwargs=model_kwargs,
             )
 
             # Store metadata for get_peft_model
@@ -1567,13 +1567,13 @@ class FastSentenceTransformer(FastModel):
                 hub_token = push_kwargs.get("token", None) or get_token()
                 if hub_token is None:
                     raise ValueError("No HF token provided")
-                api = HfApi(token = hub_token)
+                api = HfApi(token=hub_token)
                 try:
                     api.create_repo(
-                        repo_id = repo_id,
-                        private = push_kwargs.get("private"),
-                        exist_ok = True,
-                        repo_type = "model",
+                        repo_id=repo_id,
+                        private=push_kwargs.get("private"),
+                        exist_ok=True,
+                        repo_type="model",
                     )
                 except:
                     pass
@@ -1581,9 +1581,9 @@ class FastSentenceTransformer(FastModel):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self.save_pretrained_merged(temp_dir, **push_kwargs)
                     api.upload_folder(
-                        folder_path = temp_dir,
-                        repo_id = repo_id,
-                        commit_message = push_kwargs.get(
+                        folder_path=temp_dir,
+                        repo_id=repo_id,
+                        commit_message=push_kwargs.get(
                             "commit_message", "Upload model"
                         ),
                     )
@@ -1651,30 +1651,30 @@ class FastSentenceTransformer(FastModel):
 
         try:
             model, tokenizer = FastModel.from_pretrained(
-                model_name = model_name,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                load_in_16bit = load_in_16bit,
-                full_finetuning = full_finetuning,
-                token = token,
-                device_map = device_map,
-                rope_scaling = rope_scaling,
-                fix_tokenizer = fix_tokenizer,
-                trust_remote_code = trust_remote_code,
-                use_gradient_checkpointing = use_gradient_checkpointing,
-                resize_model_vocab = resize_model_vocab,
-                revision = revision,
-                return_logits = False,
-                use_exact_model_name = use_exact_model_name,
-                offload_embedding = offload_embedding,
-                random_state = random_state,
-                max_lora_rank = max_lora_rank,
-                disable_log_stats = disable_log_stats,
-                qat_scheme = qat_scheme,
-                load_in_fp8 = load_in_fp8,
-                unsloth_tiled_mlp = unsloth_tiled_mlp,
+                model_name=model_name,
+                max_seq_length=max_seq_length,
+                dtype=dtype,
+                load_in_4bit=load_in_4bit,
+                load_in_8bit=load_in_8bit,
+                load_in_16bit=load_in_16bit,
+                full_finetuning=full_finetuning,
+                token=token,
+                device_map=device_map,
+                rope_scaling=rope_scaling,
+                fix_tokenizer=fix_tokenizer,
+                trust_remote_code=trust_remote_code,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                resize_model_vocab=resize_model_vocab,
+                revision=revision,
+                return_logits=False,
+                use_exact_model_name=use_exact_model_name,
+                offload_embedding=offload_embedding,
+                random_state=random_state,
+                max_lora_rank=max_lora_rank,
+                disable_log_stats=disable_log_stats,
+                qat_scheme=qat_scheme,
+                load_in_fp8=load_in_fp8,
+                unsloth_tiled_mlp=unsloth_tiled_mlp,
                 **kwargs,
             )
         finally:
@@ -1690,7 +1690,7 @@ class FastSentenceTransformer(FastModel):
             tokenizer,
             max_seq_length,
             pooling_mode,
-            trust_remote_code = trust_remote_code,
+            trust_remote_code=trust_remote_code,
         )
 
         st_device = device_map
@@ -1699,7 +1699,7 @@ class FastSentenceTransformer(FastModel):
         ):
             st_device = None
 
-        st_model = SentenceTransformer(modules = modules, device = st_device)
+        st_model = SentenceTransformer(modules=modules, device=st_device)
         st_model.no_modules = no_modules
 
         def _save_pretrained_merged(self, save_directory, **kwargs):
@@ -1744,7 +1744,7 @@ class FastSentenceTransformer(FastModel):
                     tokenizer.save_pretrained(save_directory)
             else:
                 self[0].auto_model.save_pretrained_merged(
-                    save_directory, tokenizer = tokenizer, **kwargs
+                    save_directory, tokenizer=tokenizer, **kwargs
                 )
 
             # add Unsloth branding to the generated README
@@ -1778,13 +1778,13 @@ class FastSentenceTransformer(FastModel):
 
             from huggingface_hub import HfApi
 
-            api = HfApi(token = token)
+            api = HfApi(token=token)
             try:
                 api.create_repo(
-                    repo_id = repo_id,
-                    private = private,
-                    exist_ok = True,
-                    repo_type = "model",
+                    repo_id=repo_id,
+                    private=private,
+                    exist_ok=True,
+                    repo_type="model",
                 )
             except:
                 pass
@@ -1795,9 +1795,9 @@ class FastSentenceTransformer(FastModel):
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)
                 api.upload_folder(
-                    folder_path = temp_dir,
-                    repo_id = repo_id,
-                    commit_message = commit_message,
+                    folder_path=temp_dir,
+                    repo_id=repo_id,
+                    commit_message=commit_message,
                 )
             print(
                 f"Unsloth: Successfully pushed merged model to https://huggingface.co/{repo_id}"
@@ -1809,25 +1809,25 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def get_peft_model(
         model,
-        r = 16,
-        target_modules = [
+        r=16,
+        target_modules=[
             "query",
             "key",
             "value",
             "dense",
         ],
-        lora_alpha = 16,
-        lora_dropout = 0.0,
-        bias = "none",
-        layers_to_transform = None,
-        layers_pattern = None,
-        use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
-        random_state = 3407,
-        max_seq_length = 2048,
-        use_rslora = False,
-        modules_to_save = None,
-        init_lora_weights = True,
-        loftq_config = {},
+        lora_alpha=16,
+        lora_dropout=0.0,
+        bias="none",
+        layers_to_transform=None,
+        layers_pattern=None,
+        use_gradient_checkpointing=False,  # Changed default: conflicts with torch.compile
+        random_state=3407,
+        max_seq_length=2048,
+        use_rslora=False,
+        modules_to_save=None,
+        init_lora_weights=True,
+        loftq_config={},
         **kwargs,
     ):
         from sentence_transformers import SentenceTransformer
@@ -1882,7 +1882,7 @@ class FastSentenceTransformer(FastModel):
                     try:
                         inner_model = prepare_model_for_kbit_training(
                             inner_model,
-                            use_gradient_checkpointing = _gc_for_kbit,
+                            use_gradient_checkpointing=_gc_for_kbit,
                         )
                         print("Unsloth: Prepared quantized model for k-bit training")
                         gc_enabled = bool(_gc_for_kbit)
@@ -1894,7 +1894,7 @@ class FastSentenceTransformer(FastModel):
                             )
                             inner_model = prepare_model_for_kbit_training(
                                 inner_model,
-                                use_gradient_checkpointing = False,
+                                use_gradient_checkpointing=False,
                             )
                             print(
                                 "Unsloth: Prepared quantized model for k-bit training (without gradient checkpointing)"
@@ -1917,12 +1917,12 @@ class FastSentenceTransformer(FastModel):
 
                 # Create LoRA config
                 lora_config = LoraConfig(
-                    r = r,
-                    lora_alpha = lora_alpha,
-                    target_modules = target_modules,
-                    lora_dropout = lora_dropout,
-                    bias = bias,
-                    task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
+                    r=r,
+                    lora_alpha=lora_alpha,
+                    target_modules=target_modules,
+                    lora_dropout=lora_dropout,
+                    bias=bias,
+                    task_type=kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
                 # Apply PEFT directly (not through FastModel)
@@ -1973,21 +1973,21 @@ class FastSentenceTransformer(FastModel):
             inner_model = transformer_module.auto_model
 
             peft_model = FastModel.get_peft_model(
-                model = inner_model,
-                r = r,
-                target_modules = target_modules,
-                lora_alpha = lora_alpha,
-                lora_dropout = lora_dropout,
-                bias = bias,
-                layers_to_transform = layers_to_transform,
-                layers_pattern = layers_pattern,
-                use_gradient_checkpointing = use_gradient_checkpointing,
-                random_state = random_state,
-                max_seq_length = max_seq_length,
-                use_rslora = use_rslora,
-                modules_to_save = modules_to_save,
-                init_lora_weights = init_lora_weights,
-                loftq_config = loftq_config,
+                model=inner_model,
+                r=r,
+                target_modules=target_modules,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                bias=bias,
+                layers_to_transform=layers_to_transform,
+                layers_pattern=layers_pattern,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                random_state=random_state,
+                max_seq_length=max_seq_length,
+                use_rslora=use_rslora,
+                modules_to_save=modules_to_save,
+                init_lora_weights=init_lora_weights,
+                loftq_config=loftq_config,
                 **kwargs,
             )
 
@@ -1996,21 +1996,21 @@ class FastSentenceTransformer(FastModel):
             return model
         else:
             return FastModel.get_peft_model(
-                model = model,
-                r = r,
-                target_modules = target_modules,
-                lora_alpha = lora_alpha,
-                lora_dropout = lora_dropout,
-                bias = bias,
-                layers_to_transform = layers_to_transform,
-                layers_pattern = layers_pattern,
-                use_gradient_checkpointing = use_gradient_checkpointing,
-                random_state = random_state,
-                max_seq_length = max_seq_length,
-                use_rslora = use_rslora,
-                modules_to_save = modules_to_save,
-                init_lora_weights = init_lora_weights,
-                loftq_config = loftq_config,
+                model=model,
+                r=r,
+                target_modules=target_modules,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                bias=bias,
+                layers_to_transform=layers_to_transform,
+                layers_pattern=layers_pattern,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                random_state=random_state,
+                max_seq_length=max_seq_length,
+                use_rslora=use_rslora,
+                modules_to_save=modules_to_save,
+                init_lora_weights=init_lora_weights,
+                loftq_config=loftq_config,
                 **kwargs,
             )
 
@@ -2068,9 +2068,9 @@ def _patch_sentence_transformer_trainer():
 
             threshold = FastSentenceTransformer._estimate_compile_threshold(
                 model,
-                batch_size = batch_size,
-                grad_accum = grad_accum,
-                max_seq_length = max_seq_length,
+                batch_size=batch_size,
+                grad_accum=grad_accum,
+                max_seq_length=max_seq_length,
             )
             model._compile_threshold = threshold
 
@@ -2078,7 +2078,7 @@ def _patch_sentence_transformer_trainer():
                 print(
                     f"Unsloth: Auto-compiling model ({max_steps} steps >= {threshold} threshold)"
                 )
-                FastSentenceTransformer._apply_torch_compile(model, mode = compile_mode)
+                FastSentenceTransformer._apply_torch_compile(model, mode=compile_mode)
                 model._compile_pending = False
             elif max_steps > 0:
                 print(

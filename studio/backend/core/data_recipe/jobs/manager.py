@@ -52,7 +52,7 @@ class Subscription:
         if event_id is None:
             self._next_id += 1
             event_id = self._next_id
-        body = json.dumps(event, separators = (",", ":"), ensure_ascii = False)
+        body = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
         event_type = event.get("type") or "message"
         return (
             f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n"
@@ -66,7 +66,7 @@ class JobManager:
         self._job: Job | None = None
         self._proc: mp.Process | None = None
         self._mp_q: Any | None = None
-        self._events: deque[dict] = deque(maxlen = 5000)
+        self._events: deque[dict] = deque(maxlen=5000)
         self._subs: list[queue.Queue] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
@@ -90,7 +90,7 @@ class JobManager:
                 raise RuntimeError("job already running")
 
             job_id = uuid.uuid4().hex
-            self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
+            self._job = Job(job_id=job_id, status="pending", started_at=time.time())
             self._job.progress_columns_total = llm_column_count
             self._events.clear()
             self._seq = 0
@@ -99,15 +99,15 @@ class JobManager:
             run_payload["_job_id"] = job_id
             mp_q = _CTX.Queue()
             proc = _CTX.Process(
-                target = run_job_process,
-                kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
-                daemon = True,
+                target=run_job_process,
+                kwargs={"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                daemon=True,
             )
             proc.start()
 
             self._mp_q = mp_q
             self._proc = proc
-            self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+            self._pump_thread = threading.Thread(target=self._pump_loop, daemon=True)
             self._pump_thread.start()
 
             self._emit(
@@ -242,7 +242,7 @@ class JobManager:
                 return {"error": f"dataset path missing: {parquet_dir}"}
 
             return self._load_dataset_page(
-                parquet_dir = parquet_dir, limit = limit, offset = offset
+                parquet_dir=parquet_dir, limit=limit, offset=offset
             )
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
@@ -255,16 +255,16 @@ class JobManager:
         offset: int,
     ) -> dict[str, Any]:
         dataset_page = JobManager._load_dataset_page_with_duckdb(
-            parquet_dir = parquet_dir,
-            limit = limit,
-            offset = offset,
+            parquet_dir=parquet_dir,
+            limit=limit,
+            offset=offset,
         )
         if dataset_page is not None:
             return dataset_page
         return JobManager._load_dataset_page_with_data_designer(
-            parquet_dir = parquet_dir,
-            limit = limit,
-            offset = offset,
+            parquet_dir=parquet_dir,
+            limit=limit,
+            offset=offset,
         )
 
     @staticmethod
@@ -304,9 +304,9 @@ class JobManager:
 
         for helper_col in ("filename", "__row_num__"):
             if helper_col in dataframe.columns:
-                dataframe = dataframe.drop(columns = [helper_col])
+                dataframe = dataframe.drop(columns=[helper_col])
 
-        rows = dataframe.to_dict(orient = "records")
+        rows = dataframe.to_dict(orient="records")
         return {"dataset": to_preview_jsonable(rows), "total": total}
 
     @staticmethod
@@ -320,7 +320,7 @@ class JobManager:
 
         dataframe = read_parquet_dataset(parquet_dir)
         total = int(len(dataframe.index))
-        rows = dataframe.iloc[offset : offset + limit].to_dict(orient = "records")
+        rows = dataframe.iloc[offset : offset + limit].to_dict(orient="records")
         return {"dataset": to_preview_jsonable(rows), "total": total}
 
     def subscribe(
@@ -330,13 +330,13 @@ class JobManager:
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
-            q: queue.Queue = queue.Queue(maxsize = 2000)
+            q: queue.Queue = queue.Queue(maxsize=2000)
             self._subs.append(q)
             if after_seq is None:
                 replay = list(self._events)
             else:
                 replay = [e for e in self._events if int(e.get("seq") or 0) > after_seq]
-            return Subscription(replay = replay, _q = q)
+            return Subscription(replay=replay, _q=q)
 
     def unsubscribe(self, sub: Subscription) -> None:
         """Drop SSE subscriber (client disconnected)."""
@@ -368,7 +368,7 @@ class JobManager:
     def _read_queue_with_timeout(q: Any, *, timeout_sec: float) -> dict | None:
         """Try read 1 event from mp queue. Timeout = pump stays responsive."""
         try:
-            return coerce_event(q.get(timeout = timeout_sec))
+            return coerce_event(q.get(timeout=timeout_sec))
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -394,7 +394,7 @@ class JobManager:
                 return
             job, proc, mp_q = snap
 
-            event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
+            event = self._read_queue_with_timeout(mp_q, timeout_sec=0.25)
             if event is not None:
                 self._handle_event(job, event)
                 continue

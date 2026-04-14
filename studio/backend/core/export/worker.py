@@ -96,8 +96,8 @@ def _setup_log_capture(resp_queue: Any) -> None:
     # Replace Python's sys.stdout/sys.stderr with line-buffered writers
     # bound to the (now-redirected) fds 1 and 2.
     try:
-        sys.stdout = os.fdopen(1, "w", buffering = 1, encoding = "utf-8", errors = "replace")
-        sys.stderr = os.fdopen(2, "w", buffering = 1, encoding = "utf-8", errors = "replace")
+        sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", errors="replace")
+        sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", errors="replace")
     except Exception:
         pass
 
@@ -128,7 +128,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                         break
                 if nl < 0:
                     break
-                line = bytes(buf[:nl]).decode("utf-8", errors = "replace")
+                line = bytes(buf[:nl]).decode("utf-8", errors="replace")
                 del buf[: nl + 1]
                 if not line:
                     continue
@@ -156,7 +156,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                     {
                         "type": "log",
                         "stream": stream_name,
-                        "line": bytes(buf).decode("utf-8", errors = "replace"),
+                        "line": bytes(buf).decode("utf-8", errors="replace"),
                         "ts": time.time(),
                     }
                 )
@@ -164,16 +164,16 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 pass
 
     t_out = threading.Thread(
-        target = _reader,
-        args = (r_out, "stdout", saved_out_fd),
-        daemon = True,
-        name = "export-log-stdout",
+        target=_reader,
+        args=(r_out, "stdout", saved_out_fd),
+        daemon=True,
+        name="export-log-stdout",
     )
     t_err = threading.Thread(
-        target = _reader,
-        args = (r_err, "stderr", saved_err_fd),
-        daemon = True,
-        name = "export-log-stderr",
+        target=_reader,
+        args=(r_err, "stderr", saved_err_fd),
+        daemon=True,
+        name="export-log-stderr",
     )
     t_out.start()
     t_err.start()
@@ -230,10 +230,10 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
         success, message = backend.load_checkpoint(
-            checkpoint_path = checkpoint_path,
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            trust_remote_code = trust_remote_code,
+            checkpoint_path=checkpoint_path,
+            max_seq_length=max_seq_length,
+            load_in_4bit=load_in_4bit,
+            trust_remote_code=trust_remote_code,
         )
 
         _send_response(
@@ -256,7 +256,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": "loaded",
                 "success": False,
                 "message": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -278,37 +278,37 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     try:
         if export_type == "merged":
             success, message, output_path = backend.export_merged_model(
-                save_directory = cmd.get("save_directory", ""),
-                format_type = cmd.get("format_type", "16-bit (FP16)"),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                private = cmd.get("private", False),
+                save_directory=cmd.get("save_directory", ""),
+                format_type=cmd.get("format_type", "16-bit (FP16)"),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                private=cmd.get("private", False),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
-                save_directory = cmd.get("save_directory", ""),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                private = cmd.get("private", False),
-                base_model_id = cmd.get("base_model_id"),
+                save_directory=cmd.get("save_directory", ""),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                private=cmd.get("private", False),
+                base_model_id=cmd.get("base_model_id"),
             )
         elif export_type == "gguf":
             success, message, output_path = backend.export_gguf(
-                save_directory = cmd.get("save_directory", ""),
-                quantization_method = cmd.get("quantization_method", "Q4_K_M"),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
+                save_directory=cmd.get("save_directory", ""),
+                quantization_method=cmd.get("quantization_method", "Q4_K_M"),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
-                save_directory = cmd.get("save_directory", ""),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                private = cmd.get("private", False),
+                save_directory=cmd.get("save_directory", ""),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                private=cmd.get("private", False),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
@@ -332,7 +332,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 "success": False,
                 "message": str(exc),
                 "output_path": None,
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -405,8 +405,8 @@ def run_export_process(
         warnings.filterwarnings("ignore")
 
     LogConfig.setup_logging(
-        service_name = "unsloth-studio-export-worker",
-        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        service_name="unsloth-studio-export-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
     checkpoint_path = config["checkpoint_path"]
@@ -420,7 +420,7 @@ def run_export_process(
             {
                 "type": "error",
                 "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -468,7 +468,7 @@ def run_export_process(
             {
                 "type": "error",
                 "error": f"Failed to import ML libraries: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -486,7 +486,7 @@ def run_export_process(
             {
                 "type": "error",
                 "error": f"Failed to initialize export backend: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -497,7 +497,7 @@ def run_export_process(
 
     while True:
         try:
-            cmd = cmd_queue.get(timeout = 1.0)
+            cmd = cmd_queue.get(timeout=1.0)
         except _queue.Empty:
             continue
         except (EOFError, OSError):
@@ -562,14 +562,14 @@ def run_export_process(
 
         except Exception as exc:
             logger.error(
-                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
+                "Error handling command '%s': %s", cmd_type, exc, exc_info=True
             )
             _send_response(
                 resp_queue,
                 {
                     "type": "error",
                     "error": f"Command '{cmd_type}' failed: {exc}",
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 },
             )
