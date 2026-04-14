@@ -41,14 +41,23 @@ sys.modules.setdefault("structlog", _structlog_stub)
 
 _httpx_stub = _types.ModuleType("httpx")
 for _exc in (
-    "ConnectError", "TimeoutException", "ReadTimeout", "ReadError",
-    "RemoteProtocolError", "CloseError",
+    "ConnectError",
+    "TimeoutException",
+    "ReadTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "CloseError",
 ):
     setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
 _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
 _httpx_stub.Client = type(
-    "C", (),
-    {"__init__": lambda s, **kw: None, "__enter__": lambda s: s, "__exit__": lambda s, *a: None},
+    "C",
+    (),
+    {
+        "__init__": lambda s, **kw: None,
+        "__enter__": lambda s: s,
+        "__exit__": lambda s, *a: None,
+    },
 )
 sys.modules.setdefault("httpx", _httpx_stub)
 
@@ -78,7 +87,7 @@ def test_flag_sits_inside_the_base_cmd_list():
     # The base ``cmd = [ ... ]`` list opens with ``binary,\n  "-m",`` and
     # closes before the first ``if use_fit``. The flag must be inside
     # that block.
-    start = source.find('cmd = [')
+    start = source.find("cmd = [")
     assert start >= 0, "could not find the base cmd = [...] block"
     end = source.find("            ]", start)
     assert end > start, "could not find end of cmd = [...] block"
