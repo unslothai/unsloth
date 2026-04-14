@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
 import { ApiKeyRow } from "../components/api-key-row";
+import { CreateKeyForm } from "../components/create-key-form";
+import { RevealKeyDialog } from "../components/reveal-key-dialog";
 
 export function ApiKeysTab() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
@@ -20,6 +22,7 @@ export function ApiKeysTab() {
   const [error, setError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
+  const [revealed, setRevealed] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,7 +63,13 @@ export function ApiKeysTab() {
         </p>
       </header>
 
-      {/* Create form slot — wired in Task 8 */}
+      <CreateKeyForm
+        onCreated={(raw) => {
+          setRevealed(raw);
+          void load();
+        }}
+        onError={setError}
+      />
 
       <section className="flex flex-col">
         <h2 className="mb-2 text-sm font-semibold text-foreground">Your keys</h2>
@@ -114,6 +123,8 @@ export function ApiKeysTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <RevealKeyDialog rawKey={revealed} onClose={() => setRevealed(null)} />
     </div>
   );
 }
