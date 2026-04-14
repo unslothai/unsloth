@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import platform
 import shutil
 import subprocess
@@ -11,6 +12,8 @@ import sys
 import urllib.error
 import urllib.request
 from typing import Callable
+
+_logger = logging.getLogger(__name__)
 
 FLASH_ATTN_RELEASE_BASE_URL = (
     "https://github.com/Dao-AILab/flash-attention/releases/download"
@@ -160,7 +163,8 @@ def url_exists(url: str) -> bool:
         request = urllib.request.Request(url, method = "HEAD")
         with urllib.request.urlopen(request, timeout = 10):
             return True
-    except urllib.error.HTTPError:
-        return False
-    except Exception:
-        return False
+    except urllib.error.HTTPError as exc:
+        _logger.debug("url_exists(%s): HTTP %s", url, exc.code)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        _logger.debug("url_exists(%s): %s", url, exc)
+    return False
