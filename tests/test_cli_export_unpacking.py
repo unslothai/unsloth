@@ -97,6 +97,16 @@ def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
 
     app = typer.Typer()
     app.command("export")(export_cmd.export)
+
+    # Typer flattens a single-command app into that command, which would
+    # make argv[0] ("export") look like an extra positional argument to
+    # the test invocation. Register a harmless second command so Typer
+    # keeps "export" as a real subcommand and the tests drive the
+    # intended code path.
+    @app.command("noop")
+    def _noop() -> None:  # pragma: no cover - only exists to pin routing
+        pass
+
     return app
 
 
