@@ -55,7 +55,6 @@ import {
   PencilEdit01Icon,
   Settings02Icon,
   SlidersHorizontalIcon,
-  UserSettings01Icon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -476,8 +475,6 @@ interface ChatSettingsPanelProps {
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
-  autoTitle: boolean;
-  onAutoTitleChange: (enabled: boolean) => void;
   onReloadModel?: () => void;
 }
 
@@ -486,8 +483,6 @@ export function ChatSettingsPanel({
   onOpenChange,
   params,
   onParamsChange,
-  autoTitle,
-  onAutoTitleChange,
   onReloadModel,
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
@@ -1174,25 +1169,6 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection
-          icon={UserSettings01Icon}
-          label="Preferences"
-          defaultOpen={true}
-        >
-          <div className="flex flex-col gap-3 py-1">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-medium">Auto title</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Generate short title after reply.
-                </div>
-              </div>
-              <Switch checked={autoTitle} onCheckedChange={onAutoTitleChange} />
-            </div>
-            <HfTokenField />
-          </div>
-        </CollapsibleSection>
-
         <ChatTemplateSection onReloadModel={onReloadModel} />
       </div>
       <Dialog
@@ -1343,29 +1319,6 @@ function AutoHealToolCallsToggle() {
       <Switch
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
-      />
-    </div>
-  );
-}
-
-function HfTokenField() {
-  const hfToken = useChatRuntimeStore((s) => s.hfToken);
-  const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="min-w-0">
-        <div className="text-xs font-medium">Hugging Face Token</div>
-        <div className="text-[11px] text-muted-foreground">
-          For downloading gated or private models.
-        </div>
-      </div>
-      <Input
-        type="password"
-        value={hfToken}
-        placeholder="hf_..."
-        className="h-7 text-xs font-mono"
-        onChange={(e) => setHfToken(e.target.value)}
       />
     </div>
   );

@@ -400,8 +400,6 @@ export function ChatPage(): ReactElement {
     (state) => state.ggufContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
-  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
-  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -846,8 +844,6 @@ export function ChatPage(): ReactElement {
         onOpenChange={setSettingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
-        autoTitle={autoTitle}
-        onAutoTitleChange={setAutoTitle}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();
           if (state.params.checkpoint) {

@@ -23,7 +23,6 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/login",
   "/signup",
   "/change-password",
-  "/api-keys",
 ]);
 
 function isChatOnlyAllowed(pathname: string): boolean {
