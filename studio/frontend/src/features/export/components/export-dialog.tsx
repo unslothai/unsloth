@@ -74,34 +74,99 @@ function useExportLogs(
 
     const abortCtrl = new AbortController();
     let cancelled = false;
+    // Track the highest seq we've observed on a `log` event so we can
+    // resume the stream via `since=` / `Last-Event-ID` after a drop.
+    // The backend's SSE `id:` field carries this as ExportLogEvent.id.
+    let lastSeq: number | null = null;
+    // Exponential backoff with jitter, capped. Reset on every
+    // successful connection so flaky networks don't accumulate delay.
+    let backoffMs = 500;
+    const MAX_BACKOFF_MS = 5000;
+    // Flipped by a terminal event (explicit `complete` from the
+    // backend or a non-transient error we choose not to retry). Stops
+    // the outer reconnect loop even if `exporting` is still true.
+    let terminated = false;
 
-    streamExportLogs({
-      signal: abortCtrl.signal,
-      onOpen: () => {
-        if (!cancelled) setConnected(true);
-      },
-      onEvent: (event) => {
-        if (cancelled) return;
-        if (event.event === "log" && event.entry) {
-          const entry = event.entry;
-          setLines((prev) => {
-            const next = prev.length >= MAX_LOG_LINES
-              ? prev.slice(prev.length - MAX_LOG_LINES + 1)
-              : prev.slice();
-            next.push(entry);
-            return next;
+    const run = async () => {
+      while (!cancelled && !terminated) {
+        try {
+          await streamExportLogs({
+            signal: abortCtrl.signal,
+            since: lastSeq,
+            onOpen: () => {
+              if (cancelled) return;
+              setConnected(true);
+              // Reset backoff on every successful connect so later
+              // drops don't inherit accumulated delay from earlier ones.
+              backoffMs = 500;
+            },
+            onEvent: (event) => {
+              if (cancelled) return;
+              if (event.event === "log" && event.entry) {
+                if (typeof event.id === "number") {
+                  lastSeq = event.id;
+                }
+                const entry = event.entry;
+                setLines((prev) => {
+                  const next = prev.length >= MAX_LOG_LINES
+                    ? prev.slice(prev.length - MAX_LOG_LINES + 1)
+                    : prev.slice();
+                  next.push(entry);
+                  return next;
+                });
+              } else if (event.event === "complete") {
+                // Backend signalled the run is fully drained -- stop
+                // trying to reconnect even though `exporting` may not
+                // have flipped false yet on this tick.
+                terminated = true;
+              } else if (event.event === "error" && event.error) {
+                setError(event.error);
+              }
+            },
           });
-        } else if (event.event === "error" && event.error) {
-          setError(event.error);
+        } catch (err: unknown) {
+          if (cancelled) return;
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          setError(err instanceof Error ? err.message : String(err));
+          // Fall through to the backoff path below; a fetch-level
+          // failure is retryable the same way a clean EOF is.
         }
-      },
-    }).catch((err: unknown) => {
-      if (cancelled) return;
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(err instanceof Error ? err.message : String(err));
-    }).finally(() => {
-      if (!cancelled) setConnected(false);
-    });
+
+        setConnected(false);
+        if (cancelled || terminated) return;
+
+        // Exponential backoff with jitter before reconnecting. The
+        // backend's ring buffer plus Last-Event-ID resume means we
+        // don't lose lines across the retry as long as the reconnect
+        // happens within the buffer's lifetime (~4000 lines).
+        const delay = backoffMs + Math.floor(Math.random() * 250);
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+        try {
+          await new Promise<void>((resolve, reject) => {
+            if (abortCtrl.signal.aborted) {
+              reject(new DOMException("Aborted", "AbortError"));
+              return;
+            }
+            const timeoutId = window.setTimeout(resolve, delay);
+            abortCtrl.signal.addEventListener(
+              "abort",
+              () => {
+                window.clearTimeout(timeoutId);
+                reject(new DOMException("Aborted", "AbortError"));
+              },
+              { once: true },
+            );
+          });
+        } catch {
+          return;
+        }
+      }
+    };
+
+    // run()'s own try/catch handles every failure path we care about;
+    // swallow anything that somehow escapes so React's dev overlay
+    // doesn't flag an unhandled rejection on dialog close.
+    void run().catch(() => {});
 
     return () => {
       cancelled = true;
