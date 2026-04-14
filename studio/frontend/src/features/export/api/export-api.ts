@@ -99,7 +99,7 @@ export async function exportBase(params: {
 
 export async function exportGGUF(params: {
   save_directory: string;
-  quantization_method: string;
+  quantization_method: string[];
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
