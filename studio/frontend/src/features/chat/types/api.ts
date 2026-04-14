@@ -52,6 +52,7 @@ export interface ValidateModelResponse {
   is_gguf?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
+  requires_trust_remote_code?: boolean;
 }
 
 export interface GgufVariantDetail {
@@ -86,6 +87,7 @@ export interface LoadModelResponse {
     presence_penalty?: number;
     trust_remote_code?: boolean;
   };
+  requires_trust_remote_code?: boolean;
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
@@ -119,6 +121,7 @@ export interface InferenceStatusResponse {
     presence_penalty?: number;
     trust_remote_code?: boolean;
   };
+  requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
   reasoning_always_on?: boolean;
   supports_tools?: boolean;
