@@ -14,6 +14,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
 import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
+import { AppearanceTab } from "./tabs/appearance-tab";
 
 interface TabDef {
   id: SettingsTab;
@@ -40,6 +41,15 @@ function TabPlaceholder({ id }: { id: SettingsTab }) {
       </header>
     </div>
   );
+}
+
+function renderTab(tab: SettingsTab) {
+  switch (tab) {
+    case "appearance":
+      return <AppearanceTab />;
+    default:
+      return <TabPlaceholder id={tab} />;
+  }
 }
 
 export function SettingsDialog() {
@@ -110,7 +120,7 @@ export function SettingsDialog() {
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6 pr-12">
-              <TabPlaceholder id={activeTab} />
+              {renderTab(activeTab)}
             </div>
           </main>
         </div>
