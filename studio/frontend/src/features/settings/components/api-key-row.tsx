@@ -8,7 +8,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   Copy01Icon,
@@ -50,17 +49,9 @@ export function ApiKeyRow({
 }) {
   const prefix = `sk-unsloth-${apiKey.key_prefix}…`;
   return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 border-b border-border/60 px-1 py-3 last:border-b-0 transition-colors hover:bg-accent/40",
-        !apiKey.is_active && "opacity-50",
-      )}
-    >
+    <div className="group flex items-center gap-3 border-b border-border/60 px-1 py-3 last:border-b-0 transition-colors hover:bg-accent/40">
       <span
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          apiKey.is_active ? "bg-emerald-500" : "bg-muted-foreground",
-        )}
+        className="size-1.5 shrink-0 rounded-full bg-emerald-500"
         aria-hidden="true"
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -96,15 +87,13 @@ export function ApiKeyRow({
             <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             Copy prefix
           </DropdownMenuItem>
-          {apiKey.is_active ? (
-            <DropdownMenuItem
-              onClick={() => onRevoke(apiKey)}
-              className="text-destructive focus:text-destructive"
-            >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
-              Revoke key
-            </DropdownMenuItem>
-          ) : null}
+          <DropdownMenuItem
+            onClick={() => onRevoke(apiKey)}
+            className="text-destructive focus:text-destructive"
+          >
+            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
+            Revoke key
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
