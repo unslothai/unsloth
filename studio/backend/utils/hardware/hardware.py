@@ -113,6 +113,7 @@ def detect_hardware() -> DeviceType:
     # --- MLX: Apple Silicon ---
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
+        CHAT_ONLY = False
         chip = platform.processor() or platform.machine()
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
         return DEVICE
@@ -232,19 +233,26 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import mlx.core as mx
             import psutil
 
-            # MLX uses unified memory — report system memory as the pool
+            # MLX uses unified memory. Total = system RAM. GPU memory used
+            # comes from IORegistry's AGXAccelerator (system-wide, no sudo).
             total = psutil.virtual_memory().total
-            # MLX doesn't expose per-process GPU allocation; report 0 as allocated
-            allocated = 0
+            agx = _read_apple_gpu_stats()
+            allocated = agx.get("vram_used_bytes", 0) if agx else 0
+
+            try:
+                info = mx.device_info()
+                gpu_name = info.get("device_name") or platform.processor() or platform.machine()
+            except Exception:
+                gpu_name = platform.processor() or platform.machine()
 
             return {
                 "available": True,
                 "backend": device.value,
                 "device": 0,
-                "device_name": f"Apple Silicon ({platform.processor() or platform.machine()})",
+                "device_name": f"Apple Silicon ({gpu_name})",
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
-                "reserved_gb": 0,
+                "reserved_gb": allocated / (1024**3),
                 "free_gb": (total - allocated) / (1024**3),
                 "utilization_pct": (allocated / total) * 100 if total else 0,
             }
@@ -387,6 +395,39 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
 # ========== Live GPU Utilization ==========
 
 
+def _read_apple_gpu_stats() -> Dict[str, Any]:
+    """Query macOS IORegistry for AGX (Apple GPU) live stats. No sudo needed.
+
+    Returns dict with utilization_pct, vram_used_bytes (system-wide GPU memory).
+    Returns empty dict on failure.
+    """
+    import subprocess
+    import re
+
+    try:
+        result = subprocess.run(
+            ["ioreg", "-r", "-c", "AGXAccelerator"],
+            capture_output=True,
+            timeout=2,
+        )
+        text = result.stdout.decode("utf-8", errors="replace")
+    except Exception:
+        return {}
+
+    # PerformanceStatistics block has GPU utilization and in-use memory
+    m = re.search(r'"PerformanceStatistics" = \{([^}]+)\}', text)
+    if not m:
+        return {}
+    stats_str = m.group(1)
+    pairs = re.findall(r'"([^"]+)"=(\d+)', stats_str)
+    stats = {k: int(v) for k, v in pairs}
+
+    return {
+        "utilization_pct": stats.get("Device Utilization %", 0),
+        "vram_used_bytes": stats.get("In use system memory", 0),
+    }
+
+
 def get_gpu_utilization() -> Dict[str, Any]:
     """Return a live snapshot of device utilization information."""
     device = get_device()
@@ -401,6 +442,31 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 return result
         except Exception as e:
             logger.warning("nvidia-smi utilization query failed: %s", e)
+
+    # MLX path: reuse mem info from get_gpu_memory_info() (which already
+    # calls _read_apple_gpu_stats), then one extra call just for utilization %.
+    if device == DeviceType.MLX:
+        mem = get_gpu_memory_info()
+        if not mem.get("available"):
+            return {"available": False, "backend": device.value}
+        agx = _read_apple_gpu_stats()
+        vram_used_gb = mem.get("allocated_gb", 0)
+        total_gb = mem.get("total_gb", 0)
+
+        return {
+            "available": True,
+            "backend": device.value,
+            "gpu_utilization_pct": agx.get("utilization_pct") if agx else None,
+            "temperature_c": None,
+            "vram_used_gb": round(vram_used_gb, 2),
+            "vram_total_gb": round(total_gb, 2),
+            "vram_utilization_pct": (
+                round((vram_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
+            ),
+            "power_draw_w": None,
+            "power_limit_w": None,
+            "power_utilization_pct": None,
+        }
 
     mem = get_gpu_memory_info()
     if device != DeviceType.CPU and mem.get("available"):

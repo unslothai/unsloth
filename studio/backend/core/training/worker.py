@@ -317,6 +317,461 @@ def _activate_transformers_version(model_name: str) -> None:
     activate_transformers_for_subprocess(model_name)
 
 
+def _adapt_for_mlx_vlm(items):
+    """Adapt GPU-path VLM dataset output for mlx-vlm consumption.
+
+    The GPU path's format_and_template_dataset embeds PIL images inside
+    messages content ({"type": "image", "image": PIL_Image}).
+    mlx-vlm expects images at top-level and bare {"type": "image"} placeholders.
+    """
+    adapted = []
+    for item in items:
+        images = []
+        messages = []
+        for msg in item.get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                new_content = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image":
+                        img = part.get("image")
+                        if img is not None:
+                            images.append(img)
+                        new_content.append({"type": "image"})
+                    else:
+                        new_content.append(part)
+                messages.append({"role": msg["role"], "content": new_content})
+            else:
+                messages.append(msg)
+        out = {"messages": messages}
+        if images:
+            out["image"] = images[0] if len(images) == 1 else images
+        elif "image" in item:
+            out["image"] = item["image"]
+        elif "images" in item:
+            out["images"] = item["images"]
+        adapted.append(out)
+    return adapted
+
+
+def _run_mlx_training(event_queue, stop_queue, config):
+    """Self-contained MLX training path for Apple Silicon.
+
+    Uses MLXTrainer from unsloth_zoo directly -- no torch/SFTTrainer needed.
+    Mirrors the event_queue protocol so the parent process pump works unchanged.
+    """
+    import time
+    import gc
+    import math
+    import threading
+    import queue as _queue
+    from pathlib import Path
+
+    def _send(event_type, **kwargs):
+        event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
+
+    _send("status", status_message="Loading MLX libraries...")
+
+    import mlx.core as mx
+    from unsloth_zoo.mlx_loader import FastMLXModel
+    from unsloth_zoo.mlx_trainer import (
+        MLXTrainer,
+        MLXTrainingConfig,
+        train_on_responses_only,
+    )
+    from datasets import load_dataset
+
+    if mx.metal.is_available():
+        mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
+
+    model_name = config["model_name"]
+    hf_token = config.get("hf_token") or None
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+
+    # ── 1. Load model ──
+    # Force text-only if the dataset is not an image dataset, even if the model
+    # has vision capabilities (e.g. Qwen3.5-VL trained on plain alpaca text).
+    _send("status", status_message=f"Loading {model_name}...")
+    is_dataset_image = bool(config.get("is_dataset_image", False))
+    model, tokenizer = FastMLXModel.from_pretrained(
+        model_name,
+        text_only=None if is_dataset_image else True,
+        trust_remote_code=bool(config.get("trust_remote_code", False)),
+    )
+    is_vlm = bool(getattr(model, "_is_vlm_model", False))
+
+    # ── 2. Apply LoRA / full FT ──
+    training_type = config.get("training_type", "LoRA/QLoRA")
+    use_lora = training_type == "LoRA/QLoRA"
+
+    # Map gradient_checkpointing string to bool
+    gc_setting = config.get("gradient_checkpointing", "unsloth")
+    if isinstance(gc_setting, str):
+        use_grad_checkpoint = gc_setting.lower() not in ("false", "none", "")
+    else:
+        use_grad_checkpoint = bool(gc_setting)
+
+    if use_lora:
+        _send("status", status_message="Configuring LoRA adapters...")
+        peft_kwargs = dict(
+            r=config.get("lora_r", 16),
+            lora_alpha=config.get("lora_alpha", 16),
+            lora_dropout=config.get("lora_dropout", 0.0),
+            target_modules=config.get("target_modules") or [
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+            use_gradient_checkpointing=use_grad_checkpoint,
+        )
+        if is_vlm:
+            peft_kwargs["train_vision"] = config.get("finetune_vision_layers", False)
+            peft_kwargs["train_projector"] = (
+                config.get("finetune_attention_modules", False)
+                or config.get("finetune_mlp_modules", False)
+            )
+        model = FastMLXModel.get_peft_model(model, **peft_kwargs)
+
+    # ── 3. Load dataset ──
+    _send("status", status_message="Loading dataset...")
+    hf_dataset = config.get("hf_dataset", "")
+    subset = config.get("subset")
+    train_split = config.get("train_split", "train") or "train"
+    eval_split = config.get("eval_split")
+    slice_start = config.get("dataset_slice_start")
+    slice_end = config.get("dataset_slice_end")
+
+    def _slice(ds):
+        if slice_start is not None or slice_end is not None:
+            start = slice_start or 0
+            end = slice_end or len(ds)
+            ds = ds.select(range(start, min(end, len(ds))))
+        return ds
+
+    if hf_dataset:
+        load_kwargs = {"split": train_split, "token": hf_token}
+        if subset:
+            load_kwargs["name"] = subset
+        dataset = load_dataset(hf_dataset, **load_kwargs)
+        dataset = _slice(dataset)
+    elif config.get("local_datasets"):
+        from datasets import load_from_disk
+        dataset = load_from_disk(config["local_datasets"][0])
+        dataset = _slice(dataset)
+    else:
+        raise ValueError("No dataset specified")
+
+    # Eval dataset (separate split or local file)
+    eval_dataset = None
+    if eval_split and hf_dataset:
+        eval_kwargs = {"split": eval_split, "token": hf_token}
+        if subset:
+            eval_kwargs["name"] = subset
+        try:
+            eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
+        except Exception as e:
+            _send("status", status_message=f"Eval split load failed: {e}")
+            eval_dataset = None
+    elif config.get("local_eval_datasets"):
+        from datasets import load_from_disk
+        eval_dataset = load_from_disk(config["local_eval_datasets"][0])
+
+    # ── 3b. Format dataset (VLM or text) ──
+    # Reuse the GPU path's format pipeline for both VLM (auto-detects OCR/caption/
+    # llava/sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
+    format_type = config.get("format_type", "")
+    try:
+        from utils.datasets import format_and_template_dataset
+
+        def _fmt_progress(status_message="", **_kw):
+            _send("status", status_message=status_message)
+
+        if is_vlm:
+            _send("status", status_message="Formatting VLM dataset...")
+            vlm_info = format_and_template_dataset(
+                dataset,
+                model_name=model_name,
+                tokenizer=tokenizer,
+                is_vlm=True,
+                dataset_name=hf_dataset or "local",
+                progress_callback=_fmt_progress,
+            )
+            if vlm_info.get("success"):
+                dataset = _adapt_for_mlx_vlm(vlm_info["dataset"])
+            else:
+                errors = vlm_info.get("errors", [])
+                raise ValueError(
+                    f"VLM dataset format conversion failed: {'; '.join(errors)}"
+                )
+            if eval_dataset is not None:
+                ev_info = format_and_template_dataset(
+                    eval_dataset, model_name=model_name, tokenizer=tokenizer,
+                    is_vlm=True, dataset_name=hf_dataset or "local",
+                )
+                if ev_info.get("success"):
+                    eval_dataset = _adapt_for_mlx_vlm(ev_info["dataset"])
+
+        elif format_type:
+            _send("status", status_message=f"Formatting dataset ({format_type})...")
+            info = format_and_template_dataset(
+                dataset, model_name=model_name, tokenizer=tokenizer,
+                is_vlm=False, format_type=format_type,
+                dataset_name=hf_dataset or "local",
+            )
+            if info.get("success", True):
+                dataset = info.get("dataset", dataset)
+            if eval_dataset is not None:
+                ev = format_and_template_dataset(
+                    eval_dataset, model_name=model_name, tokenizer=tokenizer,
+                    is_vlm=False, format_type=format_type,
+                    dataset_name=hf_dataset or "local",
+                )
+                if ev.get("success", True):
+                    eval_dataset = ev.get("dataset", eval_dataset)
+    except ImportError:
+        _send("status", status_message="Format helper unavailable, using raw dataset")
+
+    # ── 4. Resolve training steps ──
+    max_steps = config.get("max_steps", 0) or 0
+    num_epochs = config.get("num_epochs", 3)
+    max_seq_length = config.get("max_seq_length", 2048)
+    batch_size = config.get("batch_size", 4)
+    grad_accum = config.get("gradient_accumulation_steps", 4)
+
+    if max_steps <= 0:
+        max_steps = max(
+            1,
+            math.ceil(len(dataset) / batch_size / grad_accum) * num_epochs,
+        )
+
+    lr_value = float(config.get("learning_rate", "2e-4"))
+
+    # Warmup: prefer warmup_steps; fall back to warmup_ratio
+    warmup_steps = config.get("warmup_steps")
+    warmup_ratio = config.get("warmup_ratio")
+    if warmup_steps is None and warmup_ratio is not None:
+        warmup_steps = int(round(warmup_ratio * max_steps))
+    if warmup_steps is None:
+        warmup_steps = 5
+
+    # Map optim name (Studio sends torch optimizers; map to MLX equivalents)
+    optim_raw = (config.get("optim") or "adafactor").lower()
+    optim_map = {
+        "adamw_8bit": "adamw",
+        "paged_adamw_8bit": "adamw",
+        "adamw_bnb_8bit": "adamw",
+        "paged_adamw_32bit": "adamw",
+        "adamw_torch": "adamw",
+        "adamw_torch_fused": "adamw",
+        "adafactor": "adafactor",
+        "sgd": "sgd",
+        "adam": "adam",
+        "muon": "muon",
+        "lion": "lion",
+    }
+    optim_name = optim_map.get(optim_raw, "adafactor")
+
+    # ── 5. Build output dir ──
+    output_dir = config.get("output_dir", "")
+    if not output_dir:
+        output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # ── 6. Create trainer ──
+    eval_steps_val = config.get("eval_steps", 0) or 0
+    if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
+        # Studio sometimes sends fraction-of-total-steps
+        eval_steps_val = max(1, int(eval_steps_val * max_steps))
+    else:
+        eval_steps_val = int(eval_steps_val)
+
+    trainer = MLXTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        eval_dataset=eval_dataset,
+        args=MLXTrainingConfig(
+            per_device_train_batch_size=batch_size,
+            gradient_accumulation_steps=grad_accum,
+            max_steps=max_steps,
+            learning_rate=lr_value,
+            warmup_steps=warmup_steps,
+            lr_scheduler_type=config.get("lr_scheduler_type", "cosine"),
+            optim=optim_name,
+            weight_decay=float(config.get("weight_decay", 0.001) or 0.001),
+            logging_steps=1,
+            max_seq_length=max_seq_length,
+            seed=config.get("random_seed", 3407),
+            use_cce=True,
+            compile=True,
+            gradient_checkpointing=use_grad_checkpoint,
+            packing=bool(config.get("packing", False)),
+            output_dir=output_dir,
+            save_steps=int(config.get("save_steps", 0) or 0),
+            eval_steps=eval_steps_val,
+        ),
+    )
+
+    # Tell the parent that eval is configured so the frontend shows the eval chart
+    if eval_dataset is not None and eval_steps_val > 0:
+        _send("eval_configured")
+
+    # ── 7. Apply train_on_responses_only if requested ──
+    if config.get("train_on_completions", False) and not is_vlm:
+        _send("status", status_message="Configuring response-only training...")
+        try:
+            chat_template = getattr(tokenizer, "chat_template", None)
+            if chat_template:
+                # Reasonable defaults based on common chat template tokens
+                # User's chat template determines exact tokens
+                instruction_part = "<|start_header_id|>user<|end_header_id|>\n\n"
+                response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                if "<|im_start|>" in chat_template:
+                    instruction_part = "<|im_start|>user\n"
+                    response_part = "<|im_start|>assistant\n"
+                trainer = train_on_responses_only(
+                    trainer,
+                    instruction_part=instruction_part,
+                    response_part=response_part,
+                )
+            else:
+                _send("status", status_message="train_on_completions skipped (no chat_template)")
+        except Exception as e:
+            _send("status", status_message=f"train_on_completions failed: {e}")
+
+    # ── 8. Setup wandb / tensorboard ──
+    wandb_run = None
+    tb_writer = None
+    if config.get("enable_wandb", False):
+        try:
+            import wandb as _wandb
+            wandb_token = config.get("wandb_token")
+            if wandb_token:
+                os.environ["WANDB_API_KEY"] = wandb_token
+            wandb_run = _wandb.init(
+                project=config.get("wandb_project") or "unsloth-mlx",
+                config=dict(config),
+                reinit=True,
+            )
+        except Exception as e:
+            _send("status", status_message=f"wandb init failed: {e}")
+    if config.get("enable_tensorboard", False):
+        try:
+            from tensorboardX import SummaryWriter
+        except ImportError:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+            except ImportError:
+                SummaryWriter = None
+        if SummaryWriter is not None:
+            try:
+                tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
+                tb_writer = SummaryWriter(log_dir=tb_dir)
+            except Exception as e:
+                _send("status", status_message=f"tensorboard init failed: {e}")
+        else:
+            _send("status", status_message="tensorboard unavailable (install tensorboardX)")
+
+    # ── 9. Real-time progress callback ──
+    _send("status", status_message=f"Training {model_name}...")
+
+    def _on_step(step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens):
+        eta = (elapsed / step * (total - step)) if step > 0 else 0
+        _send("progress",
+            step=step,
+            epoch=round(step / total * num_epochs, 2) if total > 0 else 0,
+            loss=loss,
+            learning_rate=lr,
+            total_steps=total,
+            elapsed_seconds=elapsed,
+            eta_seconds=max(0, eta),
+            grad_norm=None,
+            num_tokens=num_tokens,
+            eval_loss=None,
+            status_message=None,
+        )
+        if wandb_run is not None:
+            try:
+                wandb_run.log({
+                    "train/loss": loss,
+                    "train/learning_rate": lr,
+                    "train/tokens_per_sec": tok_s,
+                    "train/peak_gb": peak_gb,
+                    "train/num_tokens": num_tokens,
+                }, step=step)
+            except Exception:
+                pass
+        if tb_writer is not None:
+            try:
+                tb_writer.add_scalar("train/loss", loss, step)
+                tb_writer.add_scalar("train/learning_rate", lr, step)
+                tb_writer.add_scalar("train/tokens_per_sec", tok_s, step)
+                tb_writer.add_scalar("train/peak_gb", peak_gb, step)
+            except Exception:
+                pass
+
+    trainer.add_step_callback(_on_step)
+
+    def _on_eval(step, eval_loss, perplexity):
+        _send("progress", step=step, eval_loss=eval_loss)
+        if wandb_run is not None:
+            try:
+                wandb_run.log({"eval/loss": eval_loss, "eval/perplexity": perplexity}, step=step)
+            except Exception:
+                pass
+        if tb_writer is not None:
+            try:
+                tb_writer.add_scalar("eval/loss", eval_loss, step)
+                tb_writer.add_scalar("eval/perplexity", perplexity, step)
+            except Exception:
+                pass
+
+    trainer.add_eval_callback(_on_eval)
+
+    # ── 10. Stop signal polling ──
+    _stop_save = [True]  # mutable so thread can update; [save_flag]
+
+    def _poll_stop():
+        while True:
+            try:
+                msg = stop_queue.get(timeout=1.0)
+                if msg and msg.get("type") == "stop":
+                    _stop_save[0] = msg.get("save", True)
+                    trainer.stop_requested = True
+                    return
+            except (_queue.Empty, EOFError, OSError):
+                continue
+
+    stop_thread = threading.Thread(target=_poll_stop, daemon=True)
+    stop_thread.start()
+
+    # ── 11. Run training ──
+    gc.collect()
+    mx.synchronize()
+    trainer.train()
+
+    # ── 12. Save and finalize ──
+    if trainer.stop_requested and not _stop_save[0]:
+        # User clicked "Cancel" (save=False) — skip saving
+        _send("complete", output_dir=None, status_message="Training cancelled")
+    else:
+        _send("status", status_message="Saving model...")
+        mx.synchronize()
+        trainer.save_model(output_dir)
+        _send("complete", output_dir=output_dir, status_message="Training completed")
+
+    if tb_writer is not None:
+        try:
+            tb_writer.close()
+        except Exception:
+            pass
+    if wandb_run is not None:
+        try:
+            wandb_run.finish()
+        except Exception:
+            pass
+
+
 def run_training_process(
     *,
     event_queue: Any,
@@ -349,6 +804,35 @@ def run_training_process(
     apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     model_name = config["model_name"]
+
+    # ── 0. MLX FAST-PATH (must run before any torch/transformers imports) ──
+    # Apple Silicon uses MLXTrainer directly -- skip transformers version
+    # activation, causal-conv1d install, and torch imports entirely.
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    from utils.hardware import hardware as _hw
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
+        if config.get("is_dataset_audio"):
+            event_queue.put({
+                "type": "error",
+                "error": "Audio dataset training is not yet supported on Apple Silicon.",
+                "stack": "",
+                "ts": time.time(),
+            })
+            return
+        try:
+            _run_mlx_training(event_queue, stop_queue, config)
+        except Exception as exc:
+            event_queue.put({
+                "type": "error",
+                "error": str(exc),
+                "stack": traceback.format_exc(limit=20),
+                "ts": time.time(),
+            })
+        return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
