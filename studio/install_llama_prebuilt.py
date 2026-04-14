@@ -2576,8 +2576,13 @@ def detect_host() -> HostInfo:
     has_rocm = False
     if is_linux:
         for _cmd, _check in (
-            # rocminfo: look for "gfxNNNN" with nonzero first digit (gfx000 is CPU agent)
-            (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
+            # rocminfo: look for a real gfx GPU ID (3-4 digits, nonzero first).
+            # gfx000 is the CPU agent; generic ISA lines like "gfx11-generic"
+            # only have 2 digits and are not actual GPU targets.
+            (
+                ["rocminfo"],
+                lambda out: bool(re.search(r"gfx[1-9][0-9]{2,3}", out.lower())),
+            ),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
