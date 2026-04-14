@@ -41,6 +41,7 @@ import {
   PencilEdit02Icon,
   Settings02Icon,
   SidebarLeft01Icon,
+  SidebarRight01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -255,7 +256,7 @@ export function AppSidebar() {
                   aria-label="Open sidebar"
                 >
                   <HugeiconsIcon
-                    icon={SidebarLeft01Icon}
+                    icon={SidebarRight01Icon}
                     className="size-5 text-sidebar-foreground/70"
                   />
                 </button>
