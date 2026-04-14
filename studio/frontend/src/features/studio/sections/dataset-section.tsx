@@ -120,6 +120,10 @@ export function DatasetSection() {
     setDatasetEvalSplit,
     datasetStreaming,
     setDatasetStreaming,
+    isVisionModel,
+    isAudioModel,
+    isDatasetImage,
+    isDatasetAudio,
     uploadedFile,
     uploadedEvalFile,
     setUploadedEvalFile,
@@ -145,6 +149,10 @@ export function DatasetSection() {
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       datasetStreaming: s.datasetStreaming,
       setDatasetStreaming: s.setDatasetStreaming,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
+      isDatasetImage: s.isDatasetImage,
+      isDatasetAudio: s.isDatasetAudio,
       uploadedFile: s.uploadedFile,
       uploadedEvalFile: s.uploadedEvalFile,
       setUploadedEvalFile: s.setUploadedEvalFile,
@@ -156,6 +164,26 @@ export function DatasetSection() {
       setDatasetSliceEnd: s.setDatasetSliceEnd,
     })),
   );
+
+  // Streaming is only supported for Hugging Face text datasets.
+  // Hide the toggle for vision/audio models or datasets detected as multimodal,
+  // since downstream preprocessing (convert_to_vlm_format, audio collators)
+  // requires random access and would crash on an IterableDataset.
+  const isStreamingSupported =
+    datasetSource === "huggingface" &&
+    !isVisionModel &&
+    !isAudioModel &&
+    !isDatasetImage &&
+    !isDatasetAudio;
+
+  // If streaming was previously enabled but the config became incompatible
+  // (model switched to vision, dataset detected as image, etc.), clear it so
+  // the backend never receives a stale flag.
+  useEffect(() => {
+    if (datasetStreaming && !isStreamingSupported) {
+      setDatasetStreaming(false);
+    }
+  }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -853,7 +881,7 @@ export function DatasetSection() {
                     </SelectContent>
                   </Select>
                 </div>
-                {datasetSource === "huggingface" && (
+                {isStreamingSupported && (
                   <div className="flex flex-col gap-2">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       Streaming Mode
@@ -870,7 +898,7 @@ export function DatasetSection() {
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          Load Hugging Face datasets using streaming mode when supported.
+                          Load Hugging Face datasets using streaming mode. Requires max_steps &gt; 0 and a separate eval split when evaluation is enabled.
                         </TooltipContent>
                       </Tooltip>
                     </span>
@@ -886,7 +914,7 @@ export function DatasetSection() {
                     </label>
 
                     <p className="text-[10px] text-muted-foreground/80">
-                      Only applies to Hugging Face datasets.
+                      Only applies to Hugging Face text datasets.
                     </p>
                   </div>
                 )}

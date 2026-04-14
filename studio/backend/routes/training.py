@@ -153,6 +153,25 @@ async def start_training(
                 request.local_eval_datasets, "Local eval dataset"
             )
 
+        # Validate streaming-mode compatibility before any expensive work.
+        # Streaming is supported only for Hugging Face text datasets.
+        if request.dataset_streaming:
+            if not request.hf_dataset:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming requires hf_dataset; streaming is not supported for local datasets.",
+                )
+            if request.is_dataset_image or request.is_dataset_audio:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for vision or audio datasets.",
+                )
+            if request.max_steps is None or request.max_steps <= 0:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
+                )
+
         # Convert request to kwargs for backend
         training_kwargs = {
             "model_name": request.model_name,

@@ -2413,6 +2413,13 @@ class UnslothTrainer:
                                 "Train Split End must be greater than or equal to Train Split Start."
                             )
                         dataset = dataset.take(take_count)
+                        # IterableDataset.take(N) yields *at most* N samples — if
+                        # the source is shorter, the user silently gets fewer rows.
+                        logger.warning(
+                            f"Streaming slice requested up to {take_count} rows "
+                            f"[{slice_start}, {dataset_slice_end}]; actual yield "
+                            f"may be smaller if the dataset has fewer rows."
+                        )
 
                     logger.info(
                         f"Loaded Hugging Face dataset in streaming mode: {dataset_source}\n"
@@ -2447,6 +2454,30 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
 
                         if dataset_streaming:
+                            # Probe available splits before the streaming load.
+                            # load_dataset(streaming=True) returns an IterableDataset
+                            # without validating the split name — a typo would only
+                            # surface on the first eval batch mid-training.
+                            from datasets import get_dataset_split_names
+
+                            probe_kwargs = {"path": dataset_source}
+                            if subset:
+                                probe_kwargs["config_name"] = subset
+                            try:
+                                available_splits = get_dataset_split_names(
+                                    **probe_kwargs
+                                )
+                            except Exception as probe_err:
+                                raise ValueError(
+                                    f"Could not list splits for '{dataset_source}' "
+                                    f"to validate eval_split='{eval_split}': {probe_err}"
+                                )
+                            if eval_split not in available_splits:
+                                raise ValueError(
+                                    f"Requested eval split '{eval_split}' not found in "
+                                    f"dataset '{dataset_source}'. Available splits: "
+                                    f"{available_splits}"
+                                )
                             eval_dataset = load_dataset(
                                 **eval_load_kwargs, streaming = True
                             )
@@ -2466,7 +2497,7 @@ class UnslothTrainer:
                         if dataset_streaming:
                             raise ValueError(
                                 "Streaming mode does not support using the same split for both train and eval. "
-                                "Please provide a separate eval split or disable evaluation."
+                                "Please provide a separate eval split or set eval_steps to 0."
                             )
                         logger.info(
                             f"Eval split '{eval_split}' is the same as train split — will split 80/20\n"
@@ -2776,8 +2807,15 @@ class UnslothTrainer:
             logger.error(f"Failed to start training thread: {e}")
             return False
 
-    def _train_worker(self, dataset: Dataset | IterableDataset | dict, **training_args):
-        """Worker function for training (runs in separate thread)"""
+    def _train_worker(self, dataset: Dataset | dict, **training_args):
+        """Worker function for training (runs in separate thread).
+
+        ``dataset`` is either a raw ``datasets.Dataset`` (audio preprocessing
+        paths such as CSM / Whisper / SNAC / Audio-VLM) or a ``dict`` wrapper
+        returned by ``format_and_template_dataset`` (text and image VLM paths).
+        Streaming HF datasets arrive wrapped in the latter ``dict`` — they are
+        never passed as a bare ``IterableDataset``.
+        """
         try:
             # On spawn-based platforms (Windows, macOS), register all known
             # compiled-cache directories on sys.path and PYTHONPATH before any
