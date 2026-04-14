@@ -51,7 +51,7 @@ export function AboutTab() {
             href="https://unsloth.ai/docs"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700"
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
           >
             <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
             unsloth.ai/docs

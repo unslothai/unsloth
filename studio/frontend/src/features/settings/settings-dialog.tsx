@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
@@ -12,7 +17,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
@@ -34,19 +39,6 @@ const TABS: TabDef[] = [
   { id: "about", label: "About", icon: SparklesIcon },
 ];
 
-function TabPlaceholder({ id }: { id: SettingsTab }) {
-  return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading capitalize">{id}</h1>
-        <p className="text-xs text-muted-foreground">
-          Placeholder — wired in a later task.
-        </p>
-      </header>
-    </div>
-  );
-}
-
 function renderTab(tab: SettingsTab) {
   switch (tab) {
     case "general":
@@ -59,8 +51,6 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "about":
       return <AboutTab />;
-    default:
-      return <TabPlaceholder id={tab} />;
   }
 }
 
@@ -69,6 +59,7 @@ export function SettingsDialog() {
   const activeTab = useSettingsDialogStore((s) => s.activeTab);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const reduced = useReducedMotion();
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
@@ -82,6 +73,10 @@ export function SettingsDialog() {
           "max-sm:h-dvh max-sm:w-dvw max-sm:rounded-none",
         )}
       >
+        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogDescription className="sr-only">
+          Manage your Unsloth Studio preferences.
+        </DialogDescription>
         <div className="flex h-full min-h-0">
           <aside className="flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
             <nav className="flex flex-col gap-0.5">
@@ -94,6 +89,7 @@ export function SettingsDialog() {
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
                       "relative flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
@@ -103,12 +99,16 @@ export function SettingsDialog() {
                       <motion.span
                         layoutId="settings-active-pill"
                         className="absolute inset-0 rounded-md bg-accent"
-                        transition={{
-                          type: "spring",
-                          stiffness: 500,
-                          damping: 35,
-                          mass: 0.5,
-                        }}
+                        transition={
+                          reduced
+                            ? { duration: 0 }
+                            : {
+                                type: "spring",
+                                stiffness: 500,
+                                damping: 35,
+                                mass: 0.5,
+                              }
+                        }
                       />
                     )}
                     <HugeiconsIcon
@@ -126,7 +126,7 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Close settings"
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

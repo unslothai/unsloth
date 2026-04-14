@@ -105,7 +105,7 @@ export function ApiKeysTab() {
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Revoke key "{revokeTarget?.name}"?</DialogTitle>
+            <DialogTitle>Revoke key “{revokeTarget?.name}”?</DialogTitle>
             <DialogDescription>
               Applications using this key will immediately lose access. This cannot be undone.
             </DialogDescription>
@@ -119,7 +119,7 @@ export function ApiKeysTab() {
               disabled={revoking}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              {revoking ? "Revoking…" : `Revoke "${revokeTarget?.name}"`}
+              {revoking ? "Revoking…" : `Revoke “${revokeTarget?.name}”`}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -85,7 +85,7 @@ export function ApiKeyRow({
           <Button
             variant="ghost"
             size="sm"
-            className="size-7 p-0 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+            className="size-7 p-0 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100 max-sm:!opacity-100 max-sm:size-9"
             aria-label={`Actions for ${apiKey.name}`}
           >
             <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />

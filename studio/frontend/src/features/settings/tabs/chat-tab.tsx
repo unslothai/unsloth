@@ -119,7 +119,7 @@ export function ChatTab() {
               disabled={clearing}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              {clearing ? "Clearing…" : `Clear ${count} chat${count === 1 ? "" : "s"}`}
+              {clearing ? "Clearing…" : `Clear ${count ?? 0} chat${count === 1 ? "" : "s"}`}
             </Button>
           </DialogFooter>
         </DialogContent>

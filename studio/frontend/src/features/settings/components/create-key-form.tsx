@@ -63,7 +63,7 @@ export function CreateKeyForm({
                 onClick={() => setExpiry(p.value)}
                 aria-pressed={active}
                 className={cn(
-                  "rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                  "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   active
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground",

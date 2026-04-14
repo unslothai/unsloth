@@ -8,7 +8,7 @@ import {
   Sun02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { useTheme, type Theme } from "../stores/theme-store";
 
 const OPTIONS: { value: Theme; label: string; icon: typeof Sun02Icon }[] = [
@@ -19,6 +19,7 @@ const OPTIONS: { value: Theme; label: string; icon: typeof Sun02Icon }[] = [
 
 export function ThemeSegmented() {
   const { theme, setTheme } = useTheme();
+  const reduced = useReducedMotion();
   return (
     <div className="inline-flex items-center rounded-md border border-border bg-muted/30 p-0.5">
       {OPTIONS.map((opt) => {
@@ -40,7 +41,11 @@ export function ThemeSegmented() {
               <motion.span
                 layoutId="theme-pill"
                 className="absolute inset-0 rounded bg-background shadow-border"
-                transition={{ type: "spring", stiffness: 500, damping: 35, mass: 0.5 }}
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { type: "spring", stiffness: 500, damping: 35, mass: 0.5 }
+                }
               />
             )}
             <HugeiconsIcon icon={opt.icon} className="relative z-10 size-3.5" />

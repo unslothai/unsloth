@@ -59,7 +59,13 @@ export function UsageExamples() {
   const [open, setOpen] = useState(false);
   const [lang, setLang] = useState<Lang>("curl");
   const [copied, setCopied] = useState(false);
-  const snippets = useMemo(() => buildSnippets(window.location.origin), []);
+  const snippets = useMemo(
+    () =>
+      buildSnippets(
+        typeof window !== "undefined" ? window.location.origin : "",
+      ),
+    [],
+  );
 
   const handleCopy = () => {
     if (copyToClipboard(snippets[lang])) {
@@ -73,7 +79,7 @@ export function UsageExamples() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-fit items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        className="flex w-fit items-center gap-1.5 rounded text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-expanded={open}
       >
         <HugeiconsIcon
@@ -104,7 +110,7 @@ export function UsageExamples() {
                         onClick={() => setLang(t.id)}
                         aria-pressed={active}
                         className={cn(
-                          "rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                          "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           active
                             ? "bg-background text-foreground shadow-border"
                             : "text-muted-foreground hover:text-foreground",
@@ -118,7 +124,7 @@ export function UsageExamples() {
                 <button
                   type="button"
                   onClick={handleCopy}
-                  className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                  className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Copy snippet"
                 >
                   <HugeiconsIcon
