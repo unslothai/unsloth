@@ -1237,6 +1237,25 @@ def _all_hf_cache_scans():
     return scans
 
 
+def _repo_has_gguf_files(repo_info) -> bool:
+    """Return True when any revision in a cached repo contains GGUF files."""
+    for revision in repo_info.revisions:
+        for f in revision.files:
+            if f.file_name.lower().endswith(".gguf"):
+                return True
+    return False
+
+
+def _repo_gguf_size_bytes(repo_info) -> int:
+    """Return the total on-disk size of GGUF files across all revisions."""
+    total_size = 0
+    for revision in repo_info.revisions:
+        for f in revision.files:
+            if f.file_name.lower().endswith(".gguf"):
+                total_size += f.size_on_disk
+    return total_size
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
@@ -1251,16 +1270,10 @@ async def list_cached_gguf(
                 if repo_info.repo_type != "model":
                     continue
                 repo_id = repo_info.repo_id
-                if not repo_id.upper().endswith("-GGUF"):
+                if not _repo_has_gguf_files(repo_info):
                     continue
-                total_size = 0
-                has_gguf = False
-                for revision in repo_info.revisions:
-                    for f in revision.files:
-                        if f.file_name.endswith(".gguf"):
-                            has_gguf = True
-                            total_size += f.size_on_disk
-                if not has_gguf:
+                total_size = _repo_gguf_size_bytes(repo_info)
+                if total_size == 0:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)

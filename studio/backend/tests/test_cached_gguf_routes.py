@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import asyncio
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+# Keep this test runnable in lightweight environments where optional logging
+# deps are not installed.
+if "structlog" not in sys.modules:
+
+    class _DummyLogger:
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    sys.modules["structlog"] = types.SimpleNamespace(
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
+    )
+
+import routes.models as models_route
+
+
+def _repo(repo_id: str, files: list[SimpleNamespace], repo_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [SimpleNamespace(files = files)],
+    )
+
+
+def _file(name: str, size_on_disk: int) -> SimpleNamespace:
+    return SimpleNamespace(file_name = name, size_on_disk = size_on_disk)
+
+
+def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
+    repo = _repo(
+        "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+        [_file("Q4_K_M.gguf", 5_000), _file("README.md", 10)],
+        tmp_path / "models--HauhauCS--Gemma",
+    )
+    scan = SimpleNamespace(repos = [repo])
+
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+            "size_bytes": 5_000,
+            "cache_path": str(repo.repo_path),
+        }
+    ]
+
+
+def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_path):
+    repo = _repo(
+        "Org/Model-Without-Suffix",
+        [_file("Q8_0.GGUF", 7_000)],
+        tmp_path / "models--Org--Model-Without-Suffix",
+    )
+    scan = SimpleNamespace(repos = [repo])
+
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/Model-Without-Suffix",
+            "size_bytes": 7_000,
+            "cache_path": str(repo.repo_path),
+        }
+    ]
+
+
+def test_list_cached_gguf_skips_repos_without_positive_gguf_size(monkeypatch, tmp_path):
+    missing = _repo(
+        "Org/ReadmeOnly",
+        [_file("README.md", 10)],
+        tmp_path / "models--Org--ReadmeOnly",
+    )
+    zero = _repo(
+        "Org/ZeroSize",
+        [_file("Q4_K_M.gguf", 0)],
+        tmp_path / "models--Org--ZeroSize",
+    )
+    scan = SimpleNamespace(repos = [missing, zero])
+
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == []
+
+
+def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch, tmp_path):
+    smaller = _repo(
+        "Org/Dupe",
+        [_file("Q4_K_M.gguf", 2_000)],
+        tmp_path / "models--Org--Dupe-a",
+    )
+    larger = _repo(
+        "org/dupe",
+        [_file("Q4_K_M.gguf", 5_000), _file("Q6_K.gguf", 1_000)],
+        tmp_path / "models--Org--Dupe-b",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [
+            SimpleNamespace(repos = [smaller]),
+            SimpleNamespace(repos = [larger]),
+        ],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "org/dupe",
+            "size_bytes": 6_000,
+            "cache_path": str(larger.repo_path),
+        }
+    ]
