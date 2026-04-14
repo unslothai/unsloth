@@ -48,20 +48,36 @@ type RunMessage = RunMessages[number];
 export const sentAudioNames = new Map<string, string>();
 
 /**
- * Match llama-server error messages that indicate the request filled or
- * would fill the KV cache. The server emits these when it was started
- * with ``--no-context-shift`` and the prompt + pending completion would
- * exceed ``n_ctx`` -- the canonical phrase from llama.cpp is
- * "the request exceeds the available context size", but we also accept
- * looser variants since the exact wording has drifted across versions.
+ * Match error messages that indicate the request filled or would fill
+ * the KV cache, so the UI can show a dedicated toast pointing at the
+ * ``Context Length`` setting.
+ *
+ * Two wordings reach the client and both must hit:
+ *
+ *   1. The raw llama-server text when ``--no-context-shift`` trips --
+ *      "the request exceeds the available context size (N tokens)".
+ *   2. The rewritten friendly text emitted by
+ *      ``backend/routes/inference.py::_friendly_error`` -- "Message too
+ *      long: X tokens exceeds the Y-token context window. Try
+ *      increasing the Context Length ..." This is the one most users
+ *      see on the streaming GGUF path.
+ *
+ * We match on substrings rather than full regexes because both layers
+ * have drifted across versions (llama.cpp master has tweaked the
+ * phrasing; ``_friendly_error`` has gone through several copy edits).
  */
 export function isContextLimitError(message: string): boolean {
   if (!message) return false;
   const m = message.toLowerCase();
   return (
+    // Raw llama-server wording.
     m.includes("context size") ||
     m.includes("context shift") ||
     m.includes("exceeds the available context") ||
+    // Backend _friendly_error rewrite.
+    m.includes("message too long") ||
+    m.includes("context window") ||
+    // n_ctx mentions that carry an "exceed"/"full" signal.
     (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
   );
 }
