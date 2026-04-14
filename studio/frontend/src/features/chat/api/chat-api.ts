@@ -117,11 +117,31 @@ export async function getGgufDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
+export interface DownloadProgressResponse {
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+  /**
+   * Resolved on-disk path of the snapshot dir (or cache repo root if no
+   * snapshot exists yet). Null when nothing has been written to the
+   * cache for this repo.
+   */
+  cache_path: string | null;
+}
+
 export async function getDownloadProgress(
   repoId: string,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   const response = await authFetch(`/api/models/download-progress?${params}`);
+  return parseJsonOrThrow(response);
+}
+
+export async function getDatasetDownloadProgress(
+  repoId: string,
+): Promise<DownloadProgressResponse> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/datasets/download-progress?${params}`);
   return parseJsonOrThrow(response);
 }
 
