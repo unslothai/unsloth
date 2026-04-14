@@ -48,6 +48,10 @@ export function ModelLoadDescription({
   onStop,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
+  // Split once at the top of the render so the JSX below stays flat --
+  // no IIFE required. splitProgressLabel is a trivial string op.
+  const { primary: labelPrimary, secondary: labelSecondary } =
+    splitProgressLabel(progressLabel);
 
   return (
     <div className="relative flex min-h-12 w-full items-stretch gap-2">
@@ -58,24 +62,17 @@ export function ModelLoadDescription({
         {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
-            {(() => {
-              const { primary, secondary } = splitProgressLabel(progressLabel);
-              return (
-                <>
-                  <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
-                    <span className="min-w-0 truncate">{primary}</span>
-                    <span className="shrink-0 tabular-nums">
-                      {Math.round(clampProgress(progressPercent))}%
-                    </span>
-                  </div>
-                  {secondary ? (
-                    <div className="truncate pt-0.5 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/60">
-                      {secondary}
-                    </div>
-                  ) : null}
-                </>
-              );
-            })()}
+            <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
+              <span className="min-w-0 truncate">{labelPrimary}</span>
+              <span className="shrink-0 tabular-nums">
+                {Math.round(clampProgress(progressPercent))}%
+              </span>
+            </div>
+            {labelSecondary ? (
+              <div className="truncate pt-0.5 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/60">
+                {labelSecondary}
+              </div>
+            ) : null}
             <Progress
               value={clampProgress(progressPercent)}
               className="mt-1 h-1 bg-foreground/[0.08]"
