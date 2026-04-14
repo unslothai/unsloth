@@ -112,15 +112,24 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
+    # uv rejects the continuous-release_main bitsandbytes wheel because the
+    # filename version (1.33.7rc0) does not match the embedded metadata version
+    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
+    if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
+        if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
+            run_maybe_quiet uv pip install --python "$_venv_py" pip || \
+                substep "[WARN] could not bootstrap pip; bitsandbytes install will likely fail" "$C_WARN"
+        fi
+    fi
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        if run_install_cmd "$_label (pre-release)" uv pip install --python "$_venv_py" \
+        if run_install_cmd "$_label (pre-release)" "$_venv_py" -m pip install \
             --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
-        substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
-    run_install_cmd "$_label (pypi fallback)" uv pip install --python "$_venv_py" \
+    run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
         --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
 }
 
