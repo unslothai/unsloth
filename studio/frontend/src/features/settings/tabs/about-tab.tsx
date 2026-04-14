@@ -3,8 +3,9 @@
 
 import { Button } from "@/components/ui/button";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { UpdateStudioInstructions } from "@/components/navbar";
+import { UpdateStudioInstructions } from "../components/update-studio-instructions";
 import { usePlatformStore } from "@/config/env";
+import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import {
   ArrowUpRight01Icon,
   Book03Icon,
@@ -90,7 +91,11 @@ export function AboutTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <ShutdownDialog open={shutdownOpen} onOpenChange={setShutdownOpen} />
+      <ShutdownDialog
+        open={shutdownOpen}
+        onOpenChange={setShutdownOpen}
+        onBeforeShutdown={removeTrainingUnloadGuard}
+      />
     </div>
   );
 }

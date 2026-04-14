@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import {
   Outlet,
@@ -48,6 +49,8 @@ function RootLayout() {
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const { pinned, setPinned, togglePinned, hovered, setHovered } =
     useSidebarPin();
+
+  useTrainingUnloadGuard();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
