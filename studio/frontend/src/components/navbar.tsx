@@ -97,7 +97,7 @@ function CopyableCommand({
   );
 }
 
-function UpdateStudioInstructions({
+export function UpdateStudioInstructions({
   className,
   defaultShell,
   showTitle = true,

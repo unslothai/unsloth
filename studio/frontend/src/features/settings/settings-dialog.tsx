@@ -14,6 +14,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
 import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
+import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
@@ -56,6 +57,8 @@ function renderTab(tab: SettingsTab) {
       return <ChatTab />;
     case "api-keys":
       return <ApiKeysTab />;
+    case "about":
+      return <AboutTab />;
     default:
       return <TabPlaceholder id={tab} />;
   }
