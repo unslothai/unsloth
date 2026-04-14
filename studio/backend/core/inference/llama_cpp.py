@@ -1419,6 +1419,15 @@ class LlamaCppBackend:
                 str(n_parallel),
                 "--flash-attn",
                 "on",  # Force flash attention for speed
+                # Refuse to rotate the KV cache when it fills up. Without
+                # this flag llama-server silently drops the oldest
+                # non-``n_keep`` tokens to keep generating, which means
+                # the conversation quietly loses earlier turns and the
+                # UI has no way to tell the user. With ``--no-context-shift``
+                # the server returns a clean HTTP error once the request
+                # would exceed ``n_ctx``; the frontend catches it and
+                # points the user at the "Context Length" setting.
+                "--no-context-shift",
             ]
 
             if use_fit:
