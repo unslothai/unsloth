@@ -72,6 +72,7 @@ from models.inference import (
     UnloadRequest,
     GenerateRequest,
     LoadResponse,
+    LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
     ChatCompletionRequest,
@@ -749,6 +750,34 @@ async def get_status(
     except Exception as e:
         logger.error(f"Error getting status: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to get status: {str(e)}")
+
+
+@router.get("/load-progress", response_model = LoadProgressResponse)
+async def get_load_progress(
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Return the active GGUF load's mmap/upload progress.
+
+    During the warmup window after a GGUF download -- when llama-server
+    is paging ~tens-to-hundreds of GB of shards into the page cache
+    before pushing layers to VRAM -- ``/api/inference/status`` only
+    shows a generic spinner. This endpoint exposes sampled progress so
+    the UI can render a real bar plus rate/ETA during that window.
+
+    Returns an empty payload (``phase=null, bytes=0``) when no load is
+    in flight. The frontend should stop polling once ``phase`` becomes
+    ``ready``.
+    """
+    try:
+        llama_backend = get_llama_cpp_backend()
+        progress = llama_backend.load_progress()
+        if progress is None:
+            return LoadProgressResponse()
+        return LoadProgressResponse(**progress)
+    except Exception as e:
+        logger.warning(f"Error sampling load progress: {e}")
+        return LoadProgressResponse()
 
 
 # =====================================================================

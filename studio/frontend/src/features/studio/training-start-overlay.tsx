@@ -23,6 +23,8 @@ import {
   getDownloadProgress,
   type DownloadProgressResponse,
 } from "@/features/chat/api/chat-api";
+import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
+import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
 import {
   useTrainingActions,
   useTrainingConfigStore,
@@ -151,6 +153,11 @@ type DownloadRowProps = {
 };
 
 function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
+  // Compute a rolling-window rate + ETA from the same cumulative-byte
+  // series the poll hook already produces, so we can show
+  // "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left" instead of just the pair.
+  const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
+
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
   const isComplete = state.totalBytes > 0 && state.percent >= 100;
   const statusLabel = isComplete
@@ -160,11 +167,16 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
       : state.downloadedBytes === 0
         ? "Preparing"
         : null;
+  const showRate = stats.stable && !isComplete;
+  const rateSuffix = showRate ? ` • ${formatRate(stats.rateBytesPerSecond)}` : "";
+  const etaStr =
+    showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
+  const etaSuffix = etaStr !== "--" ? ` • ${etaStr} left` : "";
   const sizeLabel =
     state.totalBytes > 0
-      ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}`
+      ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}${rateSuffix}${etaSuffix}`
       : state.downloadedBytes > 0
-        ? `${formatBytes(state.downloadedBytes)} downloaded`
+        ? `${formatBytes(state.downloadedBytes)} downloaded${rateSuffix}`
         : null;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
