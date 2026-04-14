@@ -139,7 +139,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
         elif export_type == "gguf":
             success, message = backend.export_gguf(
                 save_directory = cmd.get("save_directory", ""),
-                quantization_method = cmd.get("quantization_method", "Q4_K_M"),
+                quantization_method = cmd.get("quantization_method", ["Q4_K_M"]),
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),

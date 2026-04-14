@@ -310,12 +310,16 @@ class ExportOrchestrator:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method: List[str],
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """Export model in GGUF format."""
+        """
+        Export model in GGUF format. The caller must supply a normalized
+        list of lowercase quantization method strings (see
+        `models.export.normalize_gguf_quantization_method`).
+        """
         return self._run_export(
             "gguf",
             {
