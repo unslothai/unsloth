@@ -691,6 +691,7 @@ export function ChatPage(): ReactElement {
         id: model.id,
         name: model.name,
         description: model.description,
+        isGguf: model.isGguf,
       })),
     [modelsFromStore],
   );

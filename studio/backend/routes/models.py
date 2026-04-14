@@ -1206,6 +1206,15 @@ def _all_hf_cache_scans():
     return scans
 
 
+def _repo_has_gguf_files(repo_info) -> bool:
+    """Return True when any revision of a cached repo contains .gguf files."""
+    for revision in repo_info.revisions:
+        for f in revision.files:
+            if f.file_name.endswith(".gguf"):
+                return True
+    return False
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
@@ -1220,17 +1229,14 @@ async def list_cached_gguf(
                 if repo_info.repo_type != "model":
                     continue
                 repo_id = repo_info.repo_id
-                if not repo_id.upper().endswith("-GGUF"):
+                if not _repo_has_gguf_files(repo_info):
                     continue
-                total_size = 0
-                has_gguf = False
-                for revision in repo_info.revisions:
-                    for f in revision.files:
-                        if f.file_name.endswith(".gguf"):
-                            has_gguf = True
-                            total_size += f.size_on_disk
-                if not has_gguf:
-                    continue
+                total_size = sum(
+                    f.size_on_disk
+                    for revision in repo_info.revisions
+                    for f in revision.files
+                    if f.file_name.endswith(".gguf")
+                )
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 if existing is None or total_size > existing["size_bytes"]:
@@ -1262,7 +1268,7 @@ async def list_cached_models(
                 if repo_info.repo_type != "model":
                     continue
                 repo_id = repo_info.repo_id
-                if repo_id.upper().endswith("-GGUF"):
+                if _repo_has_gguf_files(repo_info):
                     continue
                 total_size = sum(
                     f.size_on_disk for rev in repo_info.revisions for f in rev.files

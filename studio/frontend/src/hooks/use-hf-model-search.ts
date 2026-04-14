@@ -13,6 +13,7 @@ export interface HfModelResult {
   likes: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
+  isGguf?: boolean;
 }
 
 const EXCLUDED_TAGS = new Set([
@@ -89,7 +90,7 @@ function makeMapModel(excludeGguf: boolean) {
     if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
       return null;
     }
-    if (excludeGguf && m.tags?.includes("gguf")) {
+    if (excludeGguf && (m.tags?.includes("gguf") || /-GGUF$/i.test(m.name))) {
       return null;
     }
     return {
@@ -98,6 +99,7 @@ function makeMapModel(excludeGguf: boolean) {
       likes: m.likes,
       totalParams: m.safetensors?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
+      isGguf: Boolean(m.tags?.includes("gguf")) || /-GGUF$/i.test(m.name),
     };
   };
 }
