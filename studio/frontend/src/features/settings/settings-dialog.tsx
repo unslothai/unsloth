@@ -15,6 +15,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
 import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
 import { AppearanceTab } from "./tabs/appearance-tab";
+import { GeneralTab } from "./tabs/general-tab";
 
 interface TabDef {
   id: SettingsTab;
@@ -45,6 +46,8 @@ function TabPlaceholder({ id }: { id: SettingsTab }) {
 
 function renderTab(tab: SettingsTab) {
   switch (tab) {
+    case "general":
+      return <GeneralTab />;
     case "appearance":
       return <AppearanceTab />;
     default:
