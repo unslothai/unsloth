@@ -10,11 +10,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
-import { RevealKeyDialog } from "../components/reveal-key-dialog";
+import { KeyRevealCard } from "../components/key-reveal-card";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
@@ -24,6 +25,10 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const reduced = useReducedMotion();
+  const t = reduced
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,13 +69,38 @@ export function ApiKeysTab() {
         </p>
       </header>
 
-      <CreateKeyForm
-        onCreated={(raw) => {
-          setRevealed(raw);
-          void load();
-        }}
-        onError={setError}
-      />
+      <AnimatePresence mode="wait" initial={false}>
+        {revealed !== null ? (
+          <motion.div
+            key="reveal"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={t}
+          >
+            <KeyRevealCard
+              rawKey={revealed}
+              onDone={() => setRevealed(null)}
+            />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="form"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={t}
+          >
+            <CreateKeyForm
+              onCreated={(raw) => {
+                setRevealed(raw);
+                void load();
+              }}
+              onError={setError}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <section className="flex flex-col">
         <h2 className="mb-2 text-sm font-semibold text-foreground">Your keys</h2>
@@ -124,8 +154,6 @@ export function ApiKeysTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <RevealKeyDialog rawKey={revealed} onClose={() => setRevealed(null)} />
     </div>
   );
 }
