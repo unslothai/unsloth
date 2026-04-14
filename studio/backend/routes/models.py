@@ -1236,6 +1236,7 @@ def _all_hf_cache_scans():
                 logger.warning("Could not scan HF cache %s: %s", extra, exc)
     return scans
 
+
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Return the total on-disk size of GGUF files across all revisions."""
     unique_blobs: dict[str, int] = {}
