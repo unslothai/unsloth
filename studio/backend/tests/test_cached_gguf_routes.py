@@ -23,7 +23,9 @@ if "structlog" not in sys.modules:
 import routes.models as models_route
 
 
-def _repo(repo_id: str, files: list[SimpleNamespace], repo_path: Path) -> SimpleNamespace:
+def _repo(
+    repo_id: str, files: list[SimpleNamespace], repo_path: Path
+) -> SimpleNamespace:
     return SimpleNamespace(
         repo_id = repo_id,
         repo_type = "model",
@@ -36,7 +38,9 @@ def _file(name: str, size_on_disk: int) -> SimpleNamespace:
     return SimpleNamespace(file_name = name, size_on_disk = size_on_disk)
 
 
-def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
+def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(
+    monkeypatch, tmp_path
+):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
         [_file("Q4_K_M.gguf", 5_000), _file("README.md", 10)],
@@ -98,7 +102,9 @@ def test_list_cached_gguf_skips_repos_without_positive_gguf_size(monkeypatch, tm
     assert result["cached"] == []
 
 
-def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch, tmp_path):
+def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(
+    monkeypatch, tmp_path
+):
     smaller = _repo(
         "Org/Dupe",
         [_file("Q4_K_M.gguf", 2_000)],
