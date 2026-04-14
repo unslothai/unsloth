@@ -1470,7 +1470,8 @@ def _get_statistics(statistics = None, force_download = True):
                     "```"
                 )
             except Exception:
-                pass  # Don't retry without a time limit — would freeze offline
+                logger.debug("Unsloth: stats_check failed with an exception.")
+                # Don't retry without a time limit — would freeze offline
 
 
 def get_statistics(local_files_only = False):
