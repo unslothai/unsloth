@@ -34,7 +34,7 @@ type ChartPreferencesState = {
 };
 
 const defaultPreferences = {
-  windowSize: null as number | null,
+  windowSize: null as number | null, // null = show full training history
   smoothing: 0.6,
   showRaw: true,
   showSmoothed: true,
