@@ -454,15 +454,13 @@ export function ExportPage() {
           });
         }
       } else if (exportMethod === "gguf") {
-        for (const quant of quantLevels) {
-          await exportGGUF({
-            save_directory: saveDir,
-            quantization_method: quant,
-            push_to_hub: pushToHub,
-            repo_id: repoId,
-            hf_token: token,
-          });
-        }
+        await exportGGUF({
+          save_directory: saveDir,
+          quantization_method: quantLevels,
+          push_to_hub: pushToHub,
+          repo_id: repoId,
+          hf_token: token,
+        });
       } else if (exportMethod === "lora") {
         await exportLoRA({
           save_directory: saveDir,
