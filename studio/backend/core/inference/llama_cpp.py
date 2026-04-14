@@ -167,7 +167,17 @@ class LlamaCppBackend:
 
     @property
     def max_context_length(self) -> Optional[int]:
-        """Return the maximum context currently available on this hardware."""
+        """Return the largest context that fits on this hardware at load time.
+
+        This is the "safe zone" threshold the UI renders warnings
+        against. For a model whose weights fit on some GPU subset, it
+        is the binary-search cap from ``_fit_context_to_vram`` for that
+        subset. For a model whose weights exceed 90% of every GPU
+        subset, it is the 4096 fallback -- the spec's default when the
+        model will not fit. The UI slider ceiling is
+        ``native_context_length``; dragging above ``max_context_length``
+        triggers the "might be slower" warning.
+        """
         return self._max_context_length or self._context_length
 
     @property
@@ -1219,6 +1229,15 @@ class LlamaCppBackend:
                                 best_cap = max(best_cap, capped)
                         if best_cap > 0:
                             max_available_ctx = best_cap
+                        else:
+                            # Weights exceed 90% of every GPU subset's free
+                            # memory, so there is no fitting context. Anchor
+                            # the UI's "safe zone" threshold at 4096 (the
+                            # spec's default when the model cannot fit) so
+                            # the ctx slider shows the "might be slower"
+                            # warning as soon as the user drags above the
+                            # fallback default instead of never.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
 
                     if explicit_ctx:
                         # Honor the user's requested context verbatim. If it
