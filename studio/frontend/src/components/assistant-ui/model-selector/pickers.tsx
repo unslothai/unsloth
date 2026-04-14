@@ -718,9 +718,9 @@ export function HubModelPicker({
     return results
       .map((result) => result.id)
       .filter((id) => !recommendedSet.has(id))
-      .filter((id) => !chatOnly || isGgufRepo(id, resultIsGgufById.get(id)))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, chatOnly, resultIsGgufById]);
+  }, [recommendedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
 
   const metricsById = useMemo(
     () =>
@@ -1212,13 +1212,10 @@ export function HubModelPicker({
                     No matching models.
                   </div>
                 ) : null
-              ) : (
+                ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
-                  const isSearchGguf = isGgufRepo(
-                    id,
-                    resultIsGgufById.get(id),
-                  );
+                  const isSearchGguf = isKnownGgufRepo(id);
                   return (
                     <div key={id}>
                       <ModelRow
