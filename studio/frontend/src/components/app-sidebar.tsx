@@ -32,8 +32,8 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   Book03Icon,
-  ChartBarLineIcon,
   ChefHatIcon,
+  ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   Message01Icon,
@@ -348,35 +348,37 @@ export function AppSidebar() {
         </SidebarGroup>
         </Collapsible>
 
-        {/* Standalone actions */}
-        <SidebarGroup className="mt-2 group-data-[collapsible=icon]:px-0 px-0">
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <NavItem
-                icon={PencilEdit02Icon}
-                label="New Chat"
-                active={false}
-                disabled={chatDisabled}
-                onClick={() => {
-                  if (chatDisabled) return;
-                  navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-                  closeMobileIfOpen();
-                }}
-              />
-              <NavItem
-                icon={ChartBarLineIcon}
-                label="Compare"
-                active={false}
-                disabled={chatDisabled}
-                onClick={() => {
-                  if (chatDisabled) return;
-                  navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-                  closeMobileIfOpen();
-                }}
-              />
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {/* Standalone actions — chat-only */}
+        {isChatRoute && (
+          <SidebarGroup className="mt-2 group-data-[collapsible=icon]:px-0 px-0">
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <NavItem
+                  icon={PencilEdit02Icon}
+                  label="New Chat"
+                  active={false}
+                  disabled={chatDisabled}
+                  onClick={() => {
+                    if (chatDisabled) return;
+                    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+                    closeMobileIfOpen();
+                  }}
+                />
+                <NavItem
+                  icon={ColumnInsertIcon}
+                  label="Compare"
+                  active={false}
+                  disabled={chatDisabled}
+                  onClick={() => {
+                    if (chatDisabled) return;
+                    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+                    closeMobileIfOpen();
+                  }}
+                />
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         {/* Recent Chats */}
         {chatItems.length > 0 && (
