@@ -1359,7 +1359,11 @@ def save_to_gguf(
 
             # When the base format is preserved, move it away from list boundaries
             # so example commands (which use [0] for model and [-1] for mmproj) stay correct.
-            if preserved_base and base_gguf in all_saved_locations and len(all_saved_locations) > 2:
+            if (
+                preserved_base
+                and base_gguf in all_saved_locations
+                and len(all_saved_locations) > 2
+            ):
                 all_saved_locations.remove(base_gguf)
                 all_saved_locations.insert(1, base_gguf)
     else:
