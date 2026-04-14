@@ -35,20 +35,22 @@ import {
   ChefHatIcon,
   CursorInfo02Icon,
   Delete02Icon,
-  ArrowLeft02Icon,
-  ArrowRight02Icon,
   MessageSearch01Icon,
   NewReleasesIcon,
   PackageIcon,
   PencilEdit02Icon,
-  PinIcon,
-  PinOffIcon,
   Settings02Icon,
+  SidebarLeft01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
-import { Link, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -61,7 +63,7 @@ import {
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
@@ -150,8 +152,7 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { pinned, togglePinned, setHovered, isMobile, setOpenMobile } = useSidebar();
-  const router = useRouter();
+  const { togglePinned, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
 
   // Auto-close mobile Sheet after navigation
@@ -190,9 +191,6 @@ export function AppSidebar() {
 
   const chatDisabled = isTrainingRunning;
 
-  // Suppress hover-collapse while a dropdown/popover is open.
-  const dropdownOpenRef = useRef(false);
-
   async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
     await deleteChatItem(item, activeThreadId, (view) => {
       navigate({
@@ -203,88 +201,71 @@ export function AppSidebar() {
   }
 
   return (
-    <Sidebar
-      collapsible="icon"
-      variant="sidebar"
-      onMouseEnter={() => { if (!pinned) setHovered(true); }}
-      onMouseLeave={() => { if (!pinned && !dropdownOpenRef.current) setHovered(false); }}
-    >
+    <Sidebar collapsible="icon" variant="sidebar">
       <SidebarHeader className="group-data-[collapsible=icon]:px-0">
-        <div
-          className={cn(
-            "flex items-center justify-between",
-            "group-data-[collapsible=icon]:hidden",
-          )}
-        >
-          <div className="flex items-center gap-0.5">
-            <button
-              type="button"
-              onClick={() => router.history.back()}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              title="Go back"
-              aria-label="Go back"
-            >
-              <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => router.history.forward()}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              title="Go forward"
-              aria-label="Go forward"
-            >
-              <HugeiconsIcon icon={ArrowRight02Icon} className="size-4" />
-            </button>
-          </div>
+        {/* Expanded: compact logo + close toggle */}
+        <div className="flex items-center justify-between gap-2 px-1 py-1 group-data-[collapsible=icon]:hidden">
+          <Link
+            to={chatOnly ? "/chat" : "/studio"}
+            onClick={closeMobileIfOpen}
+            className="flex items-center select-none"
+            aria-label="Unsloth home"
+          >
+            <img
+              src="/blacklogo-c.png"
+              alt="Unsloth"
+              className="h-7 w-auto dark:hidden"
+            />
+            <img
+              src="/whitelogo-c.png"
+              alt="Unsloth"
+              className="hidden h-7 w-auto dark:block"
+            />
+          </Link>
           {!isMobile && (
             <button
               type="button"
               onClick={togglePinned}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              title={pinned ? "Unpin sidebar" : "Pin sidebar"}
-              aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title="Close sidebar"
+              aria-label="Close sidebar"
             >
-              <HugeiconsIcon
-                icon={pinned ? PinOffIcon : PinIcon}
-                className="size-4"
-              />
+              <HugeiconsIcon icon={SidebarLeft01Icon} className="size-4" />
             </button>
           )}
         </div>
 
-        {/* Logo */}
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              asChild
-              className="data-[slot=sidebar-menu-button]:!p-1.5"
-              tooltip="Unsloth"
+        {/* Collapsed: sticker with hover-swap to open toggle */}
+        {!isMobile && (
+          <div className="hidden group-data-[collapsible=icon]:flex relative group/logo items-center justify-center h-9 w-full">
+            <Link
+              to={chatOnly ? "/chat" : "/studio"}
+              onClick={closeMobileIfOpen}
+              className="flex items-center justify-center transition-opacity group-hover/logo:opacity-0 pointer-events-auto group-hover/logo:pointer-events-none"
+              aria-label="Unsloth home"
             >
-              <Link to={chatOnly ? "/chat" : "/studio"} onClick={closeMobileIfOpen} className="select-none">
-                {/* Collapsed: sticker icon */}
-                <img
-                  src="/sticker.png"
-                  alt="Unsloth"
-                  className="!size-7 group-data-[collapsible=icon]:block hidden"
-                />
-                {/* Expanded: full logo */}
-                <img
-                  src="/blacklogo.png"
-                  alt="Unsloth"
-                  className="h-7 w-auto dark:hidden group-data-[collapsible=icon]:hidden"
-                />
-                <img
-                  src="/whitelogo.png"
-                  alt="Unsloth"
-                  className="hidden h-7 w-auto dark:block group-data-[collapsible=icon]:!hidden"
-                />
-                <span className="text-[10px] font-extrabold leading-none tracking-[0.12em] text-primary group-data-[collapsible=icon]:hidden">
-                  BETA
-                </span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+              <img src="/sticker.png" alt="Unsloth" className="size-7" />
+            </Link>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={togglePinned}
+                  className="absolute inset-0 flex items-center justify-center rounded-md opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/logo:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Open sidebar"
+                >
+                  <HugeiconsIcon
+                    icon={SidebarLeft01Icon}
+                    className="size-5 text-sidebar-foreground/70"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                Open sidebar
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
       </SidebarHeader>
 
       <SidebarContent>
@@ -496,10 +477,7 @@ export function AppSidebar() {
 
         <SidebarMenu>
           <SidebarMenuItem>
-            <DropdownMenu onOpenChange={(open) => {
-              dropdownOpenRef.current = open;
-              if (!open && !pinned) setHovered(false);
-            }}>
+            <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
