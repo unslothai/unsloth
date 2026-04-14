@@ -1054,7 +1054,7 @@ _has_usable_nvidia_gpu() {
 # dead-end where --torch-backend=auto resolves to unsloth==2024.8.
 get_torch_index_url() {
     _base="https://download.pytorch.org/whl"
-    # macOS: always CPU (no CUDA support)
+    # macOS: no CUDA; torch comes from PyPI (whl/cpu has no macOS wheels)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.
     # Presence of the binary alone (container leftovers, stale driver
@@ -1464,9 +1464,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 --index-url "$TORCH_INDEX_URL"
         fi
     else
-        substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --index-url "$TORCH_INDEX_URL"
+        if [ "$OS" = "macos" ]; then
+            substep "installing PyTorch (Apple Silicon / MPS)..."
+            run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                "$TORCH_CONSTRAINT" torchvision torchaudio
+        else
+            substep "installing PyTorch ($TORCH_INDEX_URL)..."
+            run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --index-url "$TORCH_INDEX_URL"
+        fi
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
     # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
