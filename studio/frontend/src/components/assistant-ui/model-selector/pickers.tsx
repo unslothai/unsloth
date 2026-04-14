@@ -402,7 +402,7 @@ function GgufVariantExpander({
 // ── Detect GGUF repos by naming convention ────────────────────
 
 function hasGgufSuffix(id: string): boolean {
-  return id.toUpperCase().includes("-GGUF");
+  return id.toUpperCase().endsWith("-GGUF");
 }
 
 function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {

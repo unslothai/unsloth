@@ -24,18 +24,31 @@ import routes.models as models_route
 
 
 def _repo(
-    repo_id: str, files: list[SimpleNamespace], repo_path: Path
+    repo_id: str,
+    files: list[SimpleNamespace],
+    repo_path: Path,
+    *,
+    revisions: list[SimpleNamespace] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         repo_id = repo_id,
         repo_type = "model",
         repo_path = repo_path,
-        revisions = [SimpleNamespace(files = files)],
+        revisions = revisions or [SimpleNamespace(files = files)],
     )
 
 
-def _file(name: str, size_on_disk: int) -> SimpleNamespace:
-    return SimpleNamespace(file_name = name, size_on_disk = size_on_disk)
+def _file(
+    name: str,
+    size_on_disk: int,
+    *,
+    blob_path: str | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        file_name = name,
+        size_on_disk = size_on_disk,
+        blob_path = blob_path,
+    )
 
 
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(
@@ -132,5 +145,34 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(
             "repo_id": "org/dupe",
             "size_bytes": 6_000,
             "cache_path": str(larger.repo_path),
+        }
+    ]
+
+
+def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp_path):
+    shared = "blobs/shared-q4"
+    repo = _repo(
+        "Org/SharedBlobRepo",
+        [],
+        tmp_path / "models--Org--SharedBlobRepo",
+        revisions = [
+            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000, blob_path = shared)]),
+            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000, blob_path = shared)]),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/SharedBlobRepo",
+            "size_bytes": 5_000,
+            "cache_path": str(repo.repo_path),
         }
     ]

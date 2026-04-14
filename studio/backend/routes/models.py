@@ -1236,24 +1236,18 @@ def _all_hf_cache_scans():
                 logger.warning("Could not scan HF cache %s: %s", extra, exc)
     return scans
 
-
-def _repo_has_gguf_files(repo_info) -> bool:
-    """Return True when any revision in a cached repo contains GGUF files."""
-    for revision in repo_info.revisions:
-        for f in revision.files:
-            if f.file_name.lower().endswith(".gguf"):
-                return True
-    return False
-
-
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Return the total on-disk size of GGUF files across all revisions."""
-    total_size = 0
+    unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         for f in revision.files:
             if f.file_name.lower().endswith(".gguf"):
-                total_size += f.size_on_disk
-    return total_size
+                blob_path = getattr(f, "blob_path", None)
+                if blob_path:
+                    unique_blobs[str(blob_path)] = f.size_on_disk
+                else:
+                    unique_blobs[f"{revision}:{f.file_name}"] = f.size_on_disk
+    return sum(unique_blobs.values())
 
 
 @router.get("/cached-gguf")
@@ -1270,8 +1264,6 @@ async def list_cached_gguf(
                 if repo_info.repo_type != "model":
                     continue
                 repo_id = repo_info.repo_id
-                if not _repo_has_gguf_files(repo_info):
-                    continue
                 total_size = _repo_gguf_size_bytes(repo_info)
                 if total_size == 0:
                     continue

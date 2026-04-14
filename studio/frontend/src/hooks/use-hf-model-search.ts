@@ -92,7 +92,7 @@ function makeMapModel(excludeGguf: boolean) {
     }
     const isGguf =
       Boolean(m.tags?.some((tag) => tag.toLowerCase() === "gguf")) ||
-      m.name.toUpperCase().includes("-GGUF");
+      m.name.toUpperCase().endsWith("-GGUF");
     if (excludeGguf && isGguf) {
       return null;
     }
