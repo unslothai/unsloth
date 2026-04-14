@@ -1349,12 +1349,18 @@ def save_to_gguf(
                         )
         print("Unsloth: Model files cleanup...")
         if quants_created:
+            all_saved_locations.remove(base_gguf)
             if first_conversion not in frozenset(quantization_method):
-                all_saved_locations.remove(base_gguf)
                 Path(base_gguf).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
+
+            if first_conversion in frozenset(quantization_method):
+                if is_vlm:
+                    all_saved_locations.insert(-1, base_gguf)
+                else:
+                    all_saved_locations.append(base_gguf)
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
 
