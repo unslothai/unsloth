@@ -139,7 +139,7 @@ class TestLoadProgressSingleShard:
     def test_mmap_phase_for_alive_but_unhealthy(self, tmp_path):
         """VmRSS below total -> phase='mmap', fraction reflects progress."""
         gguf = tmp_path / "model.gguf"
-        _write_sparse_file(gguf, 40 * 1024 ** 3)  # 40 GB
+        _write_sparse_file(gguf, 40 * 1024**3)  # 40 GB
 
         inst = _make_instance()
         inst._process = _FakeProc(pid = os.getpid())  # use our own pid
@@ -150,9 +150,8 @@ class TestLoadProgressSingleShard:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
-                return io.StringIO(
-                    f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n"
-                )
+
+                return io.StringIO(f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)  # fall through
 
         with patch("builtins.open", side_effect = fake_open):
@@ -160,13 +159,13 @@ class TestLoadProgressSingleShard:
 
         assert out is not None
         assert out["phase"] == "mmap"
-        assert out["bytes_total"] == 40 * 1024 ** 3
-        assert out["bytes_loaded"] == 10 * 1024 ** 3
+        assert out["bytes_total"] == 40 * 1024**3
+        assert out["bytes_loaded"] == 10 * 1024**3
         assert 0.24 < out["fraction"] < 0.26  # ~25%
 
     def test_ready_phase_when_healthy(self, tmp_path):
         gguf = tmp_path / "model.gguf"
-        _write_sparse_file(gguf, 8 * 1024 ** 3)
+        _write_sparse_file(gguf, 8 * 1024**3)
 
         inst = _make_instance()
         inst._process = _FakeProc(pid = os.getpid())
@@ -176,6 +175,7 @@ class TestLoadProgressSingleShard:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
+
                 return io.StringIO(f"VmRSS:\t{8 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -184,8 +184,8 @@ class TestLoadProgressSingleShard:
 
         assert out is not None
         assert out["phase"] == "ready"
-        assert out["bytes_total"] == 8 * 1024 ** 3
-        assert out["bytes_loaded"] == 8 * 1024 ** 3
+        assert out["bytes_total"] == 8 * 1024**3
+        assert out["bytes_loaded"] == 8 * 1024**3
         assert out["fraction"] == 1.0
 
 
@@ -197,10 +197,10 @@ class TestLoadProgressMultiShard:
         for i in range(1, 5):
             _write_sparse_file(
                 tmp_path / f"model-{i:05d}-of-00004.gguf",
-                size_bytes = 20 * 1024 ** 3,
+                size_bytes = 20 * 1024**3,
             )
         # Drop an unrelated .gguf in the same folder -- must not be counted.
-        _write_sparse_file(tmp_path / "mmproj-BF16.gguf", 2 * 1024 ** 3)
+        _write_sparse_file(tmp_path / "mmproj-BF16.gguf", 2 * 1024**3)
 
         inst = _make_instance()
         inst._process = _FakeProc(pid = os.getpid())
@@ -210,6 +210,7 @@ class TestLoadProgressMultiShard:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
+
                 return io.StringIO("VmRSS:\t0\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -217,7 +218,7 @@ class TestLoadProgressMultiShard:
             out = inst.load_progress()
 
         assert out is not None
-        assert out["bytes_total"] == 80 * 1024 ** 3  # 4 x 20 GB, no mmproj
+        assert out["bytes_total"] == 80 * 1024**3  # 4 x 20 GB, no mmproj
 
 
 class TestLoadProgressDegradation:
@@ -232,6 +233,7 @@ class TestLoadProgressDegradation:
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 import io
+
                 return io.StringIO("VmRSS:\t1024\tkB\n")
             return open(path, *args, **kwargs)
 
