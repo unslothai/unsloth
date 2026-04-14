@@ -1350,8 +1350,13 @@ def save_to_gguf(
         print("Unsloth: Model files cleanup...")
         if quants_created:
             if first_conversion not in quantization_method:
-                all_saved_locations.remove(base_gguf)
-                Path(base_gguf).unlink(missing_ok = True)
+                # Remove all text intermediates from the returned list AND disk.
+                # For sharded outputs there may be multiple text shards; mmproj
+                # (if present) stays — it is not part of the text parts slice.
+                n_text = (len(initial_files) - 1) if is_vlm else len(initial_files)
+                for text_part in initial_files[:n_text]:
+                    all_saved_locations.remove(text_part)
+                    Path(text_part).unlink(missing_ok = True)
             elif is_vlm:
                 # VLM case: initial_files = [text_part(s)..., mmproj], with quants
                 # appended after. For the trailing reverse() to yield the desired
