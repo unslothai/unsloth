@@ -331,6 +331,9 @@ function fallbackTitleFromUserText(userText: string): string {
 }
 
 function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+  if (typeof content === "string") {
+    return content;
+  }
   return Array.isArray(content)
     ? JSON.parse(JSON.stringify(content))
     : [];

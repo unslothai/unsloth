@@ -32,8 +32,9 @@ from auth.authentication import get_current_subject
 # Import backend functions
 try:
     from utils.models import (
-        scan_trained_loras,
+        scan_trained_models,
         scan_exported_models,
+        get_base_model_from_checkpoint,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
@@ -62,8 +63,9 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from utils.models import (
-        scan_trained_loras,
+        scan_trained_models,
         scan_exported_models,
+        get_base_model_from_checkpoint,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
@@ -791,15 +793,16 @@ async def scan_loras(
         lora_list = []
 
         # Scan training outputs
-        trained_loras = scan_trained_loras(outputs_dir = resolved_outputs_dir)
-        for display_name, adapter_path in trained_loras:
-            base_model = get_base_model_from_lora(adapter_path)
+        trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+        for display_name, model_path, model_type in trained_models:
+            base_model = get_base_model_from_checkpoint(model_path)
             lora_list.append(
                 LoRAInfo(
                     display_name = display_name,
-                    adapter_path = adapter_path,
+                    adapter_path = model_path,
                     base_model = base_model,
                     source = "training",
+                    export_type = model_type,
                 )
             )
 
@@ -1088,6 +1091,25 @@ async def get_gguf_download_progress(
         return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
 
 
+def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
+    """Pick the most useful on-disk path for a HF cache repo.
+
+    Prefers the most-recent snapshot dir (what `from_pretrained` actually
+    points at). Falls back to the cache repo root. Returns the resolved
+    realpath so symlinks under snapshots/ are followed back to blobs/.
+    """
+    try:
+        snapshots_dir = repo_dir / "snapshots"
+        if snapshots_dir.is_dir():
+            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
+            if snaps:
+                latest = max(snaps, key = lambda s: s.stat().st_mtime)
+                return str(latest.resolve())
+        return str(repo_dir.resolve())
+    except Exception:
+        return None
+
+
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
@@ -1098,8 +1120,16 @@ async def get_download_progress(
     Checks the local HF cache for completed blobs and in-progress
     (.incomplete) downloads. Uses the HF API to determine the expected
     total size on the first call, then caches it for subsequent polls.
+    Also returns ``cache_path``: the realpath of the snapshot directory
+    (or the cache repo root if no snapshot exists yet) so the UI can
+    show users where the weights actually live on disk.
     """
-    _empty = {"downloaded_bytes": 0, "expected_bytes": 0, "progress": 0}
+    _empty = {
+        "downloaded_bytes": 0,
+        "expected_bytes": 0,
+        "progress": 0,
+        "cache_path": None,
+    }
     try:
         if not _is_valid_repo_id(repo_id):
             return _empty
@@ -1110,10 +1140,12 @@ async def get_download_progress(
         target = f"models--{repo_id.replace('/', '--')}".lower()
         completed_bytes = 0
         in_progress_bytes = 0
+        cache_path: Optional[str] = None
 
         for entry in cache_dir.iterdir():
             if entry.name.lower() != target:
                 continue
+            cache_path = _resolve_hf_cache_realpath(entry)
             blobs_dir = entry / "blobs"
             if not blobs_dir.is_dir():
                 break
@@ -1128,7 +1160,7 @@ async def get_download_progress(
 
         downloaded_bytes = completed_bytes + in_progress_bytes
         if downloaded_bytes == 0:
-            return _empty
+            return {**_empty, "cache_path": cache_path}
 
         # Get expected size from HF API (cached per repo_id)
         expected_bytes = _get_repo_size_cached(repo_id)
@@ -1138,6 +1170,7 @@ async def get_download_progress(
                 "downloaded_bytes": downloaded_bytes,
                 "expected_bytes": 0,
                 "progress": 0,
+                "cache_path": cache_path,
             }
 
         # Use 95% threshold for completion (blob deduplication can make
@@ -1153,6 +1186,7 @@ async def get_download_progress(
             "downloaded_bytes": downloaded_bytes,
             "expected_bytes": expected_bytes,
             "progress": round(progress, 3),
+            "cache_path": cache_path,
         }
     except Exception as e:
         logger.warning(f"Error checking download progress for {repo_id}: {e}")
