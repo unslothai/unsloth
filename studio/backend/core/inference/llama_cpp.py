@@ -1419,6 +1419,8 @@ class LlamaCppBackend:
                 str(n_parallel),
                 "--flash-attn",
                 "on",  # Force flash attention for speed
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                "--no-context-shift",
             ]
 
             if use_fit:
