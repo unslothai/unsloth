@@ -46,8 +46,12 @@ _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 _httpx_stub = _types.ModuleType("httpx")
 for _exc in (
-    "ConnectError", "TimeoutException", "ReadTimeout",
-    "ReadError", "RemoteProtocolError", "CloseError",
+    "ConnectError",
+    "TimeoutException",
+    "ReadTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "CloseError",
 ):
     setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
 _httpx_stub.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **k: None})
@@ -66,7 +70,8 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 
 pytestmark = pytest.mark.skipif(
-    not Path("/proc").exists(), reason = "live /proc test is Linux-only",
+    not Path("/proc").exists(),
+    reason = "live /proc test is Linux-only",
 )
 
 
@@ -116,8 +121,9 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         assert out["bytes_total"] == 200 * 1024 * 1024
         # VmRSS for the Python child includes the interpreter + the 100MB
         # buffer, so a realistic floor is 50 MB and ceiling is 200 MB.
-        assert out["bytes_loaded"] >= 50 * 1024 * 1024, \
-            f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
+        assert (
+            out["bytes_loaded"] >= 50 * 1024 * 1024
+        ), f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
         assert out["bytes_loaded"] <= 200 * 1024 * 1024
         assert 0.0 < out["fraction"] <= 1.0
     finally:
