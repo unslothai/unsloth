@@ -5,7 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
-import { SettingsDialog } from "@/features/settings";
+import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import {
   Outlet,
@@ -14,7 +14,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense } from "react";
+import { Suspense, useEffect } from "react";
 import { AppProvider } from "../provider";
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -49,6 +49,18 @@ function RootLayout() {
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const { pinned, setPinned, togglePinned, hovered, setHovered } =
     useSidebarPin();
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        useSettingsDialogStore.getState().openDialog();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <AppProvider>

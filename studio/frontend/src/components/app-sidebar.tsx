@@ -25,6 +25,7 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
@@ -42,6 +43,7 @@ import {
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  Settings02Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -49,6 +51,7 @@ import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
+import { useSettingsDialogStore } from "@/features/settings";
 import { usePlatformStore } from "@/config/env";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -519,6 +522,16 @@ export function AppSidebar() {
                 align="start"
                 className="w-56"
               >
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog()}
+                  >
+                    <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+                    <span>Settings</span>
+                    <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
                 <DropdownMenuGroup>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}
