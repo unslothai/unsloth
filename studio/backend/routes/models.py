@@ -1210,7 +1210,7 @@ def _repo_has_gguf_files(repo_info) -> bool:
     """Return True when any revision of a cached repo contains .gguf files."""
     for revision in repo_info.revisions:
         for f in revision.files:
-            if f.file_name.endswith(".gguf"):
+            if f.file_name.lower().endswith(".gguf"):
                 return True
     return False
 
@@ -1235,7 +1235,7 @@ async def list_cached_gguf(
                     f.size_on_disk
                     for revision in repo_info.revisions
                     for f in revision.files
-                    if f.file_name.endswith(".gguf")
+                    if f.file_name.lower().endswith(".gguf")
                 )
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
@@ -1268,15 +1268,13 @@ async def list_cached_models(
                 if repo_info.repo_type != "model":
                     continue
                 repo_id = repo_info.repo_id
-                if _repo_has_gguf_files(repo_info):
-                    continue
                 total_size = sum(
                     f.size_on_disk for rev in repo_info.revisions for f in rev.files
                 )
                 if total_size == 0:
                     continue
                 has_weights = any(
-                    f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                    f.file_name.lower().endswith(_WEIGHT_EXTENSIONS)
                     for rev in repo_info.revisions
                     for f in rev.files
                 )

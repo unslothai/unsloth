@@ -104,7 +104,6 @@ async function detectGgufRepo(id: string): Promise<boolean> {
     _ggufProbeCache.set(key, isGguf);
     return isGguf;
   } catch {
-    _ggufProbeCache.set(key, false);
     return false;
   }
 }
@@ -422,7 +421,7 @@ function GgufVariantExpander({
 // ── Detect GGUF repos by naming convention ────────────────────
 
 function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
-  return hintedIsGguf ?? hasGgufSuffix(id);
+  return hintedIsGguf === true || hasGgufSuffix(id);
 }
 
 /** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
@@ -831,10 +830,19 @@ export function HubModelPicker({
 
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
-    async (id: string, hintedIsGguf?: boolean) => {
+    async (
+      id: string,
+      hintedIsGguf?: boolean,
+      knownStandard = false,
+    ) => {
       const knownIsGguf = isGgufRepo(id, hintedIsGguf);
       if (knownIsGguf) {
         setExpandedGguf((prev) => (prev === id ? null : id));
+        return;
+      }
+
+      if (knownStandard) {
+        onSelect(id, { source: "hub", isLora: false });
         return;
       }
 
@@ -1131,7 +1139,13 @@ export function HubModelPicker({
                         label={id}
                         meta={isGguf ? "GGUF" : (vram?.detail ?? extractParamLabel(id))}
                         selected={value === id}
-                        onClick={() => void handleModelClick(id, modelGgufById.get(id))}
+                        onClick={() =>
+                          void handleModelClick(
+                            id,
+                            modelGgufById.get(id),
+                            Boolean(vram && !isGguf),
+                          )
+                        }
                         vramStatus={isGguf ? null : (vram?.status ?? null)}
                         vramEst={isGguf ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
@@ -1173,7 +1187,13 @@ export function HubModelPicker({
                       label={id}
                       meta={isGguf ? "GGUF" : (vram?.detail ?? extractParamLabel(id))}
                       selected={value === id}
-                      onClick={() => void handleModelClick(id, searchGgufById.get(id))}
+                      onClick={() =>
+                        void handleModelClick(
+                          id,
+                          searchGgufById.get(id),
+                          Boolean(vram && !isGguf),
+                        )
+                      }
                       vramStatus={isGguf ? null : (vram?.status ?? null)}
                       vramEst={isGguf ? undefined : vram?.est}
                       gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
@@ -1215,7 +1235,13 @@ export function HubModelPicker({
                         label={id}
                         meta={isGguf ? "GGUF" : (metricsById.get(id) ?? extractParamLabel(id))}
                         selected={value === id}
-                        onClick={() => void handleModelClick(id, searchGgufById.get(id))}
+                        onClick={() =>
+                          void handleModelClick(
+                            id,
+                            searchGgufById.get(id),
+                            Boolean(vram && !isGguf),
+                          )
+                        }
                         vramStatus={isGguf ? null : (vram?.status ?? null)}
                         vramEst={isGguf ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
