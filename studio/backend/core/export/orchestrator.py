@@ -70,6 +70,14 @@ class ExportOrchestrator:
         # operations, so SSE clients can use it as a stable cursor even
         # if clear_logs() is called mid-session.
         self._log_seq: int = 0
+        # Snapshot of _log_seq captured at the start of the current run
+        # (updated by clear_logs()). The SSE endpoint defaults its
+        # cursor to this value so a client that connects AFTER the
+        # worker has already emitted its first lines still sees the
+        # full run. Every line appended during the current run has seq
+        # strictly greater than _run_start_seq, and every line from
+        # prior runs has seq less than or equal to it.
+        self._run_start_seq: int = 0
         # True while an export operation (load/export/cleanup) is
         # running. The SSE endpoint ends the stream 1 second after
         # this flips back to False to drain any trailing log lines.
@@ -111,9 +119,16 @@ class ExportOrchestrator:
         output of the current run. The seq counter is NOT reset, so an
         SSE client that captured the cursor before clear_logs() will
         still see new lines (with strictly greater seq numbers).
+
+        Also snapshots the current seq into ``_run_start_seq`` so the
+        SSE endpoint can anchor its default cursor at the start of
+        this run. Anything appended after this call has seq strictly
+        greater than the snapshot and is reachable via
+        ``get_logs_since(get_run_start_seq())``.
         """
         with self._log_lock:
             self._log_buffer.clear()
+            self._run_start_seq = self._log_seq
 
     def get_logs_since(self, cursor: int) -> Tuple[List[Dict[str, Any]], int]:
         """Return log entries with seq > cursor, plus the new cursor."""
@@ -127,6 +142,16 @@ class ExportOrchestrator:
         """Return the current seq counter without reading any entries."""
         with self._log_lock:
             return self._log_seq
+
+    def get_run_start_seq(self) -> int:
+        """Return the seq value captured at the start of the current run.
+
+        The SSE endpoint uses this as the default cursor so a client
+        that connects AFTER the worker has already started emitting
+        output still sees every line from the current run.
+        """
+        with self._log_lock:
+            return self._run_start_seq
 
     def is_export_active(self) -> bool:
         """True while an export / load / cleanup command is running."""

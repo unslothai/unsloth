@@ -409,7 +409,11 @@ async def stream_export_logs(
 
     # Determine starting cursor. Explicit `since` wins, then
     # Last-Event-ID header on reconnect, otherwise start from the
-    # current seq so we only stream brand new lines.
+    # run-start snapshot captured by clear_logs() so the client sees
+    # every line emitted since the current run began -- even if the
+    # SSE connection opened after the POST that kicked off the export.
+    # Using get_current_log_seq() here would lose the early bootstrap
+    # lines that arrive in the gap between POST and SSE connect.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -418,7 +422,7 @@ async def stream_export_logs(
             pass
 
     if since is None:
-        cursor = backend.get_current_log_seq()
+        cursor = backend.get_run_start_seq()
     else:
         cursor = max(0, int(since))
 
