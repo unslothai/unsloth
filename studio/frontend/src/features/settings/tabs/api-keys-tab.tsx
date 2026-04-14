@@ -15,6 +15,7 @@ import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { RevealKeyDialog } from "../components/reveal-key-dialog";
+import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
@@ -99,7 +100,7 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      {/* Usage examples slot — wired in Task 9 */}
+      <UsageExamples />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">
