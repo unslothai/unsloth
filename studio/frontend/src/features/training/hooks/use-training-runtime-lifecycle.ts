@@ -14,6 +14,7 @@ import type { TrainingRuntimeStore } from "../types/runtime";
 
 const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
+const IDLE_POLL_INTERVAL_MS = 30000;
 const STREAM_RECONNECT_DELAY_MS = 1500;
 
 function shouldUseLiveSync(state: TrainingRuntimeStore): boolean {
@@ -164,21 +165,37 @@ export function useTrainingRuntimeLifecycle(): void {
 
     void hydrate();
 
+    const isIdle = () => {
+      const s = runtimeStore.getState();
+      return s.phase === "idle" && !s.isTrainingRunning;
+    };
+
     const statusTimer = setInterval(() => {
+      const s = runtimeStore.getState();
+      if (isIdle() && s.hasHydrated) return;
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
 
     const metricsTimer = setInterval(() => {
-      const state = runtimeStore.getState();
-      if (shouldUseLiveSync(state) || state.currentStep > 0) {
+      if (isIdle()) return;
+      const s = runtimeStore.getState();
+      if (shouldUseLiveSync(s) || s.currentStep > 0) {
         void pollMetrics();
       }
     }, METRICS_POLL_INTERVAL_MS);
+
+    // Low-frequency background poll to recover from failed hydration or detect
+    // out-of-band state changes (e.g. training started from another client).
+    const idleTimer = setInterval(() => {
+      if (!isIdle()) return;
+      void pollStatus();
+    }, IDLE_POLL_INTERVAL_MS);
 
     return () => {
       disposed = true;
       clearInterval(statusTimer);
       clearInterval(metricsTimer);
+      clearInterval(idleTimer);
       stopStream();
     };
   }, []);

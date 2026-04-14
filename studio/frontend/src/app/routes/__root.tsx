@@ -13,7 +13,14 @@ import { AnimatePresence, motion } from "motion/react";
 import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
-const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
+const CHAT_ONLY_ALLOWED = new Set([
+  "/",
+  "/chat",
+  "/login",
+  "/signup",
+  "/change-password",
+  "/api-keys",
+]);
 
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
@@ -40,11 +47,12 @@ function RootLayout() {
   return (
     <AppProvider>
       {!hideNavbar && <Navbar />}
-      <AnimatePresence initial={false}>
+      <AnimatePresence initial={false} mode="wait">
         <motion.div
           key={pathname}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
           className="flex-1"
         >
