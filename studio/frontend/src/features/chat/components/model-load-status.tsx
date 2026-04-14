@@ -17,6 +17,29 @@ function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+/**
+ * Split a composed progress label like
+ *   "22.8 of 122.3 GB • 330.1 MB/s • 5m 9s left"
+ * into a primary chunk ("22.8 of 122.3 GB") that can sit next to the
+ * percent, and a secondary chunk ("330.1 MB/s • 5m 9s left") that can
+ * live on its own row. This keeps either line from overflowing into a
+ * ragged wrap when the rate/ETA part shows up mid-download.
+ *
+ * Labels without " • " (e.g. "22.8 GB downloaded") are returned
+ * primary-only, so the secondary row simply doesn't render.
+ */
+function splitProgressLabel(
+  label: string | null | undefined,
+): { primary: string; secondary: string } {
+  if (!label) return { primary: "", secondary: "" };
+  const idx = label.indexOf(" \u2022 ");
+  if (idx < 0) return { primary: label, secondary: "" };
+  return {
+    primary: label.slice(0, idx),
+    secondary: label.slice(idx + 3),
+  };
+}
+
 export function ModelLoadDescription({
   title,
   message,
@@ -35,11 +58,28 @@ export function ModelLoadDescription({
         {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
-            <div className="flex items-center justify-between text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
-              <span>{progressLabel}</span>
-              <span>{Math.round(clampProgress(progressPercent))}%</span>
-            </div>
-            <Progress value={clampProgress(progressPercent)} className="h-1 bg-foreground/[0.08]" />
+            {(() => {
+              const { primary, secondary } = splitProgressLabel(progressLabel);
+              return (
+                <>
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
+                    <span className="min-w-0 truncate">{primary}</span>
+                    <span className="shrink-0 tabular-nums">
+                      {Math.round(clampProgress(progressPercent))}%
+                    </span>
+                  </div>
+                  {secondary ? (
+                    <div className="truncate pt-0.5 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/60">
+                      {secondary}
+                    </div>
+                  ) : null}
+                </>
+              );
+            })()}
+            <Progress
+              value={clampProgress(progressPercent)}
+              className="mt-1 h-1 bg-foreground/[0.08]"
+            />
           </div>
         ) : message ? (
           <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{message}</p>
@@ -89,9 +129,17 @@ export function ModelLoadInlineStatus({
           <div className="min-w-[7rem] flex-1">
             <Progress value={clampProgress(progressPercent)} className="h-1 bg-foreground/[0.08]" />
           </div>
-          <div className="flex shrink-0 items-center gap-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
-            <span>{progressLabel}</span>
-            <span>{Math.round(clampProgress(progressPercent))}%</span>
+          <div
+            className="flex shrink-0 items-center gap-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80"
+            title={progressLabel ?? undefined}
+          >
+            {/* Inline layout is horizontal and tight -- show only the
+                primary (bytes) chunk; the full label (with rate/ETA)
+                stays available via the tooltip. */}
+            <span>{splitProgressLabel(progressLabel).primary}</span>
+            <span className="tabular-nums">
+              {Math.round(clampProgress(progressPercent))}%
+            </span>
           </div>
         </div>
       ) : null}
