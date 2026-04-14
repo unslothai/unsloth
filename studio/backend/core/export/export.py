@@ -12,6 +12,7 @@ import structlog
 from loggers import get_logger
 import os
 import shutil
+import traceback
 from pathlib import Path
 from typing import Optional, Tuple, List
 from peft import PeftModel, PeftModelForCausalLM
@@ -486,17 +487,28 @@ class ExportBackend:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method: List[str],
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
-        Export model in GGUF format.
+        Export model in GGUF format as a single batch call.
+
+        Accepts a list of lowercase quantization methods (already
+        normalized by `models.export.normalize_gguf_quantization_method`
+        at the route boundary). `save_pretrained_gguf` is called once
+        with the full list, producing all requested formats from a
+        single weight merge.
+
+        On any `save_pretrained_gguf` exception the error is captured
+        but the relocation block still runs in a `finally` so any
+        partial outputs already written to the repo-root cwd are moved
+        into the user's export directory rather than stranded.
 
         Args:
             save_directory: Local directory to save model
-            quantization_method: GGUF quantization method (e.g., "Q4_K_M")
+            quantization_method: List of lowercase GGUF quantization methods
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
@@ -507,53 +519,65 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first."
 
+        # Defensive lowercase: route already does this, but direct
+        # callers (worker default, internal tests) may pass raw casing.
+        quant_methods = [q.lower() for q in quantization_method]
+
+        if not save_directory:
+            return False, "save_directory is required for GGUF export"
+
         try:
-            # Convert quantization method to lowercase for unsloth
-            quant_method = quantization_method.lower()
+            save_directory = str(resolve_export_dir(save_directory))
+            # Resolve to absolute path so unsloth's relative-path internals
+            # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
+            # all resolve against the repo root cwd, NOT the export directory.
+            abs_save_dir = os.path.abspath(save_directory)
+            logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
-            # Save locally if requested
-            if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
-                # Resolve to absolute path so unsloth's relative-path internals
-                # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
-                # all resolve against the repo root cwd, NOT the export directory.
-                abs_save_dir = os.path.abspath(save_directory)
-                logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
+            # Create the directory if it doesn't exist
+            ensure_dir(Path(abs_save_dir))
 
-                # Create the directory if it doesn't exist
-                ensure_dir(Path(abs_save_dir))
+            # On WSL, patch out sudo check before llama.cpp build
+            _apply_wsl_sudo_patch()
 
-                # On WSL, patch out sudo check before llama.cpp build
-                _apply_wsl_sudo_patch()
+            # Snapshot existing .gguf files in cwd before conversion.
+            # unsloth's convert_to_gguf writes output files relative to
+            # cwd (repo root), so we diff afterwards and relocate them.
+            cwd = os.getcwd()
+            pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                # Snapshot existing .gguf files in cwd before conversion.
-                # unsloth's convert_to_gguf writes output files relative to
-                # cwd (repo root), so we diff afterwards and relocate them.
-                cwd = os.getcwd()
-                pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
+            # Pass absolute path — no os.chdir needed.
+            # unsloth saves intermediate HF model files into model_save_path.
+            model_save_path = os.path.join(abs_save_dir, "model")
 
-                # Pass absolute path — no os.chdir needed.
-                # unsloth saves intermediate HF model files into model_save_path.
-                # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
-                model_save_path = os.path.join(abs_save_dir, "model")
+            save_exception: Optional[BaseException] = None
+            try:
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
+                    quantization_method = quant_methods,
                 )
-
+            except BaseException as save_exc:
+                save_exception = save_exc
+                logger.error(f"GGUF batch export failed: {save_exc}")
+                logger.error(traceback.format_exc())
+            finally:
                 # Relocate GGUF artifacts into the export directory.
-                # convert_to_gguf writes .gguf files to cwd (repo root)
-                # because --outfile is a relative path like "model.Q4_K_M.gguf".
+                # Runs on BOTH success and failure so partial outputs
+                # produced before a batch failure are visible to the
+                # user in the export dir instead of stranded in cwd.
                 new_ggufs = (
                     set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
                 )
                 for src in sorted(new_ggufs):
                     dest = os.path.join(abs_save_dir, os.path.basename(src))
-                    shutil.move(src, dest)
-                    logger.info(
-                        f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
-                    )
+                    try:
+                        shutil.move(src, dest)
+                        logger.info(
+                            f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
+                        )
+                    except OSError as move_exc:
+                        logger.warning(f"Failed to relocate {src}: {move_exc}")
 
                 # Flatten any .gguf files from subdirectories into abs_save_dir.
                 # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
@@ -563,8 +587,11 @@ class ExportBackend:
                         continue
                     for src in sub.glob("*.gguf"):
                         dest = os.path.join(abs_save_dir, src.name)
-                        shutil.move(str(src), dest)
-                        logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
+                        try:
+                            shutil.move(str(src), dest)
+                            logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
+                        except OSError as move_exc:
+                            logger.warning(f"Failed to relocate {src}: {move_exc}")
                     # Clean up the subdirectory (intermediate HF files, etc.)
                     shutil.rmtree(str(sub), ignore_errors = True)
                     logger.info(f"Cleaned up subdirectory: {sub.name}")
@@ -584,25 +611,31 @@ class ExportBackend:
                         modelfile = gguf_dir / "Modelfile"
                         if modelfile.is_file():
                             shutil.move(
-                                str(modelfile), os.path.join(abs_save_dir, "Modelfile")
+                                str(modelfile),
+                                os.path.join(abs_save_dir, "Modelfile"),
                             )
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         shutil.rmtree(str(gguf_dir), ignore_errors = True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
 
-                # Write export metadata so the Chat page can identify the base model
-                self._write_export_metadata(abs_save_dir)
+            # After the finally block: if save raised, return failure now.
+            # Partial outputs (if any) have already been relocated above.
+            if save_exception is not None:
+                return False, f"GGUF export failed: {save_exception}"
 
-                # Log final file locations (after relocation) so it's clear
-                # where the GGUF files actually ended up.
-                final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
-                logger.info(
-                    "GGUF export complete. Final files in %s:\n  %s",
-                    abs_save_dir,
-                    "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
-                )
+            # Write export metadata so the Chat page can identify the base model
+            self._write_export_metadata(abs_save_dir)
 
-            # Push to hub if requested
+            # Log final file locations (after relocation) so it's clear
+            # where the GGUF files actually ended up.
+            final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
+            logger.info(
+                "GGUF export complete. Final files in %s:\n  %s",
+                abs_save_dir,
+                "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
+            )
+
+            # Push to hub if requested (single batch call)
             if push_to_hub:
                 if not repo_id or not hf_token:
                     return (
@@ -615,17 +648,18 @@ class ExportBackend:
                 self.current_model.push_to_hub_gguf(
                     repo_id,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
+                    quantization_method = quant_methods,
                     token = hf_token,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
-            return True, f"GGUF model exported successfully ({quantization_method})"
+            return (
+                True,
+                f"GGUF model exported successfully ({', '.join(quant_methods)})",
+            )
 
         except Exception as e:
             logger.error(f"Error exporting GGUF model: {e}")
-            import traceback
-
             logger.error(traceback.format_exc())
             return False, f"GGUF export failed: {str(e)}"
 
