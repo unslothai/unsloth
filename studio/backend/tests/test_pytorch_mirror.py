@@ -50,6 +50,6 @@ class TestPyTorchMirrorEnvVar:
         mirror = "https://mirrors.nju.edu.cn/pytorch/whl"
         assert _reload_whl_base(monkeypatch, mirror) == mirror
 
-    def test_trailing_slash_preserved(self, monkeypatch):
-        mirror = "https://example.com/whl/"
-        assert _reload_whl_base(monkeypatch, mirror) == mirror
+    def test_trailing_slash_stripped(self, monkeypatch):
+        result = _reload_whl_base(monkeypatch, "https://example.com/whl/")
+        assert result == "https://example.com/whl"

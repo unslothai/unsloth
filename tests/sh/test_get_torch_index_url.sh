@@ -274,6 +274,10 @@ assert_eq "mirror env + no GPU -> mirror/cpu" "https://mirror.example.com/whl/cp
 _result=$(UNSLOTH_PYTORCH_MIRROR="" run_func "none")
 assert_eq "empty mirror env -> official/cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
+# 28) Trailing slash in UNSLOTH_PYTORCH_MIRROR is stripped
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl/" run_func "none")
+assert_eq "trailing slash stripped -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_TOOLS_DIR"

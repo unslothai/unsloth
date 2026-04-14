@@ -1517,7 +1517,7 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
-$PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR } else { "https://download.pytorch.org/whl" }
+$PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
 if ($CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
