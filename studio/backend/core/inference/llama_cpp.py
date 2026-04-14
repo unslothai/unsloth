@@ -1246,7 +1246,9 @@ class LlamaCppBackend:
                         # Weights don't fit on any subset. Default the UI to
                         # 4096 so the slider doesn't land on an unusable native
                         # context. --fit on will flex -ngl at runtime.
-                        effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        effective_ctx = (
+                            min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        )
 
                 if effective_ctx < original_ctx:
                     kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
