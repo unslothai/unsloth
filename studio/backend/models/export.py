@@ -6,7 +6,7 @@ Pydantic schemas for Export API.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Dict, Any
+from typing import Any, Dict, List, Literal, Optional, Set, Union
 
 
 class LoadCheckpointRequest(BaseModel):
@@ -108,9 +108,12 @@ class ExportGGUFRequest(BaseModel):
         ...,
         description = "Directory where GGUF files will be saved",
     )
-    quantization_method: str = Field(
+    quantization_method: Union[str, List[str]] = Field(
         "Q4_K_M",
-        description = 'GGUF quantization method (e.g. "Q4_K_M")',
+        description = (
+            "GGUF quantization method, or list of methods to produce in a "
+            'single batch (e.g. "Q4_K_M" or ["Q4_K_M", "BF16"]).'
+        ),
     )
     push_to_hub: bool = Field(
         False,
@@ -130,3 +133,39 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 
     # Uses fields from ExportCommonOptions only
+
+
+def normalize_gguf_quantization_method(
+    value: Union[str, List[str]],
+) -> List[str]:
+    """
+    Normalize a GGUF `quantization_method` value to a lowercase, deduplicated
+    list suitable for `save_pretrained_gguf`.
+
+    Accepts either a single string (legacy single-format callers) or a list
+    of strings (batch callers). Returns a list preserving first-seen order.
+
+    Raises:
+        ValueError: if the resulting list is empty. The route handler catches
+            this and returns `HTTPException(status_code=400, ...)` so clients
+            get a clear 400 instead of a generic 500 from deeper in the stack.
+    """
+    if isinstance(value, str):
+        methods = [value]
+    else:
+        methods = list(value)
+
+    seen: Set[str] = set()
+    normalized: List[str] = []
+    for method in methods:
+        lowered = method.lower()
+        if lowered not in seen:
+            seen.add(lowered)
+            normalized.append(lowered)
+
+    if not normalized:
+        raise ValueError(
+            "quantization_method must contain at least one format",
+        )
+
+    return normalized
