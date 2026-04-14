@@ -320,9 +320,10 @@ def _activate_transformers_version(model_name: str) -> None:
 def _adapt_for_mlx_vlm(items):
     """Adapt GPU-path VLM dataset output for mlx-vlm consumption.
 
-    The GPU path's format_and_template_dataset embeds PIL images inside
-    messages content ({"type": "image", "image": PIL_Image}).
-    mlx-vlm expects images at top-level and bare {"type": "image"} placeholders.
+    The GPU path embeds PIL images inside messages content as
+    {"type": "image", "image": PIL_Image}. mlx-vlm's prepare_inputs
+    needs images at top-level to produce pixel_values — regardless of
+    model type. Extract them and leave bare {"type": "image"} placeholders.
     """
     adapted = []
     for item in items:
@@ -400,6 +401,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trust_remote_code=bool(config.get("trust_remote_code", False)),
     )
     is_vlm = bool(getattr(model, "_is_vlm_model", False))
+    model_type = getattr(model, "_config", {}).get("model_type", "")
 
     # ── 2. Apply LoRA / full FT ──
     training_type = config.get("training_type", "LoRA/QLoRA")
