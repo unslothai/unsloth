@@ -56,9 +56,12 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
@@ -89,14 +92,27 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className={cn(
-          "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible pb-4 md:pb-4",
-          hideComposer ? "bg-background" : "relative bg-transparent",
-        )}>
+        <ThreadPrimitive.ViewportFooter
+          className={cn(
+            "aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
+            hideComposer ? "gap-2" : "gap-4",
+            // Compare: pointer-events pass-through so messages behind footer stay clickable
+            hideComposer
+              ? "pointer-events-none pb-3"
+              : "relative pb-4",
+          )}
+        >
           {!hideComposer && (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-background" aria-hidden />
           )}
-          <ThreadScrollToBottom />
+          <div
+            className={cn(
+              "flex justify-center",
+              hideComposer && "pointer-events-auto",
+            )}
+          >
+            <ThreadScrollToBottom />
+          </div>
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
@@ -112,7 +128,7 @@ const ThreadScrollToBottom: FC = () => {
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
+        className="aui-thread-scroll-to-bottom absolute -top-6 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
       >
         <ArrowDownIcon />
       </TooltipIconButton>
@@ -622,6 +638,41 @@ const AssistantMessage: FC = () => {
 
 const COPY_RESET_MS = 2000;
 
+const DeleteMessageButton: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+
+  const handleDelete = async () => {
+    const remoteId = aui.threadListItem().getState().remoteId;
+    const thread = aui.thread();
+    try {
+      await deleteThreadMessage({
+        thread: {
+          export: () => thread.export(),
+          import: (data) => thread.import(data),
+        },
+        messageId,
+        remoteId,
+      });
+    } catch (error) {
+      console.error("Failed to delete message", error);
+      toast.error("Failed to delete message");
+    }
+  };
+
+  return (
+    <TooltipIconButton
+      tooltip="Delete message"
+      disabled={isRunning}
+      onClick={handleDelete}
+      className="text-muted-foreground hover:text-destructive"
+    >
+      <Trash2Icon className="size-4" />
+    </TooltipIconButton>
+  );
+};
+
 const CopyButton: FC = () => {
   const aui = useAui();
   const [copied, setCopied] = useState(false);
@@ -660,6 +711,7 @@ const AssistantActionBar: FC = () => {
           <RefreshCwIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
+      <DeleteMessageButton />
       <MessageTiming side="top" />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
@@ -735,6 +787,7 @@ const UserActionBar: FC = () => {
           <PencilIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
+      <DeleteMessageButton />
     </ActionBarPrimitive.Root>
   );
 };
