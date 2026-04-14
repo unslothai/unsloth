@@ -206,6 +206,10 @@ assert_eq "Darwin -> cpu (even with nvidia-smi)" "https://download.pytorch.org/w
 _result=$(PATH="$_MOCK_UNAME_DIR:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
 assert_eq "Darwin -> cpu (no nvidia-smi)" "https://download.pytorch.org/whl/cpu" "$_result"
 
+# Test: Darwin + UNSLOTH_PYTORCH_MIRROR produces mirror/cpu
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" PATH="$_MOCK_UNAME_DIR:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "Darwin + mirror env -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR" "$_TOOLS_DIR" "$_MOCK_UNAME_DIR" "$_GPU_DIR"
 

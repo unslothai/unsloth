@@ -243,6 +243,20 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 12.8 regression -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
+# 25) UNSLOTH_PYTORCH_MIRROR overrides base URL (CUDA case)
+_dir=$(make_mock_smi "12.6")
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" run_func "$_dir")
+assert_eq "mirror env + CUDA 12.6 -> mirror/cu126" "https://mirror.example.com/whl/cu126" "$_result"
+rm -rf "$_dir"
+
+# 26) UNSLOTH_PYTORCH_MIRROR overrides base URL (CPU case)
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" run_func "none")
+assert_eq "mirror env + no GPU -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
+
+# 27) Empty UNSLOTH_PYTORCH_MIRROR falls back to official URL
+_result=$(UNSLOTH_PYTORCH_MIRROR="" run_func "none")
+assert_eq "empty mirror env -> official/cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_TOOLS_DIR"

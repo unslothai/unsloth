@@ -1053,7 +1053,7 @@ _has_usable_nvidia_gpu() {
 # On CPU-only machines this returns the cpu index, avoiding the solver
 # dead-end where --torch-backend=auto resolves to unsloth==2024.8.
 get_torch_index_url() {
-    _base="https://download.pytorch.org/whl"
+    _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.

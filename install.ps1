@@ -754,7 +754,7 @@ shell.Run cmd, 0, False
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
-        $baseUrl = "https://download.pytorch.org/whl"
+        $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR } else { "https://download.pytorch.org/whl" }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = & $NvidiaSmiExe 2>&1 | Out-String
