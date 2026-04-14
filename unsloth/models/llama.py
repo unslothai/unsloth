@@ -2659,6 +2659,12 @@ class FastLlamaModel:
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Fix gradient accumulation
+        # Unsloth always compiles and patches the fused cross-entropy path for
+        # text models, and this loader does not support `UNSLOTH_COMPILE_DISABLE`
+        # or `trust_remote_code=True` model classes. Unconditionally shadow
+        # `accepts_loss_kwargs=True` at the instance level so `num_items_in_batch`
+        # always flows through `Trainer.training_step` without double-scaling.
+        force_accepts_loss_kwargs(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes

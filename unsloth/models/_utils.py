@@ -45,6 +45,7 @@ __all__ = [
     # "accelerate_old_send_to_device",
     # "accelerate_new_send_to_device",
     "patch_gradient_accumulation_fix",
+    "force_accepts_loss_kwargs",
     "patch_compiling_bitsandbytes",
     "patch_regional_compilation",
     "patch_layernorm",
@@ -1956,7 +1957,41 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
-def patch_gradient_accumulation_fix(Trainer, force_model_accepts_loss_kwargs = False):
+def force_accepts_loss_kwargs(model):
+    # Shadow the class-level `accepts_loss_kwargs` attribute at the instance level.
+    # HF Trainer checks `hasattr(unwrapped_model, "accepts_loss_kwargs")` in
+    # `Trainer.__init__` and, if True, uses that value to set
+    # `self.model_accepts_loss_kwargs`. Vision LLMs like Gemma3/Qwen3-VL
+    # `ForConditionalGeneration` set the class attribute to `False`, which causes
+    # `training_step` to divide loss by `current_gradient_accumulation_steps` on
+    # top of Unsloth's fused-CE `num_items_in_batch` normalization (double-scaling).
+    # Walking the `.model`/`.base_model` chain and setting the instance attribute
+    # at every level ensures whichever level HF unwraps to via accelerate + PEFT
+    # unwrap reports `accepts_loss_kwargs == True`. Safe to call repeatedly and
+    # safe against PEFT/accelerate wrapping because the instance attribute lives
+    # on the underlying base model object that `get_base_model()` / `.base_model.model`
+    # will return.
+    seen = set()
+    m = model
+    depth = 0
+    while m is not None and id(m) not in seen and depth < 8:
+        seen.add(id(m))
+        try:
+            setattr(m, "accepts_loss_kwargs", True)
+        except Exception:
+            pass
+        # Walk inner model chain: PEFT wrappers expose `.base_model`, HF wrappers expose `.model`
+        next_m = getattr(m, "base_model", None)
+        if next_m is None or next_m is m:
+            next_m = getattr(m, "model", None)
+        if next_m is m:
+            break
+        m = next_m
+        depth += 1
+    return model
+
+
+def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation
     # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
@@ -2080,60 +2115,16 @@ def patch_gradient_accumulation_fix(Trainer, force_model_accepts_loss_kwargs = F
 
     # Prevent double scaling gradient accumulation
     # https://github.com/huggingface/transformers/pull/37208
-    # Patch model_accepts_loss_kwargs detection in Trainer.__init__
-    if Trainer.__init__.__name__ != "_unsloth___init__":
-        try:
-            init_function = inspect.getsource(Trainer.__init__)
-        except Exception:
-            init_function = ""
-        if init_function is not None:
-            init_function = textwrap.dedent(init_function)
-
-            # Import all variables that need importing
-            import transformers.trainer
-
-            items_in_trainer = dir(transformers.trainer)
-            good_items = []
-            for item in items_in_trainer:
-                if item in init_function:
-                    good_items.append(item)
-            exec(
-                "from transformers.trainer import ("
-                + ", ".join(x for x in good_items)
-                + ")",
-                globals(),
-            )
-
-            init_function = init_function.replace(
-                "def __init__", "def _unsloth___init__", 1
-            )
-
-            # If we successfully patch in unsloth fused cross entropy loss
-            # then the model should accept loss kwargs
-            # if we don't successfully patch in unsloth fused cross entropy loss
-            # or UNSLOTH_COMPILE_DISABLE=1 is set or trust_remote_code is True
-            # we want native HF logic
-            # right now we don't know if we successfully patched in unsloth fused cross entropy loss
-            # so this is a current gap
-            if force_model_accepts_loss_kwargs:
-                # Force else branch
-                init_function = re.sub(
-                    r'if[\s]+hasattr\(\s*unwrapped_model\s*,\s*"accepts_loss_kwargs"\s*\)\s*:',
-                    'if hasattr(unwrapped_model, "accepts_loss_kwargs") and False:',
-                    init_function,
-                )
-            else:
-                # Respect an inner wrapped model's explicit accepts_loss_kwargs flag before inferring from forward(**kwargs).
-                # https://github.com/unslothai/unsloth/issues/4982 Gemma4ForConditionalGeneration had issues with grad_acc
-                init_function = init_function.replace(
-                    "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n    else:",
-                    "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n"
-                    '    elif hasattr(getattr(unwrapped_model, "model", None), "accepts_loss_kwargs"):\n'
-                    "        self.model_accepts_loss_kwargs = unwrapped_model.model.accepts_loss_kwargs\n"
-                    "    else:",
-                )
-            exec(init_function, globals())
-            Trainer.__init__ = _unsloth___init__
+    # `self.model_accepts_loss_kwargs` gates the loss normalization branch in
+    # `Trainer.training_step` (HF 4.57.x line ~4061). When the wrapped model class
+    # declares `accepts_loss_kwargs = False` (e.g. Gemma3/Qwen3-VL
+    # `ForConditionalGeneration`), HF divides loss by
+    # `current_gradient_accumulation_steps` on top of Unsloth's fused-CE
+    # `num_items_in_batch` normalization, producing double-scaled gradients.
+    # We fix this at the call site by setting the `accepts_loss_kwargs` attribute
+    # at the INSTANCE level on the patched model (see `force_accepts_loss_kwargs`
+    # above), which shadows the class attribute so HF's `hasattr` check in
+    # `Trainer.__init__` resolves to True without any source patching here.
 
 
 def patch_tokenizer(model, tokenizer):

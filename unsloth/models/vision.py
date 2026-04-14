@@ -1126,13 +1126,18 @@ class FastBaseModel:
         # Fix gradient accumulation
         from transformers.trainer import Trainer
 
-        if trust_remote_code or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1":
-            force_model_accepts_loss_kwargs = False
-        else:
-            force_model_accepts_loss_kwargs = True
-        patch_gradient_accumulation_fix(
-            Trainer, force_model_accepts_loss_kwargs = force_model_accepts_loss_kwargs
-        )
+        # Unsloth patches in a fused cross-entropy loss that consumes
+        # `num_items_in_batch` inside the model's forward. For that path HF
+        # Trainer must set `self.model_accepts_loss_kwargs = True` so
+        # `training_step` does not divide loss by `gradient_accumulation_steps`
+        # a second time. Gemma3/Qwen3-VL `ForConditionalGeneration` set the
+        # class attribute to `False`, so we shadow it at the instance level.
+        # When `trust_remote_code=True` or `UNSLOTH_COMPILE_DISABLE='1'` we
+        # cannot guarantee the fused-CE forward patching succeeded, so we fall
+        # back to HF's native detection and leave the class default in place.
+        if not trust_remote_code and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
+            force_accepts_loss_kwargs(model)
+        patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left"  # Force inference
