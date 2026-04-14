@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
+import { SettingsDialog } from "@/features/settings";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import {
   Outlet,
@@ -51,6 +52,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <SettingsDialog />
       {hideNavbar ? (
         <main className="flex-1">
           <Suspense fallback={null}>
