@@ -19,26 +19,20 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export type TransferStats = {
-  rateBytesPerSecond: number;
-  etaSeconds: number;
-  /**
-   * False for the first few ticks (window not filled, or no forward
-   * progress yet). Consumers should hide rate/ETA while unstable so the
-   * UI doesn't flicker "123 GB/s" during the first tick.
-   */
-  stable: boolean;
-};
+import {
+  appendSample,
+  computeTransferStats,
+  type TransferSample,
+  type TransferStats,
+} from "../utils/transfer-stats";
 
-const MIN_SAMPLES = 3;
-const MIN_WINDOW_SECONDS = 3;
-const MAX_WINDOW_SECONDS = 15;
+export type { TransferStats } from "../utils/transfer-stats";
 
 export function useTransferStats(
   bytes: number | null | undefined,
   totalBytes: number | null | undefined,
 ): TransferStats {
-  const samplesRef = useRef<{ t: number; b: number }[]>([]);
+  const samplesRef = useRef<TransferSample[]>([]);
   const [state, setState] = useState<TransferStats>({
     rateBytesPerSecond: 0,
     etaSeconds: 0,
@@ -53,45 +47,8 @@ export function useTransferStats(
         ? totalBytes
         : 0;
 
-    // If the counter resets (e.g. user unloaded and started a new
-    // download), drop the stale window.
-    const samples = samplesRef.current;
-    if (samples.length > 0 && cur < samples[samples.length - 1].b) {
-      samples.length = 0;
-    }
-
-    samples.push({ t: now, b: cur });
-
-    // Drop samples older than MAX_WINDOW_SECONDS; keep at least 2 so we
-    // can still compute a rate when the counter hasn't moved in a while.
-    const cutoff = now - MAX_WINDOW_SECONDS;
-    while (samples.length > 2 && samples[0].t < cutoff) {
-      samples.shift();
-    }
-
-    if (samples.length < MIN_SAMPLES) {
-      setState({ rateBytesPerSecond: 0, etaSeconds: 0, stable: false });
-      return;
-    }
-
-    const first = samples[0];
-    const last = samples[samples.length - 1];
-    const dt = last.t - first.t;
-    const db = last.b - first.b;
-    if (dt < MIN_WINDOW_SECONDS || db <= 0) {
-      setState({ rateBytesPerSecond: 0, etaSeconds: 0, stable: false });
-      return;
-    }
-
-    const rate = db / dt;
-    const eta =
-      total > 0 && cur < total && rate > 0 ? (total - cur) / rate : 0;
-
-    setState({
-      rateBytesPerSecond: rate,
-      etaSeconds: eta,
-      stable: true,
-    });
+    appendSample(samplesRef.current, now, cur);
+    setState(computeTransferStats(samplesRef.current, total));
   }, [bytes, totalBytes]);
 
   return state;
