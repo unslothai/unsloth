@@ -15,7 +15,7 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { LoadModelResponse } from "../types/api";
+import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -124,9 +124,13 @@ function toFiniteNumber(value: unknown): number | undefined {
   return value;
 }
 
+function getTrustRemoteCodeRequiredMessage(modelName: string): string {
+  return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
+}
+
 function mergeRecommendedInference(
   current: InferenceParams,
-  response: LoadModelResponse,
+  response: LoadModelResponse | InferenceStatusResponse,
   modelId: string,
 ): InferenceParams {
   const inference = response.inference;
@@ -252,11 +256,7 @@ export function useChatModelRuntime() {
             speculative_type: statusRes.speculative_type,
           };
           setParams(
-            mergeRecommendedInference(
-              currentParams,
-              reconnectResponse,
-              statusRes.active_model,
-            ),
+            mergeRecommendedInference(currentParams, statusRes, statusRes.active_model),
           );
         }
 
@@ -281,6 +281,8 @@ export function useChatModelRuntime() {
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,
+          modelRequiresTrustRemoteCode:
+            statusRes.requires_trust_remote_code ?? false,
           speculativeType: currentSpecType,
           loadedSpeculativeType: currentSpecType,
         });
@@ -297,6 +299,10 @@ export function useChatModelRuntime() {
           }
           useChatRuntimeStore.getState().setReasoningEnabled(reasoningDefault);
         }
+      } else {
+        useChatRuntimeStore.setState({
+          modelRequiresTrustRemoteCode: false,
+        });
       }
     } catch (error) {
       const message =
@@ -401,12 +407,15 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const paramsBeforeLoad = useChatRuntimeStore.getState().params;
+          const trustRemoteCode = paramsBeforeLoad.trustRemoteCode ?? false;
           const maxSeqLength = paramsBeforeLoad.maxSeqLength;
           const hfToken = useChatRuntimeStore.getState().hfToken || null;
+          const previousModelRequiresTrustRemoteCode =
+            useChatRuntimeStore.getState().modelRequiresTrustRemoteCode;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
-            await validateModel({
+            const validation = await validateModel({
               model_path: modelId,
               hf_token: hfToken,
               max_seq_length: maxSeqLength,
@@ -414,6 +423,9 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
+            if (validation.requires_trust_remote_code && !trustRemoteCode) {
+              throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+            }
 
             if (currentCheckpoint) {
               await unloadModel({ model_path: currentCheckpoint });
@@ -433,7 +445,7 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
-              trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
+              trust_remote_code: trustRemoteCode,
               chat_template_override: chatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
@@ -478,6 +490,8 @@ export function useChatModelRuntime() {
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
               ggufNativeContextLength: reportedNativeCtx,
+              modelRequiresTrustRemoteCode:
+                loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
@@ -514,6 +528,8 @@ export function useChatModelRuntime() {
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
+                  trust_remote_code:
+                    previousModelRequiresTrustRemoteCode || trustRemoteCode,
                 });
                 await refresh();
               } catch {

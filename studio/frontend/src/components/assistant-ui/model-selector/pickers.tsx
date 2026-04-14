@@ -841,7 +841,7 @@ export function HubModelPicker({
             (cachedGguf.length > 0 ||
               (!chatOnly && cachedModels.length > 0)) ? (
             <>
-              <ListLabel>{"\uD83E\uDDA5"} Downloaded</ListLabel>
+              <ListLabel>Downloaded</ListLabel>
               {cachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
@@ -1076,7 +1076,7 @@ export function HubModelPicker({
 
           {!showHfSection && cachedReady ? (
             <>
-              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              <ListLabel>Recommended</ListLabel>
               {visibleRecommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
@@ -1128,7 +1128,7 @@ export function HubModelPicker({
 
           {showHfSection && filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              <ListLabel>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
                 return (
