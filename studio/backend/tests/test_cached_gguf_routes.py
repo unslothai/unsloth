@@ -51,6 +51,21 @@ def _file(
     )
 
 
+def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
+    nested = tmp_path / "snapshots" / "rev"
+    nested.mkdir(parents = True)
+    lower = nested / "Q4_K_M.gguf"
+    upper = nested / "Q8_0.GGUF"
+    other = nested / "README.md"
+    lower.write_text("a")
+    upper.write_text("b")
+    other.write_text("c")
+
+    result = sorted(path.name for path in models_route._iter_gguf_paths(tmp_path))
+
+    assert result == ["Q4_K_M.gguf", "Q8_0.GGUF"]
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(
     monkeypatch, tmp_path
 ):

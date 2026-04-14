@@ -992,7 +992,7 @@ async def get_gguf_variants(
                     snapshots = entry / "snapshots"
                     if snapshots.is_dir():
                         for snap in snapshots.iterdir():
-                            for f in snap.rglob("*.gguf"):
+                            for f in _iter_gguf_paths(snap):
                                 q = _extract_quant_label(f.name)
                                 cached_bytes_by_quant[q] = (
                                     cached_bytes_by_quant.get(q, 0) + f.stat().st_size
@@ -1061,7 +1061,7 @@ async def get_gguf_download_progress(
         for entry in cache_dir.iterdir():
             if entry.name.lower() == target:
                 # Count completed .gguf files matching this variant in snapshots
-                for f in entry.rglob("*.gguf"):
+                for f in _iter_gguf_paths(entry):
                     fname = f.name.lower().replace("-", "").replace("_", "")
                     if not variant_lower or variant_lower in fname:
                         downloaded_bytes += f.stat().st_size
@@ -1237,12 +1237,22 @@ def _all_hf_cache_scans():
     return scans
 
 
+def _is_gguf_filename(name: str) -> bool:
+    return name.lower().endswith(".gguf")
+
+
+def _iter_gguf_paths(root: Path):
+    for path in root.rglob("*"):
+        if path.is_file() and _is_gguf_filename(path.name):
+            yield path
+
+
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Return the total on-disk size of GGUF files across all revisions."""
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         for f in revision.files:
-            if f.file_name.lower().endswith(".gguf"):
+            if _is_gguf_filename(f.file_name):
                 blob_path = getattr(f, "blob_path", None)
                 if blob_path:
                     unique_blobs[str(blob_path)] = f.size_on_disk
@@ -1401,7 +1411,7 @@ async def delete_cached_model(
             deleted_count = 0
             for rev in target_repo.revisions:
                 for f in rev.files:
-                    if not f.file_name.endswith(".gguf"):
+                    if not _is_gguf_filename(f.file_name):
                         continue
                     quant = _extract_quant_label(f.file_name)
                     if quant.lower() != variant.lower():

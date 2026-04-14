@@ -467,7 +467,7 @@ export function HubModelPicker({
     (id: string): boolean =>
       isGgufRepo(
         id,
-        resultIsGgufById.get(id) ?? modelIsGgufById.get(id),
+        Boolean(resultIsGgufById.get(id)) || Boolean(modelIsGgufById.get(id)),
       ),
     [modelIsGgufById, resultIsGgufById],
   );
