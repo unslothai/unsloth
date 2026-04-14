@@ -904,10 +904,34 @@ class LlamaCppBackend:
         try:
             import os
 
-            from huggingface_hub import get_paths_info
+            from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
-            total_download_bytes = sum((p.size or 0) for p in path_infos)
+            total_bytes = sum((p.size or 0) for p in path_infos)
+
+            # Subtract bytes already present in the HF cache so we only
+            # preflight against what we actually have to download. Without
+            # this, re-loading a cached large model (e.g. MiniMax-M2.7-GGUF
+            # at 131 GB) fails cold whenever free disk is below the full
+            # weight footprint, even though nothing needs downloading.
+            already_cached_bytes = 0
+            for p in path_infos:
+                if not p.size:
+                    continue
+                try:
+                    cached_path = try_to_load_from_cache(hf_repo, p.path)
+                except Exception:
+                    cached_path = None
+                if isinstance(cached_path, str) and os.path.exists(cached_path):
+                    try:
+                        on_disk = os.path.getsize(cached_path)
+                    except OSError:
+                        on_disk = 0
+                    # Count as satisfied only when the full blob is present.
+                    if on_disk >= p.size:
+                        already_cached_bytes += p.size
+
+            total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
             if total_download_bytes > 0:
                 cache_dir = os.environ.get(
@@ -919,9 +943,11 @@ class LlamaCppBackend:
 
                 total_gb = total_download_bytes / (1024**3)
                 free_gb = free_bytes / (1024**3)
+                cached_gb = already_cached_bytes / (1024**3)
 
                 logger.info(
-                    f"GGUF download: {total_gb:.1f} GB needed, "
+                    f"GGUF download: {total_gb:.1f} GB needed "
+                    f"({cached_gb:.1f} GB already cached), "
                     f"{free_gb:.1f} GB free on disk"
                 )
 
