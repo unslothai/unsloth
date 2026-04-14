@@ -1195,34 +1195,17 @@ class LlamaCppBackend:
                             max_available_ctx = best_cap
 
                     if explicit_ctx:
-                        # Try to honor the user's requested context exactly.
+                        # Honor the user's requested context verbatim. If it
+                        # fits, pin GPUs and skip --fit; if it doesn't, ship
+                        # -c <user_ctx> --fit on and let llama-server flex
+                        # -ngl (CPU layer offload). The UI is expected to
+                        # have surfaced the "might be slower" warning before
+                        # the user submitted a ctx above the fit ceiling.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
                             effective_ctx, cache_type_kv
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
-
-                        # Full context doesn't fit anywhere -- cap it on the
-                        # best GPU subset we can find (fewest GPUs first).
-                        if use_fit:
-                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                            for n_gpus in range(1, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
-                                pool_mib = sum(free for _, free in subset)
-                                capped = self._fit_context_to_vram(
-                                    effective_ctx,
-                                    pool_mib,
-                                    model_size,
-                                    cache_type_kv,
-                                )
-                                kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv
-                                )
-                                total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.90:
-                                    effective_ctx = capped
-                                    gpu_indices = sorted(idx for idx, _ in subset)
-                                    use_fit = False
-                                    break
+                        # No silent shrink: effective_ctx stays == n_ctx.
                     else:
                         # Auto context: prefer fewer GPUs, cap context to fit.
                         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -1242,6 +1225,13 @@ class LlamaCppBackend:
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
+                        else:
+                            # No subset can host the weights (weights alone
+                            # exceed 90% of every pool). Per spec, default
+                            # the UI-visible context to 4096 and let
+                            # --fit on flex -ngl so llama-server offloads
+                            # layers to CPU RAM.
+                            effective_ctx = min(4096, effective_ctx)
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check.
@@ -1252,6 +1242,13 @@ class LlamaCppBackend:
                         model_size_gb = round(model_size / (1024**3), 2),
                     )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                    if use_fit and not explicit_ctx:
+                        # Weights don't fit on any subset. Default the UI to
+                        # 4096 so the slider doesn't land on an unusable native
+                        # context. --fit on will flex -ngl at runtime.
+                        effective_ctx = (
+                            min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        )
 
                 if effective_ctx < original_ctx:
                     kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
