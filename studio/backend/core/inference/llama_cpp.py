@@ -1211,9 +1211,7 @@ class LlamaCppBackend:
                             # the ctx slider shows the "might be slower"
                             # warning as soon as the user drags above the
                             # fallback default instead of never.
-                            max_available_ctx = min(
-                                4096, native_ctx_for_cap
-                            )
+                            max_available_ctx = min(4096, native_ctx_for_cap)
 
                     if explicit_ctx:
                         # Try to honor the user's requested context exactly.
