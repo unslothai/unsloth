@@ -11,9 +11,11 @@ function copyWithExecCommand(text: string): boolean {
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
+  textarea.readOnly = true;
   textarea.style.position = "fixed";
   textarea.style.top = "0";
   textarea.style.left = "0";
+  textarea.style.fontSize = "12pt";
   textarea.style.opacity = "0";
   textarea.setAttribute("aria-hidden", "true");
   document.body.appendChild(textarea);
@@ -35,8 +37,8 @@ export function copyToClipboard(text: string): boolean {
     return false;
   }
 
-  if (document.queryCommandSupported?.("copy") !== false) {
-    return copyWithExecCommand(text);
+  if (typeof document !== "undefined" && document.queryCommandSupported?.("copy") !== false) {
+    if (copyWithExecCommand(text)) return true;
   }
 
   // Async fallback for environments where execCommand is entirely unsupported
