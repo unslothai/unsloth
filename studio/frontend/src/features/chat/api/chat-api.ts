@@ -145,6 +145,31 @@ export async function getDatasetDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
+export type ModelLoadPhase = "mmap" | "ready" | null;
+
+export interface LoadProgressResponse {
+  /**
+   * Load phase: ``"mmap"`` while the llama-server subprocess is paging
+   * weight shards into RAM, ``"ready"`` once it has reported healthy,
+   * or ``null`` when no load is in flight.
+   */
+  phase: ModelLoadPhase;
+  bytes_loaded: number;
+  bytes_total: number;
+  fraction: number;
+}
+
+/**
+ * Fetch the active GGUF load's mmap/upload progress. Complements
+ * ``getDownloadProgress`` / ``getGgufDownloadProgress`` for the window
+ * between "download complete" and "chat ready", which for large MoE
+ * models can be several minutes of otherwise-opaque spinning.
+ */
+export async function getLoadProgress(): Promise<LoadProgressResponse> {
+  const response = await authFetch(`/api/inference/load-progress`);
+  return parseJsonOrThrow(response);
+}
+
 export interface LocalModelInfo {
   id: string;
   display_name: string;
