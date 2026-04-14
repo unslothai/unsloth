@@ -934,7 +934,7 @@ export function HubModelPicker({
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={
-                        isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"
+                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
                       }
                       selected={value === m.id}
                       onClick={() => {
@@ -1061,7 +1061,7 @@ export function HubModelPicker({
                 const isGguf =
                   isGgufRepo(m.id) ||
                   isGgufRepo(m.display_name) ||
-                  m.path.endsWith(".gguf");
+                  m.path.toLowerCase().endsWith(".gguf");
                 return (
                   <div key={m.id}>
                     <ModelRow
