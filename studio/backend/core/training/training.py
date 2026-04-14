@@ -194,21 +194,26 @@ class TrainingBackend:
             config["load_in_4bit"] = False
 
         # Spawn subprocess — use locals so state is untouched on failure
-        resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-            kwargs.get("gpu_ids"),
-            model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
-            training_type = config["training_type"],
-            load_in_4bit = config["load_in_4bit"],
-            batch_size = config.get("batch_size", 4),
-            max_seq_length = config.get("max_seq_length", 2048),
-            lora_rank = config.get("lora_r", 16),
-            target_modules = config.get("target_modules"),
-            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
-        )
-        config["resolved_gpu_ids"] = resolved_gpu_ids
-        config["gpu_selection"] = gpu_selection
+        from utils.hardware import hardware as _hw
+        if _hw.DEVICE == _hw.DeviceType.MLX:
+            config["resolved_gpu_ids"] = None
+            config["gpu_selection"] = None
+        else:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                kwargs.get("gpu_ids"),
+                model_name = config["model_name"],
+                hf_token = config["hf_token"] or None,
+                training_type = config["training_type"],
+                load_in_4bit = config["load_in_4bit"],
+                batch_size = config.get("batch_size", 4),
+                max_seq_length = config.get("max_seq_length", 2048),
+                lora_rank = config.get("lora_r", 16),
+                target_modules = config.get("target_modules"),
+                gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                optimizer = config.get("optim", "adamw_8bit"),
+            )
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
 
         from .worker import run_training_process
 
