@@ -823,6 +823,12 @@ def run_training_process(
                 "ts": time.time(),
             })
             return
+        # Activate correct transformers version (Gemma-4 needs 5.5.0, etc.)
+        # Must happen before any transformers/mlx-lm imports in _run_mlx_training.
+        try:
+            _activate_transformers_version(model_name)
+        except Exception:
+            pass  # Non-fatal: fall through with whatever version is installed
         try:
             _run_mlx_training(event_queue, stop_queue, config)
         except Exception as exc:
