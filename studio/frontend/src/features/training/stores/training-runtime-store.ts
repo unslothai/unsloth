@@ -126,6 +126,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   resetRuntime: () =>
     set((state) => ({
       ...initialState,
+      hasHydrated: state.hasHydrated,
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],

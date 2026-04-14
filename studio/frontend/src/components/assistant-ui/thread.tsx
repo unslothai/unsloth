@@ -56,9 +56,12 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
@@ -638,6 +641,41 @@ const AssistantMessage: FC = () => {
 
 const COPY_RESET_MS = 2000;
 
+const DeleteMessageButton: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+
+  const handleDelete = async () => {
+    const remoteId = aui.threadListItem().getState().remoteId;
+    const thread = aui.thread();
+    try {
+      await deleteThreadMessage({
+        thread: {
+          export: () => thread.export(),
+          import: (data) => thread.import(data),
+        },
+        messageId,
+        remoteId,
+      });
+    } catch (error) {
+      console.error("Failed to delete message", error);
+      toast.error("Failed to delete message");
+    }
+  };
+
+  return (
+    <TooltipIconButton
+      tooltip="Delete message"
+      disabled={isRunning}
+      onClick={handleDelete}
+      className="text-muted-foreground hover:text-destructive"
+    >
+      <Trash2Icon className="size-4" />
+    </TooltipIconButton>
+  );
+};
+
 const CopyButton: FC = () => {
   const aui = useAui();
   const [copied, setCopied] = useState(false);
@@ -676,6 +714,7 @@ const AssistantActionBar: FC = () => {
           <RefreshCwIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
+      <DeleteMessageButton />
       <MessageTiming side="top" />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
@@ -751,6 +790,7 @@ const UserActionBar: FC = () => {
           <PencilIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
+      <DeleteMessageButton />
     </ActionBarPrimitive.Root>
   );
 };

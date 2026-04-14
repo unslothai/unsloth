@@ -12,9 +12,18 @@ import {
   redirect,
   useRouterState,
 } from "@tanstack/react-router";
+import { AnimatePresence, motion } from "motion/react";
+import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
-const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
+const CHAT_ONLY_ALLOWED = new Set([
+  "/",
+  "/chat",
+  "/login",
+  "/signup",
+  "/change-password",
+  "/api-keys",
+]);
 
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
@@ -44,7 +53,9 @@ function RootLayout() {
     <AppProvider>
       {hideNavbar ? (
         <main className="flex-1">
-          <Outlet />
+          <Suspense fallback={null}>
+            <Outlet />
+          </Suspense>
         </main>
       ) : (
         <SidebarProvider
@@ -59,7 +70,20 @@ function RootLayout() {
           <SidebarInset className="overflow-hidden">
             <Navbar />
             <div className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden ${pathname.startsWith("/chat") ? "" : "pt-14 md:pt-0"}`}>
-              <Outlet />
+              <AnimatePresence initial={false} mode="wait">
+                <motion.div
+                  key={pathname}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                >
+                  <Suspense fallback={null}>
+                    <Outlet />
+                  </Suspense>
+                </motion.div>
+              </AnimatePresence>
             </div>
           </SidebarInset>
         </SidebarProvider>

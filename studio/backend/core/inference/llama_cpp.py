@@ -1063,6 +1063,7 @@ class LlamaCppBackend:
         speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
+        n_parallel: int = 1,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1283,7 +1284,7 @@ class LlamaCppBackend:
                 "-c",
                 str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
-                "1",  # Single-user studio, saves VRAM
+                str(n_parallel),
                 "--flash-attn",
                 "on",  # Force flash attention for speed
             ]

@@ -132,7 +132,8 @@ function loadInferenceParams(): InferenceParams {
 function saveInferenceParams(params: InferenceParams): boolean {
   if (!canUseStorage()) return false;
   try {
-    const { checkpoint: _, ...rest } = params;
+    const { checkpoint, ...rest } = params;
+    void checkpoint;
     localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
     return true;
   } catch {
@@ -152,6 +153,7 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
+  modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
@@ -182,6 +184,7 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   setModelLoading: (loading: boolean) => void;
+  setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
@@ -222,6 +225,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
+  modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
   reasoningEnabled: true,
@@ -247,6 +251,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   contextUsage: null,
   modelLoading: false,
   setModelLoading: (loading) => set({ modelLoading: loading }),
+  setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
+    set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set(() => {
       const persisted = saveInferenceParams(params);
@@ -302,6 +308,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
+      modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,
