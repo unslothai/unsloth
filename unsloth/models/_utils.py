@@ -2126,6 +2126,40 @@ def patch_gradient_accumulation_fix(Trainer):
     # above), which shadows the class attribute so HF's `hasattr` check in
     # `Trainer.__init__` resolves to True without any source patching here.
 
+    # Also work around a transformers 5.0-5.5 regression where the Accelerator
+    # is constructed with `GradientAccumulationPlugin(num_steps=gradient_accumulation_steps)`,
+    # which causes `accelerator.backward` to internally divide loss by GA.
+    # Combined with HF's own `loss = loss / current_gradient_accumulation_steps`
+    # in `training_step`, that produces a 1/GA gradient scale mismatch vs. the
+    # full-batch case (reproducible with real `LlamaForCausalLM` + SGD across GA
+    # values). This was fixed upstream in transformers 5.6.0.dev0 by pinning
+    # the plugin's `num_steps=1` so the Trainer is the only place that divides.
+    # We backport the same fix by wrapping `Trainer.__init__` and clamping the
+    # accelerator's `gradient_accumulation_steps` to 1 post-init. On transformers
+    # 4.x (where it is already 1) and 5.6+ (where HF already pins it to 1), this
+    # is a no-op.
+    if not getattr(Trainer, "_unsloth_init_wrapped_for_accelerate_gas", False):
+        _original_trainer_init = Trainer.__init__
+
+        def _unsloth_trainer_init(self, *args, **kwargs):
+            _original_trainer_init(self, *args, **kwargs)
+            try:
+                accelerator = getattr(self, "accelerator", None)
+                if accelerator is not None and getattr(accelerator, "gradient_accumulation_steps", 1) > 1:
+                    accelerator.gradient_accumulation_steps = 1
+                    gs = getattr(accelerator, "gradient_state", None)
+                    if gs is not None and hasattr(gs, "plugin_kwargs"):
+                        try:
+                            gs.plugin_kwargs["num_steps"] = 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        _unsloth_trainer_init.__wrapped__ = _original_trainer_init
+        Trainer.__init__ = _unsloth_trainer_init
+        Trainer._unsloth_init_wrapped_for_accelerate_gas = True
+
 
 def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
