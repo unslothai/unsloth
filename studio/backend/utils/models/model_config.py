@@ -1450,7 +1450,9 @@ def scan_exported_models(
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
             # Filter out mmproj (vision projection) files — they aren't loadable as main models
-            gguf_files = [f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)]
+            gguf_files = [
+                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
