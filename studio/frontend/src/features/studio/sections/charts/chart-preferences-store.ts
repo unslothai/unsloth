@@ -3,12 +3,7 @@
 
 import { create } from "zustand";
 import type { OutlierMode, ScaleMode } from "./types";
-import { DEFAULT_VISIBLE_POINTS, clamp } from "./utils";
-
-const DEFAULT_WINDOW_SIZE = Math.max(
-  24,
-  Math.floor(DEFAULT_VISIBLE_POINTS / 2),
-);
+import { clamp } from "./utils";
 
 type ChartPreferencesState = {
   availableSteps: number;
@@ -39,7 +34,7 @@ type ChartPreferencesState = {
 };
 
 const defaultPreferences = {
-  windowSize: DEFAULT_WINDOW_SIZE as number | null,
+  windowSize: null as number | null,
   smoothing: 0.6,
   showRaw: true,
   showSmoothed: true,
