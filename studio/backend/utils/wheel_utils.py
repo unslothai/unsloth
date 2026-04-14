@@ -26,10 +26,6 @@ CAUSAL_CONV1D_RELEASE_BASE_URL = (
     "https://github.com/Dao-AILab/causal-conv1d/releases/download"
 )
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
-FLASH_LINEAR_ATTN_RELEASE_BASE_URL = (
-    "https://github.com/fla-org/flash-linear-attention/releases/download"
-)
-
 
 @dataclass(frozen = True)
 class KernelPackageSpec:
@@ -239,10 +235,6 @@ FLASH_LINEAR_ATTN_SPEC = KernelPackageSpec(
     import_name = "fla",
     display_name = "flash-linear-attention",
     pypi_spec = "flash-linear-attention==0.5.0",
-    filename_prefix = "flash_linear_attention",
-    package_version = "0.5.0",
-    release_tag = "v0.5.0",
-    release_base_url = FLASH_LINEAR_ATTN_RELEASE_BASE_URL,
 )
 
 
