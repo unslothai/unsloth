@@ -176,3 +176,26 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
             "cache_path": str(repo.repo_path),
         }
     ]
+
+
+def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(
+    monkeypatch, tmp_path
+):
+    mixed = _repo(
+        "Org/MixedRepo",
+        [
+            _file("Q4_K_M.gguf", 5_000),
+            _file("model.safetensors", 10_000),
+        ],
+        tmp_path / "models--Org--MixedRepo",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [mixed])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+
+    assert result["cached"] == []

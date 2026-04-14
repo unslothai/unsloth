@@ -1251,6 +1251,11 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     return sum(unique_blobs.values())
 
 
+def _repo_has_gguf_files(repo_info) -> bool:
+    """Return True when any revision in a cached repo contains GGUF files."""
+    return _repo_gguf_size_bytes(repo_info) > 0
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
@@ -1299,7 +1304,7 @@ async def list_cached_models(
                 if repo_info.repo_type != "model":
                     continue
                 repo_id = repo_info.repo_id
-                if repo_id.upper().endswith("-GGUF"):
+                if _repo_has_gguf_files(repo_info):
                     continue
                 total_size = sum(
                     f.size_on_disk for rev in repo_info.revisions for f in rev.files
