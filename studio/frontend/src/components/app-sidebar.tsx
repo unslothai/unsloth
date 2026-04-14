@@ -155,7 +155,7 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { togglePinned, isMobile, setOpenMobile } = useSidebar();
+  const { togglePinned, isMobile, setOpenMobile, state: sidebarState } = useSidebar();
   const navigate = useNavigate();
 
   // Auto-close mobile Sheet after navigation
@@ -187,16 +187,18 @@ export function AppSidebar() {
     if (isStudioRoute) setRunsOpen(true);
   }, [isStudioRoute]);
 
-  useEffect(() => {
+  const handleNavOpenChange = (open: boolean) => {
+    setNavOpen(open);
     try {
-      window.localStorage.setItem("unsloth_sidebar_navigate_open", String(navOpen));
+      window.localStorage.setItem("unsloth_sidebar_navigate_open", String(open));
     } catch {
       // ignore
     }
-  }, [navOpen]);
+  };
 
   const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = (search.thread as string | undefined) ?? (search.compare as string | undefined) ?? storeThreadId ?? undefined;
 
   // Training runs
@@ -286,7 +288,11 @@ export function AppSidebar() {
 
       <SidebarContent>
         {/* Navigate */}
-        <Collapsible open={navOpen} onOpenChange={setNavOpen} asChild>
+        <Collapsible
+          open={sidebarState === "collapsed" ? true : navOpen}
+          onOpenChange={handleNavOpenChange}
+          asChild
+        >
         <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-0">
           <SidebarGroupLabel asChild>
             <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between pl-4">
@@ -360,6 +366,7 @@ export function AppSidebar() {
                   disabled={chatDisabled}
                   onClick={() => {
                     if (chatDisabled) return;
+                    setActiveThreadId(null);
                     navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
                     closeMobileIfOpen();
                   }}
@@ -367,10 +374,11 @@ export function AppSidebar() {
                 <NavItem
                   icon={ColumnInsertIcon}
                   label="Compare"
-                  active={false}
+                  active={!!search.compare}
                   disabled={chatDisabled}
                   onClick={() => {
                     if (chatDisabled) return;
+                    setActiveThreadId(null);
                     navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
                     closeMobileIfOpen();
                   }}

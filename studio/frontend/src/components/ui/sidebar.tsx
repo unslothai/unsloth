@@ -82,7 +82,7 @@ function SidebarProvider({
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
 
-  // Whether the new pinned/hovered mode is active (caller provides all props).
+  // Whether pin mode is active (caller provides pinned + setPinned + togglePinned).
   const hasPinMode = pinnedProp !== undefined && setPinnedProp !== undefined && togglePinnedProp !== undefined
 
   // This is the internal state of the sidebar.
