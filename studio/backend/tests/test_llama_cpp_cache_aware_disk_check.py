@@ -81,7 +81,7 @@ sys.modules.setdefault("httpx", _httpx_stub)
 # Helpers
 # ---------------------------------------------------------------------------
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 class _FakePathInfo:
@@ -148,9 +148,7 @@ def _preflight(
             "total_bytes": total_bytes,
             "already_cached_bytes": already_cached_bytes,
             "total_download_bytes": total_download_bytes,
-            "would_raise_disk_error": (
-                needed_download and total_download_bytes > 0
-            ),
+            "would_raise_disk_error": (needed_download and total_download_bytes > 0),
         }
 
 
@@ -160,13 +158,10 @@ def _preflight(
 
 
 class TestCacheAwarePreflight:
-
     def test_fully_cached_model_does_not_require_disk(self):
         """The MiniMax case: 131 GB weights cached, only 36 GB free.
         Preflight must not raise."""
-        shards = [
-            (f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)
-        ]
+        shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {name: size for name, size in shards}
         out = _preflight(
             repo_files = shards,
@@ -179,9 +174,7 @@ class TestCacheAwarePreflight:
 
     def test_partial_cache_only_counts_remaining_bytes(self):
         """Two of four shards cached: preflight against remaining 70 GB."""
-        shards = [
-            (f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)
-        ]
+        shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {
             shards[0][0]: shards[0][1],
             shards[1][0]: shards[1][1],
@@ -198,9 +191,7 @@ class TestCacheAwarePreflight:
     def test_partial_cache_insufficient_disk_for_rest_still_raises(self):
         """Two of four shards cached; remaining 70 GB still bigger than
         free disk -> preflight correctly wants to raise."""
-        shards = [
-            (f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)
-        ]
+        shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {
             shards[0][0]: shards[0][1],
             shards[1][0]: shards[1][1],
