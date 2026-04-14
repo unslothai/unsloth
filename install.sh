@@ -113,8 +113,9 @@ _install_bnb_rocm() {
             ;;
     esac
     if [ -n "$_bnb_whl_url" ]; then
+	# Skip UV wheel check - workaround for "version does not match filename (0.50.0.dev0 != 1.33.7rc0)"
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        if run_install_cmd "$_label (pre-release)" uv pip install --python "$_venv_py" \
+        if run_install_cmd "$_label (pre-release)" env UV_SKIP_WHEEL_FILENAME_CHECK=1 uv pip install --python "$_venv_py" \
             --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
