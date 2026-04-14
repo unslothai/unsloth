@@ -210,17 +210,12 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               alt="Sloth mascot"
               className="size-20"
             />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-semibold text-2xl duration-200">
+            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-bold text-2xl tracking-[-0.02em] duration-200">
               Chat with your model
             </h1>
-            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-base delay-75 duration-200">
-              Run GGUFs, safetensors, vision and audio models!
+            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-sm delay-75 duration-200">
+              Run GGUFs, safetensors, vision and audio models
             </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <ThreadPrimitive.Suggestions
-              components={{ Suggestion: SuggestionItem }}
-            />
           </div>
           <GeneratingSpinner />
           {!hideComposer && <ComposerAnimated />}

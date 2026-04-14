@@ -38,6 +38,7 @@ import {
   Delete02Icon,
   Message01Icon,
   MessageSearch01Icon,
+  Search01Icon,
   NewReleasesIcon,
   PackageIcon,
   PencilEdit02Icon,
@@ -52,7 +53,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
+import { ChevronDown, ChevronsUpDown, Moon, PanelLeft, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
@@ -113,6 +114,7 @@ function NavItem({
   disabled,
   onClick,
   children,
+  variant = "nav",
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -120,11 +122,13 @@ function NavItem({
   disabled?: boolean;
   onClick: () => void;
   children?: React.ReactNode;
+  variant?: "nav" | "menu";
 }) {
+  const isNav = variant === "nav";
   return (
     <SidebarMenuItem>
       <div className="relative">
-        {active && (
+        {isNav && active && (
           <motion.div
             layoutId="sidebar-active-indicator"
             className="absolute left-0 top-0 bottom-0 w-[3px] rounded-full bg-primary"
@@ -136,10 +140,14 @@ function NavItem({
           disabled={disabled}
           onClick={onClick}
           isActive={active}
-          className="rounded-none pr-0 pl-4"
+          className={
+            isNav
+              ? "rounded-none pr-0 pl-4 text-[#475569] dark:text-[#94a3b8] data-active:text-foreground!"
+              : "rounded-none pr-0 pl-4 text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
+          }
         >
-          <HugeiconsIcon icon={icon} className="size-5" />
-          <span>{label}</span>
+          <HugeiconsIcon icon={icon} strokeWidth={2} className="size-[18px]" />
+          <span className="text-[13px] font-medium">{label}</span>
         </SidebarMenuButton>
       </div>
       {children}
@@ -248,7 +256,7 @@ export function AppSidebar() {
               title="Close sidebar"
               aria-label="Close sidebar"
             >
-              <HugeiconsIcon icon={SidebarLeft01Icon} className="size-4" />
+              <PanelLeft strokeWidth={1.5} className="size-4" />
             </button>
           )}
         </div>
@@ -272,8 +280,8 @@ export function AppSidebar() {
                   className="absolute inset-0 flex items-center justify-center rounded-md opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/logo:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Open sidebar"
                 >
-                  <HugeiconsIcon
-                    icon={SidebarRight01Icon}
+                  <PanelLeft
+                    strokeWidth={1.5}
                     className="size-5 text-sidebar-foreground/70"
                   />
                 </button>
@@ -286,35 +294,52 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarContent>
-        {/* Navigate */}
-        <Collapsible
-          open={sidebarState === "collapsed" ? true : navOpen}
-          onOpenChange={handleNavOpenChange}
-          asChild
-        >
-        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-0">
-          <SidebarGroupLabel asChild>
-            <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between pl-4">
-              Navigate
-              <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
-            </CollapsibleTrigger>
-          </SidebarGroupLabel>
-          <CollapsibleContent>
+      <SidebarContent className="gap-0">
+        {/* Top actions: New Chat + Compare */}
+        <SidebarGroup className="group-data-[collapsible=icon]:p-0 p-0 pt-1">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
-                icon={Message01Icon}
-                label="Chat"
-                active={isChatRoute}
+                icon={PencilEdit02Icon}
+                label="New Chat"
+                active={false}
                 disabled={chatDisabled}
                 onClick={() => {
                   if (chatDisabled) return;
-                  navigate({ to: "/chat" });
+                  setActiveThreadId(null);
+                  navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
                   closeMobileIfOpen();
                 }}
               />
+              <NavItem
+                icon={ColumnInsertIcon}
+                label="Compare"
+                active={!!search.compare}
+                disabled={chatDisabled}
+                onClick={() => {
+                  if (chatDisabled) return;
+                  setActiveThreadId(null);
+                  navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+                  closeMobileIfOpen();
+                }}
+              />
+              <NavItem
+                icon={Search01Icon}
+                label="Search"
+                active={false}
+                onClick={() => {
+                  closeMobileIfOpen();
+                }}
+              />
+            </SidebarMenu>
+          </SidebarGroupContent>
+          <div className="my-2" />
+        </SidebarGroup>
 
+        {/* Navigate (no header) */}
+        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:p-0 p-0">
+          <SidebarGroupContent>
+            <SidebarMenu>
               <NavItem
                 icon={ZapIcon}
                 label="Studio"
@@ -350,65 +375,27 @@ export function AppSidebar() {
               />
             </SidebarMenu>
           </SidebarGroupContent>
-          </CollapsibleContent>
+          <div className="my-2" />
         </SidebarGroup>
-        </Collapsible>
-
-        {/* Standalone actions — chat-only */}
-        {isChatRoute && (
-          <SidebarGroup className="mt-2 group-data-[collapsible=icon]:px-0 px-0">
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <NavItem
-                  icon={PencilEdit02Icon}
-                  label="New Chat"
-                  active={false}
-                  disabled={chatDisabled}
-                  onClick={() => {
-                    if (chatDisabled) return;
-                    setActiveThreadId(null);
-                    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-                    closeMobileIfOpen();
-                  }}
-                />
-                <NavItem
-                  icon={ColumnInsertIcon}
-                  label="Compare"
-                  active={!!search.compare}
-                  disabled={chatDisabled}
-                  onClick={() => {
-                    if (chatDisabled) return;
-                    setActiveThreadId(null);
-                    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-                    closeMobileIfOpen();
-                  }}
-                />
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
 
         {/* Recent Chats */}
         {chatItems.length > 0 && (
-          <Collapsible open={isChatRoute ? chatOpen : true} onOpenChange={setChatOpen} asChild>
-          <SidebarGroup className="mt-2 group-data-[collapsible=icon]:hidden overflow-hidden">
+          <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
             <SidebarGroupLabel asChild>
-              {isChatRoute ? (
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                  Recent Chats
-                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
-                </CollapsibleTrigger>
-              ) : (
-                <span>Recent Chats</span>
-              )}
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                Recent Chats
+                <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
             <SidebarGroupContent className="overflow-y-auto">
               <SidebarMenu>
-                {(isChatRoute || isMobile ? chatItems : chatItems.slice(0, 1)).map((item) => (
+                {chatItems.map((item) => (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
+                      className="rounded-none pr-0 pl-4 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
                       onClick={() => {
                         navigate({
                           to: "/chat",
@@ -445,7 +432,7 @@ export function AppSidebar() {
         {/* Recent Runs */}
         {runItems.length > 0 && !chatOnly && (
           <Collapsible open={isStudioRoute ? runsOpen : true} onOpenChange={setRunsOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden">
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
             <SidebarGroupLabel asChild>
               {isStudioRoute ? (
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
@@ -469,7 +456,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="h-auto flex-col items-start gap-0.5 py-2"
+                          className="h-auto flex-col items-start gap-0.5 py-2 rounded-none pr-0 pl-4 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             if (!isStudioRoute) {
@@ -527,19 +514,7 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter>
-        {/* Desktop app download — hidden when collapsed */}
-        <div className="group-data-[collapsible=icon]:hidden px-4 pb-1">
-          <a
-            href="https://unsloth.ai/download"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-          >
-            Desktop app available &rarr;
-          </a>
-        </div>
-
+      <SidebarFooter className="border-t border-sidebar-border">
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
@@ -557,7 +532,7 @@ export function AppSidebar() {
                     <span className="truncate text-sm font-semibold">Unsloth</span>
                     <span className="truncate text-[11px] text-muted-foreground">Studio</span>
                   </div>
-                  <ChevronsUpDown className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+                  <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
