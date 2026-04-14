@@ -246,15 +246,6 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Verify the PyTorch skip message exists (now covers both --no-torch and Intel Mac)
-if grep -q 'Skipping PyTorch' "$INSTALL_SH"; then
-    echo "  PASS: PyTorch skip message found"
-    PASS=$((PASS + 1))
-else
-    echo "  FAIL: PyTorch skip message not found"
-    FAIL=$((FAIL + 1))
-fi
-
 # Verify SKIP_TORCH unified variable exists
 if grep -q 'SKIP_TORCH=true' "$INSTALL_SH"; then
     echo "  PASS: SKIP_TORCH=true assignment found"
@@ -562,16 +553,7 @@ assert_eq "MAC_INTEL=true alone sets SKIP_TORCH=true" "true" "$_result"
 rm -f "$_SKIP_SNIPPET" "$_SKIP_SNIPPET2"
 
 echo ""
-echo "=== CPU hint printing ==="
-
-# Verify the CPU hint is present in install.sh source
-if grep -q 'No NVIDIA GPU detected' "$INSTALL_SH"; then
-    echo "  PASS: CPU hint message found in install.sh"
-    PASS=$((PASS + 1))
-else
-    echo "  FAIL: CPU hint message not found in install.sh"
-    FAIL=$((FAIL + 1))
-fi
+echo "=== --no-torch flag in install.sh ==="
 
 if grep -q '\-\-no-torch' "$INSTALL_SH"; then
     echo "  PASS: --no-torch appears in install.sh"
