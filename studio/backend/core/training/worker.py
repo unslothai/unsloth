@@ -401,7 +401,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trust_remote_code=bool(config.get("trust_remote_code", False)),
     )
     is_vlm = bool(getattr(model, "_is_vlm_model", False))
-    model_type = getattr(model, "_config", {}).get("model_type", "")
 
     # ── 2. Apply LoRA / full FT ──
     training_type = config.get("training_type", "LoRA/QLoRA")
