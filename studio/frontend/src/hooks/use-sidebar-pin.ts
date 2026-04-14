@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 const PINNED_KEY = "sidebar_pinned";
 
@@ -49,10 +49,9 @@ export function useSidebarPin() {
     () => pinnedValue,
     () => false,
   );
-  const [hovered, setHovered] = useState(false);
 
   const setPinned = useCallback((value: boolean) => setPinnedGlobal(value), []);
   const togglePinned = useCallback(() => setPinnedGlobal(!pinnedValue), []);
 
-  return { pinned, setPinned, togglePinned, hovered, setHovered };
+  return { pinned, setPinned, togglePinned };
 }

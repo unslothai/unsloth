@@ -94,7 +94,7 @@ export function AboutTab() {
       <ShutdownDialog
         open={shutdownOpen}
         onOpenChange={setShutdownOpen}
-        onBeforeShutdown={removeTrainingUnloadGuard}
+        onAfterShutdown={removeTrainingUnloadGuard}
       />
     </div>
   );

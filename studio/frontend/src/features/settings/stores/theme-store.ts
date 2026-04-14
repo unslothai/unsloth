@@ -58,6 +58,23 @@ function getServerSnapshot(): Theme {
   return "system";
 }
 
+/**
+ * Single source of truth for setting the theme. All writers (the Settings
+ * dialog's segmented control AND the sidebar dropdown's animated toggler)
+ * must route through this so the DOM class, localStorage, and React
+ * subscribers stay in sync.
+ */
+export function setTheme(next: Theme): void {
+  if (typeof window === "undefined") return;
+  if (next === "system") {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } else {
+    window.localStorage.setItem(STORAGE_KEY, next);
+  }
+  applyToDocument(resolveTheme(next));
+  listeners.forEach((cb) => cb());
+}
+
 export function useTheme(): {
   theme: Theme;
   resolved: ResolvedTheme;
@@ -65,17 +82,5 @@ export function useTheme(): {
 } {
   const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const resolved = resolveTheme(theme);
-  return {
-    theme,
-    resolved,
-    setTheme: (next) => {
-      if (next === "system") {
-        window.localStorage.removeItem(STORAGE_KEY);
-      } else {
-        window.localStorage.setItem(STORAGE_KEY, next);
-      }
-      applyToDocument(resolveTheme(next));
-      listeners.forEach((cb) => cb());
-    },
-  };
+  return { theme, resolved, setTheme };
 }

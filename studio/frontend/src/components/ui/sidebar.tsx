@@ -47,8 +47,6 @@ type SidebarContextProps = {
   pinned: boolean
   setPinned: (value: boolean) => void
   togglePinned: () => void
-  hovered: boolean
-  setHovered: (value: boolean) => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -69,8 +67,6 @@ function SidebarProvider({
   pinned: pinnedProp,
   setPinned: setPinnedProp,
   togglePinned: togglePinnedProp,
-  hovered: hoveredProp,
-  setHovered: setHoveredProp,
   className,
   style,
   children,
@@ -82,8 +78,6 @@ function SidebarProvider({
   pinned?: boolean
   setPinned?: (value: boolean) => void
   togglePinned?: () => void
-  hovered?: boolean
-  setHovered?: (value: boolean) => void
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
@@ -95,11 +89,9 @@ function SidebarProvider({
   // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen)
 
-  // When pin mode is active, compute open from pinned || hovered.
-  // Otherwise fall back to the existing controlled/uncontrolled pattern.
-  const open = hasPinMode
-    ? (pinnedProp || (hoveredProp ?? false))
-    : (openProp ?? _open)
+  // When pin mode is active, open is driven entirely by `pinned` (explicit
+  // user toggle). Otherwise fall back to the controlled/uncontrolled pattern.
+  const open = hasPinMode ? !!pinnedProp : (openProp ?? _open)
 
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
@@ -148,10 +140,8 @@ function SidebarProvider({
   const state = open ? "expanded" : "collapsed"
 
   const pinned = pinnedProp ?? false
-  const hovered = hoveredProp ?? false
   const setPinned = setPinnedProp ?? noop
   const togglePinned = togglePinnedProp ?? noop
-  const setHovered = setHoveredProp ?? noop
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
@@ -166,10 +156,8 @@ function SidebarProvider({
       pinned,
       setPinned,
       togglePinned,
-      hovered,
-      setHovered,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, hovered, setHovered]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned]
   )
 
   return (
@@ -208,7 +196,7 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, hovered } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
 
   if (collapsible === "none") {
     return (
@@ -255,8 +243,8 @@ function Sidebar({
     <div
       className={cn(
         "group peer text-sidebar-foreground hidden md:block relative shrink-0 transition-[width] duration-200 ease-linear",
-        hasPinMode && (pinned || hovered) && "w-(--sidebar-width)",
-        hasPinMode && !pinned && !hovered && "w-(--sidebar-width-icon)",
+        hasPinMode && pinned && "w-(--sidebar-width)",
+        hasPinMode && !pinned && "w-(--sidebar-width-icon)",
       )}
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
@@ -272,8 +260,8 @@ function Sidebar({
           "group-data-[side=right]:rotate-180",
           hasPinMode
             ? cn(
-                // Pin mode: always push content. Expanded when pinned or hovered.
-                (pinned || hovered)
+                // Pin mode: always push content. Expanded when pinned.
+                pinned
                   ? "w-(--sidebar-width)"
                   : (variant === "floating" || variant === "inset"
                       ? "w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"

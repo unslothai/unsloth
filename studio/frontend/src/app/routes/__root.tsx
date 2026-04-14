@@ -47,8 +47,7 @@ const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
-  const { pinned, setPinned, togglePinned, hovered, setHovered } =
-    useSidebarPin();
+  const { pinned, setPinned, togglePinned } = useSidebarPin();
 
   useTrainingUnloadGuard();
 
@@ -78,8 +77,6 @@ function RootLayout() {
           pinned={pinned}
           setPinned={setPinned}
           togglePinned={togglePinned}
-          hovered={hovered}
-          setHovered={setHovered}
           className="!min-h-0 h-dvh overflow-hidden"
         >
           <AppSidebar />

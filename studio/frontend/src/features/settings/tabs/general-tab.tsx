@@ -47,6 +47,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_system_prompts",
   "unsloth_chat_system_prompts_migrated",
   // Training UI prefs
+  "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
   // Guided tour flags
