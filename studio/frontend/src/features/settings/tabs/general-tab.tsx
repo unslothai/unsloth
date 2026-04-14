@@ -32,6 +32,7 @@ const PREFS_KEYS: string[] = [
   "theme",
   // UI state
   "sidebar_pinned",
+  "unsloth_sidebar_navigate_open",
   "unsloth_settings_active_tab",
   // Chat runtime prefs
   "unsloth_chat_auto_title",

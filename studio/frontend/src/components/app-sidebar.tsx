@@ -32,9 +32,11 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   Book03Icon,
+  ChartBarLineIcon,
   ChefHatIcon,
   CursorInfo02Icon,
   Delete02Icon,
+  Message01Icon,
   MessageSearch01Icon,
   NewReleasesIcon,
   PackageIcon,
@@ -169,6 +171,11 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
+  const [navOpen, setNavOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const stored = window.localStorage.getItem("unsloth_sidebar_navigate_open");
+    return stored === null ? true : stored === "true";
+  });
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
 
@@ -179,6 +186,14 @@ export function AppSidebar() {
   useEffect(() => {
     if (isStudioRoute) setRunsOpen(true);
   }, [isStudioRoute]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("unsloth_sidebar_navigate_open", String(navOpen));
+    } catch {
+      // ignore
+    }
+  }, [navOpen]);
 
   const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -270,19 +285,26 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {/* Navigation */}
+        {/* Navigate */}
+        <Collapsible open={navOpen} onOpenChange={setNavOpen} asChild>
         <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-0">
-          <SidebarGroupLabel className="pl-4">Navigation</SidebarGroupLabel>
+          <SidebarGroupLabel asChild>
+            <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between pl-4">
+              Navigate
+              <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+            </CollapsibleTrigger>
+          </SidebarGroupLabel>
+          <CollapsibleContent>
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
-                icon={PencilEdit02Icon}
-                label="New Chat"
+                icon={Message01Icon}
+                label="Chat"
                 active={isChatRoute}
                 disabled={chatDisabled}
                 onClick={() => {
                   if (chatDisabled) return;
-                  navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+                  navigate({ to: "/chat" });
                   closeMobileIfOpen();
                 }}
               />
@@ -322,12 +344,44 @@ export function AppSidebar() {
               />
             </SidebarMenu>
           </SidebarGroupContent>
+          </CollapsibleContent>
+        </SidebarGroup>
+        </Collapsible>
+
+        {/* Standalone actions */}
+        <SidebarGroup className="mt-2 group-data-[collapsible=icon]:px-0 px-0">
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <NavItem
+                icon={PencilEdit02Icon}
+                label="New Chat"
+                active={false}
+                disabled={chatDisabled}
+                onClick={() => {
+                  if (chatDisabled) return;
+                  navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+                  closeMobileIfOpen();
+                }}
+              />
+              <NavItem
+                icon={ChartBarLineIcon}
+                label="Compare"
+                active={false}
+                disabled={chatDisabled}
+                onClick={() => {
+                  if (chatDisabled) return;
+                  navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+                  closeMobileIfOpen();
+                }}
+              />
+            </SidebarMenu>
+          </SidebarGroupContent>
         </SidebarGroup>
 
         {/* Recent Chats */}
         {chatItems.length > 0 && (
           <Collapsible open={isChatRoute ? chatOpen : true} onOpenChange={setChatOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden">
+          <SidebarGroup className="mt-2 group-data-[collapsible=icon]:hidden overflow-hidden">
             <SidebarGroupLabel asChild>
               {isChatRoute ? (
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
