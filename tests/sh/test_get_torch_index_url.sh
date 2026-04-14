@@ -7,14 +7,19 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
-# Extract only the get_torch_index_url function from install.sh
+# Extract get_torch_index_url and its helper functions from install.sh.
 # Also replace the hardcoded /usr/bin/nvidia-smi fallback with a
 # controllable path so we can test the "no GPU" scenario on GPU machines.
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
-sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH" \
-    | sed "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
-    > "$_FUNC_FILE"
+{
+    sed -n '/^_has_amd_rocm_gpu()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
+} | sed "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+  > "$_FUNC_FILE"
 
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
 _SYS_PATH="/usr/local/bin:/usr/bin:/bin"
@@ -30,16 +35,25 @@ assert_eq() {
     fi
 }
 
-# Helper: create a mock nvidia-smi that prints a given CUDA version string
+# Helper: create a mock nvidia-smi that prints a given CUDA version string.
+# Handles both default output (version header) and -L (GPU listing) so that
+# _has_usable_nvidia_gpu sees a valid GPU.
 make_mock_smi() {
     _dir=$(mktemp -d)
     cat > "$_dir/nvidia-smi" <<MOCK
 #!/bin/sh
-cat <<'SMI_OUT'
+case "\$1" in
+    -L)
+        echo "GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-fake-uuid)"
+        ;;
+    *)
+        cat <<'SMI_OUT'
 +-----------------------------------------------------------------------------------------+
 | NVIDIA-SMI 550.54.15              Driver Version: 550.54.15      CUDA Version: $1     |
 +-----------------------------------------------------------------------------------------+
 SMI_OUT
+        ;;
+esac
 MOCK
     chmod +x "$_dir/nvidia-smi"
     echo "$_dir"
@@ -130,11 +144,14 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 10.2 -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 8) Unparseable nvidia-smi output -> cu126 default
+# 8) Unparseable nvidia-smi version but valid GPU listing -> cu126 default
 _dir=$(mktemp -d)
 cat > "$_dir/nvidia-smi" <<'MOCK'
 #!/bin/sh
-echo "something completely unexpected"
+case "$1" in
+    -L) echo "GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-fake-uuid)" ;;
+    *)  echo "something completely unexpected" ;;
+esac
 MOCK
 chmod +x "$_dir/nvidia-smi"
 _result=$(run_func "$_dir")
