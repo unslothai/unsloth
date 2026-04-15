@@ -7,6 +7,7 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
 import {
@@ -233,7 +234,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             </div>
           </div>
         </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
+        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
           <SharedComposer handlesRef={handlesRef} />
         </div>
       </div>
@@ -301,10 +302,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
         >
           <div className="flex min-h-0 flex-col">
-            <div className="flex items-center gap-2 px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Model 1
-              </span>
+            <div className="flex h-11 shrink-0 items-center gap-2 px-3">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -319,7 +317,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 onFoldersChange={onFoldersChange}
                 variant="ghost"
                 size="sm"
-                className="max-w-[50%]"
+                className="max-w-[80%]"
               />
             </div>
             <div className="min-h-0 flex-1">
@@ -334,11 +332,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               </ChatRuntimeProvider>
             </div>
           </div>
-          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
-            <div className="flex items-center gap-2 px-3 py-1.5 md:justify-end">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Model 2
-              </span>
+          <div className="flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l">
+            <div className="flex h-11 shrink-0 items-center gap-2 px-3">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -353,7 +348,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 onFoldersChange={onFoldersChange}
                 variant="ghost"
                 size="sm"
-                className="max-w-[50%]"
+                className="max-w-[80%]"
               />
             </div>
             <div className="min-h-0 flex-1">
@@ -369,7 +364,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             </div>
           </div>
         </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
+        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
           <SharedComposer
             handlesRef={handlesRef}
             model1={model1}
@@ -760,24 +755,31 @@ export function ChatPage(): ReactElement {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <div className="flex h-11 shrink-0 items-center pl-12 pr-1.5 sm:pl-2 sm:pr-2">
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+        <div
+          className={cn(
+            "absolute top-0 left-0 right-2 z-30 flex h-11 shrink-0 items-center pl-12 pr-1.5 sm:pl-2 sm:pr-2 bg-background",
+            view.mode === "compare" && "right-2 left-auto w-auto bg-transparent pl-0 pr-2",
+          )}
+        >
           <div className="flex items-center gap-1">
-            <ModelSelector
-              models={models}
-              loraModels={loraModels}
-              value={inferenceParams.checkpoint}
-              activeGgufVariant={activeGgufVariant}
-              onValueChange={handleCheckpointChange}
-              onEject={handleEject}
-              onFoldersChange={refreshLocalModels}
-              variant="ghost"
-              open={modelSelectorOpen}
-              onOpenChange={handleModelSelectorOpenChange}
-              triggerDataTour="chat-model-selector"
-              contentDataTour="chat-model-selector-popover"
-              className="max-w-[62vw] sm:max-w-none"
-            />
+            {view.mode !== "compare" && (
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                value={inferenceParams.checkpoint}
+                activeGgufVariant={activeGgufVariant}
+                onValueChange={handleCheckpointChange}
+                onEject={handleEject}
+                onFoldersChange={refreshLocalModels}
+                variant="ghost"
+                open={modelSelectorOpen}
+                onOpenChange={handleModelSelectorOpenChange}
+                triggerDataTour="chat-model-selector"
+                contentDataTour="chat-model-selector-popover"
+                className="max-w-[62vw] sm:max-w-none"
+              />
+            )}
             {loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
                 label={

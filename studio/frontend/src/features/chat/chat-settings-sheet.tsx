@@ -738,7 +738,8 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div className="flex items-center gap-2 px-4 py-3">
+      <div className="aui-thread-viewport relative h-full overflow-y-auto bg-muted/70">
+      <div className="sticky top-0 z-10 flex items-center gap-2 bg-muted/70 px-4 py-3 backdrop-blur">
         <HugeiconsIcon
           icon={PencilEdit01Icon}
           className="size-4 text-muted-foreground/70"
@@ -748,7 +749,7 @@ export function ChatSettingsPanel({
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-1.5">
+      <div className="px-1.5">
         {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
         <div className="mt-4 px-2 pb-3">
           <div className="space-y-1.5">
@@ -1171,6 +1172,7 @@ export function ChatSettingsPanel({
 
         <ChatTemplateSection onReloadModel={onReloadModel} />
       </div>
+      </div>
       <Dialog
         open={systemPromptEditorOpen}
         onOpenChange={(nextOpen) => {
@@ -1244,9 +1246,9 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
+      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 transition-[width] duration-200 ease-linear ${open ? "w-[17rem]" : "w-0"}`}
     >
-      <div className="flex h-full w-[17rem] flex-col">{settingsContent}</div>
+      <div className="h-full w-[17rem]">{settingsContent}</div>
     </aside>
   );
 }

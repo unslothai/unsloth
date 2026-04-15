@@ -281,7 +281,6 @@
 
 	html {
 		@apply font-sans h-full;
-		scrollbar-gutter: stable;
 	}
 
 	body,
@@ -321,6 +320,23 @@
 
 	.dark .shadow-border {
 		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+	}
+
+	.chat-composer-surface {
+		border: 1px solid oklch(0.93 0 0 / 1);
+		background-clip: padding-box;
+		box-shadow:
+			0 1px 2px oklch(0 0 0 / 0.04),
+			0 6px 14px oklch(0 0 0 / 0.05),
+			0 18px 40px oklch(0 0 0 / 0.05);
+	}
+
+	.dark .chat-composer-surface {
+		border-color: oklch(0.38 0 0 / 1);
+		box-shadow:
+			0 1px 2px oklch(0 0 0 / 0.2),
+			0 8px 20px oklch(0 0 0 / 0.25),
+			0 22px 48px oklch(0 0 0 / 0.22);
 	}
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
@@ -423,24 +439,20 @@
 	}
 }
 
-/* Minimal scrollbar — thumb only, no track */
+/* Flat scrollbar chrome */
 * {
 	scrollbar-width: thin;
-	scrollbar-color: transparent transparent;
+	scrollbar-color: oklch(0.5 0 0 / 0.54) transparent;
 }
 
-*:hover {
-	scrollbar-color: oklch(0.6 0 0 / 0.3) transparent;
-}
-
-.dark *:hover {
-	scrollbar-color: oklch(0.5 0 0 / 0.35) transparent;
+.dark * {
+	scrollbar-color: oklch(0.67 0 0 / 0.5) transparent;
 }
 
 /* Webkit (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
-	width: 6px;
-	height: 6px;
+	width: 8px;
+	height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -448,16 +460,32 @@
 }
 
 ::-webkit-scrollbar-thumb {
-	background: transparent;
+	background: oklch(0.5 0 0 / 0.54);
 	border-radius: 9999px;
 }
 
-*:hover::-webkit-scrollbar-thumb {
-	background: oklch(0.6 0 0 / 0.3);
+::-webkit-scrollbar-button {
+	display: none;
+	width: 0;
+	height: 0;
 }
 
-.dark *:hover::-webkit-scrollbar-thumb {
-	background: oklch(0.5 0 0 / 0.35);
+.dark *::-webkit-scrollbar-thumb {
+	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Chat viewport: solid track matching sidebar so the scrollbar reads as a
+   full-height rail flush to the right edge, without a separate decorative strip. */
+.aui-thread-viewport {
+	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
+}
+
+.dark .aui-thread-viewport {
+	scrollbar-color: oklch(0.67 0 0 / 0.5) var(--sidebar);
+}
+
+.aui-thread-viewport::-webkit-scrollbar-track {
+	background: var(--sidebar);
 }
 
 /*---break---*/
