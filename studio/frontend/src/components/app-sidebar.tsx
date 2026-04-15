@@ -65,6 +65,8 @@ import {
   deleteChatItem,
 } from "@/features/chat/hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
 import { useEffect, useState } from "react";
@@ -227,6 +229,7 @@ export function AppSidebar() {
   }
 
   return (
+    <>
     <Sidebar collapsible="icon" variant="sidebar">
       <SidebarHeader className="group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
@@ -327,7 +330,10 @@ export function AppSidebar() {
                 icon={Search01Icon}
                 label="Search"
                 active={false}
+                disabled={chatDisabled}
                 onClick={() => {
+                  if (chatDisabled) return;
+                  useChatSearchStore.getState().open();
                   closeMobileIfOpen();
                 }}
               />
@@ -616,5 +622,7 @@ export function AppSidebar() {
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+    <ChatSearchDialog />
+    </>
   );
 }
