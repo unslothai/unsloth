@@ -56,7 +56,14 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
 ];
 
+// Set to true from resetAllPrefs so the unmount-commit effect skips writing
+// back the in-memory draft — otherwise the cleanup would re-persist the old
+// HF token into localStorage after it was just cleared, and the subsequent
+// reload would read the re-written value.
+let resetInProgress = false;
+
 function resetAllPrefs() {
+  resetInProgress = true;
   for (const key of PREFS_KEYS) {
     try {
       localStorage.removeItem(key);
@@ -82,9 +89,11 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch)
+  // Commit on unmount (dialog close / tab switch). Skip during reset-prefs
+  // flow so we don't re-persist the draft after localStorage was cleared.
   useEffect(() => {
     return () => {
+      if (resetInProgress) return;
       const trimmed = draftRef.current.trim();
       const current = useChatRuntimeStore.getState().hfToken;
       if (trimmed !== current) {
