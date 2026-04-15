@@ -762,6 +762,18 @@ __INT_TO_FLOAT_MAPPER = \
         "allenai/OLMo-2-0325-32B-Instruct",
         "unsloth/OLMo-2-0325-32B-Instruct-bnb-4bit",
     ),
+    "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-7B-Instruct",
+        "allenai/Olmo-3-7B-Instruct",
+    ),
+    "unsloth/Olmo-3-7B-Think-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-7B-Think",
+        "allenai/Olmo-3-7B-Think",
+    ),
+    "unsloth/Olmo-3-32B-Think-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-32B-Think",
+        "allenai/Olmo-3-32B-Think",
+    ),
     "unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit" : (
         "unsloth/Mistral-Small-3.1-24B-Instruct-2503",
         "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
