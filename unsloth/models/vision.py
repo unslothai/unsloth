@@ -1126,16 +1126,42 @@ class FastBaseModel:
         # Fix gradient accumulation
         from transformers.trainer import Trainer
 
-        # Unsloth patches in a fused cross-entropy loss that consumes
-        # `num_items_in_batch` inside the model's forward. For that path HF
-        # Trainer must set `self.model_accepts_loss_kwargs = True` so
+        # Unsloth's compiler replaces the model's forward with a
+        # `num_items_in_batch`-aware fused-CE version (written to
+        # `unsloth_compiled_cache/unsloth_compiled_module_<arch>.py`). For that
+        # path HF Trainer must set `self.model_accepts_loss_kwargs = True` so
         # `training_step` does not divide loss by `gradient_accumulation_steps`
         # a second time. Gemma3/Qwen3-VL `ForConditionalGeneration` set the
         # class attribute to `False`, so we shadow it at the instance level.
-        # When `trust_remote_code=True` or `UNSLOTH_COMPILE_DISABLE='1'` we
-        # cannot guarantee the fused-CE forward patching succeeded, so we fall
-        # back to HF's native detection and leave the class default in place.
-        if not trust_remote_code and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
+        #
+        # Fallback contract (MUST be correct — getting it wrong silently
+        # over-scales gradients): we force ONLY when we can verify the fused-CE
+        # forward was actually installed for THIS model's class. The signal is
+        # `type(model).forward.__code__.co_filename` pointing into
+        # `unsloth_compiled_cache`. That is class-specific and unambiguous:
+        #   * `trust_remote_code=True` — remote forward lives in HF's remote
+        #     cache, not in unsloth_compiled_cache.
+        #   * `UNSLOTH_COMPILE_DISABLE=1` — compile path early-exits before
+        #     writing/importing the compiled module; the class keeps its stock
+        #     forward.
+        #   * Compiler silently skipped fused-CE for this class (one of the
+        #     four "skipping patching fast linear cross entropy" branches in
+        #     unsloth_zoo.compiler, or the regex matcher fell through) — the
+        #     class keeps its stock forward.
+        # In each fallback, HF's native `training_step` divides loss by GA,
+        # which is correct for mean-reduction and preserves GA invariance.
+        #
+
+        _fused_ce_installed_here = False
+        try:
+            _co_filename = getattr(
+                getattr(type(model).forward, "__code__", None),
+                "co_filename", "",
+            )
+            _fused_ce_installed_here = "unsloth_compiled_cache" in _co_filename
+        except Exception:
+            pass
+        if _fused_ce_installed_here:
             force_accepts_loss_kwargs(model)
         patch_gradient_accumulation_fix(Trainer)
 
