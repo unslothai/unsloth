@@ -2084,17 +2084,22 @@ def patch_gradient_accumulation_fix(Trainer):
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
 
-    # accepts_loss_kwargs detection is now handled by `apply_accepts_loss_kwargs_fix`
-    # on the model instance (see llama.py / vision.py), not by rewriting
-    # Trainer.__init__ source. See issue #4982.
-
-    # Backport transformers 5.6.0.dev0 fix: clamp accelerator GA to 1 post-init
-    # so the 5.0-5.5 GradientAccumulationPlugin doesn't double-scale on top of
-    # training_step's /GA. No-op on 4.x and 5.6+.
+    # Wrap Trainer.__init__: (1) pre-init, shadow accepts_loss_kwargs on whatever
+    # model was passed in (covers PEFT wrapping done after FastModel.from_pretrained);
+    # (2) post-init, clamp accelerator GA to 1 for the transformers 5.0-5.5
+    # GradientAccumulationPlugin regression. No-op on 4.x and 5.6+. See #4982.
     if not getattr(Trainer, "_unsloth_init_wrapped_for_accelerate_gas", False):
         _original_trainer_init = Trainer.__init__
 
         def _unsloth_trainer_init(self, *args, **kwargs):
+            model = kwargs.get("model")
+            if model is None and len(args) > 0:
+                model = args[0]
+            if model is not None:
+                try:
+                    apply_accepts_loss_kwargs_fix(model)
+                except Exception:
+                    pass
             _original_trainer_init(self, *args, **kwargs)
             try:
                 accelerator = getattr(self, "accelerator", None)
@@ -2117,9 +2122,21 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
 
+def _unsloth_compile_cache_leaves():
+    # Accepts `UNSLOTH_COMPILE_LOCATION` overrides (the env var unsloth_zoo honors).
+    leaves = {"unsloth_compiled_cache", "unsloth_cache", "unsloth_compiled"}
+    loc = os.environ.get("UNSLOTH_COMPILE_LOCATION", "") or ""
+    loc = loc.rstrip("/\\")
+    if loc:
+        leaves.add(os.path.basename(loc) or loc)
+    return leaves
+
+
 def _forward_is_unsloth_compiled(model):
-    # True iff forward was installed from unsloth_compiled_cache/.
+    # True iff forward was installed from the Unsloth compile cache directory.
     # __module__ stays as the transformers module, so check co_filename.
+    leaves = _unsloth_compile_cache_leaves()
+
     def check(m):
         if m is None:
             return False
@@ -2128,7 +2145,9 @@ def _forward_is_unsloth_compiled(model):
             return False
         code = getattr(fwd, "__code__", None)
         fn = getattr(code, "co_filename", "") if code is not None else ""
-        return "unsloth_compiled" in fn or "unsloth_cache" in fn
+        fn = fn.replace("\\", "/")
+        parts = set(fn.split("/"))
+        return any(leaf in parts for leaf in leaves)
 
     if check(model):
         return True
