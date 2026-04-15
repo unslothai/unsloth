@@ -384,8 +384,7 @@ def get_dataset_splits(
             detail = "Invalid dataset name. Expected format: 'owner/name'.",
         )
 
-    MAX_CONFIGS = 50
-    STATUS_PRIORITY = {403: 0, 401: 0, 404: 1}
+    STATUS_PRIORITY = {403: 0, 404: 1}
 
     def _better(current: int, new: int) -> bool:
         return STATUS_PRIORITY.get(new, 2) < STATUS_PRIORITY.get(current, 2)
@@ -397,13 +396,6 @@ def get_dataset_splits(
         logger.info(f"Fetching splits for dataset: {dataset_name}")
 
         configs = get_dataset_config_names(dataset_name, token = token)
-
-        if len(configs) > MAX_CONFIGS:
-            logger.warning(
-                f"Dataset '{dataset_name}' has {len(configs)} configs; "
-                f"truncating to first {MAX_CONFIGS} for UI responsiveness."
-            )
-            configs = configs[:MAX_CONFIGS]
 
         def _fetch_one(config: str):
             try:
@@ -428,7 +420,8 @@ def get_dataset_splits(
         last_config_status: int = 500
 
         if configs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers = 8) as pool:
+            max_workers = min(8, len(configs))
+            with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as pool:
                 results = list(pool.map(_fetch_one, configs))
             for config, split_names, err_text, err_status in results:
                 if split_names is not None:
@@ -455,7 +448,7 @@ def get_dataset_splits(
                 status_code = last_config_status,
                 detail = (
                     f"Failed to fetch splits for any config of '{dataset_name}' "
-                    f"(HTTP {last_config_status})."
+                    f"(HTTP {last_config_status}): {last_config_error[:500]}"
                 ),
             )
 
@@ -463,7 +456,13 @@ def get_dataset_splits(
 
     except HTTPException:
         raise
-    except DatasetNotFoundError:
+    except DatasetNotFoundError as e:
+        text = str(e)
+        lowered = text.lower()
+        if any(k in lowered for k in (
+            "gated", "is private", "ask for access", "must be authenticated",
+        )):
+            raise HTTPException(status_code = 403, detail = text[:500])
         raise HTTPException(
             status_code = 404,
             detail = f"Dataset '{request.dataset_name}' was not found on the Hub.",
@@ -474,14 +473,12 @@ def get_dataset_splits(
         logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
         raise HTTPException(
             status_code = status_code,
-            detail = f"Failed to fetch dataset splits (HTTP {status_code}).",
+            detail = f"Failed to fetch dataset splits (HTTP {status_code}): {str(e)[:500]}",
         )
     except Exception as e:
         logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = "Failed to fetch dataset splits.",
-        )
+        detail = str(e)[:500] or "Failed to fetch dataset splits."
+        raise HTTPException(status_code = 500, detail = detail)
 
 
 @router.get("/download-progress")
