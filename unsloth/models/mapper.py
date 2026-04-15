@@ -34,6 +34,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-4-31B-it",
         "google/gemma-4-31B-it",
     ),
+    "unsloth/gemma-4-26B-A4B-it" : (
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ),
     "unsloth/LFM2-1.2B-unsloth-bnb-4bit" : (
         "unsloth/LFM2-1.2B",
         "LiquidAI/LFM2-1.2B",
@@ -1434,7 +1438,6 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
     for value in values:
         FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
 
-_add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-26B-A4B-it", "unsloth/gemma-4-26B-A4B-it")
 _add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-E2B", "unsloth/gemma-4-E2B")
 _add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-E4B", "unsloth/gemma-4-E4B")
 _add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-26B-A4B", "unsloth/gemma-4-26B-A4B")
