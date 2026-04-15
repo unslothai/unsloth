@@ -840,31 +840,68 @@ async def browse_folders(
     # suggestion chips use the same set, so chips are always navigable.
     allowed_roots = _build_browse_allowlist()
 
-    # Resolve the requested path. Empty / missing / unusable -> user home.
+    # Resolve the requested path into a candidate. The candidate is the
+    # *user's* path (tainted) and is only used for matching against the
+    # allowlist below; ``target`` is then *rebuilt* from the trusted
+    # root + validated relative segments so filesystem operations
+    # downstream don't consume user input.
     if path is None or not path.strip():
-        target = Path.home()
+        candidate_path = Path.home()
     else:
         try:
-            target = Path(os.path.expanduser(path.strip()))
-            if not target.is_absolute():
-                target = (Path.cwd() / target).resolve()
-            else:
-                target = target.resolve()
+            candidate_path = Path(os.path.expanduser(path.strip()))
+            if not candidate_path.is_absolute():
+                candidate_path = Path.cwd() / candidate_path
+            candidate_path = candidate_path.resolve()
         except (OSError, RuntimeError) as exc:
             raise HTTPException(
                 status_code = 400,
                 detail = f"Invalid path: {exc}",
             )
 
-    # Sandbox: refuse anything outside the allowlist of trusted roots.
-    # CodeQL/security: the user-supplied ``path`` is *only* used to
-    # construct ``target`` (already resolved above) and then validated
-    # against ``allowed_roots`` before any filesystem read.
-    if not _is_path_inside_allowlist(target, allowed_roots):
+    # Sandbox: locate the trusted root that contains the candidate, then
+    # rebuild ``target`` by appending each validated segment to that
+    # root. This pattern (a) ensures the path stays inside the sandbox
+    # even when the candidate is a symlink (we resolved with realpath
+    # above), and (b) gives CodeQL a clean dataflow: ``target`` is
+    # constructed entirely from ``allowed_roots`` (trusted) plus
+    # individually-validated segment names, so the
+    # ``py/path-injection`` rule has no tainted flow into the
+    # filesystem operations below.
+    target: Optional[Path] = None
+    for root in allowed_roots:
+        try:
+            root_resolved = root.resolve()
+        except OSError:
+            continue
+        if candidate_path == root_resolved:
+            target = root_resolved
+            break
+        try:
+            rel = candidate_path.relative_to(root_resolved)
+        except ValueError:
+            # Not under this root -- try the next.
+            continue
+        # Re-attach segment by segment. Reject anything that isn't a
+        # single safe path component. ``rel.parts`` from a resolved
+        # absolute path never contains ``..`` (resolve() collapsed
+        # them), but we double-check defensively.
+        rebuilt = root_resolved
+        ok = True
+        for seg in rel.parts:
+            if not seg or seg in (".", "..") or "/" in seg or "\\" in seg:
+                ok = False
+                break
+            rebuilt = rebuilt / seg
+        if ok:
+            target = rebuilt
+            break
+
+    if target is None:
         logger.warning(
             "browse-folders: rejected out-of-sandbox path %r (resolved=%s)",
             path,
-            target,
+            candidate_path,
         )
         raise HTTPException(
             status_code = 403,
