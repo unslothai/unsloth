@@ -48,6 +48,7 @@ import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { FolderBrowser } from "./folder-browser";
 import { Trash2Icon } from "lucide-react";
 import {
   type ReactNode,
@@ -512,6 +513,7 @@ export function HubModelPicker({
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
   const [folderLoading, setFolderLoading] = useState(false);
+  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
 
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
@@ -537,11 +539,22 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    const trimmed = folderInput.trim();
+  const handleAddFolder = useCallback(async (overridePath?: string) => {
+    // Accept an explicit path so the folder browser can submit the
+    // chosen path in the same tick it calls `setFolderInput`; reading
+    // `folderInput` alone would race the state update.
+    const raw = overridePath !== undefined ? overridePath : folderInput;
+    const trimmed = raw.trim();
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
+    // True when the request originated from the folder browser's
+    // ``onSelect`` (one-click "Use this folder"). In that flow the
+    // typed-input panel is closed, so the inline ``folderError``
+    // paragraph is invisible. Surface failures via toast instead so
+    // the action doesn't appear to silently no-op when the backend
+    // rejects (denylisted path, sandbox 403, etc.).
+    const fromBrowser = overridePath !== undefined;
     try {
       const created = await addScanFolder(trimmed);
       // Backend returns existing row for duplicates, so deduplicate
@@ -557,7 +570,11 @@ export function HubModelPicker({
       // Background reconciliation with the server
       void refreshScanFolders();
     } catch (e) {
-      setFolderError(e instanceof Error ? e.message : "Failed to add folder");
+      const message = e instanceof Error ? e.message : "Failed to add folder";
+      setFolderError(message);
+      if (fromBrowser) {
+        toast.error("Couldn't add folder", { description: message });
+      }
     } finally {
       setFolderLoading(false);
     }
@@ -984,30 +1001,42 @@ export function HubModelPicker({
 
           {!showHfSection ? (
             <>
-              <div className="flex items-center justify-between px-2.5 py-1.5">
+              <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Custom Folders
                 </span>
-                <button
-                  type="button"
-                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
-                  onClick={() => {
-                    setShowFolderInput((open) => {
-                      if (open) { setFolderInput(""); setFolderError(null); }
-                      return !open;
-                    });
-                  }}
-                  className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
-                >
-                  <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    aria-label="Browse for a folder on the server"
+                    title="Browse folders on the server"
+                    onClick={() => setShowFolderBrowser(true)}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
+                    title={showFolderInput ? "Cancel" : "Add by typing a path"}
+                    onClick={() => {
+                      setShowFolderInput((open) => {
+                        if (open) { setFolderInput(""); setFolderError(null); }
+                        return !open;
+                      });
+                    }}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                  </button>
+                </div>
               </div>
 
               {/* Folder paths */}
               {scanFolders.map((f) => (
                 <div
                   key={f.id}
-                  className="group flex items-center gap-1.5 px-3 py-0.5"
+                  className="group flex items-center gap-1.5 px-2.5 py-0.5"
                 >
                   <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
                   <span
@@ -1020,9 +1049,9 @@ export function HubModelPicker({
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
                     aria-label={`Remove folder ${f.path}`}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                    className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                   >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                   </button>
                 </div>
               ))}
@@ -1046,7 +1075,17 @@ export function HubModelPicker({
                     />
                     <button
                       type="button"
-                      onClick={handleAddFolder}
+                      onClick={() => setShowFolderBrowser(true)}
+                      disabled={folderLoading}
+                      aria-label="Browse for folder"
+                      title="Browse folders on the server"
+                      className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleAddFolder(); }}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
@@ -1059,16 +1098,20 @@ export function HubModelPicker({
                 </div>
               )}
 
-              {/* Empty state */}
-              {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
-                <button
-                  type="button"
-                  onClick={() => setShowFolderInput(true)}
-                  className="px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground"
-                >
-                  + Add a folder to scan for local models
-                </button>
-              )}
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                  // One-click UX: the "Use this folder" button submits
+                  // the scan folder directly. Pass the path explicitly
+                  // because `folderInput` state hasn't flushed yet.
+                  void handleAddFolder(picked);
+                }}
+              />
+
 
               {/* Models from custom folders */}
               {customFolderModels.map((m) => {
