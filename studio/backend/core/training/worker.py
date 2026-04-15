@@ -488,10 +488,10 @@ def run_training_process(
     try:
         _ensure_causal_conv1d_fast_path(event_queue, model_name)
         _ensure_mamba_ssm(event_queue, model_name)
-        _ensure_flash_attn_for_long_context(
-            event_queue,
-            int(config.get("max_seq_length", 2048)),
-        )
+        #_ensure_flash_attn_for_long_context(
+        #    event_queue,
+        #    int(config.get("max_seq_length", 2048)),
+        #)
     except Exception as exc:
         event_queue.put(
             {
