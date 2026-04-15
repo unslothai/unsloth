@@ -570,6 +570,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
 
         if not was_disabled:
@@ -1053,12 +1054,15 @@ class FastModel(FastBaseModel):
         peft_error = None
         model_config = None
         peft_config = None
+        local_files_only = kwargs.get("local_files_only", False)
+
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             is_model = True
         except ImportError:
@@ -1084,6 +1088,7 @@ class FastModel(FastBaseModel):
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             is_peft = True
         except ImportError:
@@ -1334,6 +1339,7 @@ class FastModel(FastBaseModel):
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
 
         if not was_disabled:
