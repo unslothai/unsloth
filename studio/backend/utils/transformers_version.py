@@ -234,7 +234,9 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
     # --- Fall back to fetching from HuggingFace ----------------------------
+    import urllib.error
     import urllib.request
+
     from utils.hf_endpoint import get_hf_endpoint
 
     url = f"{get_hf_endpoint()}/{model_name}/raw/main/tokenizer_config.json"
@@ -252,9 +254,36 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
             )
         _tokenizer_class_cache[model_name] = result
         return result
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            logger.debug(
+                "tokenizer_config.json not found for '%s' at %s (HTTP 404)",
+                model_name,
+                url,
+            )
+        else:
+            logger.warning(
+                "HTTP %s fetching tokenizer_config.json for '%s' from %s; "
+                "if HF_ENDPOINT is set to a mirror, verify it proxies /raw/ paths",
+                exc.code,
+                model_name,
+                url,
+            )
+        _tokenizer_class_cache[model_name] = False
+        return False
+    except urllib.error.URLError as exc:
+        logger.warning(
+            "Connection error fetching tokenizer_config.json for '%s' from %s: %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it is reachable",
+            model_name,
+            url,
+            exc,
+        )
+        _tokenizer_class_cache[model_name] = False
+        return False
     except Exception as exc:
         logger.debug(
-            "Could not fetch tokenizer_config.json for '%s': %s", model_name, exc
+            "Could not parse tokenizer_config.json for '%s': %s", model_name, exc
         )
         _tokenizer_class_cache[model_name] = False
         return False
@@ -301,7 +330,9 @@ def _check_config_needs_550(model_name: str) -> bool:
             logger.debug("Could not read %s: %s", local_cfg, exc)
 
     # --- Fall back to fetching from HuggingFace ---------------------------
+    import urllib.error
     import urllib.request
+
     from utils.hf_endpoint import get_hf_endpoint
 
     url = f"{get_hf_endpoint()}/{model_name}/raw/main/config.json"
@@ -320,8 +351,35 @@ def _check_config_needs_550(model_name: str) -> bool:
             )
         _config_needs_550_cache[model_name] = result
         return result
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            logger.debug(
+                "config.json not found for '%s' at %s (HTTP 404)",
+                model_name,
+                url,
+            )
+        else:
+            logger.warning(
+                "HTTP %s fetching config.json for '%s' from %s; "
+                "if HF_ENDPOINT is set to a mirror, verify it proxies /raw/ paths",
+                exc.code,
+                model_name,
+                url,
+            )
+        _config_needs_550_cache[model_name] = False
+        return False
+    except urllib.error.URLError as exc:
+        logger.warning(
+            "Connection error fetching config.json for '%s' from %s: %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it is reachable",
+            model_name,
+            url,
+            exc,
+        )
+        _config_needs_550_cache[model_name] = False
+        return False
     except Exception as exc:
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        logger.debug("Could not parse config.json for '%s': %s", model_name, exc)
         _config_needs_550_cache[model_name] = False
         return False
 

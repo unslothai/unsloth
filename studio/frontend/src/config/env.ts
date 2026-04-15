@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { hydrateHfEndpoints } from "@/lib/hf-endpoint";
 
 export const env = {
   MODE: import.meta.env.MODE,
@@ -51,11 +50,14 @@ export async function fetchDeviceType(): Promise<DeviceType> {
       const hfEndpoint = data.hf_endpoint ?? "https://huggingface.co";
       const hfDatasetsServer = data.hf_datasets_server ?? "https://datasets-server.huggingface.co";
       usePlatformStore.setState({ deviceType, chatOnly, hfEndpoint, hfDatasetsServer, fetched: true });
-      hydrateHfEndpoints();
       return deviceType;
     }
   } catch (err) {
-    console.warn("[platform] Failed to fetch device type, will retry", err);
+    console.warn(
+      "[platform] Failed to fetch /api/health; HF_ENDPOINT configuration from the backend " +
+        "will not be applied and HuggingFace requests will use the default endpoint.",
+      err,
+    );
   }
 
   return usePlatformStore.getState().deviceType;
