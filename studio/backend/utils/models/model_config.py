@@ -1188,7 +1188,7 @@ def list_local_gguf_variants(
     # used by some HF GGUF repos for the largest quants) are picked up.
     # Filenames in the result preserve the relative subpath so that
     # ``_find_local_gguf_by_variant`` can locate the file again.
-    for f in sorted(_iter_gguf_files(p, recursive=True)):
+    for f in sorted(_iter_gguf_files(p, recursive = True)):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -1233,7 +1233,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
     matches = sorted(
         f
-        for f in _iter_gguf_files(p, recursive=True)
+        for f in _iter_gguf_files(p, recursive = True)
         if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
     )
     if matches:
