@@ -379,7 +379,7 @@ export function AppSidebar() {
         </SidebarGroup>
 
         {/* Recent Chats */}
-        {chatItems.length > 0 && (
+        {!isStudioRoute && chatItems.length > 0 && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
             <SidebarGroupLabel asChild>
@@ -430,23 +430,19 @@ export function AppSidebar() {
         )}
 
         {/* Recent Runs */}
-        {runItems.length > 0 && !chatOnly && (
-          <Collapsible open={isStudioRoute ? runsOpen : true} onOpenChange={setRunsOpen} asChild>
+        {isStudioRoute && runItems.length > 0 && !chatOnly && (
+          <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
             <SidebarGroupLabel asChild>
-              {isStudioRoute ? (
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                  Recent Runs
-                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
-                </CollapsibleTrigger>
-              ) : (
-                <span>Recent Runs</span>
-              )}
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                Recent Runs
+                <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
               <SidebarGroupContent className="overflow-y-auto">
                 <SidebarMenu>
-                  {(isStudioRoute || isMobile ? runItems : runItems.slice(0, 1)).map((run) => {
+                  {runItems.map((run) => {
                     const isActiveRun =
                       selectedHistoryRunId === run.id || activeJobId === run.id;
                     return (
