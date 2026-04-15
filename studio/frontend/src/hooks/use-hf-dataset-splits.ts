@@ -16,6 +16,7 @@ export interface HfSplitEntry {
 
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
+  partial_failure?: string | null;
 }
 
 export interface HfDatasetSplitsResult {
@@ -33,6 +34,8 @@ export interface HfDatasetSplitsResult {
   isLoading: boolean;
   /** Error message if the fetch failed */
   error: string | null;
+  /** Warning when some configs loaded but others failed */
+  partialFailure: string | null;
 }
 
 function normalizeDatasetSplitsError(message: string): string {
@@ -85,6 +88,7 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partialFailure, setPartialFailure] = useState<string | null>(null);
 
 
   const [prevDatasetName, setPrevDatasetName] = useState(datasetName);
@@ -92,6 +96,7 @@ export function useHfDatasetSplits(
     setPrevDatasetName(datasetName);
     setEntries([]);
     setError(null);
+    setPartialFailure(null);
   }
 
   const accessToken = options?.accessToken;
@@ -115,7 +120,10 @@ export function useHfDatasetSplits(
       }
 
       const data: HfSplitsResponse = await res.json();
-      return data.splits ?? [];
+      return {
+        splits: data.splits ?? [],
+        partialFailure: data.partial_failure ?? null,
+      };
     },
     [accessToken],
   );
@@ -124,6 +132,7 @@ export function useHfDatasetSplits(
     if (!datasetName) {
       setEntries([]);
       setError(null);
+      setPartialFailure(null);
       setIsLoading(false);
       return;
     }
@@ -131,12 +140,14 @@ export function useHfDatasetSplits(
     const controller = new AbortController();
     setIsLoading(true);
     setError(null);
+    setPartialFailure(null);
 
     fetchSplits(datasetName, controller.signal)
-      .then((splits) => {
+      .then(({ splits, partialFailure: pf }) => {
         if (!controller.signal.aborted) {
           setEntries(splits);
           setError(null);
+          setPartialFailure(pf);
         }
       })
       .catch((err) => {
@@ -154,6 +165,7 @@ export function useHfDatasetSplits(
           });
           setError(normalizeDatasetSplitsError(rawErrorMessage));
           setEntries([]);
+          setPartialFailure(null);
         }
       })
       .finally(() => {
@@ -186,5 +198,6 @@ export function useHfDatasetSplits(
     hasMultipleSplits: activeSubset ? splits.length > 1 : false,
     isLoading,
     error,
+    partialFailure,
   };
 }

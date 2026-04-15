@@ -383,7 +383,7 @@ def get_dataset_splits(
     if not _is_valid_repo_id(request.dataset_name):
         raise HTTPException(
             status_code = 400,
-            detail = "Invalid dataset name. Expected format: 'owner/name'.",
+            detail = "Invalid dataset name. Expected format: 'name' or 'owner/name'.",
         )
 
     STATUS_PRIORITY = {403: 0, 404: 1}
@@ -393,7 +393,7 @@ def get_dataset_splits(
 
     try:
         dataset_name = request.dataset_name
-        token = request.hf_token if request.hf_token else False
+        token = request.hf_token or None
 
         logger.info(f"Fetching splits for dataset: {dataset_name}")
 
