@@ -1123,15 +1123,7 @@ class FastBaseModel:
                     )
         patch_saving_functions(tokenizer, vision = True)
 
-        # Fix gradient accumulation. `apply_accepts_loss_kwargs_fix` sets the
-        # correct `accepts_loss_kwargs` value at the instance level on this
-        # model so HF Trainer's `hasattr(unwrapped_model, "accepts_loss_kwargs")`
-        # check resolves without needing to rewrite `Trainer.__init__` source.
-        # This handles vision conditional generation wrappers whose outer class
-        # has no `accepts_loss_kwargs` but whose inner `.model` declares False
-        # (Gemma3n, earlier Gemma3, PaliGemma, Qwen-VL family, etc.), and also
-        # handles Unsloth-compiled forwards by setting True. See
-        # `_utils.apply_accepts_loss_kwargs_fix` and issue #4982.
+        # Fix gradient accumulation. See issue #4982.
         from transformers.trainer import Trainer
 
         apply_accepts_loss_kwargs_fix(model)
