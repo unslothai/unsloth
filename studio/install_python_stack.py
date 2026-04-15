@@ -1180,9 +1180,9 @@ def install_python_stack() -> int:
     #         constrain = False,
     #     )
 
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        _progress("flash-attn")
-        _ensure_flash_attn()
+    #if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    #    _progress("flash-attn")
+    #    _ensure_flash_attn()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
