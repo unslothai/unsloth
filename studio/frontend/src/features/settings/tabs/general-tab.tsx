@@ -13,7 +13,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
@@ -73,7 +74,30 @@ export function GeneralTab() {
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
+  const [showToken, setShowToken] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const draftRef = useRef(draftToken);
+  useEffect(() => {
+    draftRef.current = draftToken;
+  }, [draftToken]);
+
+  // Commit on unmount (dialog close / tab switch)
+  useEffect(() => {
+    return () => {
+      const trimmed = draftRef.current.trim();
+      const current = useChatRuntimeStore.getState().hfToken;
+      if (trimmed !== current) {
+        useChatRuntimeStore.getState().setHfToken(trimmed);
+      }
+    };
+  }, []);
+
+  const commitToken = () => {
+    const trimmed = draftToken.trim();
+    if (trimmed !== draftToken) setDraftToken(trimmed);
+    if (trimmed !== hfToken) setHfToken(trimmed);
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -89,16 +113,25 @@ export function GeneralTab() {
           label="Hugging Face token"
           description="Used to load gated models and push artifacts."
         >
-          <Input
-            type="password"
-            placeholder="hf_…"
-            value={draftToken}
-            onChange={(e) => setDraftToken(e.target.value)}
-            onBlur={() => {
-              if (draftToken !== hfToken) setHfToken(draftToken);
-            }}
-            className="h-8 w-[260px] font-mono text-xs"
-          />
+          <div className="relative w-[260px]">
+            <Input
+              type={showToken ? "text" : "password"}
+              placeholder="hf_…"
+              value={draftToken}
+              onChange={(e) => setDraftToken(e.target.value)}
+              onBlur={commitToken}
+              className="h-8 w-full pr-8 font-mono text-xs"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken((s) => !s)}
+              className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={showToken ? "Hide token" : "Show token"}
+              tabIndex={-1}
+            >
+              {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+            </button>
+          </div>
         </SettingsRow>
       </SettingsSection>
 
