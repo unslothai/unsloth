@@ -161,13 +161,20 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
     # hides these inputs in local mode but the payload builder still serializes
     # them, so a previously external provider that flipped to local can carry
     # invalid JSON or rogue auth headers into the local /v1 call.
+    #
+    # Force ``stream: false`` on the request body via provider extra_body.
+    # data_designer's OpenAICompatibleClient merges provider.extra_body into
+    # the top-level chat-completion payload (see TransportKwargs.from_request),
+    # and our /v1/chat/completions proxy streams by default when ``stream`` is
+    # absent. Recipes consume a single JSON response (no SSE parser), so we
+    # pin stream=false here for the local loopback path.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
         providers[i]["provider_type"] = "openai"
         providers[i].pop("api_key_env", None)
         providers[i].pop("extra_headers", None)
-        providers[i].pop("extra_body", None)
+        providers[i]["extra_body"] = {"stream": False}
 
     # Force skip_health_check on any model_config that references a local
     # provider. The local /v1/models endpoint only lists the real loaded
