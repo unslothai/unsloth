@@ -888,7 +888,7 @@ export function ChatSettingsPanel({
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
             placeholder="You are a helpful assistant..."
-            className="min-h-20 text-xs corner-squircle"
+            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle"
             rows={3}
           />
         </div>
@@ -1200,7 +1200,7 @@ export function ChatSettingsPanel({
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
-              className="min-h-[24rem] text-sm leading-6 corner-squircle"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
               rows={14}
             />
           </div>
@@ -1344,7 +1344,7 @@ function ChatTemplateSection({
         <Textarea
           value={displayValue}
           onChange={(e) => setOverride(e.target.value)}
-          className="min-h-32 font-mono text-[10px] leading-relaxed md:text-[10px] corner-squircle"
+          className="min-h-32 max-h-64 overflow-y-auto font-mono text-[10px] leading-relaxed md:text-[10px] corner-squircle"
           rows={6}
           spellCheck={false}
         />
