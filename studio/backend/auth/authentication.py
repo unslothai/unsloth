@@ -10,10 +10,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
 from .storage import (
+    API_KEY_PREFIX,
     get_jwt_secret,
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    validate_api_key,
     verify_refresh_token,
 )
 
@@ -137,6 +139,18 @@ async def _get_current_subject(
             ...
     """
     token = credentials.credentials
+
+    # --- API key path (sk-unsloth-...) ---
+    if token.startswith(API_KEY_PREFIX):
+        username = validate_api_key(token)
+        if username is None:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid or expired API key",
+            )
+        return username
+
+    # --- JWT path ---
     subject = _decode_subject_without_verification(token)
     if subject is None:
         raise HTTPException(
