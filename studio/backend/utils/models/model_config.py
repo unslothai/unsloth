@@ -917,9 +917,7 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
             yield f
 
 
-def detect_mmproj_file(
-    path: str, search_root: Optional[str] = None
-) -> Optional[str]:
+def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """
     Find the mmproj (vision projection) GGUF file for a given model.
 
