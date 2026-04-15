@@ -1075,10 +1075,14 @@ export function HubModelPicker({
               {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
                 <button
                   type="button"
-                  onClick={() => setShowFolderInput(true)}
-                  className="px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground"
+                  onClick={() => setShowFolderBrowser(true)}
+                  className="flex items-center gap-1.5 px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
                 >
-                  + Add a folder to scan for local models
+                  <HugeiconsIcon
+                    icon={Search01Icon}
+                    className="size-3 shrink-0"
+                  />
+                  Browse for a models folder
                 </button>
               )}
 
