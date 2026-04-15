@@ -1351,9 +1351,9 @@ def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
     if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1":
         return False
 
-    OFFLINE_TRUE = {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+    OFFLINE_TRUE = {"1", "true", "yes", "on"}
 
-    if os.environ.get("HF_HUB_OFFLINE", "").strip() in OFFLINE_TRUE:
+    if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in OFFLINE_TRUE:
         return False
     try:
         socket.setdefaulttimeout(timeout)
