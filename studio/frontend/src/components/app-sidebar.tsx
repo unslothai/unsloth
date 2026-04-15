@@ -401,7 +401,7 @@ export function AppSidebar() {
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
-                      className="rounded-none pr-0 pl-4 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
+                      className="rounded-none pl-4 pr-7 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
                       onClick={() => {
                         navigate({
                           to: "/chat",
@@ -458,7 +458,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="h-auto flex-col items-start gap-0.5 py-2 rounded-none pr-0 pl-4 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
+                          className="h-auto flex-col items-start gap-0.5 py-2 rounded-none pl-4 pr-7 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             if (!isStudioRoute) {
