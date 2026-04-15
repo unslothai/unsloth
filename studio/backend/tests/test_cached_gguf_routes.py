@@ -310,3 +310,89 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(
             "cache_path": str(healthy.repo_path),
         }
     ]
+
+
+def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path):
+    """A repo whose only ``.gguf`` artifact is an mmproj vision adapter
+    must not be classified as a GGUF repo: the variant selector filters
+    mmproj out and the picker would otherwise show zero variants."""
+    mmproj_only = _repo(
+        "Org/MmprojOnly",
+        [
+            _file("mmproj-Q8_0.gguf", 5_000),
+            _file("model.safetensors", 10_000),
+        ],
+        tmp_path / "models--Org--MmprojOnly",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [mmproj_only])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == []
+
+
+def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp_path):
+    """Mirror of the cached-gguf skip: a safetensors repo with an
+    auxiliary mmproj vision adapter must still surface in cached-models
+    so the user can load it as a normal model."""
+    mmproj_aux = _repo(
+        "Org/MmprojAux",
+        [
+            _file("mmproj-Q8_0.gguf", 5_000),
+            _file("model.safetensors", 10_000),
+        ],
+        tmp_path / "models--Org--MmprojAux",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [mmproj_aux])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/MmprojAux",
+            "size_bytes": 15_000,
+        }
+    ]
+
+
+def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(
+    monkeypatch, tmp_path
+):
+    """A vision-capable GGUF repo (main weight + mmproj adapter) is still
+    a GGUF repo. The reported size is the main weight size; mmproj is
+    excluded from the GGUF-size accounting because it is filtered out at
+    classification time."""
+    vision_repo = _repo(
+        "Org/VisionGguf",
+        [
+            _file("Q4_K_M.gguf", 5_000),
+            _file("mmproj-Q8_0.gguf", 1_000),
+        ],
+        tmp_path / "models--Org--VisionGguf",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [vision_repo])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/VisionGguf",
+            "size_bytes": 5_000,
+            "cache_path": str(vision_repo.repo_path),
+        }
+    ]

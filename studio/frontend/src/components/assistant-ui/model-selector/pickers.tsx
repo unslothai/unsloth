@@ -455,26 +455,30 @@ export function HubModelPicker({
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
 
-  // Sets of repo ids that the store or HF search have confirmed are GGUF.
-  // Absence means "no hint" and lets hasGgufSuffix take over as fallback,
-  // rather than conflating unknown with known-not-GGUF.
+  // Sets of lowercased repo ids that the store or HF search have
+  // confirmed are GGUF. Absence means "no hint" and lets hasGgufSuffix
+  // take over as fallback, rather than conflating unknown with known-
+  // not-GGUF. Keys are lowercased so that store IDs and HF search IDs
+  // that differ only by casing still match the same hint.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const model of models) {
-      if (model.isGguf) ids.add(model.id);
+      if (model.isGguf) ids.add(model.id.toLowerCase());
     }
     return ids;
   }, [models]);
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of results) {
-      if (result.isGguf) ids.add(result.id);
+      if (result.isGguf) ids.add(result.id.toLowerCase());
     }
     return ids;
   }, [results]);
   const isKnownGgufRepo = useCallback(
-    (id: string): boolean =>
-      isGgufRepo(id, resultGgufIds.has(id) || modelGgufIds.has(id)),
+    (id: string): boolean => {
+      const key = id.toLowerCase();
+      return isGgufRepo(id, resultGgufIds.has(key) || modelGgufIds.has(key));
+    },
     [modelGgufIds, resultGgufIds],
   );
 

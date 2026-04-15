@@ -1241,6 +1241,18 @@ def _is_gguf_filename(name: str) -> bool:
     return name.lower().endswith(".gguf")
 
 
+def _is_mmproj_filename(name: str) -> bool:
+    """Match GGUF vision-adapter (mmproj) files. Kept consistent with
+    ``utils.models.model_config._is_mmproj``."""
+    return "mmproj" in name.lower()
+
+
+def _is_main_gguf_filename(name: str) -> bool:
+    """A GGUF file that is a primary weight artifact, not an mmproj
+    vision adapter."""
+    return _is_gguf_filename(name) and not _is_mmproj_filename(name)
+
+
 def _iter_gguf_paths(root: Path):
     for path in root.rglob("*"):
         if path.is_file() and _is_gguf_filename(path.name):
@@ -1248,19 +1260,23 @@ def _iter_gguf_paths(root: Path):
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
-    """Return the total on-disk size of GGUF files across all revisions.
+    """Return the total on-disk size of primary GGUF weight files across
+    all revisions, excluding mmproj vision-adapter files.
 
     Hugging Face hardlinks blobs shared between revisions, so this
     deduplicates by blob path (or, as a fallback, by revision commit
     hash + filename) to avoid double-counting the same bytes. Files
     with an unknown size (``size_on_disk is None``, e.g. a partial or
-    interrupted download) are treated as zero bytes.
+    interrupted download) are treated as zero bytes. mmproj files are
+    excluded so that repos whose only ``.gguf`` artifact is a vision
+    adapter are not classified as GGUF repos: the variant selector
+    filters mmproj out and would otherwise show zero pickable variants.
     """
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            if _is_gguf_filename(f.file_name):
+            if _is_main_gguf_filename(f.file_name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
@@ -1271,7 +1287,9 @@ def _repo_gguf_size_bytes(repo_info) -> int:
 
 
 def _repo_has_gguf_files(repo_info) -> bool:
-    """Return True when any revision in a cached repo contains GGUF files."""
+    """Return True when any revision in a cached repo contains a
+    primary GGUF weight file. Repos whose only ``.gguf`` artifact is
+    an mmproj vision adapter are not treated as GGUF here."""
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
