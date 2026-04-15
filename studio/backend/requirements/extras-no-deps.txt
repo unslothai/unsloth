@@ -5,6 +5,10 @@ julius
 torchcodec
 snac
 
+# peft 0.19.0 causes export subprocess shutdown issues in Studio;
+# installing with --no-deps to avoid pulling in torch>=0.11.0
+peft==0.18.1
+
 # TRL and related packages
 trl==0.23.1
 git+https://github.com/meta-pytorch/OpenEnv.git

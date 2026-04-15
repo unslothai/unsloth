@@ -1517,14 +1517,16 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+$PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+
 if ($CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu"
+        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -1536,11 +1538,11 @@ if ($CuTag -eq "cpu") {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
+        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
