@@ -24,6 +24,10 @@ def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
 
 
+def _remap_hf_status(hf_status: int) -> int:
+    return 403 if hf_status == 401 else hf_status
+
+
 _dataset_size_cache: dict[str, int] = {}
 
 
@@ -368,9 +372,23 @@ def get_dataset_splits(
     server-side (avoids browser CORS / token-exposure issues with the
     datasets-server API for private datasets).
     """
+    import concurrent.futures
+
     from datasets import get_dataset_config_names, get_dataset_split_names
     from datasets.exceptions import DatasetNotFoundError
     from huggingface_hub.utils import HfHubHTTPError
+
+    if not _is_valid_repo_id(request.dataset_name):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Invalid dataset name. Expected format: 'owner/name'.",
+        )
+
+    MAX_CONFIGS = 50
+    STATUS_PRIORITY = {403: 0, 401: 0, 404: 1}
+
+    def _better(current: int, new: int) -> bool:
+        return STATUS_PRIORITY.get(new, 2) < STATUS_PRIORITY.get(current, 2)
 
     try:
         dataset_name = request.dataset_name
@@ -380,61 +398,64 @@ def get_dataset_splits(
 
         configs = get_dataset_config_names(dataset_name, token = token)
 
-        all_splits: list[SplitEntry] = []
-        last_config_error: str | None = None
-        last_config_status: int = 500
-        for config in configs:
+        if len(configs) > MAX_CONFIGS:
+            logger.warning(
+                f"Dataset '{dataset_name}' has {len(configs)} configs; "
+                f"truncating to first {MAX_CONFIGS} for UI responsiveness."
+            )
+            configs = configs[:MAX_CONFIGS]
+
+        def _fetch_one(config: str):
             try:
-                split_names = get_dataset_split_names(
+                names = list(get_dataset_split_names(
                     dataset_name,
                     config_name = config,
                     token = token,
-                )
-                for split_name in split_names:
-                    all_splits.append(
-                        SplitEntry(
-                            dataset = dataset_name,
-                            config = config,
-                            split = split_name,
-                        )
-                    )
-            except HfHubHTTPError as config_err:
-                logger.warning(
-                    f"Could not fetch splits for config '{config}': {config_err}"
-                )
-                last_config_error = str(config_err)
+                ))
+                return config, names, None, None
+            except HfHubHTTPError as err:
                 hf_status = (
-                    config_err.response.status_code
-                    if config_err.response is not None
-                    else 500
+                    err.response.status_code if err.response is not None else 500
                 )
-                last_config_status = 403 if hf_status == 401 else hf_status
-                continue
-            except DatasetNotFoundError as config_err:
-                logger.warning(
-                    f"Could not fetch splits for config '{config}': {config_err}"
-                )
-                last_config_error = str(config_err)
-                last_config_status = 404
-                continue
-            except Exception as config_err:
-                logger.warning(
-                    f"Could not fetch splits for config '{config}': {config_err}"
-                )
-                last_config_error = str(config_err)
-                last_config_status = 500
-                continue
+                return config, None, str(err), _remap_hf_status(hf_status)
+            except DatasetNotFoundError as err:
+                return config, None, str(err), 404
+            except Exception as err:
+                return config, None, str(err), 500
 
-        # If configs were found but every single one failed, surface the
-        # error so the UI can show an actionable message instead of a
-        # misleading empty-success response.  Preserve the original HF
-        # status code (e.g. 403) when available.
-        if configs and not all_splits and last_config_error:
+        all_splits: list[SplitEntry] = []
+        last_config_error: str | None = None
+        last_config_status: int = 500
+
+        if configs:
+            with concurrent.futures.ThreadPoolExecutor(max_workers = 8) as pool:
+                results = list(pool.map(_fetch_one, configs))
+            for config, split_names, err_text, err_status in results:
+                if split_names is not None:
+                    for split_name in split_names:
+                        all_splits.append(
+                            SplitEntry(
+                                dataset = dataset_name,
+                                config = config,
+                                split = split_name,
+                            )
+                        )
+                else:
+                    logger.warning(
+                        f"Could not fetch splits for config '{config}': {err_text}"
+                    )
+                    if last_config_error is None or _better(
+                        last_config_status, err_status
+                    ):
+                        last_config_error = err_text
+                        last_config_status = err_status
+
+        if configs and not all_splits and last_config_error is not None:
             raise HTTPException(
                 status_code = last_config_status,
                 detail = (
-                    f"Failed to fetch splits for any config of '{dataset_name}'. "
-                    f"Last error: {last_config_error}"
+                    f"Failed to fetch splits for any config of '{dataset_name}' "
+                    f"(HTTP {last_config_status})."
                 ),
             )
 
@@ -445,28 +466,21 @@ def get_dataset_splits(
     except DatasetNotFoundError:
         raise HTTPException(
             status_code = 404,
-            detail = (
-                f"Dataset '{request.dataset_name}' does not exist on the Hub, "
-                "or is private and requires a valid Hugging Face token."
-            ),
+            detail = f"Dataset '{request.dataset_name}' was not found on the Hub.",
         )
     except HfHubHTTPError as e:
         hf_status = e.response.status_code if e.response is not None else 500
-        # Remap HF 401 to 403: authFetch intercepts 401 as a studio-session
-        # expiry and triggers a refresh/logout cycle. The frontend error
-        # normalizer matches on message text, not HTTP status, so the user
-        # still sees the correct auth-related guidance.
-        status_code = 403 if hf_status == 401 else hf_status
+        status_code = _remap_hf_status(hf_status)
         logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
         raise HTTPException(
             status_code = status_code,
-            detail = f"Failed to fetch dataset splits: {str(e)}",
+            detail = f"Failed to fetch dataset splits (HTTP {status_code}).",
         )
     except Exception as e:
         logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to fetch dataset splits: {str(e)}",
+            detail = "Failed to fetch dataset splits.",
         )
 
 
