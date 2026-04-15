@@ -265,13 +265,20 @@ export interface BrowseFoldersResponse {
 export async function browseFolders(
   path?: string,
   showHidden = false,
+  signal?: AbortSignal,
 ): Promise<BrowseFoldersResponse> {
   const params = new URLSearchParams();
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
+  // Forward the AbortSignal through authFetch -> fetch so that a
+  // navigation cancelled in the FolderBrowser (rapid breadcrumb / row /
+  // hidden-toggle clicks) actually cancels the in-flight HTTP request
+  // server-side, instead of merely dropping the response client-side
+  // while the backend keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
+    signal ? { signal } : undefined,
   );
   return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }

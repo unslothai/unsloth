@@ -548,6 +548,13 @@ export function HubModelPicker({
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
+    // True when the request originated from the folder browser's
+    // ``onSelect`` (one-click "Use this folder"). In that flow the
+    // typed-input panel is closed, so the inline ``folderError``
+    // paragraph is invisible. Surface failures via toast instead so
+    // the action doesn't appear to silently no-op when the backend
+    // rejects (denylisted path, sandbox 403, etc.).
+    const fromBrowser = overridePath !== undefined;
     try {
       const created = await addScanFolder(trimmed);
       // Backend returns existing row for duplicates, so deduplicate
@@ -563,7 +570,11 @@ export function HubModelPicker({
       // Background reconciliation with the server
       void refreshScanFolders();
     } catch (e) {
-      setFolderError(e instanceof Error ? e.message : "Failed to add folder");
+      const message = e instanceof Error ? e.message : "Failed to add folder";
+      setFolderError(message);
+      if (fromBrowser) {
+        toast.error("Couldn't add folder", { description: message });
+      }
     } finally {
       setFolderLoading(false);
     }

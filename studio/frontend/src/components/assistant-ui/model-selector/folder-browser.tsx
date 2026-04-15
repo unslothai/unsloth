@@ -31,10 +31,18 @@ export interface FolderBrowserProps {
 }
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
-  // Windows / POSIX both have a trailing root we want rendered once.
-  const posix = path.replace(/\\/g, "/");
-  if (!posix) return [];
-  const segments = posix.split("/");
+  if (!path) return [];
+  // Distinguish path styles BEFORE normalizing separators. On POSIX
+  // backslashes are valid filename characters, so we cannot blindly
+  // rewrite ``\`` -> ``/`` -- doing so would mangle directory names
+  // like ``my\backup`` into ``my/backup`` and produce breadcrumb
+  // values that 404 on the server. Only Windows-style absolute paths
+  // (drive letter, or UNC ``\\server\share``) get the conversion.
+  const isWindowsDrive = /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
+  const isUnc = /^\\\\/.test(path);
+  const isWindows = isWindowsDrive || isUnc;
+  const normalized = isWindows ? path.replace(/\\/g, "/") : path;
+  const segments = normalized.split("/");
   const parts: { label: string; value: string }[] = [];
 
   // POSIX absolute path: leading empty segment from split("/")
@@ -49,13 +57,18 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows-ish drive path (C:, D:): first segment is the drive.
+  // Windows-ish drive path (C:, D:): first segment is the drive. Use
+  // ``C:/`` (drive-absolute) as the crumb value so clicking the drive
+  // root navigates to the root of the drive rather than the
+  // drive-relative current working directory on that drive (``C:``
+  // alone resolves to ``CWD-on-C``, not ``C:\``).
   if (/^[A-Za-z]:$/.test(segments[0])) {
-    let cur = segments[0];
-    parts.push({ label: segments[0], value: cur });
+    const driveRoot = `${segments[0]}/`;
+    let cur = driveRoot;
+    parts.push({ label: segments[0], value: driveRoot });
     for (const seg of segments.slice(1)) {
       if (!seg) continue;
-      cur = `${cur}/${seg}`;
+      cur = cur.endsWith("/") ? `${cur}${seg}` : `${cur}/${seg}`;
       parts.push({ label: seg, value: cur });
     }
     return parts;
@@ -79,13 +92,19 @@ export function FolderBrowser({
   const abortRef = useRef<AbortController | null>(null);
 
   const navigate = useCallback(
-    (target: string | undefined, hidden: boolean) => {
+    (
+      target: string | undefined,
+      hidden: boolean,
+      opts?: { fallbackOnError?: boolean },
+    ) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
       setLoading(true);
       setError(null);
-      browseFolders(target, hidden)
+      // Forward the signal so cancelled navigation actually cancels the
+      // backend enumeration instead of just discarding the response.
+      browseFolders(target, hidden, ctrl.signal)
         .then((res) => {
           if (ctrl.signal.aborted) return;
           setData(res);
@@ -93,7 +112,19 @@ export function FolderBrowser({
         })
         .catch((err) => {
           if (ctrl.signal.aborted) return;
-          setError(err instanceof Error ? err.message : String(err));
+          // Surface the error, but if the very first request (typically
+          // a typo'd or denylisted ``initialPath``) fails AND the
+          // browser is empty (no ``data`` to render against), fall
+          // back to the user's HOME so the modal is navigable instead
+          // of an irrecoverable dead end.
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
+          if (opts?.fallbackOnError && target !== undefined) {
+            // Re-issue without a target -> backend defaults to HOME.
+            // Don't recurse if HOME itself fails (paranoia: shouldn't
+            // happen since the sandbox allowlist always includes HOME).
+            queueMicrotask(() => navigate(undefined, hidden));
+          }
         })
         .finally(() => {
           if (!ctrl.signal.aborted) setLoading(false);
@@ -108,7 +139,10 @@ export function FolderBrowser({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
-    navigate(initialPath, showHidden);
+    // ``fallbackOnError``: if the user-supplied ``initialPath`` is bad
+    // (typo, denylisted, deleted) we recover into HOME instead of
+    // showing an empty modal with no breadcrumbs/entries.
+    navigate(initialPath, showHidden, { fallbackOnError: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 

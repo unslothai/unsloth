@@ -589,11 +589,19 @@ def _count_model_files(directory: Path, cap: int = 200) -> int:
     """Count GGUF/safetensors files immediately inside *directory*.
     Used to surface a count-hint on the response so the UI can tell
     users that a leaf directory (no subdirs, only weights) is a valid
-    "Use this folder" target."""
+    "Use this folder" target.
+
+    Bounded by *visited entries*, not by *match count*: in directories
+    with many non-model files (or many subdirectories) the scan still
+    stops after ``cap`` entries so a UI hint never costs more than a
+    bounded directory walk.
+    """
     n = 0
+    visited = 0
     try:
         for f in directory.iterdir():
-            if n >= cap:
+            visited += 1
+            if visited > cap:
                 break
             try:
                 if f.is_file():
@@ -602,7 +610,11 @@ def _count_model_files(directory: Path, cap: int = 200) -> int:
                         n += 1
             except OSError:
                 continue
-    except OSError:
+    except PermissionError as e:
+        logger.debug("browse-folders: permission denied counting %s: %s", directory, e)
+        return 0
+    except OSError as e:
+        logger.debug("browse-folders: OS error counting %s: %s", directory, e)
         return 0
     return n
 
@@ -684,13 +696,113 @@ def _looks_like_model_dir(directory: Path) -> bool:
     return False
 
 
+def _build_browse_allowlist() -> list[Path]:
+    """Return the list of root directories the folder browser is allowed
+    to walk. The same list is used to seed the sidebar suggestion chips,
+    so chip targets are always reachable.
+
+    Roots include the current user's HOME, the resolved HF cache dirs,
+    Studio's own outputs/exports/studio root, registered scan folders,
+    and well-known third-party local-LLM dirs (LM Studio, Ollama,
+    `~/models`). Each is added only if it currently resolves to a real
+    directory, so we never produce a "dead" sandbox boundary the user
+    can't navigate into.
+    """
+    from utils.paths import (
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        well_known_model_dirs,
+    )
+    from storage.studio_db import list_scan_folders
+
+    candidates: list[Path] = []
+
+    def _add(p: Optional[Path]) -> None:
+        if p is None:
+            return
+        try:
+            resolved = p.resolve()
+        except OSError:
+            return
+        if resolved.is_dir():
+            candidates.append(resolved)
+
+    _add(Path.home())
+    _add(_resolve_hf_cache_dir())
+    try:
+        _add(hf_default_cache_dir())
+    except Exception:  # noqa: BLE001 -- best-effort
+        pass
+    try:
+        _add(legacy_hf_cache_dir())
+    except Exception:  # noqa: BLE001 -- best-effort
+        pass
+    try:
+        from utils.paths import (
+            exports_root,
+            outputs_root,
+            studio_root,
+        )
+
+        _add(studio_root())
+        _add(outputs_root())
+        _add(exports_root())
+    except Exception as exc:  # noqa: BLE001 -- best-effort
+        logger.debug("browse-folders: studio roots unavailable: %s", exc)
+    try:
+        for folder in list_scan_folders():
+            p = folder.get("path")
+            if p:
+                _add(Path(p))
+    except Exception as exc:  # noqa: BLE001 -- best-effort
+        logger.debug("browse-folders: could not load scan folders: %s", exc)
+    try:
+        for p in well_known_model_dirs():
+            _add(p)
+    except Exception as exc:  # noqa: BLE001 -- best-effort
+        logger.debug("browse-folders: well-known dirs unavailable: %s", exc)
+
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for p in candidates:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return deduped
+
+
+def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
+    """Return True if *target* equals or is a descendant of any allowed
+    root. The comparison uses ``os.path.realpath`` so symlinks cannot be
+    used to escape the sandbox.
+    """
+    try:
+        target_real = os.path.realpath(str(target))
+    except OSError:
+        return False
+    for root in allowed_roots:
+        try:
+            root_real = os.path.realpath(str(root))
+        except OSError:
+            continue
+        if target_real == root_real or target_real.startswith(root_real + os.sep):
+            return True
+    return False
+
+
 @router.get("/browse-folders", response_model = BrowseFoldersResponse)
 async def browse_folders(
     path: Optional[str] = Query(
         None,
         description = (
             "Directory to list. If omitted, defaults to the current user's "
-            "home directory. Tilde (`~`) and relative paths are expanded."
+            "home directory. Tilde (`~`) and relative paths are expanded. "
+            "Must resolve inside the allowlist of browseable roots (HOME, "
+            "HF cache, Studio dirs, registered scan folders, well-known "
+            "model dirs)."
         ),
     ),
     show_hidden: bool = Query(
@@ -709,11 +821,24 @@ async def browse_folders(
     subdirectories so the user can click their way to a folder and hand
     the resulting string back to POST `/api/models/scan-folders`.
 
+    Sandbox: requests are bounded to the allowlist returned by
+    :func:`_build_browse_allowlist` (HOME, HF cache, Studio dirs,
+    registered scan folders, well-known model dirs). Paths outside the
+    allowlist return 403 so users cannot probe ``/etc``, ``/proc``,
+    ``/root`` (when not HOME), or other sensitive system locations
+    even if the server process can read them. Symlinks are resolved
+    via ``os.path.realpath`` before the check, so symlink traversal
+    cannot escape the sandbox either.
+
     Sorting: directories that look like they hold models come first, then
     plain directories, then hidden entries (if `show_hidden=true`).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from storage.studio_db import list_scan_folders
+
+    # Build the allowlist once -- both the sandbox check below and the
+    # suggestion chips use the same set, so chips are always navigable.
+    allowed_roots = _build_browse_allowlist()
 
     # Resolve the requested path. Empty / missing / unusable -> user home.
     if path is None or not path.strip():
@@ -731,6 +856,25 @@ async def browse_folders(
                 detail = f"Invalid path: {exc}",
             )
 
+    # Sandbox: refuse anything outside the allowlist of trusted roots.
+    # CodeQL/security: the user-supplied ``path`` is *only* used to
+    # construct ``target`` (already resolved above) and then validated
+    # against ``allowed_roots`` before any filesystem read.
+    if not _is_path_inside_allowlist(target, allowed_roots):
+        logger.warning(
+            "browse-folders: rejected out-of-sandbox path %r (resolved=%s)",
+            path,
+            target,
+        )
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Path is not in the browseable allowlist. Register it via "
+                "POST /api/models/scan-folders first, or pick a directory "
+                "under your home folder."
+            ),
+        )
+
     if not target.exists():
         raise HTTPException(
             status_code = 404,
@@ -746,6 +890,7 @@ async def browse_folders(
     # query against ``/usr/lib`` or ``/proc`` can't stat-storm the process.
     entries: list[BrowseEntry] = []
     truncated = False
+    visited = 0
     try:
         it = target.iterdir()
     except PermissionError:
@@ -761,7 +906,15 @@ async def browse_folders(
 
     try:
         for child in it:
-            if len(entries) >= _BROWSE_ENTRY_CAP:
+            # Bound by *visited entries*, not by *appended entries*: in
+            # directories full of files (or hidden subdirs when
+            # ``show_hidden=False``) the cap on ``len(entries)`` would
+            # never trigger and we'd still stat every child. Counting
+            # visits keeps the worst-case work to ``_BROWSE_ENTRY_CAP``
+            # iterdir/is_dir calls regardless of how many of them
+            # survive the filters below.
+            visited += 1
+            if visited > _BROWSE_ENTRY_CAP:
                 truncated = True
                 break
             try:
@@ -780,6 +933,12 @@ async def browse_folders(
                     hidden = is_hidden,
                 )
             )
+    except PermissionError as exc:
+        logger.debug(
+            "browse-folders: permission denied during enumeration of %s: %s",
+            target,
+            exc,
+        )
     except OSError as exc:
         # Rare: iterdir succeeded but reading a specific entry failed.
         logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
@@ -792,9 +951,17 @@ async def browse_folders(
 
     entries.sort(key = _sort_key)
 
-    # Parent is None only at the filesystem root (where `p.parent == p`).
+    # Parent is None at the filesystem root (`p.parent == p`) AND when
+    # the parent would step outside the sandbox -- otherwise the up-row
+    # would 403 on click. Users can still hop to other allowed roots
+    # via the suggestion chips below.
     parent: Optional[str]
-    parent = None if target.parent == target else str(target.parent)
+    if target.parent == target or not _is_path_inside_allowlist(
+        target.parent, allowed_roots
+    ):
+        parent = None
+    else:
+        parent = str(target.parent)
 
     # Handy starting points for the quick-pick chips.
     suggestions: list[str] = []
