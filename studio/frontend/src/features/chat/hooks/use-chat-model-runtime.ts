@@ -8,12 +8,14 @@ import {
   getDownloadProgress,
   getGgufDownloadProgress,
   getInferenceStatus,
+  getLoadProgress,
   listLoras,
   listModels,
   loadModel,
   unloadModel,
   validateModel,
 } from "../api/chat-api";
+import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
 import type {
@@ -236,6 +238,25 @@ export function useChatModelRuntime() {
         // Apply inference defaults on reconnect (page refresh with model already loaded)
         if (statusRes.inference) {
           const currentParams = useChatRuntimeStore.getState().params;
+          const reconnectResponse: LoadModelResponse = {
+            status: "already_loaded",
+            model: statusRes.active_model,
+            display_name: statusRes.active_model,
+            is_vision: statusRes.is_vision,
+            is_lora: false,
+            is_gguf: statusRes.is_gguf,
+            is_audio: statusRes.is_audio,
+            audio_type: statusRes.audio_type,
+            has_audio_input: statusRes.has_audio_input,
+            inference: statusRes.inference,
+            context_length: statusRes.context_length,
+            max_context_length: statusRes.max_context_length,
+            native_context_length: statusRes.native_context_length,
+            supports_reasoning: statusRes.supports_reasoning,
+            reasoning_always_on: statusRes.reasoning_always_on,
+            supports_tools: statusRes.supports_tools,
+            speculative_type: statusRes.speculative_type,
+          };
           setParams(
             mergeRecommendedInference(currentParams, statusRes, statusRes.active_model),
           );
@@ -340,8 +361,9 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
+      const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
-        explicitIsLora ?? model?.isLora ?? (lora ? true : false);
+        explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
@@ -355,7 +377,7 @@ export function useChatModelRuntime() {
         ? loras.find((entry) => entry.id === previousCheckpoint)
         : undefined;
       const previousIsLora =
-        previousModel?.isLora ?? (previousLora ? true : false);
+        previousModel?.isLora ?? (previousLora?.exportType === "lora");
       // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
       const isLocal = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(modelId);
       const isCachedLora = isLora && isLocal;
@@ -545,77 +567,147 @@ export function useChatModelRuntime() {
         );
         loadToastIdRef.current = toastId;
 
-        // Poll download progress for non-cached models (GGUF and non-GGUF)
+        // Poll download progress for non-cached models (GGUF and non-GGUF).
+        // Then, once the download wraps (or for already-cached models),
+        // poll the llama-server mmap phase so "Starting model..." no
+        // longer looks frozen for several minutes on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
-        if (!isDownloaded && !isCachedLora) {
-          const expectedBytes =
-            typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
-          let hasShownProgress = false;
+        const expectedBytes =
+          typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-          const pollProgress = async () => {
-            if (abortCtrl.signal.aborted || !loadingModelRef.current) {
-              if (progressInterval) clearInterval(progressInterval);
-              return;
-            }
-            try {
-              const prog = ggufVariant && expectedBytes > 0
+        // Rolling window of byte samples for rate / ETA estimation.
+        // Shared across download + mmap phases so the estimator doesn't
+        // reset when the phase flips.
+        type Sample = { t: number; b: number };
+        const MIN_SAMPLES = 3;
+        const MIN_WINDOW = 3_000; // ms
+        const MAX_WINDOW = 15_000; // ms
+        const dlSamples: Sample[] = [];
+        const mmapSamples: Sample[] = [];
+
+        function estimate(
+          samples: Sample[],
+          bytes: number,
+          total: number,
+        ): { rate: number; eta: number; stable: boolean } {
+          const now = Date.now();
+          // Drop samples if the counter reset (e.g. phase flipped).
+          if (samples.length > 0 && bytes < samples[samples.length - 1].b) {
+            samples.length = 0;
+          }
+          samples.push({ t: now, b: bytes });
+          const cutoff = now - MAX_WINDOW;
+          while (samples.length > 2 && samples[0].t < cutoff) {
+            samples.shift();
+          }
+          if (samples.length < MIN_SAMPLES) {
+            return { rate: 0, eta: 0, stable: false };
+          }
+          const first = samples[0];
+          const last = samples[samples.length - 1];
+          const dt = (last.t - first.t) / 1000;
+          const db = last.b - first.b;
+          if (dt * 1000 < MIN_WINDOW || db <= 0) {
+            return { rate: 0, eta: 0, stable: false };
+          }
+          const rate = db / dt;
+          const eta =
+            total > 0 && bytes < total && rate > 0 ? (total - bytes) / rate : 0;
+          return { rate, eta, stable: true };
+        }
+
+        function composeProgressLabel(
+          dlGb: number,
+          totalGb: number,
+          bytes: number,
+          total: number,
+          samples: Sample[],
+        ): string {
+          const base =
+            totalGb > 0
+              ? `${dlGb.toFixed(1)} of ${totalGb.toFixed(1)} GB`
+              : `${dlGb.toFixed(1)} GB downloaded`;
+          const est = estimate(samples, bytes, total);
+          if (!est.stable) return base;
+          const rateStr = formatRate(est.rate);
+          const etaStr = total > 0 ? formatEta(est.eta) : "";
+          return etaStr && etaStr !== "--"
+            ? `${base} • ${rateStr} • ${etaStr} left`
+            : `${base} • ${rateStr}`;
+        }
+
+        let downloadComplete = isDownloaded || isCachedLora;
+
+        const pollDownload = async () => {
+          if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+            if (progressInterval) clearInterval(progressInterval);
+            return;
+          }
+          try {
+            const prog =
+              ggufVariant && expectedBytes > 0
                 ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
                 : await getDownloadProgress(modelId);
+            if (!loadingModelRef.current) return;
 
-              if (!loadingModelRef.current) return;
-
-              if (prog.progress > 0 && prog.progress < 1) {
-                hasShownProgress = true;
-                const dlGb = prog.downloaded_bytes / (1024 ** 3);
-                const totalGb = prog.expected_bytes / (1024 ** 3);
-                const pct = Math.round(prog.progress * 100);
-                const progressLabel = totalGb > 0
-                  ? `${dlGb.toFixed(1)} of ${totalGb.toFixed(1)} GB`
-                  : `${dlGb.toFixed(1)} GB downloaded`;
-                setLoadProgress({
-                  percent: pct,
-                  label: progressLabel,
-                  phase: "downloading",
-                });
-                if (loadToastDismissedRef.current) return;
-                toast(
-                  null,
-                  {
-                    id: toastId,
-                    description: renderLoadDescription(
-                      "Downloading model…",
-                      loadingDescription,
-                      pct,
-                      progressLabel,
-                      cancelLoading,
-                    ),
-                    duration: Infinity,
-                    closeButton: false,
-                    classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-                    onDismiss: (dismissedToast) => {
-                      if (loadToastIdRef.current !== dismissedToast.id) return;
-                      setLoadToastDismissedState(true);
-                    },
-                  },
-                );
-              } else if (prog.downloaded_bytes > 0 && prog.expected_bytes === 0 && prog.progress === 0) {
-                hasShownProgress = true;
-                const dlGb = prog.downloaded_bytes / (1024 ** 3);
-                setLoadProgress({
-                  percent: null,
-                  label: `${dlGb.toFixed(1)} GB downloaded`,
-                  phase: "downloading",
-                });
-              } else if (prog.progress >= 1 && hasShownProgress) {
-                setLoadProgress({
-                  percent: 100,
-                  label: "Download complete",
-                  phase: "starting",
-                });
-                if (loadToastDismissedRef.current) {
-                  if (progressInterval) clearInterval(progressInterval);
-                  return;
-                }
+            if (prog.progress > 0 && prog.progress < 1) {
+              hasShownProgress = true;
+              const dlGb = prog.downloaded_bytes / (1024 ** 3);
+              const totalGb = prog.expected_bytes / (1024 ** 3);
+              const pct = Math.round(prog.progress * 100);
+              const progressLabel = composeProgressLabel(
+                dlGb,
+                totalGb,
+                prog.downloaded_bytes,
+                prog.expected_bytes,
+                dlSamples,
+              );
+              setLoadProgress({
+                percent: pct,
+                label: progressLabel,
+                phase: "downloading",
+              });
+              if (loadToastDismissedRef.current) return;
+              toast(null, {
+                id: toastId,
+                description: renderLoadDescription(
+                  "Downloading model…",
+                  loadingDescription,
+                  pct,
+                  progressLabel,
+                  cancelLoading,
+                ),
+                duration: Infinity,
+                closeButton: false,
+                classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+                onDismiss: (dismissedToast) => {
+                  if (loadToastIdRef.current !== dismissedToast.id) return;
+                  setLoadToastDismissedState(true);
+                },
+              });
+            } else if (
+              prog.downloaded_bytes > 0 &&
+              prog.expected_bytes === 0 &&
+              prog.progress === 0
+            ) {
+              hasShownProgress = true;
+              const dlGb = prog.downloaded_bytes / (1024 ** 3);
+              const est = estimate(dlSamples, prog.downloaded_bytes, 0);
+              const rateSuffix =
+                est.stable ? ` • ${formatRate(est.rate)}` : "";
+              setLoadProgress({
+                percent: null,
+                label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
+                phase: "downloading",
+              });
+            } else if (prog.progress >= 1 && hasShownProgress) {
+              downloadComplete = true;
+              setLoadProgress({
+                percent: 100,
+                label: "Download complete",
+                phase: "starting",
+              });
+              if (!loadToastDismissedRef.current) {
                 toast(null, {
                   id: toastId,
                   description: renderLoadDescription(
@@ -633,16 +725,79 @@ export function useChatModelRuntime() {
                     setLoadToastDismissedState(true);
                   },
                 });
-                if (progressInterval) clearInterval(progressInterval);
               }
-            } catch {
-              // Ignore polling errors
+              // Keep polling: the mmap branch below takes over from here.
             }
-          };
+          } catch {
+            // Ignore polling errors; keep polling.
+          }
+        };
 
-          setTimeout(pollProgress, 500);
-          progressInterval = setInterval(pollProgress, 2000);
-        }
+        const pollLoad = async () => {
+          if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+            if (progressInterval) clearInterval(progressInterval);
+            return;
+          }
+          try {
+            const prog = await getLoadProgress();
+            if (!loadingModelRef.current) return;
+            if (!prog || prog.phase == null) return;
+            if (prog.phase === "ready") {
+              // Loaded. The chat flow will flip loadingModelRef shortly;
+              // just stop polling.
+              if (progressInterval) clearInterval(progressInterval);
+              return;
+            }
+            if (prog.bytes_total <= 0) return; // nothing useful to render
+            const loadedGb = prog.bytes_loaded / (1024 ** 3);
+            const totalGb = prog.bytes_total / (1024 ** 3);
+            const pct = Math.min(99, Math.round(prog.fraction * 100));
+            const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
+            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
+            const label = est.stable
+              ? `${base} • ${formatRate(est.rate)}${
+                  formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
+                }`
+              : base;
+            setLoadProgress({
+              percent: pct,
+              label,
+              phase: "starting",
+            });
+            if (loadToastDismissedRef.current) return;
+            toast(null, {
+              id: toastId,
+              description: renderLoadDescription(
+                "Starting model…",
+                "Paging weights into memory.",
+                pct,
+                label,
+                cancelLoading,
+              ),
+              duration: Infinity,
+              closeButton: false,
+              classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+              onDismiss: (dismissedToast) => {
+                if (loadToastIdRef.current !== dismissedToast.id) return;
+                setLoadToastDismissedState(true);
+              },
+            });
+          } catch {
+            // Ignore polling errors.
+          }
+        };
+
+        const pollProgress = async () => {
+          if (!downloadComplete) {
+            await pollDownload();
+          } else {
+            await pollLoad();
+          }
+        };
+
+        let hasShownProgress = false;
+        setTimeout(pollProgress, 500);
+        progressInterval = setInterval(pollProgress, 2000);
 
         try {
           await performLoad();

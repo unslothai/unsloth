@@ -188,6 +188,39 @@ class UnloadResponse(BaseModel):
     model: str = Field(..., description = "Model identifier that was unloaded")
 
 
+class LoadProgressResponse(BaseModel):
+    """Progress of the active GGUF load, sampled on demand.
+
+    Used by the UI to show a real progress bar during the
+    post-download warmup window (mmap + CUDA upload), rather than a
+    generic "Starting model..." spinner that freezes for minutes on
+    large MoE models.
+    """
+
+    phase: Optional[str] = Field(
+        None,
+        description = (
+            "Load phase: 'mmap' (weights paging into RAM via mmap), "
+            "'ready' (llama-server reported healthy), or null when no "
+            "load is in flight."
+        ),
+    )
+    bytes_loaded: int = Field(
+        0,
+        description = (
+            "Bytes of the model already resident in the llama-server "
+            "process (VmRSS on Linux)."
+        ),
+    )
+    bytes_total: int = Field(
+        0,
+        description = "Total bytes across all GGUF shards for the active model.",
+    )
+    fraction: float = Field(
+        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
+    )
+
+
 class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
