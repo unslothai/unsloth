@@ -250,9 +250,8 @@ def _is_flash_attention_disabled(model_type):
 
 
 def _is_flash_attention_requested(attn_implementation):
-    return (
-        isinstance(attn_implementation, str)
-        and attn_implementation.startswith("flash_attention")
+    return isinstance(attn_implementation, str) and attn_implementation.startswith(
+        "flash_attention"
     )
 
 
