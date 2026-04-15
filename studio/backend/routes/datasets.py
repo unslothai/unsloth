@@ -17,7 +17,9 @@ import re as _re
 import structlog
 from loggers import get_logger
 
-_VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+_VALID_REPO_ID = _re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+)
 
 
 def _is_valid_repo_id(repo_id: str) -> bool:
@@ -391,7 +393,7 @@ def get_dataset_splits(
 
     try:
         dataset_name = request.dataset_name
-        token = request.hf_token or None
+        token = request.hf_token if request.hf_token else False
 
         logger.info(f"Fetching splits for dataset: {dataset_name}")
 
@@ -411,7 +413,15 @@ def get_dataset_splits(
                 )
                 return config, None, str(err), _remap_hf_status(hf_status)
             except DatasetNotFoundError as err:
-                return config, None, str(err), 404
+                text = str(err)
+                response = getattr(err, "response", None)
+                http_status = response.status_code if response is not None else None
+                lowered = text.lower()
+                if http_status in (401, 403) or any(k in lowered for k in (
+                    "gated", "is private", "ask for access", "must be authenticated",
+                )):
+                    return config, None, text, 403
+                return config, None, text, 404
             except Exception as err:
                 return config, None, str(err), 500
 
@@ -452,14 +462,34 @@ def get_dataset_splits(
                 ),
             )
 
-        return DatasetSplitsResponse(splits = all_splits)
+        if not all_splits:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"No splits found for dataset '{request.dataset_name}'.",
+            )
+
+        failed_count = 0
+        if configs:
+            failed_count = sum(1 for _, names, _, _ in results if names is None)
+        partial_failure = None
+        if failed_count and all_splits:
+            partial_failure = (
+                f"{failed_count} config(s) could not be fetched: "
+                f"{(last_config_error or '')[:200]}"
+            )
+
+        return DatasetSplitsResponse(
+            splits = all_splits, partial_failure = partial_failure,
+        )
 
     except HTTPException:
         raise
     except DatasetNotFoundError as e:
         text = str(e)
+        response = getattr(e, "response", None)
+        http_status = response.status_code if response is not None else None
         lowered = text.lower()
-        if any(k in lowered for k in (
+        if http_status in (401, 403) or any(k in lowered for k in (
             "gated", "is private", "ask for access", "must be authenticated",
         )):
             raise HTTPException(status_code = 403, detail = text[:500])

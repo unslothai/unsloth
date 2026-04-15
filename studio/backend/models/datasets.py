@@ -103,7 +103,7 @@ class DatasetSplitsRequest(BaseModel):
     """Request for fetching dataset splits (subsets and split names)."""
 
     dataset_name: str = Field(..., min_length = 1, max_length = 256)
-    hf_token: Optional[str] = Field(default = None, max_length = 512)
+    hf_token: Optional[str] = Field(default = None, min_length = 1, max_length = 512)
 
 
 class SplitEntry(BaseModel):
@@ -114,3 +114,4 @@ class SplitEntry(BaseModel):
 
 class DatasetSplitsResponse(BaseModel):
     splits: List[SplitEntry] = Field(default_factory = list)
+    partial_failure: Optional[str] = None
