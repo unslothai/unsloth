@@ -399,10 +399,14 @@ function GgufVariantExpander({
   );
 }
 
-// ── Detect GGUF repos by naming convention ────────────────────
+// ── Detect GGUF repos by naming convention or hub tag ────────────────────
 
-function isGgufRepo(id: string): boolean {
-  return id.toUpperCase().includes("-GGUF");
+function hasGgufSuffix(id: string): boolean {
+  return /-GGUF(?:$|-)/i.test(id);
+}
+
+function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
+  return Boolean(hintedIsGguf) || hasGgufSuffix(id);
 }
 
 /** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
@@ -450,6 +454,33 @@ export function HubModelPicker({
   const debouncedQuery = useDebouncedValue(query);
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
+
+  // Sets of lowercased repo ids that the store or HF search have
+  // confirmed are GGUF. Absence means "no hint" and lets hasGgufSuffix
+  // take over as fallback, rather than conflating unknown with known-
+  // not-GGUF. Keys are lowercased so that store IDs and HF search IDs
+  // that differ only by casing still match the same hint.
+  const modelGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const model of models) {
+      if (model.isGguf) ids.add(model.id.toLowerCase());
+    }
+    return ids;
+  }, [models]);
+  const resultGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of results) {
+      if (result.isGguf) ids.add(result.id.toLowerCase());
+    }
+    return ids;
+  }, [results]);
+  const isKnownGgufRepo = useCallback(
+    (id: string): boolean => {
+      const key = id.toLowerCase();
+      return isGgufRepo(id, resultGgufIds.has(key) || modelGgufIds.has(key));
+    },
+    [modelGgufIds, resultGgufIds],
+  );
 
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
@@ -625,17 +656,17 @@ export function HubModelPicker({
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
     const hub: string[] = [];
     for (const id of all) {
-      if (isGgufRepo(id)) gguf.push(id);
+      if (isKnownGgufRepo(id)) gguf.push(id);
       else hub.push(id);
     }
     return [...gguf, ...hub];
-  }, [models, value, downloadedSet, chatOnly]);
+  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo]);
 
   // Infinite scroll paging for the recommended section
   const [recommendedPage, setRecommendedPage] = useState(1);
@@ -645,7 +676,7 @@ export function HubModelPicker({
   }, [models, chatOnly]);
 
   const visibleRecommendedIds = useMemo(() => {
-    const hubStartIndex = recommendedIds.findIndex((id) => !isGgufRepo(id));
+    const hubStartIndex = recommendedIds.findIndex((id) => !isKnownGgufRepo(id));
     const allGguf =
       hubStartIndex === -1
         ? recommendedIds
@@ -659,7 +690,7 @@ export function HubModelPicker({
       result.push(...allHub.slice(p * 4, (p + 1) * 4));
     }
     return result;
-  }, [recommendedIds, recommendedPage]);
+  }, [recommendedIds, recommendedPage, isKnownGgufRepo]);
 
   const hasMoreRecommended =
     visibleRecommendedIds.length < recommendedIds.length;
@@ -681,8 +712,8 @@ export function HubModelPicker({
     const ids = showHfSection
       ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
       : visibleRecommendedIds;
-    return ids.filter((id) => !isGgufRepo(id));
-  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
+    return ids.filter((id) => !isKnownGgufRepo(id));
+  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);
 
@@ -697,9 +728,9 @@ export function HubModelPicker({
     return results
       .map((result) => result.id)
       .filter((id) => !recommendedSet.has(id))
-      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, chatOnly]);
+  }, [recommendedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
 
   const metricsById = useMemo(
     () =>
@@ -800,14 +831,14 @@ export function HubModelPicker({
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isGgufRepo(id)) {
+      if (isKnownGgufRepo(id)) {
         // Toggle GGUF variant expander
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
         onSelect(id, { source: "hub", isLora: false });
       }
     },
-    [onSelect],
+    [onSelect, isKnownGgufRepo],
   );
 
   return (
@@ -848,7 +879,11 @@ export function HubModelPicker({
                     label={c.repo_id}
                     meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
-                    onClick={() => handleModelClick(c.repo_id)}
+                    onClick={() =>
+                      setExpandedGguf((prev) =>
+                        prev === c.repo_id ? null : c.repo_id,
+                      )
+                    }
                     vramStatus={null}
                   />
                   {expandedGguf === c.repo_id && (
@@ -909,7 +944,7 @@ export function HubModelPicker({
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={
-                        isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"
+                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
                       }
                       selected={value === m.id}
                       onClick={() => {
@@ -1036,7 +1071,7 @@ export function HubModelPicker({
                 const isGguf =
                   isGgufRepo(m.id) ||
                   isGgufRepo(m.display_name) ||
-                  m.path.endsWith(".gguf");
+                  m.path.toLowerCase().endsWith(".gguf");
                 return (
                   <div key={m.id}>
                     <ModelRow
@@ -1089,16 +1124,22 @@ export function HubModelPicker({
                       <ModelRow
                         label={id}
                         meta={
-                          isGgufRepo(id)
+                          isKnownGgufRepo(id)
                             ? "GGUF"
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => handleModelClick(id)}
+                        onClick={() => {
+                          if (isKnownGgufRepo(id)) {
+                            setExpandedGguf((prev) => (prev === id ? null : id));
+                          } else {
+                            handleModelClick(id);
+                          }
+                        }}
                         vramStatus={
-                          isGgufRepo(id) ? null : (vram?.status ?? null)
+                          isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                         }
-                        vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                        vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
@@ -1136,16 +1177,22 @@ export function HubModelPicker({
                     <ModelRow
                       label={id}
                       meta={
-                        isGgufRepo(id)
+                        isKnownGgufRepo(id)
                           ? "GGUF"
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      onClick={() => handleModelClick(id)}
+                      onClick={() => {
+                        if (isKnownGgufRepo(id)) {
+                          setExpandedGguf((prev) => (prev === id ? null : id));
+                        } else {
+                          handleModelClick(id);
+                        }
+                      }}
                       vramStatus={
-                        isGgufRepo(id) ? null : (vram?.status ?? null)
+                        isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                       }
-                      vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                      vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                       gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                     />
                     {expandedGguf === id && (
@@ -1175,24 +1222,31 @@ export function HubModelPicker({
                     No matching models.
                   </div>
                 ) : null
-              ) : (
+                ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
+                  const isSearchGguf = isKnownGgufRepo(id);
                   return (
                     <div key={id}>
                       <ModelRow
                         label={id}
                         meta={
-                          isGgufRepo(id)
+                          isSearchGguf
                             ? "GGUF"
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => handleModelClick(id)}
+                        onClick={() => {
+                          if (isSearchGguf) {
+                            setExpandedGguf((prev) => (prev === id ? null : id));
+                          } else {
+                            handleModelClick(id);
+                          }
+                        }}
                         vramStatus={
-                          isGgufRepo(id) ? null : (vram?.status ?? null)
+                          isSearchGguf ? null : (vram?.status ?? null)
                         }
-                        vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                        vramEst={isSearchGguf ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (

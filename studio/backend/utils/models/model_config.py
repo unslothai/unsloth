@@ -907,6 +907,18 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+def _is_gguf_filename(filename: str) -> bool:
+    return filename.lower().endswith(".gguf")
+
+
+def _iter_gguf_files(directory: Path):
+    if not directory.is_dir():
+        return
+    for f in directory.iterdir():
+        if f.is_file() and _is_gguf_filename(f.name):
+            yield f
+
+
 def detect_mmproj_file(path: str) -> Optional[str]:
     """
     Find the mmproj (vision projection) GGUF file in a directory.
@@ -922,7 +934,7 @@ def detect_mmproj_file(path: str) -> Optional[str]:
     if not search_dir.is_dir():
         return None
 
-    for f in search_dir.glob("*.gguf"):
+    for f in _iter_gguf_files(search_dir):
         if _is_mmproj(f.name):
             return str(f.resolve())
     return None
@@ -945,7 +957,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
     p = Path(path)
 
     # Case 1: direct .gguf file
-    if p.suffix == ".gguf" and p.is_file():
+    if p.suffix.lower() == ".gguf" and p.is_file():
         if _is_mmproj(p.name):
             return None
         return str(p.resolve())
@@ -953,7 +965,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
     # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():
         gguf_files = sorted(
-            (f for f in p.glob("*.gguf") if not _is_mmproj(f.name)),
+            (f for f in _iter_gguf_files(p) if not _is_mmproj(f.name)),
             key = lambda f: f.stat().st_size,
             reverse = True,
         )
@@ -1018,7 +1030,7 @@ def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     Prefers quantization levels in _GGUF_QUANT_PREFERENCE order.
     Falls back to the first .gguf file found.
     """
-    gguf_files = [f for f in filenames if f.endswith(".gguf")]
+    gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
     if not gguf_files:
         return None
 
@@ -1103,7 +1115,7 @@ def list_gguf_variants(
 
     for sibling in info.siblings:
         fname = sibling.rfilename
-        if not fname.endswith(".gguf"):
+        if not fname.lower().endswith(".gguf"):
             continue
         size = sibling.size or 0
 
@@ -1174,7 +1186,7 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    for f in sorted(p.glob("*.gguf")):
+    for f in sorted(_iter_gguf_files(p)):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -1213,7 +1225,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     matches = sorted(
         f
-        for f in p.glob("*.gguf")
+        for f in _iter_gguf_files(p)
         if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
     )
     if matches:
@@ -1441,7 +1453,9 @@ def scan_exported_models(
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
             # Filter out mmproj (vision projection) files — they aren't loadable as main models
-            gguf_files = [f for f in run_dir.glob("*.gguf") if not _is_mmproj(f.name)]
+            gguf_files = [
+                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -1468,7 +1482,7 @@ def scan_exported_models(
                 has_weights = any(checkpoint_dir.glob("*.safetensors")) or any(
                     checkpoint_dir.glob("*.bin")
                 )
-                has_gguf = any(checkpoint_dir.glob("*.gguf"))
+                has_gguf = any(_iter_gguf_files(checkpoint_dir))
 
                 base_model = None
                 export_type = None
@@ -1491,7 +1505,7 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    gguf_list = list(checkpoint_dir.glob("*.gguf"))
+                    gguf_list = list(_iter_gguf_files(checkpoint_dir))
                     # Check checkpoint_dir first, then fall back to parent run_dir
                     # (export.py writes metadata to the top-level export directory)
                     for meta_dir in (checkpoint_dir, run_dir):

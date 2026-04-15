@@ -14,6 +14,7 @@ export interface HfModelResult {
   likes: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
+  isGguf: boolean;
 }
 
 const EXCLUDED_TAGS = new Set([
@@ -90,7 +91,10 @@ function makeMapModel(excludeGguf: boolean) {
     if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
       return null;
     }
-    if (excludeGguf && m.tags?.includes("gguf")) {
+    const isGguf =
+      Boolean(m.tags?.some((tag) => tag.toLowerCase() === "gguf")) ||
+      /-GGUF(?:$|-)/i.test(m.name);
+    if (excludeGguf && isGguf) {
       return null;
     }
     return {
@@ -99,6 +103,7 @@ function makeMapModel(excludeGguf: boolean) {
       likes: m.likes,
       totalParams: m.safetensors?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
+      isGguf,
     };
   };
 }
@@ -336,4 +341,3 @@ export function useHfModelSearch(
 
   return { ...search, results };
 }
-
