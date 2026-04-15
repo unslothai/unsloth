@@ -3,8 +3,13 @@ from pathlib import Path
 
 
 def _route_tree():
-    src = (Path(__file__).resolve().parent
-           / "studio" / "backend" / "routes" / "datasets.py").read_text()
+    src = (
+        Path(__file__).resolve().parent
+        / "studio"
+        / "backend"
+        / "routes"
+        / "datasets.py"
+    ).read_text()
     return ast.parse(src), src
 
 
@@ -51,18 +56,18 @@ def test_logger_error_messages_include_type_name_formatter():
             # Arg 0 should be a JoinedStr (f-string) containing a FormattedValue
             # whose expression is `type(e).__name__`.
             arg0 = n.args[0]
-            assert isinstance(arg0, ast.JoinedStr), (
-                "logger.error first arg must be an f-string"
-            )
+            assert isinstance(
+                arg0, ast.JoinedStr
+            ), "logger.error first arg must be an f-string"
             uses_type_name = False
             for part in arg0.values:
                 if isinstance(part, ast.FormattedValue):
                     src_text = ast.unparse(part.value)
                     if ".__name__" in src_text and "type(" in src_text:
                         uses_type_name = True
-            assert uses_type_name, (
-                "logger.error f-string should format type(e).__name__"
-            )
+            assert (
+                uses_type_name
+            ), "logger.error f-string should format type(e).__name__"
     assert found_any, "expected at least one logger.error call in function"
 
 

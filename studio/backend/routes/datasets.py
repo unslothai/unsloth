@@ -410,11 +410,13 @@ def get_dataset_splits(
 
         def _fetch_one(config: str):
             try:
-                names = list(get_dataset_split_names(
-                    dataset_name,
-                    config_name = config,
-                    token = token,
-                ))
+                names = list(
+                    get_dataset_split_names(
+                        dataset_name,
+                        config_name = config,
+                        token = token,
+                    )
+                )
                 return config, names, None, None
             except HfHubHTTPError as err:
                 hf_status = (
@@ -428,9 +430,15 @@ def get_dataset_splits(
                 )
                 http_status = response.status_code if response is not None else None
                 lowered = text.lower()
-                if http_status in (401, 403) or any(k in lowered for k in (
-                    "gated", "is private", "ask for access", "must be authenticated",
-                )):
+                if http_status in (401, 403) or any(
+                    k in lowered
+                    for k in (
+                        "gated",
+                        "is private",
+                        "ask for access",
+                        "must be authenticated",
+                    )
+                ):
                     return config, None, text, 403
                 return config, None, text, 404
             except Exception as err:
@@ -457,9 +465,7 @@ def get_dataset_splits(
                 logger.warning(
                     f"Could not fetch splits for config '{config}': {err_text}"
                 )
-                if last_config_error is None or _better(
-                    last_config_status, err_status
-                ):
+                if last_config_error is None or _better(last_config_status, err_status):
                     last_config_error = err_text
                     last_config_status = err_status
 
@@ -490,7 +496,8 @@ def get_dataset_splits(
             )
 
         return DatasetSplitsResponse(
-            splits = all_splits, partial_failure = partial_failure,
+            splits = all_splits,
+            partial_failure = partial_failure,
         )
 
     except HTTPException:
@@ -502,9 +509,15 @@ def get_dataset_splits(
         )
         http_status = response.status_code if response is not None else None
         lowered = text.lower()
-        if http_status in (401, 403) or any(k in lowered for k in (
-            "gated", "is private", "ask for access", "must be authenticated",
-        )):
+        if http_status in (401, 403) or any(
+            k in lowered
+            for k in (
+                "gated",
+                "is private",
+                "ask for access",
+                "must be authenticated",
+            )
+        ):
             raise HTTPException(status_code = 403, detail = text[:500])
         raise HTTPException(
             status_code = 404,

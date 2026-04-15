@@ -10,15 +10,20 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 if "structlog" not in sys.modules:
+
     class _L:
         def __getattr__(self, n):
             return lambda *a, **k: None
+
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_L, get_logger=lambda *a, **k: _L(),
+        BoundLogger = _L,
+        get_logger = lambda *a, **k: _L(),
     )
 if "datasets" not in sys.modules:
+
     class _NF(Exception):
         pass
+
     m = types.ModuleType("datasets")
     m.get_dataset_config_names = lambda *a, **k: []
     m.get_dataset_split_names = lambda *a, **k: []
@@ -52,8 +57,10 @@ class _CapturingLogger:
 
 def _make_http_error(status):
     from huggingface_hub.utils import HfHubHTTPError
+
     class _R:
         status_code = status
+
     e = HfHubHTTPError("upstream boom")
     e.response = _R()
     return e
@@ -61,16 +68,18 @@ def _make_http_error(status):
 
 def test_hfhub_error_handler_has_no_exc_info_kwarg(monkeypatch):
     import datasets as ds
+
     cap = _CapturingLogger()
     monkeypatch.setattr(rd, "logger", cap)
 
     def _raise(*a, **k):
         raise _make_http_error(500)
+
     monkeypatch.setattr(ds, "get_dataset_config_names", _raise)
 
-    req = DatasetSplitsRequest(dataset_name="owner/x")
+    req = DatasetSplitsRequest(dataset_name = "owner/x")
     with pytest.raises(HTTPException):
-        rd.get_dataset_splits(req, current_subject="t")
+        rd.get_dataset_splits(req, current_subject = "t")
 
     error_calls = [c for c in cap.calls if c[0] == "error"]
     assert error_calls, "expected at least one logger.error call"
@@ -83,16 +92,18 @@ def test_hfhub_error_handler_has_no_exc_info_kwarg(monkeypatch):
 
 def test_generic_exception_handler_has_no_exc_info_kwarg(monkeypatch):
     import datasets as ds
+
     cap = _CapturingLogger()
     monkeypatch.setattr(rd, "logger", cap)
 
     def _raise(*a, **k):
         raise RuntimeError("unexpected")
+
     monkeypatch.setattr(ds, "get_dataset_config_names", _raise)
 
-    req = DatasetSplitsRequest(dataset_name="owner/x")
+    req = DatasetSplitsRequest(dataset_name = "owner/x")
     with pytest.raises(HTTPException):
-        rd.get_dataset_splits(req, current_subject="t")
+        rd.get_dataset_splits(req, current_subject = "t")
 
     error_calls = [c for c in cap.calls if c[0] == "error"]
     assert error_calls

@@ -8,15 +8,20 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 if "structlog" not in sys.modules:
+
     class _L:
         def __getattr__(self, n):
             return lambda *a, **k: None
+
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_L, get_logger=lambda *a, **k: _L(),
+        BoundLogger = _L,
+        get_logger = lambda *a, **k: _L(),
     )
 if "datasets" not in sys.modules:
+
     class _NF(Exception):
         pass
+
     m = types.ModuleType("datasets")
     m.get_dataset_config_names = lambda *a, **k: []
     m.get_dataset_split_names = lambda *a, **k: []
@@ -37,14 +42,15 @@ def _run(monkeypatch, configs, fail_set):
     from huggingface_hub.utils import HfHubHTTPError
 
     monkeypatch.setattr(
-        ds, "get_dataset_config_names",
-        lambda name, token=None: list(configs),
+        ds,
+        "get_dataset_config_names",
+        lambda name, token = None: list(configs),
     )
 
     class _R:
         status_code = 500
 
-    def _splits(name, config_name=None, token=None):
+    def _splits(name, config_name = None, token = None):
         if config_name in fail_set:
             e = HfHubHTTPError("err")
             e.response = _R()
@@ -52,8 +58,8 @@ def _run(monkeypatch, configs, fail_set):
         return ["train"]
 
     monkeypatch.setattr(ds, "get_dataset_split_names", _splits)
-    req = DatasetSplitsRequest(dataset_name="owner/t")
-    return rd.get_dataset_splits(req, current_subject="t")
+    req = DatasetSplitsRequest(dataset_name = "owner/t")
+    return rd.get_dataset_splits(req, current_subject = "t")
 
 
 def test_partial_failure_count_three_of_five(monkeypatch):

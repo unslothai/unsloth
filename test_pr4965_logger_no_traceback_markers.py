@@ -10,15 +10,20 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 if "structlog" not in sys.modules:
+
     class _L:
         def __getattr__(self, n):
             return lambda *a, **k: None
+
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_L, get_logger=lambda *a, **k: _L(),
+        BoundLogger = _L,
+        get_logger = lambda *a, **k: _L(),
     )
 if "datasets" not in sys.modules:
+
     class _NF(Exception):
         pass
+
     m = types.ModuleType("datasets")
     m.get_dataset_config_names = lambda *a, **k: []
     m.get_dataset_split_names = lambda *a, **k: []
@@ -70,6 +75,7 @@ def _deep_chain_exception():
 
 def test_logger_never_receives_exc_info_true(monkeypatch):
     import datasets as ds
+
     cap = _CapturingLogger()
     monkeypatch.setattr(rd, "logger", cap)
 
@@ -77,11 +83,12 @@ def test_logger_never_receives_exc_info_true(monkeypatch):
 
     def _raise(*a, **k):
         raise chained
+
     monkeypatch.setattr(ds, "get_dataset_config_names", _raise)
 
-    req = DatasetSplitsRequest(dataset_name="owner/x")
+    req = DatasetSplitsRequest(dataset_name = "owner/x")
     with pytest.raises(HTTPException):
-        rd.get_dataset_splits(req, current_subject="t")
+        rd.get_dataset_splits(req, current_subject = "t")
 
     # No logger.error call forwards exc_info=True
     for kwargs in cap.kwargs:
@@ -90,6 +97,7 @@ def test_logger_never_receives_exc_info_true(monkeypatch):
 
 def test_logger_message_has_no_traceback_keywords(monkeypatch):
     import datasets as ds
+
     cap = _CapturingLogger()
     monkeypatch.setattr(rd, "logger", cap)
 
@@ -97,12 +105,13 @@ def test_logger_message_has_no_traceback_keywords(monkeypatch):
         # An exception whose str() does NOT contain "Traceback",
         # ensuring the test catches the logger (not str(e)) leaking the trace.
         raise RuntimeError("plain bounded message")
+
     monkeypatch.setattr(ds, "get_dataset_config_names", _raise)
 
-    req = DatasetSplitsRequest(dataset_name="owner/x")
+    req = DatasetSplitsRequest(dataset_name = "owner/x")
     with pytest.raises(HTTPException):
-        rd.get_dataset_splits(req, current_subject="t")
+        rd.get_dataset_splits(req, current_subject = "t")
 
     combined = "\n".join(cap.messages)
     assert "Traceback" not in combined
-    assert "File \"" not in combined
+    assert 'File "' not in combined

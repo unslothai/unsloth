@@ -8,15 +8,20 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 if "structlog" not in sys.modules:
+
     class _L:
         def __getattr__(self, n):
             return lambda *a, **k: None
+
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_L, get_logger=lambda *a, **k: _L(),
+        BoundLogger = _L,
+        get_logger = lambda *a, **k: _L(),
     )
 if "datasets" not in sys.modules:
+
     class _NF(Exception):
         pass
+
     m = types.ModuleType("datasets")
     m.get_dataset_config_names = lambda *a, **k: []
     m.get_dataset_split_names = lambda *a, **k: []
@@ -37,14 +42,15 @@ def _run_with_error(monkeypatch, upstream_msg):
     from huggingface_hub.utils import HfHubHTTPError
 
     monkeypatch.setattr(
-        ds, "get_dataset_config_names",
-        lambda name, token=None: ["ok", "bad"],
+        ds,
+        "get_dataset_config_names",
+        lambda name, token = None: ["ok", "bad"],
     )
 
     class _R:
         status_code = 500
 
-    def _splits(name, config_name=None, token=None):
+    def _splits(name, config_name = None, token = None):
         if config_name == "ok":
             return ["train"]
         e = HfHubHTTPError(upstream_msg)
@@ -52,8 +58,8 @@ def _run_with_error(monkeypatch, upstream_msg):
         raise e
 
     monkeypatch.setattr(ds, "get_dataset_split_names", _splits)
-    req = DatasetSplitsRequest(dataset_name="owner/t")
-    return rd.get_dataset_splits(req, current_subject="t").partial_failure
+    req = DatasetSplitsRequest(dataset_name = "owner/t")
+    return rd.get_dataset_splits(req, current_subject = "t").partial_failure
 
 
 def test_partial_failure_message_is_deterministic_across_errors(monkeypatch):
@@ -72,26 +78,30 @@ def test_partial_failure_message_deterministic_for_same_counts(monkeypatch):
         status_code = 500
 
     def _splits_factory(bad_name):
-        def _splits(name, config_name=None, token=None):
+        def _splits(name, config_name = None, token = None):
             if config_name == bad_name:
                 e = HfHubHTTPError("error_of_any_kind")
                 e.response = _R()
                 raise e
             return ["train"]
+
         return _splits
 
     monkeypatch.setattr(
-        ds, "get_dataset_config_names",
-        lambda name, token=None: ["c1", "c2", "c3"],
+        ds,
+        "get_dataset_config_names",
+        lambda name, token = None: ["c1", "c2", "c3"],
     )
     monkeypatch.setattr(ds, "get_dataset_split_names", _splits_factory("c1"))
     r1 = rd.get_dataset_splits(
-        DatasetSplitsRequest(dataset_name="owner/t"), current_subject="t",
+        DatasetSplitsRequest(dataset_name = "owner/t"),
+        current_subject = "t",
     ).partial_failure
 
     monkeypatch.setattr(ds, "get_dataset_split_names", _splits_factory("c3"))
     r2 = rd.get_dataset_splits(
-        DatasetSplitsRequest(dataset_name="owner/t"), current_subject="t",
+        DatasetSplitsRequest(dataset_name = "owner/t"),
+        current_subject = "t",
     ).partial_failure
 
     assert r1 == r2
