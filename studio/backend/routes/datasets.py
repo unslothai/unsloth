@@ -414,7 +414,9 @@ def get_dataset_splits(
                 return config, None, str(err), _remap_hf_status(hf_status)
             except DatasetNotFoundError as err:
                 text = str(err)
-                response = getattr(err, "response", None)
+                response = getattr(err, "response", None) or getattr(
+                    getattr(err, "__cause__", None), "response", None
+                )
                 http_status = response.status_code if response is not None else None
                 lowered = text.lower()
                 if http_status in (401, 403) or any(k in lowered for k in (
@@ -428,6 +430,7 @@ def get_dataset_splits(
         all_splits: list[SplitEntry] = []
         last_config_error: str | None = None
         last_config_status: int = 500
+        results: list = []
 
         if configs:
             max_workers = min(8, len(configs))
@@ -462,12 +465,21 @@ def get_dataset_splits(
                 ),
             )
 
+        if not configs:
+            raise HTTPException(
+                status_code = 404,
+                detail = (
+                    f"Dataset '{request.dataset_name}' has no registered configs or "
+                    "splits (HTTP 404)."
+                ),
+            )
+
         if not all_splits:
             raise HTTPException(
                 status_code = 404,
                 detail = (
-                    f"Dataset '{request.dataset_name}' was not found on the Hub "
-                    "(no splits registered)."
+                    f"No splits could be loaded for dataset '{request.dataset_name}' "
+                    "(HTTP 404)."
                 ),
             )
 
@@ -489,7 +501,9 @@ def get_dataset_splits(
         raise
     except DatasetNotFoundError as e:
         text = str(e)
-        response = getattr(e, "response", None)
+        response = getattr(e, "response", None) or getattr(
+            getattr(e, "__cause__", None), "response", None
+        )
         http_status = response.status_code if response is not None else None
         lowered = text.lower()
         if http_status in (401, 403) or any(k in lowered for k in (
