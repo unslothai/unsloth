@@ -103,6 +103,14 @@ export function StudioPage(): ReactElement {
     }
   }, [isTrainingRunning, requestedTab]);
 
+  // Selecting a run from the sidebar only sets selectedHistoryRunId; auto-switch
+  // to the History tab so the main panel reflects the selection.
+  useEffect(() => {
+    if (selectedHistoryRunId && requestedTab !== "history") {
+      setRequestedTab("history");
+    }
+  }, [selectedHistoryRunId, requestedTab]);
+
   useEffect(() => {
     ensureModelDefaultsLoaded();
     ensureDatasetChecked();
