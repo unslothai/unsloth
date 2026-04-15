@@ -116,6 +116,7 @@ function NavItem({
   onClick,
   children,
   variant = "nav",
+  dataTour,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -124,6 +125,7 @@ function NavItem({
   onClick: () => void;
   children?: React.ReactNode;
   variant?: "nav" | "menu";
+  dataTour?: string;
 }) {
   const isNav = variant === "nav";
   return (
@@ -141,6 +143,7 @@ function NavItem({
           disabled={disabled}
           onClick={onClick}
           isActive={active}
+          data-tour={dataTour}
           className={
             isNav
               ? "rounded-none pr-0 pl-4 text-[#475569] dark:text-[#94a3b8] data-active:text-foreground!"
@@ -318,6 +321,7 @@ export function AppSidebar() {
                 label="Compare"
                 active={!!search.compare}
                 disabled={chatDisabled}
+                dataTour="chat-compare"
                 onClick={() => {
                   if (chatDisabled) return;
                   setActiveThreadId(null);
