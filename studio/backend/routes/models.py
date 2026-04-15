@@ -1248,16 +1248,25 @@ def _iter_gguf_paths(root: Path):
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
-    """Return the total on-disk size of GGUF files across all revisions."""
+    """Return the total on-disk size of GGUF files across all revisions.
+
+    Hugging Face hardlinks blobs shared between revisions, so this
+    deduplicates by blob path (or, as a fallback, by revision commit
+    hash + filename) to avoid double-counting the same bytes. Files
+    with an unknown size (``size_on_disk is None``, e.g. a partial or
+    interrupted download) are treated as zero bytes.
+    """
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
+        rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
             if _is_gguf_filename(f.file_name):
                 blob_path = getattr(f, "blob_path", None)
+                size = f.size_on_disk or 0
                 if blob_path:
-                    unique_blobs[str(blob_path)] = f.size_on_disk
+                    unique_blobs[str(blob_path)] = size
                 else:
-                    unique_blobs[f"{revision}:{f.file_name}"] = f.size_on_disk
+                    unique_blobs[f"{rev_id}:{f.file_name}"] = size
     return sum(unique_blobs.values())
 
 
@@ -1277,20 +1286,25 @@ async def list_cached_gguf(
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
-                if repo_info.repo_type != "model":
+                try:
+                    if repo_info.repo_type != "model":
+                        continue
+                    repo_id = repo_info.repo_id
+                    total_size = _repo_gguf_size_bytes(repo_info)
+                    if total_size == 0:
+                        continue
+                    key = repo_id.lower()
+                    existing = seen_lower.get(key)
+                    if existing is None or total_size > existing["size_bytes"]:
+                        seen_lower[key] = {
+                            "repo_id": repo_id,
+                            "size_bytes": total_size,
+                            "cache_path": str(repo_info.repo_path),
+                        }
+                except Exception as e:
+                    repo_label = getattr(repo_info, "repo_id", "<unknown>")
+                    logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                     continue
-                repo_id = repo_info.repo_id
-                total_size = _repo_gguf_size_bytes(repo_info)
-                if total_size == 0:
-                    continue
-                key = repo_id.lower()
-                existing = seen_lower.get(key)
-                if existing is None or total_size > existing["size_bytes"]:
-                    seen_lower[key] = {
-                        "repo_id": repo_id,
-                        "size_bytes": total_size,
-                        "cache_path": str(repo_info.repo_path),
-                    }
         cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:
@@ -1311,30 +1325,37 @@ async def list_cached_models(
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
-                if repo_info.repo_type != "model":
+                try:
+                    if repo_info.repo_type != "model":
+                        continue
+                    repo_id = repo_info.repo_id
+                    if _repo_has_gguf_files(repo_info):
+                        continue
+                    total_size = sum(
+                        (f.size_on_disk or 0)
+                        for rev in repo_info.revisions
+                        for f in rev.files
+                    )
+                    if total_size == 0:
+                        continue
+                    has_weights = any(
+                        f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                        for rev in repo_info.revisions
+                        for f in rev.files
+                    )
+                    if not has_weights:
+                        continue
+                    key = repo_id.lower()
+                    existing = seen_lower.get(key)
+                    if existing is None or total_size > existing["size_bytes"]:
+                        seen_lower[key] = {
+                            "repo_id": repo_id,
+                            "size_bytes": total_size,
+                        }
+                except Exception as e:
+                    repo_label = getattr(repo_info, "repo_id", "<unknown>")
+                    logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
-                repo_id = repo_info.repo_id
-                if _repo_has_gguf_files(repo_info):
-                    continue
-                total_size = sum(
-                    f.size_on_disk for rev in repo_info.revisions for f in rev.files
-                )
-                if total_size == 0:
-                    continue
-                has_weights = any(
-                    f.file_name.endswith(_WEIGHT_EXTENSIONS)
-                    for rev in repo_info.revisions
-                    for f in rev.files
-                )
-                if not has_weights:
-                    continue
-                key = repo_id.lower()
-                existing = seen_lower.get(key)
-                if existing is None or total_size > existing["size_bytes"]:
-                    seen_lower[key] = {
-                        "repo_id": repo_id,
-                        "size_bytes": total_size,
-                    }
         cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:

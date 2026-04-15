@@ -214,3 +214,99 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
 
     assert result["cached"] == []
+
+
+def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(
+    monkeypatch, tmp_path
+):
+    """Mirror of the _skips_ test: the mixed repo should still surface in
+    cached-gguf so the picker can show it as a GGUF download."""
+    mixed = _repo(
+        "Org/MixedRepo",
+        [
+            _file("Q4_K_M.gguf", 5_000),
+            _file("model.safetensors", 10_000),
+        ],
+        tmp_path / "models--Org--MixedRepo",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [mixed])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/MixedRepo",
+            "size_bytes": 5_000,
+            "cache_path": str(mixed.repo_path),
+        }
+    ]
+
+
+def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
+    """A partial/interrupted GGUF download has ``size_on_disk = None``. The
+    route must treat the unknown bytes as zero instead of raising TypeError
+    out of ``sum()`` and wiping the entire response."""
+    partial = _repo(
+        "Org/PartialDownload",
+        [_file("Q4_K_M.gguf", None), _file("Q6_K.gguf", 5_000)],
+        tmp_path / "models--Org--PartialDownload",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [partial])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/PartialDownload",
+            "size_bytes": 5_000,
+            "cache_path": str(partial.repo_path),
+        }
+    ]
+
+
+def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(
+    monkeypatch, tmp_path
+):
+    """One repo raising during classification must not poison the response
+    for every other repo in the scan."""
+
+    class _ExplodingRepo:
+        repo_id = "Org/Broken"
+        repo_type = "model"
+        repo_path = tmp_path / "models--Org--Broken"
+
+        @property
+        def revisions(self):
+            raise RuntimeError("boom")
+
+    healthy = _repo(
+        "Org/Healthy",
+        [_file("Q4_K_M.gguf", 5_000)],
+        tmp_path / "models--Org--Healthy",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [_ExplodingRepo(), healthy])],
+    )
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    assert result["cached"] == [
+        {
+            "repo_id": "Org/Healthy",
+            "size_bytes": 5_000,
+            "cache_path": str(healthy.repo_path),
+        }
+    ]

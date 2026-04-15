@@ -399,7 +399,7 @@ function GgufVariantExpander({
   );
 }
 
-// ── Detect GGUF repos by naming convention ────────────────────
+// ── Detect GGUF repos by naming convention or hub tag ────────────────────
 
 function hasGgufSuffix(id: string): boolean {
   return /-GGUF(?:$|-)/i.test(id);
@@ -455,21 +455,27 @@ export function HubModelPicker({
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
 
-  const modelIsGgufById = useMemo(
-    () => new Map(models.map((model) => [model.id, model.isGguf ?? false])),
-    [models],
-  );
-  const resultIsGgufById = useMemo(
-    () => new Map(results.map((result) => [result.id, result.isGguf ?? false])),
-    [results],
-  );
+  // Sets of repo ids that the store or HF search have confirmed are GGUF.
+  // Absence means "no hint" and lets hasGgufSuffix take over as fallback,
+  // rather than conflating unknown with known-not-GGUF.
+  const modelGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const model of models) {
+      if (model.isGguf) ids.add(model.id);
+    }
+    return ids;
+  }, [models]);
+  const resultGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of results) {
+      if (result.isGguf) ids.add(result.id);
+    }
+    return ids;
+  }, [results]);
   const isKnownGgufRepo = useCallback(
     (id: string): boolean =>
-      isGgufRepo(
-        id,
-        Boolean(resultIsGgufById.get(id)) || Boolean(modelIsGgufById.get(id)),
-      ),
-    [modelIsGgufById, resultIsGgufById],
+      isGgufRepo(id, resultGgufIds.has(id) || modelGgufIds.has(id)),
+    [modelGgufIds, resultGgufIds],
   );
 
   // Track which GGUF repo is expanded for variant selection
@@ -821,14 +827,14 @@ export function HubModelPicker({
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isGgufRepo(id)) {
+      if (isKnownGgufRepo(id)) {
         // Toggle GGUF variant expander
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
         onSelect(id, { source: "hub", isLora: false });
       }
     },
-    [onSelect],
+    [onSelect, isKnownGgufRepo],
   );
 
   return (

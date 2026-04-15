@@ -13,7 +13,7 @@ export interface HfModelResult {
   likes: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
-  isGguf?: boolean;
+  isGguf: boolean;
 }
 
 const EXCLUDED_TAGS = new Set([
