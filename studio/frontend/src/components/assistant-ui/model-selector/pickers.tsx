@@ -986,23 +986,35 @@ export function HubModelPicker({
 
           {!showHfSection ? (
             <>
-              <div className="flex items-center justify-between px-2.5 py-1.5">
+              <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Custom Folders
                 </span>
-                <button
-                  type="button"
-                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
-                  onClick={() => {
-                    setShowFolderInput((open) => {
-                      if (open) { setFolderInput(""); setFolderError(null); }
-                      return !open;
-                    });
-                  }}
-                  className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
-                >
-                  <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    aria-label="Browse for a folder on the server"
+                    title="Browse folders on the server"
+                    onClick={() => setShowFolderBrowser(true)}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
+                    title={showFolderInput ? "Cancel" : "Add by typing a path"}
+                    onClick={() => {
+                      setShowFolderInput((open) => {
+                        if (open) { setFolderInput(""); setFolderError(null); }
+                        return !open;
+                      });
+                    }}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                  </button>
+                </div>
               </div>
 
               {/* Folder paths */}
@@ -1069,21 +1081,6 @@ export function HubModelPicker({
                     <p className="px-0.5 pt-0.5 text-[10px] text-destructive">{folderError}</p>
                   )}
                 </div>
-              )}
-
-              {/* Empty state */}
-              {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
-                <button
-                  type="button"
-                  onClick={() => setShowFolderBrowser(true)}
-                  className="flex items-center gap-1.5 px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={Search01Icon}
-                    className="size-3 shrink-0"
-                  />
-                  Browse for a models folder
-                </button>
               )}
 
               <FolderBrowser
