@@ -46,7 +46,7 @@ import {
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Folder02Icon, FolderSearchIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
 import { Trash2Icon } from "lucide-react";
@@ -539,8 +539,12 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    const trimmed = folderInput.trim();
+  const handleAddFolder = useCallback(async (overridePath?: string) => {
+    // Accept an explicit path so the folder browser can submit the
+    // chosen path in the same tick it calls `setFolderInput`; reading
+    // `folderInput` alone would race the state update.
+    const raw = overridePath !== undefined ? overridePath : folderInput;
+    const trimmed = raw.trim();
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
@@ -1018,9 +1022,9 @@ export function HubModelPicker({
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
                     aria-label={`Remove folder ${f.path}`}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                    className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                   >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                   </button>
                 </div>
               ))}
@@ -1050,11 +1054,11 @@ export function HubModelPicker({
                       title="Browse folders on the server"
                       className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
                     >
-                      <HugeiconsIcon icon={FolderSearchIcon} className="size-3" />
+                      <HugeiconsIcon icon={Search01Icon} className="size-3" />
                     </button>
                     <button
                       type="button"
-                      onClick={handleAddFolder}
+                      onClick={() => { void handleAddFolder(); }}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
@@ -1085,6 +1089,10 @@ export function HubModelPicker({
                 onSelect={(picked) => {
                   setFolderInput(picked);
                   setFolderError(null);
+                  // One-click UX: the "Use this folder" button submits
+                  // the scan folder directly. Pass the path explicitly
+                  // because `folderInput` state hasn't flushed yet.
+                  void handleAddFolder(picked);
                 }}
               />
 
