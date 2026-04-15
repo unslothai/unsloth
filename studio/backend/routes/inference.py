@@ -1975,25 +1975,32 @@ async def openai_completions(
     if is_stream:
 
         async def _stream():
-            # Manual httpx client/response lifecycle — see
-            # _anthropic_passthrough_stream for the full rationale. Briefly:
-            # `async with` inside an async generator causes
-            # "Attempted to exit cancel scope in a different task" /
-            # "async generator ignored GeneratorExit" on Python 3.13 +
-            # httpcore 1.0.x when the generator is orphaned and finalized
-            # by GC. Closing via a finally block that catches Exception
-            # (but not BaseException) suppresses the anyio cleanup noise
-            # while letting GeneratorExit propagate cleanly.
+            # Manual httpx client/response lifecycle AND explicit
+            # aiter_bytes() iterator close — see _anthropic_passthrough_stream
+            # for the full rationale. Saving `bytes_iter = resp.aiter_bytes()`
+            # and `await bytes_iter.aclose()` in the finally block is the
+            # part that matters for avoiding the Python 3.13 + httpcore
+            # 1.0.x "Exception ignored in: <async_generator>" / anyio
+            # cancel-scope trace: an anonymous async for leaves the
+            # iterator unclosed, so Python's asyncgen GC finalizer runs
+            # cleanup on a later pass in a different asyncio task.
             client = httpx.AsyncClient(timeout = 600)
             resp = None
+            bytes_iter = None
             try:
                 req = client.build_request("POST", target_url, json = body)
                 resp = await client.send(req, stream = True)
-                async for chunk in resp.aiter_bytes():
+                bytes_iter = resp.aiter_bytes()
+                async for chunk in bytes_iter:
                     yield chunk
             except Exception as e:
                 logger.error("openai_completions stream error: %s", e)
             finally:
+                if bytes_iter is not None:
+                    try:
+                        await bytes_iter.aclose()
+                    except Exception:
+                        pass
                 if resp is not None:
                     try:
                         await resp.aclose()
@@ -2852,33 +2859,42 @@ async def _anthropic_passthrough_stream(
         for line in emitter.start(message_id, model_name):
             yield line
 
-        # Manage the httpx client and response MANUALLY — no `async with`.
+        # Manage the httpx client, response, AND the aiter_lines() async
+        # generator MANUALLY — no `async with`, no anonymous iterator.
         #
-        # On Python 3.13 + httpcore 1.0.x, an orphaned async generator (e.g.
-        # when the client disconnects mid-stream and Starlette drops the
-        # StreamingResponse iterator without explicitly calling aclose())
-        # is finalized by Python's asyncgen GC hook in a DIFFERENT asyncio
-        # task than the one that originally entered the httpx context
-        # managers. When `async with` exits run in the wrong task, httpcore's
-        # internal `HTTP11ConnectionByteStream.aclose()` hits
-        # `anyio.CancelScope.__exit__` with a mismatched task and raises
-        # RuntimeError("Attempted to exit cancel scope in a different task"),
-        # which escapes as "Exception ignored in:" because it happens during
-        # GC finalization outside any user-owned try/except.
+        # On Python 3.13 + httpcore 1.0.x, `async for raw_line in
+        # resp.aiter_lines():` creates an anonymous async generator. When
+        # the loop exits via `break` (or the generator is orphaned when a
+        # client disconnects mid-stream), Python's `async for` protocol
+        # does NOT auto-close the iterator the way a sync `for` loop
+        # would. The iterator remains reachable only from the current
+        # coroutine frame; once `_stream()` returns, the frame is GC'd
+        # and the iterator becomes unreachable. Python's asyncgen
+        # finalizer hook then runs its aclose() on a LATER GC pass in a
+        # DIFFERENT asyncio task, where httpcore's
+        # `HTTP11ConnectionByteStream.aclose()` enters
+        # `anyio.CancelScope.__exit__` with a mismatched task and prints
+        # `RuntimeError: Attempted to exit cancel scope in a different
+        # task` / `RuntimeError: async generator ignored GeneratorExit`
+        # as "Exception ignored in:" unraisable warnings.
         #
-        # The fix: do not use `async with` for the client/response. Close
-        # them in a finally block wrapped in `try: ... except Exception: pass`.
-        # This narrowly suppresses RuntimeError / other Exception subclasses
-        # from the anyio cleanup noise while letting GeneratorExit (a
-        # BaseException, not Exception) propagate through cleanly so the
-        # generator terminates as Python expects.
+        # The fix: save `resp.aiter_lines()` as `lines_iter`, and in the
+        # finally block explicitly `await lines_iter.aclose()` BEFORE
+        # `resp.aclose()` / `client.aclose()`. This closes the iterator
+        # inside our own task's event loop, so the internal httpcore
+        # byte-stream is cleaned up before Python's asyncgen finalizer
+        # has anything orphaned to finalize. Each aclose is wrapped in
+        # `try: ... except Exception: pass` so anyio cleanup noise from
+        # nested aclose paths can't bubble out.
         client = httpx.AsyncClient(timeout = 600)
         resp = None
+        lines_iter = None
         try:
             req = client.build_request("POST", target_url, json = body)
             resp = await client.send(req, stream = True)
 
-            async for raw_line in resp.aiter_lines():
+            lines_iter = resp.aiter_lines()
+            async for raw_line in lines_iter:
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
@@ -2896,6 +2912,11 @@ async def _anthropic_passthrough_stream(
         except Exception as e:
             logger.error("anthropic_messages passthrough stream error: %s", e)
         finally:
+            if lines_iter is not None:
+                try:
+                    await lines_iter.aclose()
+                except Exception:
+                    pass
             if resp is not None:
                 try:
                     await resp.aclose()
@@ -3120,12 +3141,18 @@ async def _openai_passthrough_stream(
 
     async def _stream():
         # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
-        # avoid `async with` on the client/response to sidestep the Python
-        # 3.13 + httpcore 1.0.x anyio cancel-scope bug when the async
-        # generator is garbage-collected from a different task than the
-        # one that originally entered the context managers.
+        # avoid `async with` on the client/response AND explicitly save
+        # resp.aiter_lines() so we can close it ourselves in the finally
+        # block. See the long comment there for the full rationale on
+        # why the anonymous `async for raw_line in resp.aiter_lines():`
+        # pattern leaks an unclosed async generator that Python's
+        # asyncgen GC hook then finalizes in a different asyncio task,
+        # producing "Exception ignored in:" / "async generator ignored
+        # GeneratorExit" / anyio cancel-scope traces on Python 3.13 +
+        # httpcore 1.0.x.
         client = httpx.AsyncClient(timeout = 600)
         resp = None
+        lines_iter = None
         try:
             req = client.build_request("POST", target_url, json = body)
             resp = await client.send(req, stream = True)
@@ -3147,7 +3174,8 @@ async def _openai_passthrough_stream(
                 yield f"data: {json.dumps(err)}\n\n"
                 return
 
-            async for raw_line in resp.aiter_lines():
+            lines_iter = resp.aiter_lines()
+            async for raw_line in lines_iter:
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
@@ -3171,6 +3199,11 @@ async def _openai_passthrough_stream(
             }
             yield f"data: {json.dumps(err)}\n\n"
         finally:
+            if lines_iter is not None:
+                try:
+                    await lines_iter.aclose()
+                except Exception:
+                    pass
             if resp is not None:
                 try:
                     await resp.aclose()
