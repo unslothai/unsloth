@@ -11,7 +11,7 @@ const STORAGE_KEY = "theme";
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
   const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "dark") return stored;
+  if (stored === "light" || stored === "dark" || stored === "system") return stored;
   return "system";
 }
 
@@ -66,11 +66,9 @@ function getServerSnapshot(): Theme {
  */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
-  if (next === "system") {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } else {
-    window.localStorage.setItem(STORAGE_KEY, next);
-  }
+  // Persist "system" explicitly so next-themes (mounted with
+  // defaultTheme="light") doesn't clobber the choice on reload.
+  window.localStorage.setItem(STORAGE_KEY, next);
   applyToDocument(resolveTheme(next));
   listeners.forEach((cb) => cb());
 }
