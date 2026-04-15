@@ -71,6 +71,7 @@ type LoraCandidate = {
   id: string;
   baseModel: string;
   updatedAt?: number;
+  exportType?: "lora" | "merged" | "gguf";
 };
 
 function normalizeModelRef(value: string | null | undefined): string {
@@ -81,12 +82,13 @@ function pickBestLoraForBase(
   loras: LoraCandidate[],
   baseModel: string | null,
 ): LoraCandidate | null {
-  if (loras.length === 0) return null;
-  const sorted = [...loras].sort(
+  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
+  if (adapterOnly.length === 0) return null;
+  const sorted = [...adapterOnly].sort(
     (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
   );
   const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0];
+  if (!normalizedBase) return sorted[0] ?? null;
 
   const exact = sorted.find(
     (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
@@ -101,7 +103,7 @@ function pickBestLoraForBase(
       normalizedBase.includes(normalizedLoraBase)
     );
   });
-  return partial ?? sorted[0];
+  return partial ?? sorted[0] ?? null;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -154,7 +156,8 @@ type CompareModelSelection = {
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
     const cp = s.params.checkpoint;
-    return cp ? s.loras.some((l) => l.id === cp) : false;
+    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
+    return selected?.exportType === "lora";
   });
 }
 
@@ -235,7 +238,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
             <div className="px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Fine-tuned (LoRA)
+                Fine-tuned
               </span>
             </div>
             <div className="min-h-0 flex-1">
@@ -251,7 +254,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             </div>
           </div>
         </div>
-        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
           <SharedComposer handlesRef={handlesRef} />
         </div>
       </div>
@@ -387,7 +390,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             </div>
           </div>
         </div>
-        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
           <SharedComposer
             handlesRef={handlesRef}
             model1={model1}
@@ -688,6 +691,7 @@ export function ChatPage(): ReactElement {
         id: model.id,
         name: model.name,
         description: model.description,
+        isGguf: model.isGguf,
       })),
     [modelsFromStore],
   );

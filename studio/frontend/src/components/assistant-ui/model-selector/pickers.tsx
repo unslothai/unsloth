@@ -48,6 +48,7 @@ import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { FolderBrowser } from "./folder-browser";
 import { Trash2Icon } from "lucide-react";
 import {
   type ReactNode,
@@ -399,10 +400,14 @@ function GgufVariantExpander({
   );
 }
 
-// ── Detect GGUF repos by naming convention ────────────────────
+// ── Detect GGUF repos by naming convention or hub tag ────────────────────
 
-function isGgufRepo(id: string): boolean {
-  return id.toUpperCase().includes("-GGUF");
+function hasGgufSuffix(id: string): boolean {
+  return /-GGUF(?:$|-)/i.test(id);
+}
+
+function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
+  return Boolean(hintedIsGguf) || hasGgufSuffix(id);
 }
 
 /** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
@@ -451,6 +456,33 @@ export function HubModelPicker({
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
 
+  // Sets of lowercased repo ids that the store or HF search have
+  // confirmed are GGUF. Absence means "no hint" and lets hasGgufSuffix
+  // take over as fallback, rather than conflating unknown with known-
+  // not-GGUF. Keys are lowercased so that store IDs and HF search IDs
+  // that differ only by casing still match the same hint.
+  const modelGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const model of models) {
+      if (model.isGguf) ids.add(model.id.toLowerCase());
+    }
+    return ids;
+  }, [models]);
+  const resultGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of results) {
+      if (result.isGguf) ids.add(result.id.toLowerCase());
+    }
+    return ids;
+  }, [results]);
+  const isKnownGgufRepo = useCallback(
+    (id: string): boolean => {
+      const key = id.toLowerCase();
+      return isGgufRepo(id, resultGgufIds.has(key) || modelGgufIds.has(key));
+    },
+    [modelGgufIds, resultGgufIds],
+  );
+
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
@@ -481,6 +513,7 @@ export function HubModelPicker({
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
   const [folderLoading, setFolderLoading] = useState(false);
+  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
 
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
@@ -506,11 +539,22 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    const trimmed = folderInput.trim();
+  const handleAddFolder = useCallback(async (overridePath?: string) => {
+    // Accept an explicit path so the folder browser can submit the
+    // chosen path in the same tick it calls `setFolderInput`; reading
+    // `folderInput` alone would race the state update.
+    const raw = overridePath !== undefined ? overridePath : folderInput;
+    const trimmed = raw.trim();
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
+    // True when the request originated from the folder browser's
+    // ``onSelect`` (one-click "Use this folder"). In that flow the
+    // typed-input panel is closed, so the inline ``folderError``
+    // paragraph is invisible. Surface failures via toast instead so
+    // the action doesn't appear to silently no-op when the backend
+    // rejects (denylisted path, sandbox 403, etc.).
+    const fromBrowser = overridePath !== undefined;
     try {
       const created = await addScanFolder(trimmed);
       // Backend returns existing row for duplicates, so deduplicate
@@ -526,7 +570,11 @@ export function HubModelPicker({
       // Background reconciliation with the server
       void refreshScanFolders();
     } catch (e) {
-      setFolderError(e instanceof Error ? e.message : "Failed to add folder");
+      const message = e instanceof Error ? e.message : "Failed to add folder";
+      setFolderError(message);
+      if (fromBrowser) {
+        toast.error("Couldn't add folder", { description: message });
+      }
     } finally {
       setFolderLoading(false);
     }
@@ -569,7 +617,11 @@ export function HubModelPicker({
     refreshLocalModelsList();
     refreshScanFolders();
 
-    if (alreadyCached) return;
+    // Always refetch cached GGUF/model lists. The module-level caches give
+    // an instant render with stale data (no spinner flash), but newly
+    // downloaded repos won't appear unless we re-hit the backend on every
+    // mount.  Initial state already has cachedReady=alreadyCached, so the
+    // background refresh is invisible when we already had data.
     let done = 0;
     const check = () => {
       if (++done >= 2) setCachedReady(true);
@@ -588,7 +640,7 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-  }, [alreadyCached, refreshLocalModelsList, refreshScanFolders]);
+  }, [refreshLocalModelsList, refreshScanFolders]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return;
@@ -625,17 +677,17 @@ export function HubModelPicker({
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
     const hub: string[] = [];
     for (const id of all) {
-      if (isGgufRepo(id)) gguf.push(id);
+      if (isKnownGgufRepo(id)) gguf.push(id);
       else hub.push(id);
     }
     return [...gguf, ...hub];
-  }, [models, value, downloadedSet, chatOnly]);
+  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo]);
 
   // Infinite scroll paging for the recommended section
   const [recommendedPage, setRecommendedPage] = useState(1);
@@ -645,7 +697,7 @@ export function HubModelPicker({
   }, [models, chatOnly]);
 
   const visibleRecommendedIds = useMemo(() => {
-    const hubStartIndex = recommendedIds.findIndex((id) => !isGgufRepo(id));
+    const hubStartIndex = recommendedIds.findIndex((id) => !isKnownGgufRepo(id));
     const allGguf =
       hubStartIndex === -1
         ? recommendedIds
@@ -659,7 +711,7 @@ export function HubModelPicker({
       result.push(...allHub.slice(p * 4, (p + 1) * 4));
     }
     return result;
-  }, [recommendedIds, recommendedPage]);
+  }, [recommendedIds, recommendedPage, isKnownGgufRepo]);
 
   const hasMoreRecommended =
     visibleRecommendedIds.length < recommendedIds.length;
@@ -681,8 +733,8 @@ export function HubModelPicker({
     const ids = showHfSection
       ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
       : visibleRecommendedIds;
-    return ids.filter((id) => !isGgufRepo(id));
-  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
+    return ids.filter((id) => !isKnownGgufRepo(id));
+  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);
 
@@ -697,9 +749,9 @@ export function HubModelPicker({
     return results
       .map((result) => result.id)
       .filter((id) => !recommendedSet.has(id))
-      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, chatOnly]);
+  }, [recommendedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
 
   const metricsById = useMemo(
     () =>
@@ -800,14 +852,14 @@ export function HubModelPicker({
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isGgufRepo(id)) {
+      if (isKnownGgufRepo(id)) {
         // Toggle GGUF variant expander
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
         onSelect(id, { source: "hub", isLora: false });
       }
     },
-    [onSelect],
+    [onSelect, isKnownGgufRepo],
   );
 
   return (
@@ -841,14 +893,18 @@ export function HubModelPicker({
             (cachedGguf.length > 0 ||
               (!chatOnly && cachedModels.length > 0)) ? (
             <>
-              <ListLabel>{"\uD83E\uDDA5"} Downloaded</ListLabel>
+              <ListLabel>Downloaded</ListLabel>
               {cachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
                     label={c.repo_id}
                     meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
-                    onClick={() => handleModelClick(c.repo_id)}
+                    onClick={() =>
+                      setExpandedGguf((prev) =>
+                        prev === c.repo_id ? null : c.repo_id,
+                      )
+                    }
                     vramStatus={null}
                   />
                   {expandedGguf === c.repo_id && (
@@ -909,7 +965,7 @@ export function HubModelPicker({
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={
-                        isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"
+                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
                       }
                       selected={value === m.id}
                       onClick={() => {
@@ -945,30 +1001,42 @@ export function HubModelPicker({
 
           {!showHfSection ? (
             <>
-              <div className="flex items-center justify-between px-2.5 py-1.5">
+              <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Custom Folders
                 </span>
-                <button
-                  type="button"
-                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
-                  onClick={() => {
-                    setShowFolderInput((open) => {
-                      if (open) { setFolderInput(""); setFolderError(null); }
-                      return !open;
-                    });
-                  }}
-                  className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
-                >
-                  <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    aria-label="Browse for a folder on the server"
+                    title="Browse folders on the server"
+                    onClick={() => setShowFolderBrowser(true)}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
+                    title={showFolderInput ? "Cancel" : "Add by typing a path"}
+                    onClick={() => {
+                      setShowFolderInput((open) => {
+                        if (open) { setFolderInput(""); setFolderError(null); }
+                        return !open;
+                      });
+                    }}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                  </button>
+                </div>
               </div>
 
               {/* Folder paths */}
               {scanFolders.map((f) => (
                 <div
                   key={f.id}
-                  className="group flex items-center gap-1.5 px-3 py-0.5"
+                  className="group flex items-center gap-1.5 px-2.5 py-0.5"
                 >
                   <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
                   <span
@@ -981,9 +1049,9 @@ export function HubModelPicker({
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
                     aria-label={`Remove folder ${f.path}`}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                    className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                   >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                   </button>
                 </div>
               ))}
@@ -1007,7 +1075,17 @@ export function HubModelPicker({
                     />
                     <button
                       type="button"
-                      onClick={handleAddFolder}
+                      onClick={() => setShowFolderBrowser(true)}
+                      disabled={folderLoading}
+                      aria-label="Browse for folder"
+                      title="Browse folders on the server"
+                      className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleAddFolder(); }}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
@@ -1020,23 +1098,27 @@ export function HubModelPicker({
                 </div>
               )}
 
-              {/* Empty state */}
-              {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
-                <button
-                  type="button"
-                  onClick={() => setShowFolderInput(true)}
-                  className="px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground"
-                >
-                  + Add a folder to scan for local models
-                </button>
-              )}
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                  // One-click UX: the "Use this folder" button submits
+                  // the scan folder directly. Pass the path explicitly
+                  // because `folderInput` state hasn't flushed yet.
+                  void handleAddFolder(picked);
+                }}
+              />
+
 
               {/* Models from custom folders */}
               {customFolderModels.map((m) => {
                 const isGguf =
                   isGgufRepo(m.id) ||
                   isGgufRepo(m.display_name) ||
-                  m.path.endsWith(".gguf");
+                  m.path.toLowerCase().endsWith(".gguf");
                 return (
                   <div key={m.id}>
                     <ModelRow
@@ -1076,7 +1158,7 @@ export function HubModelPicker({
 
           {!showHfSection && cachedReady ? (
             <>
-              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              <ListLabel>Recommended</ListLabel>
               {visibleRecommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
@@ -1089,16 +1171,22 @@ export function HubModelPicker({
                       <ModelRow
                         label={id}
                         meta={
-                          isGgufRepo(id)
+                          isKnownGgufRepo(id)
                             ? "GGUF"
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => handleModelClick(id)}
+                        onClick={() => {
+                          if (isKnownGgufRepo(id)) {
+                            setExpandedGguf((prev) => (prev === id ? null : id));
+                          } else {
+                            handleModelClick(id);
+                          }
+                        }}
                         vramStatus={
-                          isGgufRepo(id) ? null : (vram?.status ?? null)
+                          isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                         }
-                        vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                        vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
@@ -1128,7 +1216,7 @@ export function HubModelPicker({
 
           {showHfSection && filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              <ListLabel>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
                 return (
@@ -1136,16 +1224,22 @@ export function HubModelPicker({
                     <ModelRow
                       label={id}
                       meta={
-                        isGgufRepo(id)
+                        isKnownGgufRepo(id)
                           ? "GGUF"
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      onClick={() => handleModelClick(id)}
+                      onClick={() => {
+                        if (isKnownGgufRepo(id)) {
+                          setExpandedGguf((prev) => (prev === id ? null : id));
+                        } else {
+                          handleModelClick(id);
+                        }
+                      }}
                       vramStatus={
-                        isGgufRepo(id) ? null : (vram?.status ?? null)
+                        isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                       }
-                      vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                      vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                       gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                     />
                     {expandedGguf === id && (
@@ -1175,24 +1269,31 @@ export function HubModelPicker({
                     No matching models.
                   </div>
                 ) : null
-              ) : (
+                ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
+                  const isSearchGguf = isKnownGgufRepo(id);
                   return (
                     <div key={id}>
                       <ModelRow
                         label={id}
                         meta={
-                          isGgufRepo(id)
+                          isSearchGguf
                             ? "GGUF"
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => handleModelClick(id)}
+                        onClick={() => {
+                          if (isSearchGguf) {
+                            setExpandedGguf((prev) => (prev === id ? null : id));
+                          } else {
+                            handleModelClick(id);
+                          }
+                        }}
                         vramStatus={
-                          isGgufRepo(id) ? null : (vram?.status ?? null)
+                          isSearchGguf ? null : (vram?.status ?? null)
                         }
-                        vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                        vramEst={isSearchGguf ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
@@ -1330,7 +1431,7 @@ export function LoraModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search local adapters"
+          placeholder="Search trained models"
           className="h-9 pl-8"
         />
       </div>
@@ -1339,7 +1440,7 @@ export function LoraModelPicker({
         <div className="p-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No adapters found.
+              No trained models found.
             </div>
           ) : (
             grouped.map(([baseModel, adapters], index) => (
@@ -1348,9 +1449,11 @@ export function LoraModelPicker({
                 <ListLabel>{baseModel}</ListLabel>
                 {adapters.map((adapter) => {
                   const isLocal = adapter.source === "local";
+                  const isTraining = adapter.source === "training";
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
+                  const isTrainingFull = isTraining && isMerged;
                   const isLocalGgufDir =
                     isLocal &&
                     (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
@@ -1360,6 +1463,8 @@ export function LoraModelPicker({
                       : "Local"
                     : isGguf
                       ? "GGUF"
+                      : isTrainingFull
+                        ? "Full"
                       : isExported
                         ? isMerged
                           ? "Merged"
@@ -1369,6 +1474,8 @@ export function LoraModelPicker({
                     ? isLocalGgufDir
                       ? "GGUF"
                       : "Local"
+                    : isTrainingFull
+                      ? "Full finetune"
                     : isExported
                       ? `${tag} · Exported`
                       : tag;
