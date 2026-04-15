@@ -399,6 +399,15 @@ def get_dataset_splits(
 
         configs = get_dataset_config_names(dataset_name, token = token)
 
+        if not configs:
+            raise HTTPException(
+                status_code = 404,
+                detail = (
+                    f"Dataset '{request.dataset_name}' has no registered configs or "
+                    "splits (HTTP 404)."
+                ),
+            )
+
         def _fetch_one(config: str):
             try:
                 names = list(get_dataset_split_names(
@@ -430,47 +439,36 @@ def get_dataset_splits(
         all_splits: list[SplitEntry] = []
         last_config_error: str | None = None
         last_config_status: int = 500
-        results: list = []
 
-        if configs:
-            max_workers = min(8, len(configs))
-            with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as pool:
-                results = list(pool.map(_fetch_one, configs))
-            for config, split_names, err_text, err_status in results:
-                if split_names is not None:
-                    for split_name in split_names:
-                        all_splits.append(
-                            SplitEntry(
-                                dataset = dataset_name,
-                                config = config,
-                                split = split_name,
-                            )
+        max_workers = min(8, len(configs))
+        with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as pool:
+            results = list(pool.map(_fetch_one, configs))
+        for config, split_names, err_text, err_status in results:
+            if split_names is not None:
+                for split_name in split_names:
+                    all_splits.append(
+                        SplitEntry(
+                            dataset = dataset_name,
+                            config = config,
+                            split = split_name,
                         )
-                else:
-                    logger.warning(
-                        f"Could not fetch splits for config '{config}': {err_text}"
                     )
-                    if last_config_error is None or _better(
-                        last_config_status, err_status
-                    ):
-                        last_config_error = err_text
-                        last_config_status = err_status
+            else:
+                logger.warning(
+                    f"Could not fetch splits for config '{config}': {err_text}"
+                )
+                if last_config_error is None or _better(
+                    last_config_status, err_status
+                ):
+                    last_config_error = err_text
+                    last_config_status = err_status
 
-        if configs and not all_splits and last_config_error is not None:
+        if not all_splits and last_config_error is not None:
             raise HTTPException(
                 status_code = last_config_status,
                 detail = (
                     f"Failed to fetch splits for any config of '{dataset_name}' "
                     f"(HTTP {last_config_status}): {last_config_error[:500]}"
-                ),
-            )
-
-        if not configs:
-            raise HTTPException(
-                status_code = 404,
-                detail = (
-                    f"Dataset '{request.dataset_name}' has no registered configs or "
-                    "splits (HTTP 404)."
                 ),
             )
 
@@ -483,14 +481,12 @@ def get_dataset_splits(
                 ),
             )
 
-        failed_count = 0
-        if configs:
-            failed_count = sum(1 for _, names, _, _ in results if names is None)
+        failed_count = sum(1 for _, names, _, _ in results if names is None)
         partial_failure = None
-        if failed_count and all_splits:
+        if failed_count:
             partial_failure = (
-                f"{failed_count} config(s) could not be fetched: "
-                f"{(last_config_error or '')[:200]}"
+                f"{failed_count} of {len(configs)} config(s) could not be loaded. "
+                "Some subset options may be missing."
             )
 
         return DatasetSplitsResponse(
@@ -517,13 +513,17 @@ def get_dataset_splits(
     except HfHubHTTPError as e:
         hf_status = e.response.status_code if e.response is not None else 500
         status_code = _remap_hf_status(hf_status)
-        logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
+        logger.error(
+            f"Error fetching dataset splits: {type(e).__name__}: {str(e)[:200]}"
+        )
         raise HTTPException(
             status_code = status_code,
             detail = f"Failed to fetch dataset splits (HTTP {status_code}): {str(e)[:500]}",
         )
     except Exception as e:
-        logger.error(f"Error fetching dataset splits: {e}", exc_info = True)
+        logger.error(
+            f"Error fetching dataset splits: {type(e).__name__}: {str(e)[:200]}"
+        )
         detail = str(e)[:500] or "Failed to fetch dataset splits."
         raise HTTPException(status_code = 500, detail = detail)
 
