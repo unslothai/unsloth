@@ -465,7 +465,10 @@ def get_dataset_splits(
         if not all_splits:
             raise HTTPException(
                 status_code = 404,
-                detail = f"No splits found for dataset '{request.dataset_name}'.",
+                detail = (
+                    f"Dataset '{request.dataset_name}' was not found on the Hub "
+                    "(no splits registered)."
+                ),
             )
 
         failed_count = 0
