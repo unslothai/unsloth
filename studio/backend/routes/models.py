@@ -579,6 +579,10 @@ async def remove_scan_folder_endpoint(
 # directory "looks like" it contains models. Keeps the browser snappy
 # even when a directory has thousands of unrelated entries.
 _BROWSE_MODEL_HINT_PROBE = 64
+# Hard cap on how many subdirectory entries we send back. Pointing the
+# browser at something like ``/usr/lib`` or ``/proc`` must not stat-storm
+# the process or send tens of thousands of rows to the client.
+_BROWSE_ENTRY_CAP = 2000
 
 
 def _looks_like_model_dir(directory: Path) -> bool:
@@ -677,10 +681,12 @@ async def browse_folders(
             detail = f"Not a directory: {target}",
         )
 
-    # Enumerate immediate subdirectories.
+    # Enumerate immediate subdirectories with a bounded cap so a stray
+    # query against ``/usr/lib`` or ``/proc`` can't stat-storm the process.
     entries: list[BrowseEntry] = []
+    truncated = False
     try:
-        raw = list(target.iterdir())
+        it = target.iterdir()
     except PermissionError:
         raise HTTPException(
             status_code = 403,
@@ -692,23 +698,30 @@ async def browse_folders(
             detail = f"Could not read {target}: {exc}",
         )
 
-    for child in raw:
-        try:
-            if not child.is_dir():
+    try:
+        for child in it:
+            if len(entries) >= _BROWSE_ENTRY_CAP:
+                truncated = True
+                break
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
                 continue
-        except OSError:
-            continue
-        name = child.name
-        is_hidden = name.startswith(".")
-        if is_hidden and not show_hidden:
-            continue
-        entries.append(
-            BrowseEntry(
-                name = name,
-                has_models = _looks_like_model_dir(child),
-                hidden = is_hidden,
+            name = child.name
+            is_hidden = name.startswith(".")
+            if is_hidden and not show_hidden:
+                continue
+            entries.append(
+                BrowseEntry(
+                    name = name,
+                    has_models = _looks_like_model_dir(child),
+                    hidden = is_hidden,
+                )
             )
-        )
+    except OSError as exc:
+        # Rare: iterdir succeeded but reading a specific entry failed.
+        logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
 
     # Model-bearing dirs first, then plain, then hidden; case-insensitive
     # alphabetical within each bucket.
@@ -755,6 +768,7 @@ async def browse_folders(
         parent = parent,
         entries = entries,
         suggestions = suggestions,
+        truncated = truncated,
     )
 
 

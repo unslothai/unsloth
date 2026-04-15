@@ -258,6 +258,7 @@ export interface BrowseFoldersResponse {
   parent: string | null;
   entries: BrowseEntry[];
   suggestions: string[];
+  truncated?: boolean;
 }
 
 export async function browseFolders(

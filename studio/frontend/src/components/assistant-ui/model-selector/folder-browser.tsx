@@ -208,6 +208,12 @@ export function FolderBrowser({
                   (empty directory)
                 </div>
               )}
+              {data.truncated === true && (
+                <div className="border-t border-border/30 px-4 py-1.5 text-[10px] text-muted-foreground/70">
+                  Showing first {data.entries.length} entries. Narrow the path
+                  to see more.
+                </div>
+              )}
               {data.entries.map((e) => (
                 <button
                   type="button"

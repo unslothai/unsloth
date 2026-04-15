@@ -260,3 +260,12 @@ class BrowseFoldersResponse(BaseModel):
             "scan folders). Rendered as quick-pick chips above the list."
         ),
     )
+    truncated: bool = Field(
+        False,
+        description = (
+            "True when the listing was capped because the directory had "
+            "more subfolders than the server is willing to enumerate in "
+            "one request. The UI should show a hint telling the user to "
+            "narrow their path."
+        ),
+    )
