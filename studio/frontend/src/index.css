@@ -33,7 +33,7 @@
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
-	--background: oklch(0.978 0.004 95);
+	--background: oklch(1 0 0);
 	--foreground: oklch(0.2686 0 0);
 	--card: oklch(1 0 0);
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
@@ -48,8 +48,8 @@
 	--accent: oklch(0.9596 0.0275 167.8295);
 	--accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--destructive: oklch(0.6368 0.2078 25.3313);
-	--border: oklch(0.948 0.003 247);
-	--input: oklch(0.948 0.003 247);
+	--border: oklch(0.9208 0.0101 164.8536);
+	--input: oklch(0.9208 0.0101 164.8536);
 	--ring: oklch(0.6929 0.1396 166.5513);
 	--chart-1: oklch(0.6929 0.1396 166.5513);
 	--chart-2: oklch(0.694 0.1395 136.6059);
@@ -57,13 +57,13 @@
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
 	--radius: 0.625rem;
-	--sidebar: oklch(0.981 0.004 95);
+	--sidebar: oklch(0.99 0 0);
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: oklch(0.6929 0.1396 166.5513);
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-	--sidebar-border: oklch(0.88 0.003 247);
+	--sidebar-border: oklch(0.9208 0.0101 164.8536);
 	--sidebar-ring: oklch(0.6929 0.1396 166.5513);
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
