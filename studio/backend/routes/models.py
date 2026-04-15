@@ -793,6 +793,121 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
     return False
 
 
+def _normalize_browse_request_path(path: Optional[str]) -> str:
+    """Normalize the browse request path lexically, without touching the FS."""
+    if path is None or not path.strip():
+        return os.path.normpath(str(Path.home()))
+
+    expanded = os.path.expanduser(path.strip())
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(str(Path.cwd()), expanded)
+    return os.path.normpath(expanded)
+
+
+def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str]]:
+    """Return validated relative path components under ``root``."""
+    root_text = os.path.normpath(str(root))
+    try:
+        rel_text = os.path.relpath(requested_path, root_text)
+    except ValueError:
+        return None
+
+    if rel_text == ".":
+        return []
+    if rel_text == ".." or rel_text.startswith(f"..{os.sep}"):
+        return None
+
+    parts = [part for part in rel_text.split(os.sep) if part not in ("", ".")]
+    altsep = os.altsep
+    for part in parts:
+        if part == ".." or os.sep in part or (altsep and altsep in part):
+            return None
+    return parts
+
+
+def _match_browse_child(current: Path, name: str) -> Optional[Path]:
+    """Return the immediate child named ``name`` under ``current``."""
+    try:
+        for child in current.iterdir():
+            if child.name == name:
+                return child
+    except PermissionError:
+        raise HTTPException(
+            status_code = 403,
+            detail = f"Permission denied reading {current}",
+        ) from None
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Could not read {current}: {exc}",
+        ) from exc
+    return None
+
+
+def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
+    """Resolve a requested browse path by walking from trusted allowlist roots."""
+    requested_path = _normalize_browse_request_path(path)
+    resolved_roots: list[Path] = []
+    seen_roots: set[str] = set()
+    for root in sorted(allowed_roots, key = lambda p: len(str(p)), reverse = True):
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        key = str(resolved)
+        if key in seen_roots:
+            continue
+        seen_roots.add(key)
+        resolved_roots.append(resolved)
+
+    for root in resolved_roots:
+        parts = _browse_relative_parts(requested_path, root)
+        if parts is None:
+            continue
+
+        current = root
+        for part in parts:
+            child = _match_browse_child(current, part)
+            if child is None:
+                raise HTTPException(
+                    status_code = 404,
+                    detail = f"Path does not exist: {requested_path}",
+                )
+            try:
+                resolved_child = child.resolve()
+            except OSError as exc:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"Invalid path: {exc}",
+                ) from exc
+            if not _is_path_inside_allowlist(resolved_child, resolved_roots):
+                raise HTTPException(
+                    status_code = 403,
+                    detail = (
+                        "Path is not in the browseable allowlist. Register it via "
+                        "POST /api/models/scan-folders first, or pick a directory "
+                        "under your home folder."
+                    ),
+                )
+            current = resolved_child
+
+        if not current.is_dir():
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Not a directory: {current}",
+            )
+        return current
+
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Path is not in the browseable allowlist. Register it via "
+            "POST /api/models/scan-folders first, or pick a directory "
+            "under your home folder."
+        ),
+    )
+
+
 @router.get("/browse-folders", response_model = BrowseFoldersResponse)
 async def browse_folders(
     path: Optional[str] = Query(
@@ -840,88 +955,17 @@ async def browse_folders(
     # suggestion chips use the same set, so chips are always navigable.
     allowed_roots = _build_browse_allowlist()
 
-    # Resolve the requested path into a candidate. The candidate is the
-    # *user's* path (tainted) and is only used for matching against the
-    # allowlist below; ``target`` is then *rebuilt* from the trusted
-    # root + validated relative segments so filesystem operations
-    # downstream don't consume user input.
-    if path is None or not path.strip():
-        candidate_path = Path.home()
-    else:
-        try:
-            candidate_path = Path(os.path.expanduser(path.strip()))
-            if not candidate_path.is_absolute():
-                candidate_path = Path.cwd() / candidate_path
-            candidate_path = candidate_path.resolve()
-        except (OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Invalid path: {exc}",
+    try:
+        target = _resolve_browse_target(path, allowed_roots)
+    except HTTPException:
+        requested_path = _normalize_browse_request_path(path)
+        if path is not None and path.strip():
+            logger.warning(
+                "browse-folders: rejected path %r (normalized=%s)",
+                path,
+                requested_path,
             )
-
-    # Sandbox: locate the trusted root that contains the candidate, then
-    # rebuild ``target`` by appending each validated segment to that
-    # root. This pattern (a) ensures the path stays inside the sandbox
-    # even when the candidate is a symlink (we resolved with realpath
-    # above), and (b) gives CodeQL a clean dataflow: ``target`` is
-    # constructed entirely from ``allowed_roots`` (trusted) plus
-    # individually-validated segment names, so the
-    # ``py/path-injection`` rule has no tainted flow into the
-    # filesystem operations below.
-    target: Optional[Path] = None
-    for root in allowed_roots:
-        try:
-            root_resolved = root.resolve()
-        except OSError:
-            continue
-        if candidate_path == root_resolved:
-            target = root_resolved
-            break
-        try:
-            rel = candidate_path.relative_to(root_resolved)
-        except ValueError:
-            # Not under this root -- try the next.
-            continue
-        # Re-attach segment by segment. Reject anything that isn't a
-        # single safe path component. ``rel.parts`` from a resolved
-        # absolute path never contains ``..`` (resolve() collapsed
-        # them), but we double-check defensively.
-        rebuilt = root_resolved
-        ok = True
-        for seg in rel.parts:
-            if not seg or seg in (".", "..") or "/" in seg or "\\" in seg:
-                ok = False
-                break
-            rebuilt = rebuilt / seg
-        if ok:
-            target = rebuilt
-            break
-
-    if target is None:
-        logger.warning(
-            "browse-folders: rejected out-of-sandbox path %r (resolved=%s)",
-            path,
-            candidate_path,
-        )
-        raise HTTPException(
-            status_code = 403,
-            detail = (
-                "Path is not in the browseable allowlist. Register it via "
-                "POST /api/models/scan-folders first, or pick a directory "
-                "under your home folder."
-            ),
-        )
-
-    if not target.exists():
-        raise HTTPException(
-            status_code = 404,
-            detail = f"Path does not exist: {target}",
-        )
-    if not target.is_dir():
-        raise HTTPException(
-            status_code = 400,
-            detail = f"Not a directory: {target}",
-        )
+        raise
 
     # Enumerate immediate subdirectories with a bounded cap so a stray
     # query against ``/usr/lib`` or ``/proc`` can't stat-storm the process.
