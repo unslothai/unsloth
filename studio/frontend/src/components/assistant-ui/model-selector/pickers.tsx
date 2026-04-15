@@ -999,7 +999,7 @@ export function HubModelPicker({
                       return !open;
                     });
                   }}
-                  className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                 >
                   <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
                 </button>
@@ -1009,7 +1009,7 @@ export function HubModelPicker({
               {scanFolders.map((f) => (
                 <div
                   key={f.id}
-                  className="group flex items-center gap-1.5 px-3 py-0.5"
+                  className="group flex items-center gap-1.5 px-2.5 py-0.5"
                 >
                   <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
                   <span
