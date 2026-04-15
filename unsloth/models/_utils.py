@@ -2122,7 +2122,10 @@ def patch_gradient_accumulation_fix(Trainer):
             _original_trainer_init(self, *args, **kwargs)
             try:
                 accelerator = getattr(self, "accelerator", None)
-                if accelerator is not None and getattr(accelerator, "gradient_accumulation_steps", 1) > 1:
+                if (
+                    accelerator is not None
+                    and getattr(accelerator, "gradient_accumulation_steps", 1) > 1
+                ):
                     accelerator.gradient_accumulation_steps = 1
                     gs = getattr(accelerator, "gradient_state", None)
                     if gs is not None and hasattr(gs, "plugin_kwargs"):
@@ -2148,6 +2151,7 @@ def _forward_is_unsloth_compiled(model):
     signal. Walks one level through PEFT and HF wrappers to catch the case where
     the outer object is a peft / accelerate wrapper.
     """
+
     def check(m):
         if m is None:
             return False
@@ -2194,7 +2198,9 @@ def _find_concrete_accepts_loss_kwargs(model):
         seen.add(id(m))
         for klass in type(m).__mro__:
             if "accepts_loss_kwargs" in klass.__dict__:
-                return klass.__dict__["accepts_loss_kwargs"], f"{klass.__name__}.accepts_loss_kwargs"
+                return klass.__dict__[
+                    "accepts_loss_kwargs"
+                ], f"{klass.__name__}.accepts_loss_kwargs"
         nxt = getattr(m, "base_model", None)
         if nxt is None or nxt is m:
             nxt = getattr(m, "model", None)
