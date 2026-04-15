@@ -908,32 +908,81 @@ def _is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
-def _iter_gguf_files(directory: Path):
+def _iter_gguf_files(directory: Path, recursive: bool = False):
     if not directory.is_dir():
         return
-    for f in directory.iterdir():
+    iterator = directory.rglob("*") if recursive else directory.iterdir()
+    for f in iterator:
         if f.is_file() and _is_gguf_filename(f.name):
             yield f
 
 
-def detect_mmproj_file(path: str) -> Optional[str]:
+def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """
-    Find the mmproj (vision projection) GGUF file in a directory.
+    Find the mmproj (vision projection) GGUF file for a given model.
 
     Args:
-        path: Directory to search — or a .gguf file (uses its parent dir).
+        path: Directory to search — or a .gguf file (uses its parent dir
+            as the starting point).
+        search_root: Optional outer directory that should also be scanned
+            (and any directory between it and ``path``). This handles
+            local layouts where the model weights live in a quant-named
+            subdir (``snapshot/BF16/foo.gguf``) but the mmproj sits at
+            the snapshot root (``snapshot/mmproj-BF16.gguf``). When
+            ``None``, only the immediate parent dir is scanned, matching
+            the historical behavior.
 
     Returns:
         Full path to the mmproj .gguf file, or None if not found.
     """
     p = Path(path)
-    search_dir = p.parent if p.is_file() else p
-    if not search_dir.is_dir():
+    start_dir = p.parent if p.is_file() else p
+    if not start_dir.is_dir():
         return None
 
-    for f in _iter_gguf_files(search_dir):
-        if _is_mmproj(f.name):
-            return str(f.resolve())
+    # Build the list of dirs to scan: immediate dir first, then walk up
+    # to (and including) ``search_root`` if it is an ancestor. We walk
+    # incrementally rather than recursing into ``search_root`` so we
+    # don't accidentally pick up an mmproj from a sibling subdir
+    # belonging to a different model variant.
+    seen: set[Path] = set()
+    scan_order: list[Path] = []
+
+    def _add(d: Path) -> None:
+        try:
+            resolved = d.resolve()
+        except OSError:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        scan_order.append(resolved)
+
+    _add(start_dir)
+    if search_root is not None:
+        try:
+            root_resolved = Path(search_root).resolve()
+            start_resolved = start_dir.resolve()
+            # Only walk if start_dir is inside (or equal to) search_root.
+            if root_resolved == start_resolved or (
+                start_resolved.is_relative_to(root_resolved)
+                if hasattr(start_resolved, "is_relative_to")
+                else str(start_resolved).startswith(str(root_resolved) + "/")
+            ):
+                cur = start_resolved
+                # Walk up from start_dir to (and including) root_resolved.
+                while cur != root_resolved and cur.parent != cur:
+                    cur = cur.parent
+                    _add(cur)
+                    if cur == root_resolved:
+                        break
+        except OSError:
+            pass
+
+    for d in scan_order:
+        for f in _iter_gguf_files(d):
+            if _is_mmproj(f.name):
+                return str(f.resolve())
     return None
 
 
@@ -1183,7 +1232,11 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    for f in sorted(_iter_gguf_files(p)):
+    # Recurse so variant-specific subdirectories (e.g. ``BF16/...gguf``
+    # used by some HF GGUF repos for the largest quants) are picked up.
+    # Filenames in the result preserve the relative subpath so that
+    # ``_find_local_gguf_by_variant`` can locate the file again.
+    for f in sorted(_iter_gguf_files(p, recursive = True)):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -1193,8 +1246,14 @@ def list_local_gguf_variants(
             size = 0
         quant = _extract_quant_label(f.name)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
+        # Only compute the (potentially expensive) relative path when this
+        # is the first file we've seen for this quant -- after that we'd
+        # discard the result anyway. Use posix-style separators so the
+        # filename matches what ``list_gguf_variants`` (the remote HF
+        # API path) returns on every platform; otherwise Windows would
+        # emit ``BF16\foo.gguf`` here.
         if quant not in quant_first_file:
-            quant_first_file[quant] = f.name
+            quant_first_file[quant] = f.relative_to(p).as_posix()
 
     variants = [
         GgufVariantInfo(
@@ -1220,9 +1279,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     if p is None:
         return None
 
+    # Recurse into subdirectories so variants stored under a quant-named
+    # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
     matches = sorted(
         f
-        for f in _iter_gguf_files(p)
+        for f in _iter_gguf_files(p, recursive = True)
         if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
     )
     if matches:
@@ -1932,8 +1993,16 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
 
-                # If vision (or mmproj happens to exist), find the mmproj file
-                mmproj_file = detect_mmproj_file(gguf_file)
+                # If vision (or mmproj happens to exist), find the mmproj
+                # file. The recursive variant scan in
+                # ``_find_local_gguf_by_variant`` may have returned a
+                # weight file inside a quant-named subdir (e.g.
+                # ``.../BF16/foo.gguf``) while ``mmproj-*.gguf`` lives
+                # at the snapshot root. Pass ``search_root=path`` so
+                # ``detect_mmproj_file`` walks up to the snapshot root
+                # instead of seeing only the weight file's immediate
+                # parent.
+                mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")

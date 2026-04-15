@@ -600,7 +600,11 @@ export function HubModelPicker({
     refreshLocalModelsList();
     refreshScanFolders();
 
-    if (alreadyCached) return;
+    // Always refetch cached GGUF/model lists. The module-level caches give
+    // an instant render with stale data (no spinner flash), but newly
+    // downloaded repos won't appear unless we re-hit the backend on every
+    // mount.  Initial state already has cachedReady=alreadyCached, so the
+    // background refresh is invisible when we already had data.
     let done = 0;
     const check = () => {
       if (++done >= 2) setCachedReady(true);
@@ -619,7 +623,7 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-  }, [alreadyCached, refreshLocalModelsList, refreshScanFolders]);
+  }, [refreshLocalModelsList, refreshScanFolders]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return;
