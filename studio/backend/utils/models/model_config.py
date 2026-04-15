@@ -1171,7 +1171,11 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    for f in sorted(p.glob("*.gguf")):
+    # Use rglob so that variant-specific subdirectories (e.g. ``BF16/...gguf``
+    # used by some HF GGUF repos for the largest quants) are picked up.
+    # Filenames in the result preserve the relative subpath so that
+    # ``_find_local_gguf_by_variant`` can locate the file again.
+    for f in sorted(p.rglob("*.gguf")):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -1181,8 +1185,9 @@ def list_local_gguf_variants(
             size = 0
         quant = _extract_quant_label(f.name)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
+        rel_name = str(f.relative_to(p))
         if quant not in quant_first_file:
-            quant_first_file[quant] = f.name
+            quant_first_file[quant] = rel_name
 
     variants = [
         GgufVariantInfo(
@@ -1208,9 +1213,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     if p is None:
         return None
 
+    # Recurse into subdirectories so variants stored under a quant-named
+    # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
     matches = sorted(
         f
-        for f in p.glob("*.gguf")
+        for f in p.rglob("*.gguf")
         if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
     )
     if matches:
