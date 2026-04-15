@@ -259,6 +259,7 @@ export interface BrowseFoldersResponse {
   entries: BrowseEntry[];
   suggestions: string[];
   truncated?: boolean;
+  model_files_here?: number;
 }
 
 export async function browseFolders(

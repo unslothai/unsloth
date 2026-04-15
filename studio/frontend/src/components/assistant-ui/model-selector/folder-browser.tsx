@@ -127,6 +127,7 @@ export function FolderBrowser({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-w-md p-0 gap-0"
+        overlayClassName="bg-black/20 backdrop-blur-none"
         data-testid="folder-browser-dialog"
       >
         <DialogHeader className="px-4 pt-4 pb-2">
@@ -203,9 +204,14 @@ export function FolderBrowser({
                   <span className="font-mono">..</span>
                 </button>
               )}
-              {data.entries.length === 0 && (
+              {data.entries.length === 0 && !(data.model_files_here && data.model_files_here > 0) && (
                 <div className="px-4 py-3 text-xs text-muted-foreground/60">
                   (empty directory)
+                </div>
+              )}
+              {data.model_files_here !== undefined && data.model_files_here > 0 && (
+                <div className="border-t border-border/30 px-4 py-1.5 text-[10px] text-foreground/70">
+                  {data.model_files_here} model file{data.model_files_here === 1 ? "" : "s"} in this folder. Click "Use this folder" to scan it.
                 </div>
               )}
               {data.truncated === true && (

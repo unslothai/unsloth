@@ -585,24 +585,39 @@ _BROWSE_MODEL_HINT_PROBE = 64
 _BROWSE_ENTRY_CAP = 2000
 
 
-def _looks_like_model_dir(directory: Path) -> bool:
-    """Quick, bounded check used by the folder browser to mark promising
-    entries. False negatives are fine; the real scanner is authoritative.
-    Returns True if the directory itself looks like an HF cache repo or
-    any probed child is a GGUF/safetensors weight, a config.json, an
-    adapter_config.json, or an HF-cache repo dir."""
-    # Fast path: the directory itself is an HF Hub cache repo. Its
-    # on-disk children are `blobs/`, `refs/`, `snapshots/`, none of
-    # which match the file-level probes below, so we need to recognise
-    # the repo by its conventional name.
-    if directory.name.startswith("models--"):
-        return True
+def _count_model_files(directory: Path, cap: int = 200) -> int:
+    """Count GGUF/safetensors files immediately inside *directory*.
+    Used to surface a count-hint on the response so the UI can tell
+    users that a leaf directory (no subdirs, only weights) is a valid
+    "Use this folder" target."""
+    n = 0
     try:
-        children = directory.iterdir()
+        for f in directory.iterdir():
+            if n >= cap:
+                break
+            try:
+                if f.is_file():
+                    low = f.name.lower()
+                    if low.endswith((".gguf", ".safetensors")):
+                        n += 1
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    return n
+
+
+def _has_direct_model_signal(directory: Path) -> bool:
+    """Return True if *directory* has an immediate child that signals
+    it holds a model: a GGUF/safetensors/config.json file, or a
+    `models--*` subdir (HF hub cache). Bounded by
+    ``_BROWSE_MODEL_HINT_PROBE`` to stay fast."""
+    try:
+        it = directory.iterdir()
     except OSError:
         return False
     try:
-        for i, child in enumerate(children):
+        for i, child in enumerate(it):
             if i >= _BROWSE_MODEL_HINT_PROBE:
                 break
             try:
@@ -614,10 +629,56 @@ def _looks_like_model_dir(directory: Path) -> bool:
                     if low in ("config.json", "adapter_config.json"):
                         return True
                 elif child.is_dir() and name.startswith("models--"):
-                    # HuggingFace hub cache layout
                     return True
             except OSError:
                 continue
+    except OSError:
+        return False
+    return False
+
+
+def _looks_like_model_dir(directory: Path) -> bool:
+    """Bounded heuristic used by the folder browser to flag directories
+    worth exploring. False negatives are fine; the real scanner is
+    authoritative.
+
+    Three signals, cheapest first:
+
+    1. Directory name itself: ``models--*`` is the HuggingFace hub cache
+       layout (``blobs``/``refs``/``snapshots`` children wouldn't match
+       the file-level probes below).
+    2. An immediate child is a weight file or config (handled by
+       :func:`_has_direct_model_signal`).
+    3. A grandchild has a direct signal -- this catches the
+       ``publisher/model/weights.gguf`` layout used by LM Studio and
+       Ollama. We probe at most the first
+       ``_BROWSE_MODEL_HINT_PROBE`` child directories, each of which is
+       checked with a bounded :func:`_has_direct_model_signal` call,
+       so the total cost stays O(PROBE^2) worst-case.
+    """
+    if directory.name.startswith("models--"):
+        return True
+    if _has_direct_model_signal(directory):
+        return True
+    # Grandchild probe: LM Studio / Ollama publisher/model layout.
+    try:
+        it = directory.iterdir()
+    except OSError:
+        return False
+    try:
+        for i, child in enumerate(it):
+            if i >= _BROWSE_MODEL_HINT_PROBE:
+                break
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            # Fast name check first
+            if child.name.startswith("models--"):
+                return True
+            if _has_direct_model_signal(child):
+                return True
     except OSError:
         return False
     return False
@@ -651,7 +712,7 @@ async def browse_folders(
     Sorting: directories that look like they hold models come first, then
     plain directories, then hidden entries (if `show_hidden=true`).
     """
-    from utils.paths import hf_default_cache_dir
+    from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from storage.studio_db import list_scan_folders
 
     # Resolve the requested path. Empty / missing / unusable -> user home.
@@ -752,16 +813,32 @@ async def browse_folders(
             seen_sug.add(resolved)
             suggestions.append(resolved)
 
+    # Home always comes first -- it's the safe fallback when everything
+    # else is cold.
     _add_sug(Path.home())
+    # The HF cache root the process is actually using.
     try:
         _add_sug(hf_default_cache_dir())
     except Exception:
         pass
+    # Already-registered scan folders (what the user has curated).
     try:
         for folder in list_scan_folders():
             _add_sug(Path(folder.get("path", "")))
     except Exception as exc:
         logger.debug("browse-folders: could not load scan folders: %s", exc)
+    # Directories commonly used by other local-LLM tools: LM Studio
+    # (`~/.lmstudio/models` + legacy `~/.cache/lm-studio/models` +
+    # user-configured downloadsFolder from LM Studio's settings.json),
+    # Ollama (`~/.ollama/models` + common system paths + OLLAMA_MODELS
+    # env var), and generic user-choice spots (`~/models`, `~/Models`).
+    # Each helper only returns paths that currently exist so we never
+    # show dead chips.
+    try:
+        for p in well_known_model_dirs():
+            _add_sug(p)
+    except Exception as exc:
+        logger.debug("browse-folders: could not load well-known dirs: %s", exc)
 
     return BrowseFoldersResponse(
         current = str(target),
@@ -769,6 +846,7 @@ async def browse_folders(
         entries = entries,
         suggestions = suggestions,
         truncated = truncated,
+        model_files_here = _count_model_files(target),
     )
 
 

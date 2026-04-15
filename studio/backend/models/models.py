@@ -269,3 +269,12 @@ class BrowseFoldersResponse(BaseModel):
             "narrow their path."
         ),
     )
+    model_files_here: int = Field(
+        0,
+        description = (
+            "Count of GGUF/safetensors files immediately inside "
+            "``current``. Used by the UI to surface a hint on leaf "
+            "model directories (which otherwise look `empty` because "
+            "they contain only files, no subdirectories)."
+        ),
+    )
