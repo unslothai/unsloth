@@ -2695,7 +2695,8 @@ class FastLlamaModel:
         patch_saving_functions(model)
         Trainer._inner_training_loop = _fast_inner_training_loop
 
-        # Fix gradient accumulation
+        # Fix gradient accumulation. See issue #4982.
+        apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes

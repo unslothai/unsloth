@@ -1123,9 +1123,10 @@ class FastBaseModel:
                     )
         patch_saving_functions(tokenizer, vision = True)
 
-        # Fix gradient accumulation
+        # Fix gradient accumulation. See issue #4982.
         from transformers.trainer import Trainer
 
+        apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
