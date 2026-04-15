@@ -45,6 +45,7 @@ __all__ = [
     # "accelerate_old_send_to_device",
     # "accelerate_new_send_to_device",
     "patch_gradient_accumulation_fix",
+    "apply_accepts_loss_kwargs_fix",
     "patch_compiling_bitsandbytes",
     "patch_regional_compilation",
     "patch_layernorm",
@@ -2085,45 +2086,188 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Prevent double scaling gradient accumulation
     # https://github.com/huggingface/transformers/pull/37208
-    # Patch model_accepts_loss_kwargs detection in Trainer.__init__
-    if Trainer.__init__.__name__ != "_unsloth___init__":
+    # https://github.com/unslothai/unsloth/issues/4982
+    #
+    # The `self.model_accepts_loss_kwargs` flag gates the loss normalization branch
+    # in `Trainer.training_step` and decides whether `num_items_in_batch` gets passed
+    # to the model's forward. Getting it wrong silently over-scales gradients by
+    # `gradient_accumulation_steps` (reproducible as loss ~GA times too large).
+    #
+    # Previous approaches rewrote the source of `Trainer.__init__` via `str.replace`,
+    # which silently no-ops whenever transformers reformats the condition. For
+    # example on transformers 4.48 through 4.52 the parameter is named `model`
+    # (not `unwrapped_model`) and both known patch variants match nothing.
+    #
+    # The new approach moves the fix to the loader side: `apply_accepts_loss_kwargs_fix`
+    # (called from `unsloth/models/llama.py` and `unsloth/models/vision.py` after
+    # the model is loaded) sets the correct value at the instance level directly
+    # on the model. HF Trainer's `hasattr(unwrapped_model, "accepts_loss_kwargs")`
+    # check then picks up the instance attribute and bypasses signature inference
+    # entirely. This is version agnostic and never silently no-ops.
+    #
+    # What remains here is a transformers 5.0 through 5.5 accelerator clamp.
+    # Those versions construct the Accelerator with
+    # `GradientAccumulationPlugin(num_steps=gradient_accumulation_steps)`, which
+    # makes `accelerator.backward` divide loss by GA internally. Combined with
+    # HF's own `loss = loss / current_gradient_accumulation_steps` in
+    # `training_step`, that produces a 1/GA gradient scale mismatch vs. the
+    # full-batch case. This was fixed upstream in transformers 5.6.0.dev0 via
+    # `grad_acc_kwargs["num_steps"] = 1`. We backport the same fix by wrapping
+    # `Trainer.__init__` and clamping `accelerator.gradient_accumulation_steps`
+    # to 1 post-init. On 4.x (already 1) and 5.6+ (HF pins to 1) this is a no-op.
+    if not getattr(Trainer, "_unsloth_init_wrapped_for_accelerate_gas", False):
+        _original_trainer_init = Trainer.__init__
+
+        def _unsloth_trainer_init(self, *args, **kwargs):
+            _original_trainer_init(self, *args, **kwargs)
+            try:
+                accelerator = getattr(self, "accelerator", None)
+                if accelerator is not None and getattr(accelerator, "gradient_accumulation_steps", 1) > 1:
+                    accelerator.gradient_accumulation_steps = 1
+                    gs = getattr(accelerator, "gradient_state", None)
+                    if gs is not None and hasattr(gs, "plugin_kwargs"):
+                        try:
+                            gs.plugin_kwargs["num_steps"] = 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        _unsloth_trainer_init.__wrapped__ = _original_trainer_init
+        Trainer.__init__ = _unsloth_trainer_init
+        Trainer._unsloth_init_wrapped_for_accelerate_gas = True
+
+
+def _forward_is_unsloth_compiled(model):
+    """Return True iff this model's forward came from Unsloth's compile cache.
+
+    Unsloth's compiler installs a rewritten `forward` on the class whose
+    `__code__.co_filename` points into `unsloth_compiled_cache/...`. The method's
+    `__module__` still reflects the original transformers module (the function
+    object is assigned onto the existing class), so `co_filename` is the reliable
+    signal. Walks one level through PEFT and HF wrappers to catch the case where
+    the outer object is a peft / accelerate wrapper.
+    """
+    def check(m):
+        if m is None:
+            return False
+        fwd = getattr(type(m), "forward", None)
+        if fwd is None:
+            return False
+        code = getattr(fwd, "__code__", None)
+        fn = getattr(code, "co_filename", "") if code is not None else ""
+        return "unsloth_compiled" in fn or "unsloth_cache" in fn
+
+    if check(model):
+        return True
+    seen = set()
+    m = model
+    for _ in range(4):
+        if m is None or id(m) in seen:
+            break
+        seen.add(id(m))
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        if nxt is None or nxt is m:
+            break
+        if check(nxt):
+            return True
+        m = nxt
+    return False
+
+
+def _find_concrete_accepts_loss_kwargs(model):
+    """Walk the model / .base_model / .model chain looking for the first class
+    that declares `accepts_loss_kwargs` on its own class dict. Returns
+    (value, reason) or (None, reason) if nothing concrete is found.
+
+    Using `type(m).__dict__` (not `hasattr`) avoids picking up attributes we
+    shadow onto the instance ourselves, and avoids descending into PEFT's
+    `__getattr__` forwarding which would return False positives.
+    """
+    seen = set()
+    m = model
+    for _ in range(6):
+        if m is None or id(m) in seen:
+            break
+        seen.add(id(m))
+        for klass in type(m).__mro__:
+            if "accepts_loss_kwargs" in klass.__dict__:
+                return klass.__dict__["accepts_loss_kwargs"], f"{klass.__name__}.accepts_loss_kwargs"
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        if nxt is None or nxt is m:
+            break
+        m = nxt
+    return None, "no explicit accepts_loss_kwargs on any wrapper level"
+
+
+def _shadow_accepts_loss_kwargs(model, value):
+    """Set `accepts_loss_kwargs = value` at the instance level on model and every
+    reachable wrapper (PEFT `base_model`, HF `model`) so HF Trainer's
+    `hasattr(unwrapped_model, "accepts_loss_kwargs")` resolves correctly
+    regardless of which level accelerator / peft unwrap returns."""
+    seen = set()
+    m = model
+    for _ in range(8):
+        if m is None or id(m) in seen:
+            break
+        seen.add(id(m))
         try:
-            init_function = inspect.getsource(Trainer.__init__)
+            setattr(m, "accepts_loss_kwargs", value)
         except Exception:
-            init_function = ""
-        if init_function is not None:
-            init_function = textwrap.dedent(init_function)
+            pass
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        if nxt is None or nxt is m:
+            break
+        m = nxt
 
-            # Import all variables that need importing
-            import transformers.trainer
 
-            items_in_trainer = dir(transformers.trainer)
-            good_items = []
-            for item in items_in_trainer:
-                if item in init_function:
-                    good_items.append(item)
-            exec(
-                "from transformers.trainer import ("
-                + ", ".join(x for x in good_items)
-                + ")",
-                globals(),
-            )
+def apply_accepts_loss_kwargs_fix(model):
+    """Fix HF Trainer's `model_accepts_loss_kwargs` detection for this model.
 
-            init_function = init_function.replace(
-                "def __init__", "def _unsloth___init__", 1
-            )
+    Decides the correct value for `accepts_loss_kwargs` and shadows it at the
+    instance level on the model and its wrapper chain so HF Trainer's
+    `hasattr(unwrapped_model, "accepts_loss_kwargs")` check in `Trainer.__init__`
+    resolves to that value. This replaces the older approach of rewriting
+    `Trainer.__init__` source code, which silently no-op'd on some transformers
+    versions (4.48 through 4.52 name the parameter `model` instead of
+    `unwrapped_model`, for example).
 
-            # Respect an inner wrapped model's explicit accepts_loss_kwargs flag before inferring from forward(**kwargs).
-            # https://github.com/unslothai/unsloth/issues/4982 Gemma4ForConditionalGeneration had issues with grad_acc
-            init_function = init_function.replace(
-                "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n    else:",
-                "self.model_accepts_loss_kwargs = unwrapped_model.accepts_loss_kwargs\n"
-                '    elif hasattr(getattr(unwrapped_model, "model", None), "accepts_loss_kwargs"):\n'
-                "        self.model_accepts_loss_kwargs = unwrapped_model.model.accepts_loss_kwargs\n"
-                "    else:",
-            )
-            exec(init_function, globals())
-            Trainer.__init__ = _unsloth___init__
+    Priority:
+      1. If Unsloth's compile pipeline replaced this model's forward
+         (`co_filename` points into `unsloth_compiled_cache/`), set True. The
+         compiled forward calls `unsloth_fixed_cross_entropy` which accepts
+         `num_items_in_batch` and scales the loss accordingly, so Trainer must
+         not divide again.
+      2. Else walk the wrapper chain looking for a class that declares
+         `accepts_loss_kwargs` on its own class dict. Vision conditional
+         generation wrappers like `Gemma3nForConditionalGeneration` have no
+         outer attribute but their inner `.model` (`Gemma3nModel`) declares
+         `accepts_loss_kwargs = False`. This catches those cases and produces
+         the correct False value so HF's training_step divides by GA and the
+         reported loss is not inflated by `gradient_accumulation_steps`.
+      3. Else leave HF's default (signature inspection on forward) untouched.
+         Text language models like Llama / Mistral / Qwen3 fall here, and their
+         forward has `**kwargs` so HF correctly infers True.
+
+    Safe to call more than once on the same model. See
+    https://github.com/unslothai/unsloth/issues/4982 for the original symptom
+    and PRs #4998 and #5030 for earlier attempts.
+    """
+    if _forward_is_unsloth_compiled(model):
+        _shadow_accepts_loss_kwargs(model, True)
+        return "True (Unsloth compiled forward)"
+
+    value, reason = _find_concrete_accepts_loss_kwargs(model)
+    if value is None:
+        return f"default (signature inspection, {reason})"
+    _shadow_accepts_loss_kwargs(model, value)
+    return f"{value} ({reason})"
 
 
 def patch_tokenizer(model, tokenizer):

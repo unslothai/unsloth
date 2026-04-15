@@ -2658,7 +2658,12 @@ class FastLlamaModel:
         patch_saving_functions(model)
         Trainer._inner_training_loop = _fast_inner_training_loop
 
-        # Fix gradient accumulation
+        # Fix gradient accumulation. `apply_accepts_loss_kwargs_fix` sets the
+        # correct `accepts_loss_kwargs` value at the instance level on this
+        # model so HF Trainer's `hasattr(unwrapped_model, "accepts_loss_kwargs")`
+        # check resolves without needing to rewrite `Trainer.__init__` source.
+        # See `_utils.apply_accepts_loss_kwargs_fix` and issue #4982.
+        apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
