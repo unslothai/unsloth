@@ -218,9 +218,7 @@ class ScanFolderInfo(BaseModel):
 class BrowseEntry(BaseModel):
     """A directory entry surfaced by the folder browser."""
 
-    name: str = Field(
-        ..., description = "Entry name (basename, not full path)"
-    )
+    name: str = Field(..., description = "Entry name (basename, not full path)")
     has_models: bool = Field(
         False,
         description = (
