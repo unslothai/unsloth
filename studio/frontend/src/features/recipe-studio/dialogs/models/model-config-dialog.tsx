@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, useRef, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import type { ModelConfig } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
@@ -26,14 +26,17 @@ import { NameField } from "../shared/name-field";
 type ModelConfigDialogProps = {
   config: ModelConfig;
   providerOptions: string[];
+  localProviderNames: Set<string>;
   onUpdate: (patch: Partial<ModelConfig>) => void;
 };
 
 export function ModelConfigDialog({
   config,
   providerOptions,
+  localProviderNames,
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
+  const isLinkedToLocal = localProviderNames.has(config.provider);
   const [optionalOpen, setOptionalOpen] = useState(false);
   const modelId = `${config.id}-model`;
   const providerId = `${config.id}-provider`;
@@ -44,16 +47,33 @@ export function ModelConfigDialog({
   const extraBodyId = `${config.id}-inference-extra-body`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
-  const lastProviderRef = useRef(config.provider);
-  if (lastProviderRef.current !== config.provider) {
-    lastProviderRef.current = config.provider;
+  // Sync providerInputRef with the current provider value. Updating a ref in
+  // an effect (vs reading/writing it during render) satisfies the
+  // react-hooks/refs rule and keeps the combobox blur path stable across
+  // re-renders.
+  useEffect(() => {
     providerInputRef.current = config.provider;
-  }
+  }, [config.provider]);
   const updateField = <K extends keyof ModelConfig>(
     key: K,
     value: ModelConfig[K],
   ) => {
     onUpdate({ [key]: value } as Partial<ModelConfig>);
+  };
+
+  // Apply provider selection while keeping the local-provider model autofill
+  // consistent across both dropdown selection and free-typed + blur input.
+  const applyProviderChange = (selectedProvider: string) => {
+    const isLocal = localProviderNames.has(selectedProvider);
+    if (isLocal && !config.model.trim()) {
+      onUpdate({ provider: selectedProvider, model: "local" });
+      return;
+    }
+    if (!isLocal && config.model === "local") {
+      onUpdate({ provider: selectedProvider, model: "" });
+      return;
+    }
+    updateField("provider", selectedProvider);
   };
 
   return (
@@ -72,7 +92,7 @@ export function ModelConfigDialog({
           generation defaults you want to reuse.
         </p>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Provider connection"
           htmlFor={providerId}
@@ -84,7 +104,7 @@ export function ModelConfigDialog({
             filteredItems={providerOptions}
             filter={null}
             value={config.provider || null}
-            onValueChange={(value) => updateField("provider", value ?? "")}
+            onValueChange={(value) => applyProviderChange(value ?? "")}
             onInputValueChange={(value) => {
               providerInputRef.current = value;
             }}
@@ -98,7 +118,7 @@ export function ModelConfigDialog({
               onBlur={() => {
                 const next = providerInputRef.current;
                 if (next !== config.provider) {
-                  updateField("provider", next);
+                  applyProviderChange(next);
                 }
               }}
             />
@@ -120,16 +140,16 @@ export function ModelConfigDialog({
             : "Matching blocks are linked automatically on the canvas."}
         </p>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Model ID"
           htmlFor={modelId}
-          hint="The exact model name sent to the connection."
+          hint={isLinkedToLocal ? "Uses the model loaded in Chat. Any value works here." : "The exact model name sent to the connection."}
         />
         <Input
           id={modelId}
           className="nodrag"
-          placeholder="gpt-4o-mini"
+          placeholder={isLinkedToLocal ? "local" : "gpt-4o-mini"}
           value={config.model}
           onChange={(event) => updateField("model", event.target.value)}
         />
@@ -144,7 +164,7 @@ export function ModelConfigDialog({
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Temperature"
               htmlFor={tempId}
@@ -159,7 +179,7 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Top-p"
               htmlFor={topPId}
@@ -174,7 +194,7 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Max tokens"
               htmlFor={maxTokensId}
@@ -189,7 +209,7 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Timeout (seconds)"
               htmlFor={timeoutId}
@@ -214,7 +234,7 @@ export function ModelConfigDialog({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Advanced request fields (JSON)"
               htmlFor={extraBodyId}

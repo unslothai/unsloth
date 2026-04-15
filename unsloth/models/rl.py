@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
+import sys
+from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
@@ -91,6 +93,58 @@ def vLLMSamplingParams(**kwargs):
     sampling_params = SamplingParams(**kwargs)
     sampling_params._set_kwargs = kwargs
     return sampling_params
+
+
+def _maybe_prepare_vllm_for_resume(trainer):
+    if not torch.cuda.is_available():
+        return
+
+    llm = getattr(trainer, "llm", None)
+    if llm is None:
+        llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
+    if llm is None:
+        return
+
+    model_config = getattr(
+        getattr(getattr(llm, "llm_engine", None), "vllm_config", None),
+        "model_config",
+        None,
+    )
+    if not getattr(model_config, "enable_sleep_mode", False):
+        return
+
+    try:
+        llm.sleep(1)
+    except Exception:
+        pass
+
+    import gc
+
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+def _patch_resume_from_checkpoint_memory(trainer_class):
+    original_train = getattr(trainer_class, "train", None)
+    if original_train is None:
+        return
+    if getattr(original_train, "_unsloth_resume_guard", False):
+        return
+
+    def _unsloth_train_with_resume_guard(self, *args, **kwargs):
+        resume_from_checkpoint = kwargs.get("resume_from_checkpoint", None)
+        if resume_from_checkpoint is None:
+            resume_from_checkpoint = kwargs.get("model_path", None)
+        if resume_from_checkpoint is None and len(args) != 0:
+            resume_from_checkpoint = args[0]
+
+        if resume_from_checkpoint:
+            _maybe_prepare_vllm_for_resume(self)
+        return original_train(self, *args, **kwargs)
+
+    _unsloth_train_with_resume_guard._unsloth_resume_guard = True
+    trainer_class.train = _unsloth_train_with_resume_guard
 
 
 def PatchRL(FastLanguageModel):
@@ -221,8 +275,17 @@ def PatchRL(FastLanguageModel):
         with torch.no_grad():
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
+                    try:
+                        num_items_in_batch = self._get_num_items_in_batch(
+                            [inputs], self.args.device
+                        )
+                    except (AttributeError, TypeError):
+                        num_items_in_batch = None
                     loss, outputs = self.compute_loss(
-                        model, inputs, return_outputs = True
+                        model,
+                        inputs,
+                        return_outputs = True,
+                        num_items_in_batch = num_items_in_batch,
                     )
                 loss = loss.mean().detach()
 
@@ -305,7 +368,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -315,6 +377,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -335,12 +414,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
@@ -686,8 +762,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             else:
                 continue
             call_args.append(f"{k} = {k}")
-        arguments = f"\n{' '*8}" + f",\n{' '*8}".join(arguments)
-        call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
+        arguments = f"\n{' ' * 8}" + f",\n{' ' * 8}".join(arguments)
+        call_args = f"\n{' ' * 12}" + f",\n{' ' * 12}".join(call_args)
         processed.append(
             (
                 arguments,
@@ -701,7 +777,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add tokenizer if not seen
     if "tokenizer" not in parameters and "processing_class" in parameters:
-        arguments += f",\n{' '*8}tokenizer = None"
+        arguments += f",\n{' ' * 8}tokenizer = None"
         call_args = call_args.replace(
             "processing_class = processing_class",
             "processing_class = tokenizer if tokenizer is not None else processing_class",
@@ -1490,6 +1566,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         imports,
         overwrite = False,
     )
+    patched_trainer = getattr(created_module, f"Unsloth{RLTrainer_name}")
+    if trainer_file == "grpo_trainer":
+        _patch_resume_from_checkpoint_memory(patched_trainer)
 
     # Patch Trainer
     exec(
@@ -1706,8 +1785,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
                 new_vllm_part = (
-                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"
-                    f"\n{' '*8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
+                    f"\n{' ' * 8}else:\n"
                 )
 
         if trl_version >= Version("0.18.0"):
@@ -1870,6 +1949,83 @@ def patch_trl_rl_trainers():
     return
 
 
+def patch_trl_disable_gradient_checkpointing():
+    # TRL 1.0.0+ wraps generation in:
+    #   with torch.no_grad(), disable_gradient_checkpointing(self.model, ...):
+    # The toggle exists only to suppress a cosmetic PyTorch warning
+    # ("None of the inputs have requires_grad=True"). Inside torch.no_grad()
+    # the gradient checkpointing state has no functional effect on the
+    # forward pass.
+    #
+    # On exit, the context manager calls model.gradient_checkpointing_enable()
+    # which dispatches to HuggingFace's generic implementation and overwrites
+    # Unsloth's custom `use_gradient_checkpointing="unsloth"` wrapper. For
+    # Gemma-4 (and likely other models) this corrupts the forward numerics
+    # enough to make GRPO KL divergence explode to ~10^12 at step 1.
+    #
+    # Replacing the context manager with a no-op preserves Unsloth's custom
+    # gradient checkpointing wrapper across generation/inference passes.
+    #
+    # Backwards compatibility:
+    #   - trl < 1.0.0 (no disable_gradient_checkpointing): early return.
+    #   - trl >= 1.0.0: noop is functionally equivalent for forward
+    #     correctness. The only loss is a cosmetic warning being emitted
+    #     by PyTorch when use_reentrant=True (which is exactly the warning
+    #     TRL added the toggle to suppress in the first place).
+    try:
+        import trl.models.utils as _tmu
+    except ImportError:
+        return
+    if not hasattr(_tmu, "disable_gradient_checkpointing"):
+        return
+    if getattr(
+        _tmu.disable_gradient_checkpointing,
+        "_unsloth_noop_patched",
+        False,
+    ):
+        return
+
+    @contextmanager
+    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs = None):
+        yield
+
+    _noop_disable_gradient_checkpointing._unsloth_noop_patched = True
+
+    _tmu.disable_gradient_checkpointing = _noop_disable_gradient_checkpointing
+
+    # Also rebind any trl.* module that already imported the symbol by
+    # reference, so the noop applies even when the trainer module cached the
+    # original at import time. We walk sys.modules dynamically rather than
+    # hardcoding a list, so this picks up every trainer that does
+    # `from ...models.utils import disable_gradient_checkpointing`
+    # (grpo, dpo, rloo, dppo, gfpo, grpo_with_replay_buffer, and any future
+    # TRL trainer module).
+    for _mod_name, _mod in list(sys.modules.items()):
+        if _mod is None or not _mod_name.startswith("trl."):
+            continue
+        try:
+            _bound = getattr(_mod, "disable_gradient_checkpointing", None)
+        except (AttributeError, ImportError):
+            continue
+        if _bound is None:
+            continue
+        try:
+            setattr(
+                _mod,
+                "disable_gradient_checkpointing",
+                _noop_disable_gradient_checkpointing,
+            )
+        except (AttributeError, TypeError):
+            pass
+
+    logger.warning_once(
+        "Unsloth: Patched trl.models.utils.disable_gradient_checkpointing with "
+        "a no-op to preserve Unsloth gradient checkpointing across TRL "
+        "generation passes."
+    )
+    return
+
+
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
@@ -1904,6 +2060,14 @@ def patch_trl_vllm_generation():
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
+    # Install the disable_gradient_checkpointing noop BEFORE
+    # patch_trl_rl_trainers. patch_trl_rl_trainers imports extra trl.* trainer
+    # submodules while generating the compiled cache; any new trl.* modules
+    # imported after the sys.modules walk would keep their original (broken)
+    # binding of disable_gradient_checkpointing. Running the noop install
+    # first ensures the canonical trl.models.utils symbol is already replaced
+    # before those submodules bind it.
+    patch_trl_disable_gradient_checkpointing()
     patch_trl_rl_trainers()
     patch_trl_openenv()
     patch_trl_vllm_generation()

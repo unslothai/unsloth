@@ -3,6 +3,7 @@
 
 import {
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -13,12 +14,15 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import {
+  BookOpen02Icon,
   ColumnInsertIcon,
   Delete02Icon,
+  NewReleasesIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { db, useLiveQuery } from "./db";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView, ThreadRecord } from "./types";
 
 interface SidebarItem {
@@ -73,12 +77,17 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
-  const allThreads = useLiveQuery(
-    () => db.threads.orderBy("createdAt").reverse().toArray(),
-    [],
-  );
+  const allThreads = useLiveQuery(async () => {
+    const threadIdsWithMessage = new Set(
+      (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
+    );
+    const rows = await db.threads.orderBy("createdAt").reverse().toArray();
+    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
+  }, []);
   const items = groupThreads(allThreads ?? []);
-  const activeId = view.mode === "single" ? view.threadId : view.pairId;
+  const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const activeId =
+    view.mode === "single" ? (view.threadId ?? storeThreadId) : view.pairId;
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
@@ -98,7 +107,11 @@ export function ThreadSidebar({
       }
     }
     if (activeId === item.id) {
-      onSelect({ mode: "single" });
+      // Directly set a new view with a nonce rather than going through
+      // onNewThread(), which may return early if the guard sees no
+      // threadId and no activeThreadId (after we just cleared it).
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
     }
   }
 
@@ -158,6 +171,26 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="space-y-1 px-4 pb-3">
+        <a
+          href="https://unsloth.ai/docs/new/studio/chat"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+        >
+          <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
+          <span>Learn more in docs</span>
+        </a>
+        <a
+          href="https://unsloth.ai/docs/new/changelog"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <HugeiconsIcon icon={NewReleasesIcon} className="size-4 shrink-0" strokeWidth={2} />
+          <span>What&apos;s new</span>
+        </a>
+      </SidebarFooter>
     </>
   );
 }

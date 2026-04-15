@@ -137,7 +137,15 @@ export function applyRemovalToConfig(
   }
   if (config.kind === "model_config" && config.provider === ref) {
     const base = next as ModelConfig;
-    next = { ...base, provider: "" };
+    // Clear the synthetic "local" placeholder when the provider that was
+    // a local provider is removed; otherwise the stale placeholder would
+    // pass validation against a future external provider and then fail
+    // at runtime against a real API ("model not found").
+    next = {
+      ...base,
+      provider: "",
+      model: base.model === "local" ? "" : base.model,
+    };
   }
   if (config.kind === "llm" && config.model_alias === ref) {
     const base = next as LlmConfig;

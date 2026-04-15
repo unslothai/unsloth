@@ -17,11 +17,11 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: "http://127.0.0.1:8888",
         changeOrigin: true,
       },
       "/v1": {
-        target: "http://127.0.0.1:8000",
+        target: "http://127.0.0.1:8888",
         changeOrigin: true,
       },
       "/seed/inspect": {

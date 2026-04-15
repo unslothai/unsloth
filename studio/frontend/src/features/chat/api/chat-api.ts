@@ -117,12 +117,78 @@ export async function getGgufDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
+export interface DownloadProgressResponse {
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+  /**
+   * Resolved on-disk path of the snapshot dir (or cache repo root if no
+   * snapshot exists yet). Null when nothing has been written to the
+   * cache for this repo.
+   */
+  cache_path: string | null;
+}
+
 export async function getDownloadProgress(
   repoId: string,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   const response = await authFetch(`/api/models/download-progress?${params}`);
   return parseJsonOrThrow(response);
+}
+
+export async function getDatasetDownloadProgress(
+  repoId: string,
+): Promise<DownloadProgressResponse> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  return parseJsonOrThrow(response);
+}
+
+export type ModelLoadPhase = "mmap" | "ready" | null;
+
+export interface LoadProgressResponse {
+  /**
+   * Load phase: ``"mmap"`` while the llama-server subprocess is paging
+   * weight shards into RAM, ``"ready"`` once it has reported healthy,
+   * or ``null`` when no load is in flight.
+   */
+  phase: ModelLoadPhase;
+  bytes_loaded: number;
+  bytes_total: number;
+  fraction: number;
+}
+
+/**
+ * Fetch the active GGUF load's mmap/upload progress. Complements
+ * ``getDownloadProgress`` / ``getGgufDownloadProgress`` for the window
+ * between "download complete" and "chat ready", which for large MoE
+ * models can be several minutes of otherwise-opaque spinning.
+ */
+export async function getLoadProgress(): Promise<LoadProgressResponse> {
+  const response = await authFetch(`/api/inference/load-progress`);
+  return parseJsonOrThrow(response);
+}
+
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  path: string;
+  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  model_id?: string | null;
+  updated_at?: number | null;
+}
+
+interface LocalModelListResponse {
+  models_dir: string;
+  hf_cache_dir?: string | null;
+  lmstudio_dirs: string[];
+  models: LocalModelInfo[];
+}
+
+export async function listLocalModels(): Promise<LocalModelListResponse> {
+  const response = await authFetch("/api/models/local");
+  return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
 export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
@@ -149,6 +215,34 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export interface ScanFolderInfo {
+  id: number;
+  path: string;
+  created_at: string;
+}
+
+export async function listScanFolders(): Promise<ScanFolderInfo[]> {
+  const response = await authFetch("/api/models/scan-folders");
+  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
+  return data.folders;
+}
+
+export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+  const response = await authFetch("/api/models/scan-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseJsonOrThrow<ScanFolderInfo>(response);
+}
+
+export async function removeScanFolder(id: number): Promise<void> {
+  const response = await authFetch(`/api/models/scan-folders/${id}`, {
+    method: "DELETE",
   });
   await parseJsonOrThrow<unknown>(response);
 }
@@ -231,6 +325,12 @@ export async function* streamChatCompletions(
       // Tool status events are custom SSE payloads, not OpenAI chunks
       if ("type" in parsed && parsed.type === "tool_status") {
         yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
+      }
+      // Tool start/end events carry full input/output for the tool outputs panel
+      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+        yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }

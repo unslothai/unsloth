@@ -34,6 +34,7 @@ interface ModelSelectorProps {
   activeGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
+  onFoldersChange?: () => void;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -100,6 +101,7 @@ function ModelSelectorContent({
   value,
   onSelect,
   onEject,
+  onFoldersChange,
   className,
   dataTour,
 }: {
@@ -108,6 +110,7 @@ function ModelSelectorContent({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
+  onFoldersChange?: () => void;
   className?: string;
   dataTour?: string;
 }) {
@@ -124,7 +127,7 @@ function ModelSelectorContent({
       )}
     >
       {chatOnly ? (
-        <HubModelPicker models={models} value={value} onSelect={onSelect} />
+        <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
@@ -133,7 +136,7 @@ function ModelSelectorContent({
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} />
+            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
           </TabsContent>
 
           <TabsContent value="lora" className="m-0">
@@ -151,7 +154,7 @@ function ModelSelectorContent({
           <button
             type="button"
             onClick={onEject}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
             title="Eject model"
           >
             <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
@@ -171,6 +174,7 @@ export function ModelSelector({
   activeGgufVariant,
   onValueChange,
   onEject,
+  onFoldersChange,
   variant = "outline",
   size = "default",
   className,
@@ -199,11 +203,22 @@ export function ModelSelector({
         ? lora.name.split("/")[0].trim()
         : lora.name;
       // Show type tag instead of base model name
+      const isLocal = lora.source === "local";
+      const isTraining = lora.source === "training";
       const isExported = lora.source === "exported";
       const isMerged = lora.exportType === "merged";
-      const tag = isExported
-        ? isMerged ? "Merged · Exported" : "LoRA"
-        : "LoRA";
+      const isGguf = lora.exportType === "gguf";
+      const tag = isLocal
+        ? isGguf
+          ? "GGUF"
+          : "Local"
+        : isTraining && isMerged
+          ? "Full finetune"
+          : isExported
+            ? isMerged
+              ? "Merged · Exported"
+              : "LoRA · Exported"
+            : "LoRA";
       all.set(lora.id, {
         ...lora,
         name: displayName,
@@ -253,6 +268,7 @@ export function ModelSelector({
         value={selected}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
+        onFoldersChange={onFoldersChange}
         className={contentClassName}
         dataTour={contentDataTour}
       />

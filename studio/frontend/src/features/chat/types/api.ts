@@ -41,6 +41,7 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  speculative_type?: string | null;
 }
 
 export interface ValidateModelResponse {
@@ -51,6 +52,7 @@ export interface ValidateModelResponse {
   is_gguf?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
+  requires_trust_remote_code?: boolean;
 }
 
 export interface GgufVariantDetail {
@@ -85,11 +87,16 @@ export interface LoadModelResponse {
     presence_penalty?: number;
     trust_remote_code?: boolean;
   };
+  requires_trust_remote_code?: boolean;
   context_length?: number | null;
+  max_context_length?: number | null;
+  native_context_length?: number | null;
   supports_reasoning?: boolean;
+  reasoning_always_on?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
+  speculative_type?: string | null;
 }
 
 export interface UnloadModelRequest {
@@ -114,9 +121,14 @@ export interface InferenceStatusResponse {
     presence_penalty?: number;
     trust_remote_code?: boolean;
   };
+  requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
+  reasoning_always_on?: boolean;
   supports_tools?: boolean;
   context_length?: number | null;
+  max_context_length?: number | null;
+  native_context_length?: number | null;
+  speculative_type?: string | null;
 }
 
 export interface AudioGenerationResponse {
@@ -156,6 +168,11 @@ export interface OpenAIChatCompletionsRequest {
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   enable_tools?: boolean | null;
+  enabled_tools?: string[];
+  auto_heal_tool_calls?: boolean;
+  max_tool_calls_per_message?: number;
+  tool_call_timeout?: number;
+  session_id?: string;
 }
 
 export interface OpenAIChatDelta {
@@ -170,4 +187,10 @@ export interface OpenAIChatChunkChoice {
 
 export interface OpenAIChatChunk {
   choices?: OpenAIChatChunkChoice[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  timings?: Record<string, number>;
 }

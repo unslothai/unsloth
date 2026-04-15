@@ -9,17 +9,21 @@ Uses Colab's built-in proxy - no external tunneling needed!
 from pathlib import Path
 import sys
 
-# Add backend to path early so local modules like loggers can be imported
-backend_path = str(Path(__file__).parent)
-if backend_path not in sys.path:
-    sys.path.insert(0, backend_path)
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+_backend_dir = str(Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+import _platform_compat  # noqa: F401
+
 
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_colab_url(port: int = 8000) -> str:
+def get_colab_url(port: int = 8888) -> str:
     """
     Get the actual Colab proxy URL for a port.
     """
@@ -34,7 +38,7 @@ def get_colab_url(port: int = 8000) -> str:
         return f"http://localhost:{port}"
 
 
-def show_link(port: int = 8000):
+def show_link(port: int = 8888):
     """Display a styled clickable link to the UI."""
     from IPython.display import display, HTML
 
@@ -42,8 +46,8 @@ def show_link(port: int = 8000):
     url = get_colab_url(port)
 
     short_url = (
-        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
-        if "8000-" in url
+        url[: url.index("-", url.index(f"{port}-") + len(str(port)) + 1) + 1] + "..."
+        if f"{port}-" in url
         else url
     )
     html = f"""
@@ -62,7 +66,10 @@ def show_link(port: int = 8000):
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
             Open Unsloth Studio
         </a>
-        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace;">
+        <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
+            If the link doesn't work, you can scroll down to view the UI generated directly in Colab.
+        </p>
+        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
             {short_url}
         </p>
     </div>
@@ -70,7 +77,7 @@ def show_link(port: int = 8000):
     display(HTML(html))
 
 
-def start(port: int = 8000):
+def start(port: int = 8888):
     """
     Start Unsloth Studio server in Colab and display the URL.
 

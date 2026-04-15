@@ -167,12 +167,7 @@ def _validate_recipe_runtime_support(
     recipe: dict[str, Any],
     model_providers: list[Any],
 ) -> None:
-    if not _recipe_has_llm_columns(recipe):
-        raise ValueError(
-            "Recipe Studio currently requires at least one AI generation step."
-        )
-
-    if not model_providers:
+    if _recipe_has_llm_columns(recipe) and not model_providers:
         raise ValueError("Add a Provider connection block before running this recipe.")
 
 
@@ -265,6 +260,21 @@ def create_data_designer(
 
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
+
+    # DataDesigner requires at least one model provider in its registry even
+    # when the pipeline contains no LLM columns.  Supply a lightweight stub
+    # so sampler/expression-only recipes can run without a real provider.
+    if not model_providers:
+        from data_designer.config.models import ModelProvider
+
+        model_providers = [
+            ModelProvider(
+                name = "_unused",
+                endpoint = "http://localhost",
+                provider_type = "openai",
+                api_key = None,
+            )
+        ]
 
     return DataDesigner(
         artifact_path = artifact_path,

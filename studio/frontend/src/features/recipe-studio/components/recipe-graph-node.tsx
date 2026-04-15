@@ -30,7 +30,7 @@ import {
   Position,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { type ReactElement, memo, useEffect } from "react";
+import { type ReactElement, memo, useEffect, useMemo } from "react";
 import {
   MAX_NODE_WIDTH,
   MAX_NOTE_NODE_WIDTH,
@@ -256,9 +256,10 @@ function getConfigSummary(config: NodeConfig | undefined): string {
     }
     if (
       seedSourceType === "unstructured" &&
-      config.unstructured_file_name?.trim()
+      config.unstructured_file_names?.length
     ) {
-      return config.unstructured_file_name.trim();
+      const count = config.unstructured_file_names.length;
+      return `${count} file${count !== 1 ? "s" : ""} uploaded`;
     }
     if (config.hf_path.trim()) {
       return config.hf_path.trim();
@@ -286,6 +287,7 @@ function renderNodeBody(
   config: NodeConfig | undefined,
   summary: string,
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void,
+  localProviderNames: Set<string>,
 ): ReactElement {
   if (config?.kind === "markdown_note") {
     return <MarkdownPreview markdown={config.markdown} />;
@@ -299,7 +301,13 @@ function renderNodeBody(
       return <InlineSampler config={config} onUpdate={onUpdate} />;
     }
     if (config.kind === "model_provider" || config.kind === "model_config") {
-      return <InlineModel config={config} onUpdate={onUpdate} />;
+      return (
+        <InlineModel
+          config={config}
+          localProviderNames={localProviderNames}
+          onUpdate={onUpdate}
+        />
+      );
     }
     if (config.kind === "llm") {
       return <InlineLlm config={config} onUpdate={onUpdate} />;
@@ -354,6 +362,16 @@ function RecipeGraphNodeBase({
   const config = useRecipeStudioStore((state) => state.configs[id]);
   const openConfig = useRecipeStudioStore((state) => state.openConfig);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
+  const allConfigs = useRecipeStudioStore((state) => state.configs);
+  const localProviderNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const cfg of Object.values(allConfigs)) {
+      if (cfg.kind === "model_provider" && cfg.is_local === true) {
+        names.add(cfg.name);
+      }
+    }
+    return names;
+  }, [allConfigs]);
   const llmAuxVisible = useRecipeStudioStore(
     (state) => state.llmAuxVisibility[id] ?? false,
   );
@@ -417,7 +435,12 @@ function RecipeGraphNodeBase({
     data.kind === "tool_config" ||
     data.kind === "validator";
   const summary = getConfigSummary(config);
-  const nodeBody = renderNodeBody(config, summary, updateConfig);
+  const nodeBody = renderNodeBody(
+    config,
+    summary,
+    updateConfig,
+    localProviderNames,
+  );
   const canShowLlmAux =
     config?.kind === "llm" &&
     (Boolean(config.prompt.trim()) ||

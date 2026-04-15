@@ -72,7 +72,22 @@ def clear_bootstrap_password() -> None:
 
 
 def _hash_token(token: str) -> str:
-    """SHA-256 hash helper used for refresh token storage."""
+    """SHA-256 hash helper used for refresh token storage.
+
+    Plain SHA-256 is intentional here: refresh tokens are high-entropy
+    random strings from ``secrets.token_urlsafe(48)`` (384 bits of
+    entropy), so a slow KDF (Argon2 / bcrypt / PBKDF2) provides zero
+    additional security — no attacker can brute-force 2^384 regardless
+    of hash speed — while adding tens of ms of CPU to every refresh.
+    See the OWASP Password Storage Cheat Sheet on fast-vs-slow hashing
+    of high-entropy inputs.
+
+    API keys use the separate ``_pbkdf2_api_key`` helper below, which
+    runs PBKDF2-HMAC-SHA256 with a persistent server-side salt — not
+    for cryptographic reasons (128-bit random tokens don't need slow
+    hashing), but because CodeQL's ``py/weak-sensitive-data-hashing``
+    query mislabels API keys as passwords and demands a KDF.
+    """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -103,6 +118,29 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash   TEXT NOT NULL UNIQUE,
+            name       TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            expires_at TEXT,
+            is_active  INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_secrets (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -110,6 +148,89 @@ def get_connection() -> sqlite3.Connection:
         )
     conn.commit()
     return conn
+
+
+# ── API-key PBKDF2 salt ────────────────────────────────────────────────
+#
+# Module-level cache for the persistent API-key PBKDF2 salt. Populated
+# lazily on first use via ``_get_or_create_api_key_pbkdf2_salt``. Not
+# protected by a lock because (a) the ``INSERT OR IGNORE`` provides
+# atomicity at the SQLite layer and (b) concurrent populations converge
+# on the same value, so the worst case is a harmless duplicate read on
+# startup.
+_api_key_pbkdf2_salt_cache: Optional[bytes] = None
+
+
+def _get_or_create_api_key_pbkdf2_salt() -> bytes:
+    """Return the persistent API-key PBKDF2 salt, generating it once if missing.
+
+    Stored as a hex-encoded 32-byte random value in the ``app_secrets``
+    table under key ``"api_key_pbkdf2_salt"``. Regenerated only if the row
+    is missing (i.e. fresh install, or operator manually deleted the row
+    and accepts invalidating existing API keys).
+    """
+    global _api_key_pbkdf2_salt_cache
+    if _api_key_pbkdf2_salt_cache is not None:
+        return _api_key_pbkdf2_salt_cache
+
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            ("api_key_pbkdf2_salt",),
+        )
+        row = cur.fetchone()
+        if row is None:
+            new_value = secrets.token_hex(32)  # 32 bytes -> 64 hex chars
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                ("api_key_pbkdf2_salt", new_value),
+            )
+            conn.commit()
+            cur = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                ("api_key_pbkdf2_salt",),
+            )
+            row = cur.fetchone()
+        salt = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _api_key_pbkdf2_salt_cache = salt
+    return salt
+
+
+_API_KEY_PBKDF2_ITERATIONS = 100_000
+
+
+def _pbkdf2_api_key(raw_key: str) -> str:
+    """PBKDF2-HMAC-SHA256 an API key with a persistent server-side salt.
+
+    Used for API-key storage ONLY, not refresh tokens. Matches the
+    PBKDF2 algorithm + iteration count used by the password hasher in
+    ``auth/hashing.py`` so the codebase is consistent on which KDF it
+    uses for credential storage.
+
+    Notes on why a slow KDF here is *only* a CodeQL appeasement and
+    *not* a cryptographic requirement: API keys are cryptographically
+    random 128-bit tokens (via ``secrets.token_hex``), so brute force
+    against 2^128 is infeasible regardless of hash speed. CodeQL's
+    ``py/weak-sensitive-data-hashing`` query mislabels these tokens as
+    "password" sensitive data and then demands a KDF from its
+    allowlist (Argon2 / scrypt / bcrypt / PBKDF2). Per the query's
+    own recommendation page we use PBKDF2. The persistent salt is
+    still loaded from ``app_secrets`` so an attacker dumping the
+    ``api_keys`` table alone cannot derive hashes for candidate
+    tokens without also obtaining the salt row.
+    """
+    salt = _get_or_create_api_key_pbkdf2_salt()
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        raw_key.encode("utf-8"),
+        salt,
+        _API_KEY_PBKDF2_ITERATIONS,
+    )
+    return dk.hex()
 
 
 def is_initialized() -> bool:
@@ -355,5 +476,107 @@ def revoke_user_refresh_tokens(username: str) -> None:
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# API key management
+# ---------------------------------------------------------------------------
+
+API_KEY_PREFIX = "sk-unsloth-"
+
+
+def create_api_key(
+    username: str,
+    name: str,
+    expires_at: Optional[str] = None,
+) -> Tuple[str, dict]:
+    """Create a new API key for *username*.
+
+    Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
+    exactly once.  The database only stores the SHA-256 hash.
+    """
+    raw_key = API_KEY_PREFIX + secrets.token_hex(16)
+    key_hash = _pbkdf2_api_key(raw_key)
+    key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (username, key_prefix, key_hash, name, now, expires_at),
+        )
+        conn.commit()
+        cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
+        row = cur.fetchone()
+        return raw_key, dict(row)
+    finally:
+        conn.close()
+
+
+def list_api_keys(username: str) -> list:
+    """Return all API keys for *username* (never exposes ``key_hash``)."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, username, key_prefix, name, created_at, last_used_at, expires_at, is_active
+            FROM api_keys
+            WHERE username = ?
+            ORDER BY created_at DESC
+            """,
+            (username,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def revoke_api_key(username: str, key_id: int) -> bool:
+    """Soft-delete an API key.  Returns True if a matching row was found."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND username = ?",
+            (key_id, username),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def validate_api_key(raw_key: str) -> Optional[str]:
+    """Validate *raw_key* and return the owning username, or ``None``.
+
+    Also updates ``last_used_at`` on success.
+    """
+    key_hash = _pbkdf2_api_key(raw_key)
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
+            (key_hash,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        if not row["is_active"]:
+            return None
+        if row["expires_at"] is not None:
+            expires = datetime.fromisoformat(row["expires_at"])
+            if datetime.now(timezone.utc) > expires:
+                return None
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), row["id"]),
+        )
+        conn.commit()
+        return row["username"]
     finally:
         conn.close()

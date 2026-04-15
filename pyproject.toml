@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-unsloth = "cli:app"
+unsloth = "unsloth_cli:app"
 
 [tool.setuptools.dynamic]
 version = {attr = "unsloth.models._utils.__version__"}
@@ -46,12 +46,9 @@ studio = [
     "*.ps1",
     "*.bat",
     "frontend/dist/**/*",
-    "frontend/public/**/*",
-    "frontend/src/**/*",
     "frontend/*.json",
     "frontend/*.ts",
     "frontend/*.js",
-    "frontend/*.lock",
     "frontend/*.html",
     "frontend/*.yaml",
     "frontend/.git*",
@@ -61,7 +58,8 @@ studio = [
 ]
 
 [tool.setuptools.packages.find]
-exclude = ["images*", "tests*", "kernels/moe*"]
+include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
+exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
 
 [project.optional-dependencies]
 triton = [
@@ -84,13 +82,13 @@ huggingfacenotorch = [
     "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.3.4",
+    "unsloth_zoo>=2026.4.3",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -580,10 +578,10 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.3.4",
+    "unsloth_zoo>=2026.4.3",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -1154,8 +1152,8 @@ rocm711-torch2100 = [
 ]
 
 [project.urls]
-homepage = "http://www.unsloth.ai"
-documentation = "https://github.com/unslothai/unsloth"
+homepage = "https://unsloth.ai"
+documentation = "https://unsloth.ai/docs"
 repository = "https://github.com/unslothai/unsloth"
 
 [tool.ruff]

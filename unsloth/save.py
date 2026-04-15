@@ -1976,15 +1976,46 @@ def unsloth_save_pretrained_gguf(
         fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
     # Step 4: Save/merge model to 16-bit format
-    print(
-        f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...'
+    is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(
+        self, PeftModel
     )
-    try:
-        # Call unsloth_generic_save directly (it's in the same file)
-        unsloth_generic_save(**arguments)
 
-    except Exception as e:
-        raise RuntimeError(f"Failed to save/merge model: {e}")
+    if is_peft_model:
+        print(
+            f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...'
+        )
+        try:
+            # Call unsloth_generic_save directly (it's in the same file)
+            unsloth_generic_save(**arguments)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to save/merge model: {e}")
+    else:
+        # Non-PEFT model — checkpoint files already exist on disk.
+        # Point save_to_gguf at the original checkpoint path instead of
+        # re-saving to a temporary "model" subdirectory.
+        original_path = getattr(self.config, "_name_or_path", None)
+        if original_path and os.path.isdir(original_path):
+            print(
+                f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
+            )
+            save_directory = original_path
+            # Persist tokenizer fixes (e.g. BOS token stripping) to disk
+            # so the GGUF converter picks up the corrected chat template.
+            if tokenizer is not None:
+                tokenizer.save_pretrained(save_directory)
+        else:
+            # Fallback: save the in-memory model to save_directory
+            print(
+                "Unsloth: Model is not a PEFT model. Saving directly without LoRA merge..."
+            )
+            os.makedirs(save_directory, exist_ok = True)
+            try:
+                self.save_pretrained(save_directory)
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(save_directory)
+            except Exception as e:
+                raise RuntimeError(f"Failed to save model: {e}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -2502,12 +2533,15 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
-
     try:
         with subprocess.Popen(
-            command,
-            shell = True,
+            [
+                sys.executable,
+                "llama.cpp/convert-lora-to-ggml.py",
+                lora_directory_push,
+                output_file,
+                "llama",
+            ],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             bufsize = 1,
@@ -2519,7 +2553,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
                 print(line, end = "", flush = True)
             sp.wait()
             if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, command)
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
     except subprocess.CalledProcessError as e:
         print(f"Error: Conversion failed with return code {e.returncode}")
         return
@@ -2581,12 +2615,15 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     )
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
-
     try:
         with subprocess.Popen(
-            command,
-            shell = True,
+            [
+                sys.executable,
+                "llama.cpp/convert-lora-to-ggml.py",
+                save_directory,
+                output_file,
+                "llama",
+            ],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             bufsize = 1,
@@ -2598,7 +2635,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
                 print(line, end = "", flush = True)
             sp.wait()
             if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, command)
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
     except subprocess.CalledProcessError as e:
         print(f"Error: Conversion failed with return code {e.returncode}")
         return
@@ -2746,19 +2783,79 @@ def unsloth_generic_save(
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
-    merge_and_overwrite_lora(
-        get_model_name,
-        model = model,
-        tokenizer = tokenizer,
-        save_directory = save_directory,
-        push_to_hub = push_to_hub,
-        private = private,
-        token = token,
-        save_method = save_method,
-        output_dtype = None,
-        low_disk_space_usage = True,
-        use_temp_file = False,
-    )
+    # Full-finetuned models (no LoRA) cannot use merge_and_overwrite_lora
+    # since there are no adapters to merge. Fall back to save_pretrained.
+    # This mirrors the non-PeftModel handling in save_pretrained_torchao
+    # and the GGUF save path.
+    _is_peft = isinstance(model, PeftModel)
+    if not _is_peft:
+        if not is_main_process:
+            return
+
+        # Honor merged_16bit by casting to the target dtype if needed
+        _save_kwargs = dict(
+            safe_serialization = safe_serialization,
+            max_shard_size = max_shard_size,
+            variant = variant,
+        )
+        if "16bit" in save_method:
+            _target_dtype = (
+                torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            )
+            _save_kwargs["state_dict"] = {
+                k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
+                for k, v in model.state_dict().items()
+            }
+
+        if push_to_hub:
+            print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
+            model.push_to_hub(
+                repo_id = save_directory,
+                token = token,
+                private = private,
+                commit_message = commit_message,
+                create_pr = create_pr,
+                revision = revision,
+                commit_description = commit_description,
+                tags = tags,
+                **_save_kwargs,
+            )
+            if tokenizer is not None:
+                old_padding_side = tokenizer.padding_side
+                tokenizer.padding_side = "left"
+                tokenizer.push_to_hub(
+                    save_directory,
+                    token = token,
+                    private = private,
+                    commit_message = commit_message,
+                    create_pr = create_pr,
+                    revision = revision,
+                )
+                tokenizer.padding_side = old_padding_side
+        else:
+            print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
+            model.save_pretrained(save_directory, **_save_kwargs)
+            if tokenizer is not None:
+                old_padding_side = tokenizer.padding_side
+                tokenizer.padding_side = "left"
+                tokenizer.save_pretrained(save_directory)
+                tokenizer.padding_side = old_padding_side
+
+        print(f"Unsloth: Model saved successfully to '{save_directory}'")
+    else:
+        merge_and_overwrite_lora(
+            get_model_name,
+            model = model,
+            tokenizer = tokenizer,
+            save_directory = save_directory,
+            push_to_hub = push_to_hub,
+            private = private,
+            token = token,
+            save_method = save_method,
+            output_dtype = None,
+            low_disk_space_usage = True,
+            use_temp_file = False,
+        )
 
     if push_to_hub and datasets:
         try:

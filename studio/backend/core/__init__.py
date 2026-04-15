@@ -10,6 +10,16 @@ like unsloth, transformers, or torch before the version activation
 code has a chance to run.
 """
 
+import sys
+from pathlib import Path
+
+# Ensure the backend directory is on sys.path so that bare "from utils.*"
+# imports used throughout the backend work when core is imported as a package
+# (e.g. from the CLI: "from studio.backend.core import ModelConfig").
+_backend_dir = str(Path(__file__).resolve().parent.parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
 __all__ = [
     # Inference
     "InferenceBackend",
@@ -21,6 +31,7 @@ __all__ = [
     # Config
     "ModelConfig",
     "is_vision_model",
+    "scan_trained_models",
     "scan_trained_loras",
     "load_model_defaults",
     "get_base_model_from_lora",
@@ -62,6 +73,7 @@ def __getattr__(name):
     if name in (
         "is_vision_model",
         "ModelConfig",
+        "scan_trained_models",
         "scan_trained_loras",
         "load_model_defaults",
         "get_base_model_from_lora",
@@ -69,14 +81,15 @@ def __getattr__(name):
         from utils.models import (
             is_vision_model,
             ModelConfig,
-            scan_trained_loras,
+            scan_trained_models,
             load_model_defaults,
             get_base_model_from_lora,
         )
 
         globals()["is_vision_model"] = is_vision_model
         globals()["ModelConfig"] = ModelConfig
-        globals()["scan_trained_loras"] = scan_trained_loras
+        globals()["scan_trained_models"] = scan_trained_models
+        globals()["scan_trained_loras"] = scan_trained_models
         globals()["load_model_defaults"] = load_model_defaults
         globals()["get_base_model_from_lora"] = get_base_model_from_lora
         return globals()[name]

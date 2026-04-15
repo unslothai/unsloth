@@ -41,6 +41,10 @@ class ModelCheckpoints(BaseModel):
         None,
         description = "LoRA rank (r) if applicable",
     )
+    is_quantized: bool = Field(
+        False,
+        description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -161,7 +165,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -185,7 +189,27 @@ class LocalModelListResponse(BaseModel):
         None,
         description = "HF cache root that was scanned",
     )
+    lmstudio_dirs: List[str] = Field(
+        default_factory = list,
+        description = "LM Studio model directories that were scanned",
+    )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
         description = "Discovered local/cached models",
     )
+
+
+class AddScanFolderRequest(BaseModel):
+    """Request body for adding a custom scan folder."""
+
+    path: str = Field(
+        ..., description = "Absolute or relative directory path to scan for models"
+    )
+
+
+class ScanFolderInfo(BaseModel):
+    """A registered custom model scan folder."""
+
+    id: int = Field(..., description = "Database row ID")
+    path: str = Field(..., description = "Normalized absolute path")
+    created_at: str = Field(..., description = "ISO 8601 creation timestamp")

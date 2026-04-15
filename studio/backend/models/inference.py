@@ -22,7 +22,10 @@ class LoadRequest(BaseModel):
         None, description = "HuggingFace token for gated models"
     )
     max_seq_length: int = Field(
-        4096, ge = 128, le = 32768, description = "Maximum sequence length"
+        0,
+        ge = 0,
+        le = 1048576,
+        description = "Maximum sequence length (0 = model default for GGUF)",
     )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
@@ -40,6 +43,14 @@ class LoadRequest(BaseModel):
     cache_type_kv: Optional[str] = Field(
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
 
 
@@ -83,6 +94,10 @@ class ValidateModelResponse(BaseModel):
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -126,12 +141,27 @@ class LoadResponse(BaseModel):
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
     context_length: Optional[int] = Field(
         None, description = "Model's native context length (from GGUF metadata)"
+    )
+    max_context_length: Optional[int] = Field(
+        None, description = "Maximum context length currently available on this hardware"
+    )
+    native_context_length: Optional[int] = Field(
+        None,
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
     )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+    )
+    reasoning_always_on: bool = Field(
+        False,
+        description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
     supports_tools: bool = Field(
         False,
@@ -145,6 +175,10 @@ class LoadResponse(BaseModel):
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
     )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -152,6 +186,39 @@ class UnloadResponse(BaseModel):
 
     status: str = Field(..., description = "Unload status")
     model: str = Field(..., description = "Model identifier that was unloaded")
+
+
+class LoadProgressResponse(BaseModel):
+    """Progress of the active GGUF load, sampled on demand.
+
+    Used by the UI to show a real progress bar during the
+    post-download warmup window (mmap + CUDA upload), rather than a
+    generic "Starting model..." spinner that freezes for minutes on
+    large MoE models.
+    """
+
+    phase: Optional[str] = Field(
+        None,
+        description = (
+            "Load phase: 'mmap' (weights paging into RAM via mmap), "
+            "'ready' (llama-server reported healthy), or null when no "
+            "load is in flight."
+        ),
+    )
+    bytes_loaded: int = Field(
+        0,
+        description = (
+            "Bytes of the model already resident in the llama-server "
+            "process (VmRSS on Linux)."
+        ),
+    )
+    bytes_total: int = Field(
+        0,
+        description = "Total bytes across all GGUF shards for the active model.",
+    )
+    fraction: float = Field(
+        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
+    )
 
 
 class InferenceStatusResponse(BaseModel):
@@ -187,14 +254,33 @@ class InferenceStatusResponse(BaseModel):
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the active model requires trust_remote_code to be enabled for loading.",
+    )
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
+    )
+    reasoning_always_on: bool = Field(
+        False, description = "Whether reasoning is always on (not toggleable)"
     )
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
+    )
+    max_context_length: Optional[int] = Field(
+        None,
+        description = "Maximum context length currently available for the active model",
+    )
+    native_context_length: Optional[int] = Field(
+        None,
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
 
 
@@ -288,7 +374,7 @@ class ChatCompletionRequest(BaseModel):
         0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
     image_base64: Optional[str] = Field(
         None, description = "[x-unsloth] Base64-encoded image for vision models"
@@ -318,6 +404,24 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
     )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        True,
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    max_tool_calls_per_message: Optional[int] = Field(
+        25,
+        ge = 0,
+        description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
+    )
+    tool_call_timeout: Optional[int] = Field(
+        300,
+        ge = 1,
+        description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
 
 
 # ── Streaming response chunks ────────────────────────────────────
@@ -346,6 +450,8 @@ class ChatCompletionChunk(BaseModel):
     created: int = Field(default_factory = lambda: int(time.time()))
     model: str = "default"
     choices: list[ChunkChoice]
+    usage: Optional[CompletionUsage] = None
+    timings: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────
@@ -383,3 +489,241 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+
+
+# =====================================================================
+# OpenAI Responses API Models  (/v1/responses)
+# =====================================================================
+
+
+# ── Request models ──────────────────────────────────────────────
+
+
+class ResponsesInputTextPart(BaseModel):
+    """Text content part in a Responses API message (type=input_text)."""
+
+    type: Literal["input_text"]
+    text: str
+
+
+class ResponsesInputImagePart(BaseModel):
+    """Image content part in a Responses API message (type=input_image)."""
+
+    type: Literal["input_image"]
+    image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
+    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+
+
+ResponsesContentPart = Union[ResponsesInputTextPart, ResponsesInputImagePart]
+
+
+class ResponsesInputMessage(BaseModel):
+    """A single message in the Responses API input array."""
+
+    role: Literal["system", "user", "assistant", "developer"]
+    content: Union[str, list[ResponsesContentPart]]
+
+
+class ResponsesRequest(BaseModel):
+    """OpenAI Responses API request."""
+
+    model: str = Field("default", description = "Model identifier")
+    input: Union[str, list[ResponsesInputMessage]] = Field(
+        default = [],
+        description = "Input text or message list",
+    )
+    instructions: Optional[str] = Field(
+        None, description = "System / developer instructions"
+    )
+    temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
+    top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    max_output_tokens: Optional[int] = Field(None, ge = 1)
+    stream: bool = Field(False, description = "Whether to stream the response via SSE")
+
+    # Accepted but ignored -- keeps SDK clients from failing on unsupported fields
+    tools: Optional[list] = None
+    tool_choice: Optional[Any] = None
+    previous_response_id: Optional[str] = None
+    store: Optional[bool] = None
+    metadata: Optional[dict] = None
+    truncation: Optional[Any] = None
+    user: Optional[str] = None
+    text: Optional[Any] = None
+    reasoning: Optional[Any] = None
+
+    model_config = {"extra": "allow"}
+
+
+# ── Response models ─────────────────────────────────────────────
+
+
+class ResponsesOutputTextContent(BaseModel):
+    """A text content block inside an output message."""
+
+    type: Literal["output_text"] = "output_text"
+    text: str
+    annotations: list = Field(default_factory = list)
+
+
+class ResponsesOutputMessage(BaseModel):
+    """An output message in the Responses API response."""
+
+    type: Literal["message"] = "message"
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress"] = "completed"
+    role: Literal["assistant"] = "assistant"
+    content: list[ResponsesOutputTextContent] = Field(default_factory = list)
+
+
+class ResponsesUsage(BaseModel):
+    """Token usage for a Responses API response (input_tokens, not prompt_tokens)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+class ResponsesResponse(BaseModel):
+    """Top-level Responses API response object."""
+
+    id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
+    object: Literal["response"] = "response"
+    created_at: int = Field(default_factory = lambda: int(time.time()))
+    status: Literal["completed", "in_progress", "failed"] = "completed"
+    model: str = "default"
+    output: list[ResponsesOutputMessage] = Field(default_factory = list)
+    usage: ResponsesUsage = Field(default_factory = ResponsesUsage)
+    error: Optional[Any] = None
+    incomplete_details: Optional[Any] = None
+    instructions: Optional[str] = None
+    metadata: dict = Field(default_factory = dict)
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_output_tokens: Optional[int] = None
+    previous_response_id: Optional[str] = None
+    text: Optional[Any] = None
+    tool_choice: Optional[Any] = None
+    tools: list = Field(default_factory = list)
+    truncation: Optional[Any] = None
+
+
+# =====================================================================
+# Anthropic Messages API Models  (/v1/messages)
+# =====================================================================
+
+
+# ── Request models ─────────────────────────────────────────────
+
+
+class AnthropicTextBlock(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class AnthropicImageSource(BaseModel):
+    type: Literal["base64", "url"]
+    media_type: Optional[str] = None
+    data: Optional[str] = None
+    url: Optional[str] = None
+
+
+class AnthropicImageBlock(BaseModel):
+    type: Literal["image"]
+    source: AnthropicImageSource
+
+
+class AnthropicToolUseBlock(BaseModel):
+    type: Literal["tool_use"]
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicToolResultBlock(BaseModel):
+    type: Literal["tool_result"]
+    tool_use_id: str
+    content: Union[str, list] = ""
+
+
+AnthropicContentBlock = Union[
+    AnthropicTextBlock,
+    AnthropicImageBlock,
+    AnthropicToolUseBlock,
+    AnthropicToolResultBlock,
+]
+
+
+class AnthropicMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: Union[str, list[AnthropicContentBlock]]
+
+
+class AnthropicTool(BaseModel):
+    name: str
+    description: Optional[str] = None
+    input_schema: dict
+
+
+class AnthropicMessagesRequest(BaseModel):
+    model: str = "default"
+    max_tokens: Optional[int] = None
+    messages: list[AnthropicMessage]
+    system: Optional[Union[str, list]] = None
+    tools: Optional[list[AnthropicTool]] = None
+    tool_choice: Optional[Any] = None
+    stream: bool = False
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    stop_sequences: Optional[list[str]] = None
+    metadata: Optional[dict] = None
+    # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    min_p: Optional[float] = Field(
+        None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+    )
+    repetition_penalty: Optional[float] = Field(
+        None, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+    )
+    presence_penalty: Optional[float] = Field(
+        None, ge = 0.0, le = 2.0, description = "[x-unsloth] Presence penalty"
+    )
+    enable_tools: Optional[bool] = None
+    enabled_tools: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    model_config = {"extra": "allow"}
+
+
+# ── Response models ────────────────────────────────────────────
+
+
+class AnthropicUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class AnthropicResponseTextBlock(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class AnthropicResponseToolUseBlock(BaseModel):
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
+]
+
+
+class AnthropicMessagesResponse(BaseModel):
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:24]}")
+    type: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
+    content: list[AnthropicResponseBlock] = Field(default_factory = list)
+    model: str = "default"
+    stop_reason: Optional[str] = None
+    stop_sequence: Optional[str] = None
+    usage: AnthropicUsage = Field(default_factory = AnthropicUsage)

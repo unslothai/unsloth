@@ -6,14 +6,39 @@ Main FastAPI application for Unsloth UI Backend
 """
 
 import os
+import sys
+from pathlib import Path as _Path
 
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Ensure backend dir is on sys.path so _platform_compat is importable when
+# main.py is launched directly (e.g. `uvicorn main:app`).
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
+
+import mimetypes
 import shutil
-import sys
 import warnings
 from contextlib import asynccontextmanager
+
+# Fix broken Windows registry MIME types.  Some Windows installs map .js to
+# "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
+# module reads from the registry, and FastAPI/Starlette's StaticFiles uses
+# mimetypes.guess_type() to set Content-Type headers.  Browsers enforce strict
+# MIME checking for ES module scripts (<script type="module">) and will refuse
+# to execute .js files served as text/plain — resulting in a blank page.
+# Calling add_type() *before* StaticFiles is instantiated ensures the correct
+# types are used regardless of the OS registry.
+if sys.platform == "win32":
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
 
 # Suppress annoying dependency warnings in production
 if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
@@ -22,7 +47,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -37,10 +62,17 @@ from routes import (
     export_router,
     inference_router,
     models_router,
+    training_history_router,
     training_router,
 )
 from auth import storage
-from utils.hardware import detect_hardware, get_device, DeviceType
+from auth.authentication import get_current_subject
+from utils.hardware import (
+    detect_hardware,
+    get_device,
+    DeviceType,
+    get_backend_visible_gpu_info,
+)
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
@@ -61,6 +93,17 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
+    from storage.studio_db import cleanup_orphaned_runs
+
+    try:
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "cleanup_orphaned_runs failed at startup: %s", exc
+        )
+
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
     # Runs in a background thread so it doesn't block server startup.
     import threading
@@ -78,13 +121,13 @@ async def lifespan(app: FastAPI):
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
+
+        bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(
-            "Sign in with the seeded credentials and change the password immediately:\n"
-        )
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password: {bootstrap_pw}\n")
+        print(f"    password saved to: {bootstrap_path}")
+        print("    Open the Studio UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
@@ -137,6 +180,9 @@ app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(
+    training_history_router, prefix = "/api/train", tags = ["training-history"]
+)
 
 
 # ============ Health and System Endpoints ============
@@ -157,73 +203,47 @@ async def health_check():
     }
 
 
+@app.post("/api/shutdown")
+async def shutdown_server(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Gracefully shut down the Unsloth Studio server.
+
+    Called by the frontend quit dialog so users can stop the server from the UI
+    without needing to use the CLI or kill the process manually.
+    """
+    import asyncio
+
+    async def _delayed_shutdown():
+        await asyncio.sleep(0.2)  # Let the HTTP response return first
+        trigger = getattr(request.app.state, "trigger_shutdown", None)
+        if trigger is not None:
+            trigger()
+        else:
+            # Fallback when not launched via run_server() (e.g. direct uvicorn)
+            import signal
+            import os
+
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
+    return {"status": "shutting_down"}
+
+
 @app.get("/api/system")
 async def get_system_info():
     """Get system information"""
     import platform
-    import subprocess
     import psutil
-    from utils.hardware import get_device, get_gpu_memory_info, DeviceType
+    from utils.hardware import get_device
+    from utils.hardware.hardware import _backend_label
 
-    # GPU Info — query nvidia-smi for physical GPUs, filtered by
-    # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF
-    # fit estimation and llama-server respects CVD too).
-    import os
-
-    gpu_info: dict = {"available": False, "devices": []}
-
-    device = get_device()
-    if device == DeviceType.CUDA:
-        # Parse CUDA_VISIBLE_DEVICES allowlist
-        allowed_indices = None
-        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if cvd is not None and cvd.strip():
-            try:
-                allowed_indices = set(int(x.strip()) for x in cvd.split(","))
-            except ValueError:
-                pass  # Non-numeric (e.g. GPU-uuid), show all
-
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=index,name,memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output = True,
-                text = True,
-                timeout = 10,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().splitlines():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) == 3:
-                        idx = int(parts[0])
-                        if allowed_indices is not None and idx not in allowed_indices:
-                            continue
-                        gpu_info["devices"].append(
-                            {
-                                "index": idx,
-                                "name": parts[1],
-                                "memory_total_gb": round(int(parts[2]) / 1024, 2),
-                            }
-                        )
-                gpu_info["available"] = len(gpu_info["devices"]) > 0
-        except Exception:
-            pass
-
-    # Fallback to torch-based single-GPU detection
-    if not gpu_info["available"]:
-        mem_info = get_gpu_memory_info()
-        if mem_info.get("available"):
-            gpu_info["available"] = True
-            gpu_info["devices"].append(
-                {
-                    "index": mem_info.get("device", 0),
-                    "name": mem_info.get("device_name", "Unknown"),
-                    "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-                }
-            )
+    visibility_info = get_backend_visible_gpu_info()
+    gpu_info = {
+        "available": visibility_info["available"],
+        "devices": visibility_info["devices"],
+    }
 
     # CPU & Memory
     memory = psutil.virtual_memory()
@@ -231,7 +251,10 @@ async def get_system_info():
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        "device_backend": get_device().value,
+        # Use the centralized _backend_label helper so the /api/system
+        # endpoint reports "rocm" on AMD hosts instead of "cuda", matching
+        # the /api/hardware and /api/gpu-visibility endpoints.
+        "device_backend": _backend_label(get_device()),
         "cpu_count": psutil.cpu_count(),
         "memory": {
             "total_gb": round(memory.total / 1e9, 2),
@@ -240,6 +263,13 @@ async def get_system_info():
         },
         "gpu": gpu_info,
     }
+
+
+@app.get("/api/system/gpu-visibility")
+async def get_gpu_visibility(
+    current_subject: str = Depends(get_current_subject),
+):
+    return get_backend_visible_gpu_info()
 
 
 @app.get("/api/system/hardware")
@@ -323,7 +353,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        if full_path.startswith("api"):
+        if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             return {"error": "API endpoint not found"}
 
         file_path = (build_path / full_path).resolve()

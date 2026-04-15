@@ -45,10 +45,14 @@ const placeholderData = [
 export function TrainingSection() {
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
+  const isLoadingModel = store.isLoadingModelDefaults || store.isCheckingVision;
+  const isModelCapabilitiesSettled = !!store.selectedModel && !isLoadingModel;
   const isIncompatible =
-    (!store.isVisionModel && store.isDatasetImage === true) ||
-    (!store.isAudioModel && store.isDatasetAudio === true);
+    isModelCapabilitiesSettled &&
+    ((!store.isVisionModel && store.isDatasetImage === true) ||
+      (!store.isAudioModel && store.isDatasetAudio === true));
   const configValidation = validateTrainingConfig(store);
+  const hasMessage = !!(startError || isIncompatible || (!configValidation.ok && configValidation.message));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -98,13 +102,13 @@ export function TrainingSection() {
   };
 
   return (
-    <div data-tour="studio-training" className="col-span-1 xl:col-span-4">
+    <div data-tour="studio-training" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
         title="Training"
         description="Monitor and control training"
         accent="blue"
-        className="md:min-h-[470px]"
+        className={hasMessage ? "min-h-studio-config-column" : "h-studio-config-column"}
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}
@@ -156,17 +160,19 @@ export function TrainingSection() {
           data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible || store.isCheckingDataset || !configValidation.ok}
+          disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
-          {isStarting ? "Starting..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
+          {isStarting ? "Starting..." : isLoadingModel ? "Loading model..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
         </Button>
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
         )}
         {isIncompatible && (
           <p className="text-xs text-red-500 leading-relaxed">
-            Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset.
+            {!store.isAudioModel && store.isDatasetAudio === true
+              ? "This model does not support audio. Switch to an audio-capable model or choose a non-audio dataset."
+              : "Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset."}
           </p>
         )}
         {!configValidation.ok && configValidation.message && !isIncompatible && (
