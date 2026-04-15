@@ -21,9 +21,10 @@ function extractText(message: MessageRecord): string {
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const part of content) {
-    if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === "string") parts.push(text);
+    if (!part || typeof part !== "object") continue;
+    const p = part as { type?: string; text?: unknown };
+    if ((p.type === "text" || p.type === "reasoning") && typeof p.text === "string") {
+      parts.push(p.text);
     }
   }
   return parts.join(" ").replace(/\s+/g, " ").trim();
@@ -35,11 +36,14 @@ function truncate(text: string, max: number): string {
 }
 
 async function buildIndex(): Promise<ChatSearchItem[]> {
-  const threads = (await db.threads
+  // Fetch all threads newest-first, filter archived in JS, then take top N.
+  // `archived` is a boolean which Dexie does not index reliably, so we filter
+  // after the sort instead of using `.where("archived")`.
+  const all = (await db.threads
     .orderBy("createdAt")
     .reverse()
-    .limit(THREAD_LIMIT)
     .toArray()) as ThreadRecord[];
+  const active = all.filter((t) => !t.archived).slice(0, THREAD_LIMIT);
 
   const itemThreadIds = new Map<
     string,
@@ -47,8 +51,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   >();
   const seenPairs = new Set<string>();
 
-  for (const t of threads) {
-    if (t.archived) continue;
+  for (const t of active) {
     if (t.pairId) {
       if (seenPairs.has(t.pairId)) {
         const existing = itemThreadIds.get(t.pairId);
@@ -78,16 +81,34 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
     }
   }
 
+  // One query for all messages across all relevant threads, then group by
+  // threadId in memory. Avoids N sequential awaits.
+  const allThreadIds = Array.from(itemThreadIds.values()).flatMap(
+    (e) => e.threadIds,
+  );
+  const messages = (await db.messages
+    .where("threadId")
+    .anyOf(allThreadIds)
+    .toArray()) as MessageRecord[];
+
+  const byThreadId = new Map<string, MessageRecord[]>();
+  for (const m of messages) {
+    const arr = byThreadId.get(m.threadId);
+    if (arr) arr.push(m);
+    else byThreadId.set(m.threadId, [m]);
+  }
+
   const results: ChatSearchItem[] = [];
   for (const { item, threadIds } of itemThreadIds.values()) {
-    const messages = (await db.messages
-      .where("threadId")
-      .anyOf(threadIds)
-      .toArray()) as MessageRecord[];
-    messages.sort((a, b) => b.createdAt - a.createdAt);
+    const merged: MessageRecord[] = [];
+    for (const tid of threadIds) {
+      const arr = byThreadId.get(tid);
+      if (arr) merged.push(...arr);
+    }
+    merged.sort((a, b) => b.createdAt - a.createdAt);
 
     let preview = "";
-    for (const m of messages) {
+    for (const m of merged) {
       const text = extractText(m);
       if (text) {
         preview = truncate(text, PREVIEW_MAX);
@@ -109,7 +130,11 @@ export function useChatSearchIndex(enabled: boolean): {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // Clear stale results so the next open doesn't flash old items.
+      setItems([]);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     buildIndex()
