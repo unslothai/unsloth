@@ -2727,6 +2727,55 @@ def _prepare_model_for_qat(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
             )
+        elif qat_scheme == "cactus":
+            try:
+                from torchao.quantization import IntxWeightOnlyConfig
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
+
+            # IntxWeightOnlyConfig already defaults to
+            # `mapping_type = MappingType.SYMMETRIC`, so we intentionally do not
+            # import `MappingType` here. Matches the upstream Cactus runtime
+            # int8 / per-group-32 / symmetric weight-only configuration.
+            group_size = 32
+            base_config = IntxWeightOnlyConfig(
+                weight_dtype = torch.int8,
+                granularity = PerGroup(group_size),
+            )
+            filter_fn = (
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and m.in_features >= group_size
+                and m.in_features % group_size == 0
+            )
+            # Warn if any Linear layer is skipped by the cactus filter because
+            # its in_features is not divisible by `group_size`. torchao's
+            # PerGroup(32) quantizer rejects non-divisible widths at
+            # `quantize_()` time, so the filter excludes those layers to keep
+            # the QAT prepare step from crashing. Surface that silently-skipped
+            # coverage gap to the user so they know some Linears will stay in
+            # full precision during training.
+            skipped_cactus_layers = [
+                name
+                for name, module in model.named_modules()
+                if isinstance(module, torch.nn.Linear)
+                and module.in_features >= group_size
+                and module.in_features % group_size != 0
+            ]
+            if skipped_cactus_layers:
+                preview = ", ".join(skipped_cactus_layers[:8])
+                if len(skipped_cactus_layers) > 8:
+                    preview += f", ... ({len(skipped_cactus_layers) - 8} more)"
+                warnings.warn(
+                    f"Unsloth: qat_scheme='cactus' uses PerGroup({group_size}) "
+                    "which requires in_features to be divisible by "
+                    f"{group_size}. The following Linear layers will be kept "
+                    f"in full precision during QAT: {preview}",
+                    stacklevel = 2,
+                )
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
+            )
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
         assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
