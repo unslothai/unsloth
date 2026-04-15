@@ -1185,7 +1185,10 @@ def list_local_gguf_variants(
             size = 0
         quant = _extract_quant_label(f.name)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
-        rel_name = str(f.relative_to(p))
+        # Always use posix-style separators so the filename matches what
+        # ``list_gguf_variants`` (the remote HF API path) returns on every
+        # platform; otherwise Windows would emit ``BF16\foo.gguf`` here.
+        rel_name = f.relative_to(p).as_posix()
         if quant not in quant_first_file:
             quant_first_file[quant] = rel_name
 
