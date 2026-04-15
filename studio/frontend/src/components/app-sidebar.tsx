@@ -416,9 +416,9 @@ export function AppSidebar() {
                         handleDeleteThread(item);
                       }}
                       title="Delete"
-                      className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/recent-item:opacity-100"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-md text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/recent-item:scale-100 group-hover/recent-item:opacity-100"
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-3" />
+                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
                     </button>
                   </SidebarMenuItem>
                 ))}
@@ -499,9 +499,9 @@ export function AppSidebar() {
                             }
                           }}
                           title="Delete"
-                          className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/run-item:opacity-100"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-md text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/run-item:scale-100 group-hover/run-item:opacity-100"
                         >
-                          <HugeiconsIcon icon={Delete02Icon} className="size-3" />
+                          <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
                         </button>
                       </SidebarMenuItem>
                     );
