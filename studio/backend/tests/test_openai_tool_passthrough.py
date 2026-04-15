@@ -1,0 +1,326 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""
+Tests for the OpenAI /v1/chat/completions client-side tool pass-through.
+
+Covers:
+- ChatCompletionRequest accepts standard OpenAI `tools` / `tool_choice` / `stop`.
+- ChatMessage accepts role="tool" with `tool_call_id` and role="assistant"
+  with `content: None` + `tool_calls`.
+- ChatCompletionRequest carries unknown fields via `extra="allow"`.
+- anthropic_tool_choice_to_openai() covers all four Anthropic shapes.
+- _build_passthrough_payload() honors a caller-supplied tool_choice and
+  defaults to "auto" when unset.
+
+No running server or GPU required.
+"""
+
+import os
+import sys
+
+_backend = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, _backend)
+
+import pytest
+from pydantic import ValidationError
+
+from models.inference import (
+    ChatCompletionRequest,
+    ChatMessage,
+)
+from core.inference.anthropic_compat import (
+    anthropic_tool_choice_to_openai,
+)
+from routes.inference import _build_passthrough_payload
+
+
+# =====================================================================
+# ChatMessage — tool role, tool_calls, optional content
+# =====================================================================
+
+
+class TestChatMessageToolRoles:
+    def test_tool_role_with_tool_call_id(self):
+        msg = ChatMessage(
+            role = "tool",
+            tool_call_id = "call_abc123",
+            content = '{"temperature": 72}',
+        )
+        assert msg.role == "tool"
+        assert msg.tool_call_id == "call_abc123"
+        assert msg.content == '{"temperature": 72}'
+
+    def test_tool_role_with_name(self):
+        msg = ChatMessage(
+            role = "tool",
+            tool_call_id = "call_abc123",
+            name = "get_weather",
+            content = '{"temperature": 72}',
+        )
+        assert msg.name == "get_weather"
+
+    def test_assistant_with_tool_calls_no_content(self):
+        msg = ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Paris"}',
+                    },
+                }
+            ],
+        )
+        assert msg.role == "assistant"
+        assert msg.content is None
+        assert msg.tool_calls is not None
+        assert len(msg.tool_calls) == 1
+        assert msg.tool_calls[0]["function"]["name"] == "get_weather"
+
+    def test_assistant_with_content_and_tool_calls(self):
+        msg = ChatMessage(
+            role = "assistant",
+            content = "Let me check the weather.",
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"},
+                }
+            ],
+        )
+        assert msg.content == "Let me check the weather."
+        assert msg.tool_calls[0]["id"] == "call_1"
+
+    def test_plain_user_message_still_works(self):
+        msg = ChatMessage(role = "user", content = "Hello")
+        assert msg.role == "user"
+        assert msg.tool_call_id is None
+        assert msg.tool_calls is None
+        assert msg.name is None
+
+    def test_invalid_role_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatMessage(role = "function", content = "x")
+
+    def test_content_absent_defaults_to_none(self):
+        msg = ChatMessage(role = "assistant")
+        assert msg.content is None
+
+
+# =====================================================================
+# ChatCompletionRequest — standard OpenAI tool fields
+# =====================================================================
+
+
+class TestChatCompletionRequestToolFields:
+    def _make(self, **kwargs):
+        base = {"messages": [{"role": "user", "content": "Hi"}]}
+        base.update(kwargs)
+        return ChatCompletionRequest(**base)
+
+    def test_tools_parses(self):
+        req = self._make(
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Return the weather in a city",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ],
+        )
+        assert req.tools is not None
+        assert len(req.tools) == 1
+        assert req.tools[0]["function"]["name"] == "get_weather"
+
+    def test_tool_choice_string_auto(self):
+        assert self._make(tool_choice = "auto").tool_choice == "auto"
+
+    def test_tool_choice_string_required(self):
+        assert self._make(tool_choice = "required").tool_choice == "required"
+
+    def test_tool_choice_string_none(self):
+        assert self._make(tool_choice = "none").tool_choice == "none"
+
+    def test_tool_choice_named_function(self):
+        tc = {"type": "function", "function": {"name": "get_weather"}}
+        assert self._make(tool_choice = tc).tool_choice == tc
+
+    def test_stop_string(self):
+        assert self._make(stop = "\nUser:").stop == "\nUser:"
+
+    def test_stop_list(self):
+        assert self._make(stop = ["\nUser:", "\nAssistant:"]).stop == [
+            "\nUser:",
+            "\nAssistant:",
+        ]
+
+    def test_tools_default_none(self):
+        req = self._make()
+        assert req.tools is None
+        assert req.tool_choice is None
+        assert req.stop is None
+
+    def test_extra_fields_accepted(self):
+        # `frequency_penalty`, `seed`, `response_format` are not yet
+        # explicitly declared but must survive Pydantic parsing now that
+        # extra="allow" is set.
+        req = self._make(
+            frequency_penalty = 0.5,
+            seed = 42,
+            response_format = {"type": "json_object"},
+        )
+        # Extras land in model_extra
+        assert req.model_extra is not None
+        assert req.model_extra.get("frequency_penalty") == 0.5
+        assert req.model_extra.get("seed") == 42
+        assert req.model_extra.get("response_format") == {"type": "json_object"}
+
+    def test_unsloth_extensions_still_work(self):
+        req = self._make(
+            enable_tools = True,
+            enabled_tools = ["web_search", "python"],
+            session_id = "abc",
+        )
+        assert req.enable_tools is True
+        assert req.enabled_tools == ["web_search", "python"]
+        assert req.session_id == "abc"
+
+    def test_multiturn_tool_loop_messages(self):
+        req = ChatCompletionRequest(
+            messages = [
+                {"role": "user", "content": "What's the weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "Paris"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": '{"temperature": 14, "unit": "celsius"}',
+                },
+            ],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+        assert len(req.messages) == 3
+        assert req.messages[1].role == "assistant"
+        assert req.messages[1].content is None
+        assert req.messages[1].tool_calls[0]["id"] == "call_1"
+        assert req.messages[2].role == "tool"
+        assert req.messages[2].tool_call_id == "call_1"
+
+
+# =====================================================================
+# anthropic_tool_choice_to_openai — pure translation helper
+# =====================================================================
+
+
+class TestAnthropicToolChoiceToOpenAI:
+    def test_auto(self):
+        assert anthropic_tool_choice_to_openai({"type": "auto"}) == "auto"
+
+    def test_any_becomes_required(self):
+        assert anthropic_tool_choice_to_openai({"type": "any"}) == "required"
+
+    def test_none(self):
+        assert anthropic_tool_choice_to_openai({"type": "none"}) == "none"
+
+    def test_tool_named(self):
+        result = anthropic_tool_choice_to_openai(
+            {"type": "tool", "name": "get_weather"}
+        )
+        assert result == {
+            "type": "function",
+            "function": {"name": "get_weather"},
+        }
+
+    def test_tool_missing_name_returns_none(self):
+        assert anthropic_tool_choice_to_openai({"type": "tool"}) is None
+
+    def test_none_input_returns_none(self):
+        assert anthropic_tool_choice_to_openai(None) is None
+
+    def test_unrecognized_shape_returns_none(self):
+        assert anthropic_tool_choice_to_openai({"type": "wibble"}) is None
+        assert anthropic_tool_choice_to_openai("auto") is None
+        assert anthropic_tool_choice_to_openai(42) is None
+
+
+# =====================================================================
+# _build_passthrough_payload — tool_choice propagation
+# =====================================================================
+
+
+class TestBuildPassthroughPayloadToolChoice:
+    def _args(self):
+        return dict(
+            openai_messages = [{"role": "user", "content": "Hi"}],
+            openai_tools = [
+                {
+                    "type": "function",
+                    "function": {"name": "f", "parameters": {"type": "object"}},
+                }
+            ],
+            temperature = 0.6,
+            top_p = 0.95,
+            top_k = 20,
+            max_tokens = 128,
+            stream = False,
+        )
+
+    def test_default_tool_choice_is_auto(self):
+        body = _build_passthrough_payload(**self._args())
+        assert body["tool_choice"] == "auto"
+
+    def test_override_tool_choice_required(self):
+        body = _build_passthrough_payload(**self._args(), tool_choice = "required")
+        assert body["tool_choice"] == "required"
+
+    def test_override_tool_choice_none(self):
+        body = _build_passthrough_payload(**self._args(), tool_choice = "none")
+        assert body["tool_choice"] == "none"
+
+    def test_override_tool_choice_named_function(self):
+        tc = {"type": "function", "function": {"name": "f"}}
+        body = _build_passthrough_payload(**self._args(), tool_choice = tc)
+        assert body["tool_choice"] == tc
+
+    def test_stream_adds_include_usage(self):
+        args = self._args()
+        args["stream"] = True
+        body = _build_passthrough_payload(**args)
+        assert body.get("stream_options") == {"include_usage": True}
+
+    def test_repetition_penalty_renamed(self):
+        body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
+        assert body.get("repeat_penalty") == 1.1
+        assert "repetition_penalty" not in body

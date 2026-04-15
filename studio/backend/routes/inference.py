@@ -106,6 +106,7 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
     anthropic_tools_to_openai,
+    anthropic_tool_choice_to_openai,
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
@@ -1121,6 +1122,39 @@ async def openai_chat_completions(
                     ],
                 )
                 return JSONResponse(content = response.model_dump())
+
+    # ── Standard OpenAI function-calling pass-through (GGUF only) ────
+    # When a client (opencode / Claude Code via OpenAI compat / Cursor /
+    # Continue / ...) sends standard OpenAI `tools` without Studio's
+    # `enable_tools` shorthand, forward the request to llama-server
+    # verbatim so structured `tool_calls` flow back to the client. This
+    # branch runs BEFORE `_extract_content_parts` because that helper is
+    # unaware of `role="tool"` messages and assistant messages that only
+    # carry `tool_calls` (content=None) — both of which are valid in
+    # multi-turn client-side tool loops.
+    _has_tool_messages = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    if (
+        using_gguf
+        and llama_backend.supports_tools
+        and not payload.enable_tools
+        and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
+    ):
+        cancel_event = threading.Event()
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        if payload.stream:
+            return await _openai_passthrough_stream(
+                request,
+                cancel_event,
+                llama_backend,
+                payload,
+                model_name,
+                completion_id,
+            )
+        return await _openai_passthrough_non_streaming(
+            llama_backend,
+            payload,
+            model_name,
+        )
 
     # ── Parse messages (handles multimodal content parts) ─────
     system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
@@ -2339,22 +2373,12 @@ async def anthropic_messages(
     )
     stop = payload.stop_sequences or None
 
-    # tool_choice is declared on AnthropicMessagesRequest for Anthropic SDK
-    # compatibility (the SDK often sets it by default), but it is not
-    # currently honored by Unsloth's backend. Warn once per request so the
-    # silent drop is visible to operators instead of looking like a model
-    # quality issue to clients.
-    if payload.tool_choice is not None:
-        logger.warning(
-            "anthropic_messages.tool_choice_ignored",
-            tool_choice = payload.tool_choice,
-            note = (
-                "tool_choice is accepted for Anthropic SDK compatibility but not "
-                "honored by Unsloth. Use enable_tools / enabled_tools (server-side "
-                "built-in tools) or restrict the `tools` array (client-side) to "
-                "control which tools the model sees."
-            ),
-        )
+    # Translate Anthropic tool_choice to OpenAI format for forwarding to
+    # llama-server. Falls back to "auto" when unset or unrecognized, which
+    # matches the prior hardcoded behavior.
+    openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice)
+    if openai_tool_choice is None:
+        openai_tool_choice = "auto"
 
     cancel_event = threading.Event()
 
@@ -2392,6 +2416,7 @@ async def anthropic_messages(
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                tool_choice = openai_tool_choice,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -2407,6 +2432,7 @@ async def anthropic_messages(
             min_p = min_p,
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
+            tool_choice = openai_tool_choice,
         )
 
     if server_tools:
@@ -2750,11 +2776,12 @@ def _build_passthrough_payload(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    tool_choice = "auto",
 ):
     body = {
         "messages": openai_messages,
         "tools": openai_tools,
-        "tool_choice": "auto",
+        "tool_choice": tool_choice,
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
@@ -2792,6 +2819,7 @@ async def _anthropic_passthrough_stream(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    tool_choice = "auto",
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -2808,6 +2836,7 @@ async def _anthropic_passthrough_stream(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        tool_choice = tool_choice,
     )
 
     async def _stream():
@@ -2897,6 +2926,7 @@ async def _anthropic_passthrough_non_streaming(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    tool_choice = "auto",
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -2912,6 +2942,7 @@ async def _anthropic_passthrough_non_streaming(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        tool_choice = tool_choice,
     )
 
     async with httpx.AsyncClient() as client:
@@ -2969,3 +3000,212 @@ async def _anthropic_passthrough_non_streaming(
         ),
     )
     return JSONResponse(content = resp_obj.model_dump())
+
+
+# =====================================================================
+# Client-side tool pass-through (OpenAI-native /v1/chat/completions)
+# =====================================================================
+
+
+def _openai_messages_for_passthrough(payload) -> list[dict]:
+    """Build OpenAI-format message dicts for the /v1/chat/completions
+    passthrough path.
+
+    Messages from ``payload.messages`` are dumped through Pydantic (dropping
+    unset optional fields) so they are already in standard OpenAI format
+    — including ``role="tool"`` tool-result messages and assistant messages
+    that carry structured ``tool_calls``. Content-parts images already in
+    the message list are left untouched.
+
+    When a client uses Studio's legacy ``image_base64`` top-level field, the
+    image is re-encoded to PNG (llama-server's stb_image has limited format
+    support) and spliced into the last user message as an OpenAI
+    ``image_url`` content part so vision + function-calling requests work
+    transparently.
+    """
+    messages = [m.model_dump(exclude_none = True) for m in payload.messages]
+
+    if not payload.image_base64:
+        return messages
+
+    try:
+        import base64 as _b64
+        from io import BytesIO as _BytesIO
+        from PIL import Image as _Image
+
+        raw = _b64.b64decode(payload.image_base64)
+        img = _Image.open(_BytesIO(raw))
+        if img.mode == "RGBA":
+            img = img.convert("RGB")
+        buf = _BytesIO()
+        img.save(buf, format = "PNG")
+        png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception as e:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Failed to process image: {e}",
+        )
+
+    data_url = f"data:image/png;base64,{png_b64}"
+    image_part = {"type": "image_url", "image_url": {"url": data_url}}
+
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        existing = msg.get("content")
+        if isinstance(existing, str):
+            msg["content"] = [{"type": "text", "text": existing}, image_part]
+        elif isinstance(existing, list):
+            existing.append(image_part)
+        else:
+            msg["content"] = [image_part]
+        break
+    else:
+        messages.append({"role": "user", "content": [image_part]})
+
+    return messages
+
+
+def _build_openai_passthrough_body(payload) -> dict:
+    """Assemble the llama-server request body from a ChatCompletionRequest.
+
+    Only explicitly-known OpenAI / llama-server fields are forwarded so that
+    Studio-specific extensions (``enable_tools``, ``enabled_tools``,
+    ``session_id``, ...) never leak to the backend.
+    """
+    messages = _openai_messages_for_passthrough(payload)
+    tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
+    return _build_passthrough_payload(
+        messages,
+        payload.tools,
+        payload.temperature,
+        payload.top_p,
+        payload.top_k,
+        payload.max_tokens,
+        payload.stream,
+        stop = payload.stop,
+        min_p = payload.min_p,
+        repetition_penalty = payload.repetition_penalty,
+        presence_penalty = payload.presence_penalty,
+        tool_choice = tool_choice,
+    )
+
+
+async def _openai_passthrough_stream(
+    request,
+    cancel_event,
+    llama_backend,
+    payload,
+    model_name,
+    completion_id,
+):
+    """Streaming client-side pass-through for /v1/chat/completions.
+
+    Forwards the client's OpenAI function-calling request to llama-server and
+    relays the SSE stream back verbatim. This preserves llama-server's
+    native response ``id``, ``finish_reason`` (including ``"tool_calls"``),
+    ``delta.tool_calls``, and the trailing ``usage`` chunk so the client
+    observes a standard OpenAI response.
+    """
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    body = _build_openai_passthrough_body(payload)
+
+    async def _stream():
+        # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
+        # avoid `async with` on the client/response to sidestep the Python
+        # 3.13 + httpcore 1.0.x anyio cancel-scope bug when the async
+        # generator is garbage-collected from a different task than the
+        # one that originally entered the context managers.
+        client = httpx.AsyncClient(timeout = 600)
+        resp = None
+        try:
+            req = client.build_request("POST", target_url, json = body)
+            resp = await client.send(req, stream = True)
+
+            if resp.status_code != 200:
+                err_bytes = await resp.aread()
+                err_text = err_bytes.decode("utf-8", errors = "replace")
+                logger.error(
+                    "openai passthrough upstream error: status=%s body=%s",
+                    resp.status_code,
+                    err_text[:500],
+                )
+                err = {
+                    "error": {
+                        "message": f"llama-server error: {err_text[:500]}",
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(err)}\n\n"
+                return
+
+            async for raw_line in resp.aiter_lines():
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    break
+                if not raw_line:
+                    continue
+                if not raw_line.startswith("data: "):
+                    continue
+                # Relay the llama-server SSE chunk verbatim so the client
+                # sees its native `id`, `finish_reason`, `delta.tool_calls`,
+                # and final `usage` unchanged.
+                yield raw_line + "\n\n"
+                if raw_line[6:].strip() == "[DONE]":
+                    break
+        except Exception as e:
+            logger.error("openai passthrough stream error: %s", e)
+            err = {
+                "error": {
+                    "message": _friendly_error(e),
+                    "type": "server_error",
+                },
+            }
+            yield f"data: {json.dumps(err)}\n\n"
+        finally:
+            if resp is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _openai_passthrough_non_streaming(
+    llama_backend,
+    payload,
+    model_name,
+):
+    """Non-streaming client-side pass-through for /v1/chat/completions.
+
+    Returns llama-server's JSON response verbatim (via JSONResponse) so the
+    client sees the native response ``id``, ``finish_reason`` (including
+    ``"tool_calls"``), structured ``tool_calls``, and accurate ``usage``
+    token counts.
+    """
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    body = _build_openai_passthrough_body(payload)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(target_url, json = body, timeout = 600)
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code = resp.status_code,
+            detail = f"llama-server error: {resp.text[:500]}",
+        )
+
+    return JSONResponse(content = resp.json())
