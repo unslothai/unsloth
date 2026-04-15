@@ -2420,7 +2420,9 @@ class FastLlamaModel:
                             _ckpt_skip.append(_m)
                     _ckpt_qcfg["llm_int8_skip_modules"] = _ckpt_skip
                 else:
-                    _ckpt_skip = list(getattr(_ckpt_qcfg, "llm_int8_skip_modules", None) or [])
+                    _ckpt_skip = list(
+                        getattr(_ckpt_qcfg, "llm_int8_skip_modules", None) or []
+                    )
                     for _m in llm_int8_skip_modules:
                         if _m not in _ckpt_skip:
                             _ckpt_skip.append(_m)
@@ -2470,8 +2472,11 @@ class FastLlamaModel:
             # leaving the head in an integer storage. See unslothai/unsloth#5027.
             for _head_name in ("score", "classifier", "qa_outputs"):
                 _head = getattr(model, _head_name, None)
-                if _head is not None and hasattr(_head, "weight") and \
-                        not _head.weight.is_floating_point():
+                if (
+                    _head is not None
+                    and hasattr(_head, "weight")
+                    and not _head.weight.is_floating_point()
+                ):
                     _head.to(dtype)
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
