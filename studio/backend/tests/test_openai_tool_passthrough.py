@@ -12,6 +12,8 @@ Covers:
 - anthropic_tool_choice_to_openai() covers all four Anthropic shapes.
 - _build_passthrough_payload() honors a caller-supplied tool_choice and
   defaults to "auto" when unset.
+- _friendly_error() maps httpx transport errors to a "Lost connection"
+  message so passthrough failures are legible instead of bare 500s.
 
 No running server or GPU required.
 """
@@ -22,6 +24,7 @@ import sys
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -32,7 +35,7 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
-from routes.inference import _build_passthrough_payload
+from routes.inference import _build_passthrough_payload, _friendly_error
 
 
 # =====================================================================
@@ -324,3 +327,52 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
+
+
+# =====================================================================
+# _friendly_error — httpx transport failures
+# =====================================================================
+
+
+class TestFriendlyErrorHttpx:
+    """The async pass-through helpers talk to llama-server via httpx.
+    When the subprocess is down, httpx raises RequestError subclasses
+    whose string form (``"All connection attempts failed"``, ``"[Errno 111]
+    Connection refused"``, ...) does NOT contain the substring
+    ``"Lost connection to llama-server"`` the sync path uses, so the
+    previous substring-only `_friendly_error` returned a useless generic
+    message. These tests pin the new isinstance-based mapping.
+    """
+
+    def _req(self):
+        return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
+
+    def test_connect_error_mapped(self):
+        exc = httpx.ConnectError("All connection attempts failed", request = self._req())
+        assert "Lost connection" in _friendly_error(exc)
+
+    def test_read_error_mapped(self):
+        exc = httpx.ReadError("EOF", request = self._req())
+        assert "Lost connection" in _friendly_error(exc)
+
+    def test_remote_protocol_error_mapped(self):
+        exc = httpx.RemoteProtocolError("peer closed", request = self._req())
+        assert "Lost connection" in _friendly_error(exc)
+
+    def test_read_timeout_mapped(self):
+        exc = httpx.ReadTimeout("timed out", request = self._req())
+        assert "Lost connection" in _friendly_error(exc)
+
+    def test_non_httpx_unchanged(self):
+        # Non-httpx exceptions still fall through to the existing substring
+        # heuristics — a context-size message must still produce the
+        # "Message too long" path.
+        ctx_msg = (
+            "request (4096 tokens) exceeds the available context size (2048 tokens)"
+        )
+        assert "Message too long" in _friendly_error(ValueError(ctx_msg))
+
+    def test_generic_exception_returns_generic_message(self):
+        assert (
+            _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
+        )

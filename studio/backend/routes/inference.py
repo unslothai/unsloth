@@ -29,6 +29,14 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
+    # httpx transport-layer failures reaching the managed llama-server —
+    # raised by the async pass-through helpers that talk to llama-server
+    # directly. Treat any RequestError subclass (ConnectError, ReadError,
+    # RemoteProtocolError, WriteError, PoolTimeout, ...) as "the upstream
+    # subprocess is unreachable", which for Studio always means the
+    # llama-server subprocess crashed or is still coming up.
+    if isinstance(exc, httpx.RequestError):
+        return "Lost connection to the model server. It may have crashed -- try reloading the model."
     msg = str(exc)
     m = _re.search(
         r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
@@ -3199,8 +3207,18 @@ async def _openai_passthrough_non_streaming(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(payload)
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(target_url, json = body, timeout = 600)
+    except httpx.RequestError as e:
+        # llama-server subprocess crashed / still starting / unreachable.
+        # Surface the same friendly message the sync chat path emits so
+        # operators don't see a bare 500 with no diagnostic.
+        logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+        raise HTTPException(
+            status_code = 502,
+            detail = _friendly_error(e),
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
