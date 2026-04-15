@@ -46,8 +46,9 @@ import {
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Folder02Icon, FolderSearchIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { FolderBrowser } from "./folder-browser";
 import { Trash2Icon } from "lucide-react";
 import {
   type ReactNode,
@@ -512,6 +513,7 @@ export function HubModelPicker({
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
   const [folderLoading, setFolderLoading] = useState(false);
+  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
 
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
@@ -1042,6 +1044,16 @@ export function HubModelPicker({
                     />
                     <button
                       type="button"
+                      onClick={() => setShowFolderBrowser(true)}
+                      disabled={folderLoading}
+                      aria-label="Browse for folder"
+                      title="Browse folders on the server"
+                      className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      <HugeiconsIcon icon={FolderSearchIcon} className="size-3" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleAddFolder}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
@@ -1065,6 +1077,17 @@ export function HubModelPicker({
                   + Add a folder to scan for local models
                 </button>
               )}
+
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                }}
+              />
+
 
               {/* Models from custom folders */}
               {customFolderModels.map((m) => {

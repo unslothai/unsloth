@@ -247,6 +247,33 @@ export async function removeScanFolder(id: number): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+export interface BrowseEntry {
+  name: string;
+  has_models: boolean;
+  hidden: boolean;
+}
+
+export interface BrowseFoldersResponse {
+  current: string;
+  parent: string | null;
+  entries: BrowseEntry[];
+  suggestions: string[];
+}
+
+export async function browseFolders(
+  path?: string,
+  showHidden = false,
+): Promise<BrowseFoldersResponse> {
+  const params = new URLSearchParams();
+  if (path !== undefined && path !== null) params.set("path", path);
+  if (showHidden) params.set("show_hidden", "true");
+  const qs = params.toString();
+  const response = await authFetch(
+    `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
+  );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
+}
+
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,

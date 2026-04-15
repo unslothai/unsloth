@@ -213,3 +213,52 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+
+
+class BrowseEntry(BaseModel):
+    """A directory entry surfaced by the folder browser."""
+
+    name: str = Field(
+        ..., description = "Entry name (basename, not full path)"
+    )
+    has_models: bool = Field(
+        False,
+        description = (
+            "Hint that the directory likely contains models "
+            "(*.gguf, *.safetensors, config.json, or HF-style "
+            "`models--*` subfolders). Used by the UI to highlight "
+            "promising candidates; the scanner itself is authoritative."
+        ),
+    )
+    hidden: bool = Field(
+        False,
+        description = "Name starts with a dot (e.g. `.cache`)",
+    )
+
+
+class BrowseFoldersResponse(BaseModel):
+    """Response schema for the folder browser endpoint."""
+
+    current: str = Field(..., description = "Absolute path of the directory just listed")
+    parent: Optional[str] = Field(
+        None,
+        description = (
+            "Parent directory of `current`, or null if `current` is the "
+            "filesystem root. The frontend uses this to render an `Up` row."
+        ),
+    )
+    entries: List[BrowseEntry] = Field(
+        default_factory = list,
+        description = (
+            "Subdirectories of `current`. Sorted with model-bearing "
+            "directories first, then alphabetically case-insensitive; "
+            "hidden entries come last within each group."
+        ),
+    )
+    suggestions: List[str] = Field(
+        default_factory = list,
+        description = (
+            "Handy starting points (home, HF cache, already-registered "
+            "scan folders). Rendered as quick-pick chips above the list."
+        ),
+    )

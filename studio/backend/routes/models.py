@@ -101,6 +101,8 @@ from models import (
     ModelListResponse,
 )
 from models.models import (
+    BrowseEntry,
+    BrowseFoldersResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
     ModelType,
@@ -571,6 +573,189 @@ async def remove_scan_folder_endpoint(
     remove_scan_folder(folder_id)
     logger.info("Scan folder removed: id=%s", folder_id)
     return {"ok": True}
+
+
+# Heuristic ceiling on how many children to stat when checking whether a
+# directory "looks like" it contains models. Keeps the browser snappy
+# even when a directory has thousands of unrelated entries.
+_BROWSE_MODEL_HINT_PROBE = 64
+
+
+def _looks_like_model_dir(directory: Path) -> bool:
+    """Quick, bounded check used by the folder browser to mark promising
+    entries. False negatives are fine; the real scanner is authoritative.
+    Returns True if the directory itself looks like an HF cache repo or
+    any probed child is a GGUF/safetensors weight, a config.json, an
+    adapter_config.json, or an HF-cache repo dir."""
+    # Fast path: the directory itself is an HF Hub cache repo. Its
+    # on-disk children are `blobs/`, `refs/`, `snapshots/`, none of
+    # which match the file-level probes below, so we need to recognise
+    # the repo by its conventional name.
+    if directory.name.startswith("models--"):
+        return True
+    try:
+        children = directory.iterdir()
+    except OSError:
+        return False
+    try:
+        for i, child in enumerate(children):
+            if i >= _BROWSE_MODEL_HINT_PROBE:
+                break
+            try:
+                name = child.name
+                if child.is_file():
+                    low = name.lower()
+                    if low.endswith((".gguf", ".safetensors")):
+                        return True
+                    if low in ("config.json", "adapter_config.json"):
+                        return True
+                elif child.is_dir() and name.startswith("models--"):
+                    # HuggingFace hub cache layout
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+@router.get("/browse-folders", response_model = BrowseFoldersResponse)
+async def browse_folders(
+    path: Optional[str] = Query(
+        None,
+        description = (
+            "Directory to list. If omitted, defaults to the current user's "
+            "home directory. Tilde (`~`) and relative paths are expanded."
+        ),
+    ),
+    show_hidden: bool = Query(
+        False,
+        description = "Include entries whose name starts with a dot",
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    List immediate subdirectories of *path* for the Custom Folders picker.
+
+    The frontend uses this to render a modal folder browser without needing
+    a native OS dialog (Studio is served over HTTP, so the browser can't
+    reveal absolute paths on the host). The endpoint is read-only and does
+    not create, move, or delete anything. It simply enumerates visible
+    subdirectories so the user can click their way to a folder and hand
+    the resulting string back to POST `/api/models/scan-folders`.
+
+    Sorting: directories that look like they hold models come first, then
+    plain directories, then hidden entries (if `show_hidden=true`).
+    """
+    from utils.paths import hf_default_cache_dir
+    from storage.studio_db import list_scan_folders
+
+    # Resolve the requested path. Empty / missing / unusable -> user home.
+    if path is None or not path.strip():
+        target = Path.home()
+    else:
+        try:
+            target = Path(os.path.expanduser(path.strip()))
+            if not target.is_absolute():
+                target = (Path.cwd() / target).resolve()
+            else:
+                target = target.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid path: {exc}",
+            )
+
+    if not target.exists():
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Path does not exist: {target}",
+        )
+    if not target.is_dir():
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Not a directory: {target}",
+        )
+
+    # Enumerate immediate subdirectories.
+    entries: list[BrowseEntry] = []
+    try:
+        raw = list(target.iterdir())
+    except PermissionError:
+        raise HTTPException(
+            status_code = 403,
+            detail = f"Permission denied reading {target}",
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Could not read {target}: {exc}",
+        )
+
+    for child in raw:
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        name = child.name
+        is_hidden = name.startswith(".")
+        if is_hidden and not show_hidden:
+            continue
+        entries.append(
+            BrowseEntry(
+                name = name,
+                has_models = _looks_like_model_dir(child),
+                hidden = is_hidden,
+            )
+        )
+
+    # Model-bearing dirs first, then plain, then hidden; case-insensitive
+    # alphabetical within each bucket.
+    def _sort_key(e: BrowseEntry) -> tuple[int, str]:
+        bucket = 0 if e.has_models else (2 if e.hidden else 1)
+        return (bucket, e.name.lower())
+
+    entries.sort(key = _sort_key)
+
+    # Parent is None only at the filesystem root (where `p.parent == p`).
+    parent: Optional[str]
+    parent = None if target.parent == target else str(target.parent)
+
+    # Handy starting points for the quick-pick chips.
+    suggestions: list[str] = []
+    seen_sug: set[str] = set()
+
+    def _add_sug(p: Optional[Path]) -> None:
+        if p is None:
+            return
+        try:
+            resolved = str(p.resolve())
+        except OSError:
+            return
+        if resolved in seen_sug:
+            return
+        if Path(resolved).is_dir():
+            seen_sug.add(resolved)
+            suggestions.append(resolved)
+
+    _add_sug(Path.home())
+    try:
+        _add_sug(hf_default_cache_dir())
+    except Exception:
+        pass
+    try:
+        for folder in list_scan_folders():
+            _add_sug(Path(folder.get("path", "")))
+    except Exception as exc:
+        logger.debug("browse-folders: could not load scan folders: %s", exc)
+
+    return BrowseFoldersResponse(
+        current = str(target),
+        parent = parent,
+        entries = entries,
+        suggestions = suggestions,
+    )
 
 
 @router.get("/list")
