@@ -725,36 +725,164 @@ def _has_add_generation_prompt_block(chat_template):
     return False
 
 
-def _infer_assistant_separator(scrubbed):
-    """Infer the separator that follows 'assistant' in a ChatML template.
+# Sentinels used by _derive_assistant_prefix_by_render. The first character of
+# each sentinel differs so os.path.commonprefix() cannot absorb them, and the
+# random-looking tail makes accidental collision with real template literals
+# vanishingly unlikely (tested as T18 in test_chat_template_followups.py).
+_RENDER_DIFF_SENTINEL_A = "AAAA_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
+_RENDER_DIFF_SENTINEL_B = "BBBB_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
+_RENDER_DIFF_SENTINEL_C = "CCCC_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 
-    Strategy: prefer an explicit '<|im_start|>assistant<sep>' literal; else
-    the unique `message['role'] + '<sep>'` from role concatenations; else
-    '<|im_sep|>' if present (Phi-4-mini mixes '\\n' for system with
-    '<|im_sep|>' for user/assistant); else '\\n'.
+
+def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
+    """Return the exact assistant-turn prefix the template emits, derived by
+    rendering the template against two dialogs that differ only in assistant
+    content. The common prefix/suffix around the varying sentinel is the prefix
+    the template actually emits for an assistant turn.
+
+    This replaces the earlier regex-based `_infer_assistant_separator`, which
+    only worked for ChatML-shaped templates and could be fooled by variables,
+    conditional prefixes, and unusual quoting. Render-diff derivation uses the
+    template itself as ground truth, so Llama-3 / Gemma / Phi-3 and other
+    non-ChatML shapes work as long as the assistant block is a literal the
+    template emits once per message.
+
+    Returns the derived prefix string on success, or None if any guard fails
+    (ambiguous divergence, template cannot render without context, reordering
+    templates, or templates where role has no effect on output).
+
+    Known limitation: a template that emits the turn-end sentinel only for
+    non-last messages (`eos-on-non-last` pattern) would produce a consistent
+    but slightly wrong derived prefix. `_validate_patched_template` would not
+    catch it because the repaired template would still satisfy
+    `yes != no and yes.startswith(no)`. No real-world template is known to use
+    this pattern.
     """
-    assistant_match = re.search(
-        r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
-        scrubbed,
-    )
-    role_seps = [
-        m.group(2)
-        for m in re.finditer(
-            r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
-            scrubbed,
+    try:
+        import jinja2
+    except Exception:
+        return None
+
+    if is_sharegpt:
+        base_msgs = [{"from": "human", "value": "Hi"}]
+        sent_a_msgs = base_msgs + [
+            {"from": "gpt", "value": _RENDER_DIFF_SENTINEL_A}
+        ]
+        sent_b_msgs = base_msgs + [
+            {"from": "gpt", "value": _RENDER_DIFF_SENTINEL_B}
+        ]
+        # Negative cross-check: another *user* turn instead of an assistant
+        # turn. If the derived prefix also appears before a user-role sentinel,
+        # the template does not distinguish assistant turns from user turns
+        # (e.g. a {% set %}-only template) and we must reject.
+        sent_c_msgs = base_msgs + [
+            {"from": "human", "value": _RENDER_DIFF_SENTINEL_C}
+        ]
+    else:
+        base_msgs = [{"role": "user", "content": "Hi"}]
+        sent_a_msgs = base_msgs + [
+            {"role": "assistant", "content": _RENDER_DIFF_SENTINEL_A}
+        ]
+        sent_b_msgs = base_msgs + [
+            {"role": "assistant", "content": _RENDER_DIFF_SENTINEL_B}
+        ]
+        sent_c_msgs = base_msgs + [
+            {"role": "user", "content": _RENDER_DIFF_SENTINEL_C}
+        ]
+
+    # Trim trailing whitespace / Jinja comments that live AFTER the last
+    # {% endfor %}/{% endif %}. Without this, a template like
+    # `{% for m in messages %}...{% endfor %}   \n` renders base (1 message)
+    # as `MSG   \n` and render with 2 messages as `MSG1MSG2   \n` -- the
+    # trailing whitespace appears *after* the message loop in both, so
+    # out_a does not start with out_base. Since `_fix_chat_template` also
+    # discards that trailing content when it splices in the generation block,
+    # stripping it in the probe matches the eventual emitted behavior.
+    probe_template = chat_template
+    end = _find_end_position(chat_template)
+    if end is not None:
+        after = chat_template[end["end"]:]
+        if _RE_JINJA_COMMENT.sub("", after).strip() == "":
+            probe_template = chat_template[: end["end"]]
+
+    # Isolated Jinja environment. autoescape=False: chat templates are strings,
+    # not HTML. keep_trailing_newline=True: preserve final newline in the
+    # output so the diff captures it. No custom filters/globals/bos_token
+    # added on purpose: any template that relies on them will fail at render
+    # time and we'll return None, which is the correct outcome -- we don't
+    # want to silently fall back for a template the caller can't render
+    # either.
+    try:
+        env = jinja2.Environment(
+            autoescape = False,
+            keep_trailing_newline = True,
         )
-    ]
-    unique_role_seps = list(dict.fromkeys(role_seps))
-    if assistant_match is not None and assistant_match.group(2):
-        return assistant_match.group(2)
-    if len(unique_role_seps) == 1:
-        return unique_role_seps[0]
-    if "<|im_sep|>" in scrubbed:
-        return "<|im_sep|>"
-    return "\\n"
+        tmpl = env.from_string(probe_template)
+        out_base = tmpl.render(messages = base_msgs, add_generation_prompt = False)
+        out_a = tmpl.render(messages = sent_a_msgs, add_generation_prompt = False)
+        out_b = tmpl.render(messages = sent_b_msgs, add_generation_prompt = False)
+    except Exception:
+        return None
+
+    # The user-cross-check render is best-effort: some templates enforce
+    # role alternation via `raise_exception` (e.g. Gemma), which means a
+    # [user, user] dialog deliberately fails to render. A render failure
+    # here is evidence that role matters -- the template rejects two
+    # consecutive users -- and we should *not* reject the derived prefix.
+    out_user_c = None
+    try:
+        out_user_c = tmpl.render(messages = sent_c_msgs, add_generation_prompt = False)
+    except Exception:
+        pass
+
+    # Guard A: both assistant renders must be extensions of the base render
+    # (i.e. the template appends to produce the assistant turn, rather than
+    # reordering or deleting content).
+    if not (out_a.startswith(out_base) and out_b.startswith(out_base)):
+        return None
+
+    tail_a = out_a[len(out_base):]
+    tail_b = out_b[len(out_base):]
+
+    # Both tails must be non-empty (template actually renders something for
+    # an assistant turn).
+    if not tail_a or not tail_b:
+        return None
+
+    import os as _os
+    prefix = _os.path.commonprefix([tail_a, tail_b])
+
+    # Guard B: after stripping the common prefix, each tail must begin with
+    # its own sentinel. This confirms the divergence point is exactly the
+    # content-insertion site, not some earlier difference in the output.
+    if not (
+        tail_a[len(prefix):].startswith(_RENDER_DIFF_SENTINEL_A)
+        and tail_b[len(prefix):].startswith(_RENDER_DIFF_SENTINEL_B)
+    ):
+        return None
+
+    # Guard C: negative user-role cross-check. Only run if the user-cross
+    # render succeeded. If a third render with a user sentinel produces the
+    # *same* prefix after the base, then role has no effect on output --
+    # the derived prefix is not assistant-specific and must be rejected.
+    # This catches templates like `{% set greeting = 'Hi' %}
+    # {% for m in messages %}{{ greeting }} {{ m.content }}{% endfor %}`
+    # where any new message gets the same "Hi " prefix regardless of role.
+    # A render failure on the user-cross render is ALSO evidence that
+    # role distinguishes turns (e.g. Gemma's `raise_exception` on
+    # non-alternating roles), so we accept the derived prefix.
+    if out_user_c is not None and out_user_c.startswith(out_base):
+        tail_c = out_user_c[len(out_base):]
+        if tail_c.startswith(prefix) and prefix != "":
+            return None
+
+    if not prefix:
+        return None
+
+    return prefix
 
 
-def _fix_chat_template(chat_template):
+def _fix_chat_template(chat_template, is_sharegpt = False):
     # Fast path: already has an {% if add_generation_prompt %} block, nothing
     # to do. This catches cases the old string-based check would miss (e.g.
     # templates that use {%- if add_generation_prompt -%} with both-side dash,
@@ -789,30 +917,40 @@ def _fix_chat_template(chat_template):
 
     # Case 2 (GH#4150): template ends at {% endfor %} with only whitespace or
     # Jinja comments left. Inject an {% if add_generation_prompt %} block
-    # with a model-specific assistant-turn separator inferred from the
-    # template body. Require the top-level body to END in a For node so we
-    # don't inject inside a wider wrapper (e.g. Qwen3-Guard wraps the whole
-    # template in an outer If -- there the generation block would be out of
-    # place).
+    # with the exact assistant-turn prefix the template emits, derived by
+    # render-diff probe (no regex / no hard ChatML token gate -- so Llama-3,
+    # Gemma, Phi-3 stripped templates work too). Require the top-level body
+    # to END in a For node so we don't inject inside a wider wrapper (e.g.
+    # Qwen3-Guard wraps the whole template in an outer If -- there the
+    # generation block would be out of place).
     if _RE_JINJA_COMMENT.sub(
         "", after_endfor
     ).strip() == "" and _template_ends_with_toplevel_for(chat_template):
         scrubbed = _RE_JINJA_COMMENT.sub("", chat_template)
-        if (
-            "<|im_start|>" in scrubbed
-            and "<|im_end|>" in scrubbed
-            and "add_generation_prompt" not in scrubbed
-        ):
-            separator = _infer_assistant_separator(scrubbed)
-            assistant_prefix = "<|im_start|>assistant" + separator
-            # Double-quoted Jinja literal so a single quote in the separator
-            # cannot break the block. Trailing whitespace/comments after
-            # endfor are dropped: they would render as stray output after
-            # the generation prefix.
+        if "add_generation_prompt" not in scrubbed:
+            assistant_prefix = _derive_assistant_prefix_by_render(
+                chat_template, is_sharegpt
+            )
+            # Dual-probe fallback: dict/list callers don't know the shape up
+            # front, and a template that expects ShareGPT-keyed messages will
+            # raise on HF-keyed probe. Try the other shape before giving up.
+            if assistant_prefix is None and not is_sharegpt:
+                assistant_prefix = _derive_assistant_prefix_by_render(
+                    chat_template, is_sharegpt = True
+                )
+            if assistant_prefix is None:
+                return chat_template
+            # Double-quoted Jinja literal with \\, \n, and " escaped so the
+            # block is valid regardless of the derived prefix's content.
+            escaped = (
+                assistant_prefix.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", "\\n")
+            )
             generation_block = (
                 open_tag("if add_generation_prompt")
                 + '{{ "'
-                + assistant_prefix.replace('"', '\\"')
+                + escaped
                 + '" }}'
                 + open_tag("endif")
             )
@@ -914,7 +1052,7 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
 def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     """Core string-template repair. Returns the repaired template on success,
     or None if repair was not possible / failed validation."""
-    candidate = _fix_chat_template(chat_template)
+    candidate = _fix_chat_template(chat_template, is_sharegpt = is_sharegpt)
     if not _has_add_generation_prompt_block(candidate):
         return None
     if not _validate_patched_template(tokenizer, candidate, is_sharegpt):
