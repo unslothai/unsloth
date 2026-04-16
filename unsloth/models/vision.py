@@ -217,11 +217,8 @@ def _attach_bnb_multidevice_hooks(
         if not inferred_map:
             return
 
-        # accelerate's set_module_tensor_to_device grabs param.__dict__ and
-        # passes it as **kwargs to the parameter class constructor.  HF
-        # Transformers adds _is_hf_initialized to parameter __dict__ which
-        # bitsandbytes Params4bit/Int8Params do not accept, causing TypeError.
-        # Strip these extra keys before dispatching.
+        # Strip _is_hf_initialized from param.__dict__ -- bnb constructors
+        # reject it when accelerate re-creates params during dispatch.
         _extra_keys = ("_is_hf_initialized",)
         _stripped = []
         for _, param in model.named_parameters():
@@ -230,10 +227,7 @@ def _attach_bnb_multidevice_hooks(
                     _stripped.append((param, key, param.__dict__.pop(key)))
 
         try:
-            # Convert device_map values to the format dispatch_model expects:
-            # CUDA devices -> int index, non-CUDA devices -> type string.
-            # dispatch_model uses string equality (device == "cpu") internally,
-            # so torch.device("cpu") must become "cpu", not stay as an object.
+            # CUDA -> int index, non-CUDA -> type string ("cpu", "meta").
             device_map_int = {
                 k: (v.index if v.type == "cuda" else v.type)
                 if isinstance(v, torch.device)
@@ -241,15 +235,11 @@ def _attach_bnb_multidevice_hooks(
                 for k, v in inferred_map.items()
             }
 
-            # dispatch_model installs AlignDevicesHook on every module and
-            # sub-module, exactly matching HF's own loading behavior.
-            # force_hooks=True ensures hooks are installed even for single-
-            # device maps (e.g. all weights on cuda:1), where the default
-            # fast-path would skip hook installation entirely.
+            # force_hooks=True: install hooks even for single-device maps.
             dispatch_model(model, device_map = device_map_int, force_hooks = True)
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
-            # Restore stripped keys
+            # Restore stripped keys.
             for param, key, val in _stripped:
                 param.__dict__[key] = val
 

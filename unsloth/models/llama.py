@@ -2490,9 +2490,7 @@ class FastLlamaModel:
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
-            # Attach AlignDevicesHook for bnb multi-device / non-default-device
-            # loads.  The bnb loading path places weights on CUDA devices but
-            # never calls dispatch_model, so no hooks are installed.
+            # Attach dispatch hooks for bnb multi-device loads.
             from unsloth.models.vision import _attach_bnb_multidevice_hooks
 
             _attach_bnb_multidevice_hooks(
