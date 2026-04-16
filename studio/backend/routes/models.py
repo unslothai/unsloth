@@ -456,7 +456,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return None
 
 
-def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
+def _scan_ollama_dir(
+    ollama_dir: Path, limit: Optional[int] = None
+) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
     Ollama stores models in a content-addressable layout::
@@ -716,9 +718,10 @@ async def list_local_models(
                     )
                     if ".studio_links" not in m.path
                 ]
-                custom_models = (_generic + _scan_ollama_dir(
-                    folder_path, limit=_MAX_MODELS_PER_FOLDER
-                ))[:_MAX_MODELS_PER_FOLDER]
+                custom_models = (
+                    _generic
+                    + _scan_ollama_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                )[:_MAX_MODELS_PER_FOLDER]
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
