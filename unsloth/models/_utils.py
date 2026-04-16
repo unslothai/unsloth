@@ -66,6 +66,9 @@ __all__ = [
     "process_vision_info",
     "unsloth_compile_transformers",
     "determine_attention_implementation",
+    "resolve_model_class",
+    "resolve_attention_implementation",
+    "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "patch_fast_lora",
     "validate_loftq_config",
@@ -233,7 +236,7 @@ def apply_unsloth_gradient_checkpointing(
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
-_FLASH_ATTENTION_DISABLED_MODELS = ("gemma4", "gemma4_text")
+_FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
 
 
@@ -245,8 +248,80 @@ def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
-def _is_flash_attention_disabled(model_type):
-    return model_type in _FLASH_ATTENTION_DISABLED_MODELS
+def _iter_attention_configs(config, seen = None):
+    if seen is None:
+        seen = set()
+    config_id = id(config)
+    if config_id in seen:
+        return
+    seen.add(config_id)
+    yield config
+
+    for field_name, child_config in vars(config).items():
+        if not field_name.endswith("_config"):
+            continue
+        if child_config is not None:
+            yield from _iter_attention_configs(child_config, seen)
+
+
+def _collect_attention_head_dims(config):
+    explicit_head_dims = []
+
+    for field_name in (
+        "head_dim",
+        "global_head_dim",
+        "local_head_dim",
+        "kv_head_dim",
+    ):
+        value = getattr(config, field_name, None)
+        if isinstance(value, int) and value > 0:
+            explicit_head_dims.append(value)
+
+    if len(explicit_head_dims) != 0:
+        return explicit_head_dims
+
+    head_dims = []
+
+    hidden_size_names = ("hidden_size", "d_model", "embed_dim", "dim")
+    num_heads_names = ("num_attention_heads", "num_heads", "n_heads")
+    for hidden_size_name in hidden_size_names:
+        hidden_size = getattr(config, hidden_size_name, None)
+        if not isinstance(hidden_size, int) or hidden_size <= 0:
+            continue
+        for num_heads_name in num_heads_names:
+            num_heads = getattr(config, num_heads_name, None)
+            if (
+                isinstance(num_heads, int)
+                and num_heads > 0
+                and (hidden_size % num_heads) == 0
+            ):
+                head_dims.append(hidden_size // num_heads)
+
+    return head_dims
+
+
+def _get_max_attention_head_dim(config):
+    head_dims = []
+    for attention_config in _iter_attention_configs(config):
+        head_dims.extend(_collect_attention_head_dims(attention_config))
+    return max(head_dims) if len(head_dims) != 0 else None
+
+
+def _get_flash_attention_disable_reason(config):
+    max_head_dim = _get_max_attention_head_dim(config)
+    if (
+        max_head_dim is not None
+        and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM
+    ):
+        return (
+            f"max attention head dim {max_head_dim} exceeds the Flash Attention 2 "
+            f"limit of {_FLASH_ATTENTION_MAX_HEAD_DIM}"
+        )
+    return None
+
+
+def _is_flash_attention_disabled(config):
+    return _get_flash_attention_disable_reason(config) is not None
 
 
 def _is_flash_attention_requested(attn_implementation):
@@ -256,13 +331,13 @@ def _is_flash_attention_requested(attn_implementation):
 
 
 def _disable_flash_attention_if_needed(
-    model_type,
     config,
     attn_implementation = None,
     supports_sdpa = False,
     would_use_flash_attention = False,
 ):
-    if not _is_flash_attention_disabled(model_type):
+    disable_reason = _get_flash_attention_disable_reason(config)
+    if disable_reason is None:
         return attn_implementation
 
     requested_attn_implementation = attn_implementation
@@ -284,16 +359,18 @@ def _disable_flash_attention_if_needed(
             if _is_flash_attention_requested(requested_attn_implementation)
             else "flash_attention_2"
         )
+        model_type = getattr(config, "model_type", "")
         warning_key = (
             model_type,
             logged_attn_implementation,
             fallback_attn_implementation,
+            disable_reason,
         )
         if warning_key not in _FLASH_ATTENTION_DISABLED_WARNED:
             _FLASH_ATTENTION_DISABLED_WARNED.add(warning_key)
             print(
                 f"Unsloth: `{logged_attn_implementation}` is not supported "
-                "for Gemma 4 - "
+                f"for `{model_type}` because {disable_reason} - "
                 f"defaulting to `{fallback_attn_implementation}`."
             )
 
@@ -309,23 +386,25 @@ def _set_attn_impl(config, impl):
     return impl
 
 
+def resolve_model_class(auto_model, config):
+    try:
+        return auto_model._model_mapping[config.__class__]
+    except Exception:
+        return None
+
+
 def determine_attention_implementation(model_class, config):
     model_type = getattr(config, "model_type", "").lower()
 
-    # Eager-only models (e.g. gemma3n timm vision towers)
     if _is_eager_only(model_type):
         _set_attn_impl(config, "eager")
         return "eager"
 
-    # Models with known Flash Attention incompatibilities. Gemma 4 full-attention
-    # layers use global_head_dim=512, which exceeds Flash Attention's dense
-    # head-dim support. Keep explicit eager requests, otherwise prefer SDPA.
-    if _is_flash_attention_disabled(model_type):
+    if _is_flash_attention_disabled(config):
         supports_sdpa = model_class is not None and getattr(
             model_class, "_supports_sdpa", False
         )
         return _disable_flash_attention_if_needed(
-            model_type,
             config,
             supports_sdpa = supports_sdpa,
         )
@@ -364,6 +443,67 @@ def determine_attention_implementation(model_class, config):
 
     _set_attn_impl(config, "eager")
     return "eager"
+
+
+def resolve_attention_implementation(
+    model_class,
+    config,
+    requested_attn_implementation = None,
+    supports_sdpa = None,
+):
+    if supports_sdpa is None:
+        supports_sdpa = model_class is not None and getattr(
+            model_class, "_supports_sdpa", False
+        )
+
+    if model_class is None:
+        attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
+    else:
+        attn_impl = determine_attention_implementation(model_class, config)
+
+    if requested_attn_implementation is None:
+        final_attn_impl = attn_impl
+    else:
+        final_attn_impl = requested_attn_implementation
+
+    if _is_flash_attention_disabled(config):
+        final_attn_impl = _disable_flash_attention_if_needed(
+            config,
+            final_attn_impl,
+            supports_sdpa = supports_sdpa,
+            would_use_flash_attention = (
+                requested_attn_implementation is None
+                and _is_flash_attention_requested(attn_impl)
+            ),
+        )
+    elif final_attn_impl is not None:
+        _set_attn_impl(config, final_attn_impl)
+
+    if not supports_sdpa and final_attn_impl == "sdpa":
+        model_type = getattr(config, "model_type", "model")
+        print(
+            f"Unsloth: {model_type.title()} does not support SDPA - switching to fast eager."
+        )
+        final_attn_impl = _set_attn_impl(config, "eager")
+
+    return final_attn_impl
+
+
+def resolve_encoder_attention_implementation(
+    auto_model,
+    config,
+    model_type = "",
+    disable_sdpa_model_names = (),
+):
+    model_class = resolve_model_class(auto_model, config)
+    supports_sdpa = model_class is not None and getattr(
+        model_class, "_supports_sdpa", False
+    )
+    if any(name in model_type.lower() for name in disable_sdpa_model_names):
+        return "eager"
+    if supports_sdpa:
+        return "sdpa"
+    return None
 
 
 def _run_temporary_patches(phase):

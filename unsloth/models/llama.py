@@ -2346,7 +2346,7 @@ class FastLlamaModel:
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
-        preferred_attn_impl = determine_attention_implementation(
+        preferred_attn_impl = resolve_attention_implementation(
             model_function, model_config
         )
 
