@@ -1704,9 +1704,13 @@ class LlamaCppBackend:
             if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
                 _gguf = gguf_path or ""
-                if ".studio_links" in _gguf or (
-                    os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
-                ):
+                _is_ollama = (
+                    ".studio_links" in _gguf
+                    or os.sep + "ollama_links" + os.sep in _gguf
+                    or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
+                    or (self._model_identifier or "").startswith("ollama/")
+                )
+                if _is_ollama:
                     raise RuntimeError(
                         "Some Ollama models do not work with llama.cpp. "
                         "Try a different model, or use this model directly through Ollama instead."
