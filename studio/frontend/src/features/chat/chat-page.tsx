@@ -238,8 +238,13 @@ const LoraCompareContent = memo(function LoraCompareContent({
             </div>
           </div>
         </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
-          <SharedComposer handlesRef={handlesRef} />
+        <div className="z-20 shrink-0 bg-background px-5 pb-2">
+          <div className="mx-auto w-full max-w-[44rem]">
+            <SharedComposer handlesRef={handlesRef} />
+          </div>
+          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+            LLM's can make mistakes. Double-check all responses.
+          </p>
         </div>
       </div>
     </CompareHandlesProvider>
@@ -372,12 +377,17 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             </div>
           </div>
         </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
-          <SharedComposer
-            handlesRef={handlesRef}
-            model1={model1}
-            model2={model2}
-          />
+        <div className="z-20 shrink-0 bg-background px-5 pb-2">
+          <div className="mx-auto w-full max-w-[44rem]">
+            <SharedComposer
+              handlesRef={handlesRef}
+              model1={model1}
+              model2={model2}
+            />
+          </div>
+          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+            LLM's can make mistakes. Double-check all responses.
+          </p>
         </div>
       </div>
     </CompareHandlesProvider>
