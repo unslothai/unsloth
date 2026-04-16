@@ -526,12 +526,16 @@ def _scan_ollama_dir(
                 if os.path.samefile(str(link_path), str(resolved)):
                     return str(link_path)
                 # Hardlink or copy -- same size is good enough
-                if link_path.is_file() and link_path.stat().st_size == resolved.stat().st_size:
+                if (
+                    link_path.is_file()
+                    and link_path.stat().st_size == resolved.stat().st_size
+                ):
                     return str(link_path)
         except OSError as e:
             logger.debug("Error checking existing link %s: %s", link_path, e)
 
         import uuid
+
         tmp_path = link_dir / f".{link_name}.tmp-{uuid.uuid4().hex[:8]}"
         try:
             if tmp_path.is_symlink() or tmp_path.exists():
@@ -553,7 +557,9 @@ def _scan_ollama_dir(
                 if tmp_path.is_symlink() or tmp_path.exists():
                     tmp_path.unlink()
             except OSError as cleanup_err:
-                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
+                logger.debug(
+                    "Could not clean up tmp path %s: %s", tmp_path, cleanup_err
+                )
             return None
 
     try:
