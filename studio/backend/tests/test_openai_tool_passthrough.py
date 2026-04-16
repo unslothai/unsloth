@@ -110,8 +110,19 @@ class TestChatMessageToolRoles:
         with pytest.raises(ValidationError):
             ChatMessage(role = "function", content = "x")
 
-    def test_content_absent_defaults_to_none(self):
-        msg = ChatMessage(role = "assistant")
+    def test_content_absent_on_assistant_tool_call_defaults_to_none(self):
+        # Assistant messages that carry only tool_calls are the one
+        # documented case where `content=None` is permitted.
+        msg = ChatMessage(
+            role = "assistant",
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ],
+        )
         assert msg.content is None
 
     def test_tool_role_missing_tool_call_id_rejected(self):
@@ -130,6 +141,57 @@ class TestChatMessageToolRoles:
                 tool_call_id = "",
                 content = '{"temperature": 72}',
             )
+
+    # ── Role-aware content requirements ────────────────────────────
+
+    def test_user_empty_content_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatMessage(role = "user", content = "")
+
+    def test_system_empty_content_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatMessage(role = "system", content = "")
+
+    def test_user_empty_list_content_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatMessage(role = "user", content = [])
+
+    def test_tool_empty_content_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
+        assert "content" in str(exc_info.value)
+
+    def test_assistant_without_content_or_tool_calls_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            ChatMessage(role = "assistant")
+        assert "content" in str(exc_info.value) or "tool_calls" in str(exc_info.value)
+
+    # ── Role-constrained tool-call metadata ────────────────────────
+
+    def test_tool_calls_on_user_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            ChatMessage(
+                role = "user",
+                content = "Hi",
+                tool_calls = [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            )
+        assert "tool_calls" in str(exc_info.value)
+
+    def test_tool_call_id_on_user_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
+        assert "tool_call_id" in str(exc_info.value)
+
+    def test_name_on_user_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            ChatMessage(role = "user", content = "Hi", name = "get_weather")
+        assert "name" in str(exc_info.value)
 
 
 # =====================================================================
