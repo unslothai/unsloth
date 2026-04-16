@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -95,6 +96,7 @@ export function GeneralTab() {
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
+  const chatOnly = usePlatformStore((s) => s.chatOnly);
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -170,24 +172,26 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Getting started">
-        <SettingsRow
-          label="Start onboarding"
-          description="Open the setup wizard again without changing your account."
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              resetOnboardingDone();
-              closeDialog();
-              navigate({ to: "/onboarding", search: { redirectTo } });
-            }}
+      {!chatOnly && (
+        <SettingsSection title="Getting started">
+          <SettingsRow
+            label="Start onboarding"
+            description="Open the setup wizard again without changing your account."
           >
-            Start onboarding
-          </Button>
-        </SettingsRow>
-      </SettingsSection>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                resetOnboardingDone();
+                closeDialog();
+                navigate({ to: "/onboarding", search: { redirectTo } });
+              }}
+            >
+              Start onboarding
+            </Button>
+          </SettingsRow>
+        </SettingsSection>
+      )}
 
       <SettingsSection title="Danger zone">
         <SettingsRow

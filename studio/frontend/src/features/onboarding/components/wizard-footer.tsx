@@ -69,7 +69,7 @@ export function WizardFooter({
                 if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
                   sessionStorage.removeItem("unsloth_chat_only");
                   markOnboardingDone();
-                  window.location.assign(returnTo);
+                  window.location.assign("/chat");
                 } else {
                   nextStep();
                 }
