@@ -144,10 +144,7 @@ def detect_hardware() -> DeviceType:
         except Exception:
             cuda_unavailable = True
 
-        prefer_xpu = (
-            force_xpu
-            or (bool(ze_mask) and (cuda_hidden or cuda_unavailable))
-        )
+        prefer_xpu = force_xpu or (bool(ze_mask) and (cuda_hidden or cuda_unavailable))
         if prefer_xpu:
             try:
                 xpu_ok = hasattr(torch, "xpu") and torch.xpu.is_available()
@@ -163,9 +160,7 @@ def detect_hardware() -> DeviceType:
                     reason = "UNSLOTH_FORCE_XPU=1 + ZE_AFFINITY_MASK"
                 else:
                     reason = "ZE_AFFINITY_MASK hint honoured"
-                print(
-                    f"Hardware detected: XPU -- {device_name} ({reason})"
-                )
+                print(f"Hardware detected: XPU -- {device_name} ({reason})")
                 return DEVICE
 
         # --- CUDA: NVIDIA GPU ---
