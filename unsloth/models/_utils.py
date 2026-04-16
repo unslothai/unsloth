@@ -233,6 +233,8 @@ def apply_unsloth_gradient_checkpointing(
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
+_FLASH_ATTENTION_DISABLED_MODELS = ("gemma4", "gemma4_text")
+_FLASH_ATTENTION_DISABLED_WARNED = set()
 
 
 def _is_flex_excluded(model_type):
@@ -241,6 +243,61 @@ def _is_flex_excluded(model_type):
 
 def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
+
+
+def _is_flash_attention_disabled(model_type):
+    return model_type in _FLASH_ATTENTION_DISABLED_MODELS
+
+
+def _is_flash_attention_requested(attn_implementation):
+    return isinstance(attn_implementation, str) and attn_implementation.startswith(
+        "flash_attention"
+    )
+
+
+def _disable_flash_attention_if_needed(
+    model_type,
+    config,
+    attn_implementation = None,
+    supports_sdpa = False,
+    would_use_flash_attention = False,
+):
+    if not _is_flash_attention_disabled(model_type):
+        return attn_implementation
+
+    requested_attn_implementation = attn_implementation
+    if requested_attn_implementation is None:
+        requested_attn_implementation = getattr(config, "_attn_implementation", None)
+    if requested_attn_implementation is None:
+        requested_attn_implementation = getattr(config, "attn_implementation", None)
+
+    if requested_attn_implementation == "eager":
+        return _set_attn_impl(config, "eager")
+
+    fallback_attn_implementation = "sdpa" if supports_sdpa else "eager"
+    if (
+        _is_flash_attention_requested(requested_attn_implementation)
+        or would_use_flash_attention
+    ):
+        logged_attn_implementation = (
+            requested_attn_implementation
+            if _is_flash_attention_requested(requested_attn_implementation)
+            else "flash_attention_2"
+        )
+        warning_key = (
+            model_type,
+            logged_attn_implementation,
+            fallback_attn_implementation,
+        )
+        if warning_key not in _FLASH_ATTENTION_DISABLED_WARNED:
+            _FLASH_ATTENTION_DISABLED_WARNED.add(warning_key)
+            print(
+                f"Unsloth: `{logged_attn_implementation}` is not supported "
+                "for Gemma 4 - "
+                f"defaulting to `{fallback_attn_implementation}`."
+            )
+
+    return _set_attn_impl(config, fallback_attn_implementation)
 
 
 def _set_attn_impl(config, impl):
@@ -259,6 +316,19 @@ def determine_attention_implementation(model_class, config):
     if _is_eager_only(model_type):
         _set_attn_impl(config, "eager")
         return "eager"
+
+    # Models with known Flash Attention incompatibilities. Gemma 4 full-attention
+    # layers use global_head_dim=512, which exceeds Flash Attention's dense
+    # head-dim support. Keep explicit eager requests, otherwise prefer SDPA.
+    if _is_flash_attention_disabled(model_type):
+        supports_sdpa = model_class is not None and getattr(
+            model_class, "_supports_sdpa", False
+        )
+        return _disable_flash_attention_if_needed(
+            model_type,
+            config,
+            supports_sdpa = supports_sdpa,
+        )
 
     # Flash Attention 2
     if HAS_FLASH_ATTENTION and model_class is not None:

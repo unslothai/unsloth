@@ -29,7 +29,13 @@ except:
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import (
+    __version__,
+    importlib_version,
+    _prepare_model_for_qat,
+    _is_flash_attention_disabled,
+    _disable_flash_attention_if_needed,
+)
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -607,6 +613,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
+        user_attn_implementation = kwargs.get("attn_implementation", None)
         try:
             model_class = auto_model._model_mapping[auto_config.__class__]
         except Exception:
@@ -631,6 +638,23 @@ class FastBaseModel:
 
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = attn_impl
+        model_type = getattr(auto_config, "model_type", "").lower()
+        if _is_flash_attention_disabled(model_type):
+            supports_fa2 = model_class is not None and (
+                getattr(model_class, "_supports_flash_attn_2", False)
+                or getattr(model_class, "_supports_flash_attn", False)
+            )
+            kwargs["attn_implementation"] = _disable_flash_attention_if_needed(
+                model_type,
+                auto_config,
+                kwargs.get("attn_implementation"),
+                supports_sdpa = supports_sdpa,
+                would_use_flash_attention = (
+                    user_attn_implementation is None
+                    and HAS_FLASH_ATTENTION
+                    and supports_fa2
+                ),
+            )
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
             print(
                 f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
