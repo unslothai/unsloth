@@ -173,6 +173,7 @@ type ChatRuntimeStore = {
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   activeThreadId: string | null;
+  settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   contextUsage: {
@@ -193,6 +194,7 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (enabled: boolean) => void;
   setToolsEnabled: (enabled: boolean) => void;
@@ -243,6 +245,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   activeThreadId: null,
+  settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
   contextUsage: null,
@@ -294,6 +297,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       activeGgufVariant: ggufVariant ?? null,
     })),
   setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
+  setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
