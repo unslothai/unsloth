@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
+import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useSettingsDialogStore } from "@/features/settings";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
@@ -75,10 +79,25 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const navigate = useNavigate();
+  const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const { pathname, search } = useRouterState({
+    select: (s) => ({
+      pathname: s.location.pathname,
+      search:
+        "searchStr" in s.location
+          ? (s.location as { searchStr?: string }).searchStr ?? ""
+          : typeof window !== "undefined"
+            ? window.location.search
+            : "",
+    }),
+  });
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
+  const chatOnly = usePlatformStore((s) => s.chatOnly);
+  const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -152,6 +171,27 @@ export function GeneralTab() {
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
+
+      {!chatOnly && (
+        <SettingsSection title="Getting started">
+          <SettingsRow
+            label="Start onboarding"
+            description="Open the setup wizard again without changing your account."
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                resetOnboardingDone();
+                closeDialog();
+                navigate({ to: "/onboarding", search: { redirectTo } });
+              }}
+            >
+              Start onboarding
+            </Button>
+          </SettingsRow>
+        </SettingsSection>
+      )}
 
       <SettingsSection title="Danger zone">
         <SettingsRow
