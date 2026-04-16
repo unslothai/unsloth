@@ -396,18 +396,22 @@ class LlamaCppBackend:
 
             utilization = get_visible_gpu_utilization()
 
-            # Refuse to return relative ordinals. When the backend exposes
-            # the device set via index_kind="relative" (subdevice / wildcard /
-            # UUID masks), those indices are NOT safe to round-trip back into
-            # ZE_AFFINITY_MASK or CUDA_VISIBLE_DEVICES because the parent
-            # process has already hidden the physical ID mapping. Returning
-            # [] lets the caller skip the placement path entirely and
-            # inherit the parent's visibility mask unchanged.
-            if utilization.get("index_kind") not in (None, "physical"):
+            # CUDA UUID/MIG "relative" telemetry is not safe to round-trip
+            # into CUDA_VISIBLE_DEVICES because the parent process hides
+            # the physical mapping. On Intel XPU, torch.xpu ordinals are
+            # stable within the worker's inherited ZE_AFFINITY_MASK scope,
+            # so relative XPU indices ARE valid as narrower-mask tokens
+            # for the llama-server child process. Accept them so default
+            # Intel FLAT hosts still get VRAM-based placement.
+            index_kind = utilization.get("index_kind")
+            allow_relative_xpu = (
+                get_device() == DeviceType.XPU and index_kind == "relative"
+            )
+            if index_kind not in (None, "physical") and not allow_relative_xpu:
                 logger.debug(
                     "Skipping GPU placement: telemetry reports index_kind=%r "
-                    "(not physical)",
-                    utilization.get("index_kind"),
+                    "(not reusable for placement)",
+                    index_kind,
                 )
                 return []
 

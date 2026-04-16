@@ -1438,23 +1438,44 @@ def auto_select_gpu_ids(
     parent_visible_spec = _get_parent_visible_gpu_spec()
     metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
 
-    if not parent_visible_spec["supports_explicit_gpu_ids"]:
+    # Some XPU configurations cannot expose stable physical GPU IDs (FLAT
+    # hierarchy + no mask, FLAT numeric mask, wildcard, subdevice syntax).
+    # Rejecting auto-selection there leaves default Intel hosts stuck on
+    # single-device sequential loading even when multiple devices are
+    # visible to torch.xpu. The worker-local torch.xpu ordinals are still
+    # valid ZE_AFFINITY_MASK tokens for the current inherited visibility
+    # set, so we can safely use them for Studio's internal auto-selection
+    # even though the API contract still refuses to accept them as
+    # user-supplied "Physical GPU indices" in prepare_gpu_selection().
+    xpu_relative_auto_select = (
+        not parent_visible_spec["supports_explicit_gpu_ids"]
+        and get_device() == DeviceType.XPU
+    )
+    if not parent_visible_spec["supports_explicit_gpu_ids"] and not xpu_relative_auto_select:
         metadata["selection_mode"] = "inherit_parent_visible"
         metadata["selected_gpu_ids"] = None
         return None, metadata
+
+    if xpu_relative_auto_select:
+        parent_ids = list(range(get_visible_gpu_count()))
+        if not parent_ids:
+            metadata["selection_mode"] = "inherit_parent_visible"
+            metadata["selected_gpu_ids"] = None
+            return None, metadata
+        metadata["xpu_relative_auto_select"] = True
+    else:
+        parent_ids = get_parent_visible_gpu_ids()
 
     if required_gb is None:
         # Cannot estimate model size -- fall back to all visible GPUs
         # rather than risk loading on a single GPU that may not have
         # enough memory.
-        parent_ids = get_parent_visible_gpu_ids()
         metadata["selection_mode"] = "fallback_all"
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
     utilization = get_visible_gpu_utilization()
     devices = utilization.get("devices", [])
-    parent_ids = get_parent_visible_gpu_ids()
 
     if not devices:
         metadata["selection_mode"] = "fallback_all"
