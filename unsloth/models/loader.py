@@ -1151,9 +1151,6 @@ class FastModel(FastBaseModel):
                 )
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
-            # Disable flex_attention for Gemma-4: flex compile overhead is 2.7x slower
-            # than SDPA. Our attention patch ensures Q/K/V dtype alignment for SDPA.
-            os.environ["UNSLOTH_ENABLE_FLEX_ATTENTION"] = "0"
         # Gemma 3N must be before Gemma 3
         elif "gemma3n" in model_types_all:
             if transformers_version < Version("4.53.0"):
