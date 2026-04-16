@@ -1020,10 +1020,10 @@ def detect_gguf_model(path: str) -> Optional[str]:
     if p.suffix.lower() == ".gguf" and p.is_file():
         if _is_mmproj(p.name):
             return None
-        # Use abspath (not resolve) to preserve symlink names -- e.g.
+        # Use absolute (not resolve) to preserve symlink names -- e.g.
         # Ollama .studio_links/model.gguf -> blobs/sha256-... should
         # keep the readable symlink name, not the opaque blob hash.
-        return os.path.abspath(str(p))
+        return str(p.absolute())
 
     # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():

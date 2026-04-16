@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
@@ -440,7 +441,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     # Ollama roots don't collide. Use sha1 for speed -- this is a cache
     # path, not a security boundary.
     try:
-        digest = hashlib.sha1(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
+        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except OSError:
         digest = "default"
     fallback = cache_root() / "ollama_links" / digest
@@ -532,8 +533,6 @@ def _scan_ollama_dir(
         except OSError as e:
             logger.debug("Error checking existing link %s: %s", link_path, e)
 
-        import uuid
-
         tmp_path = link_dir / f".{link_name}.tmp-{uuid.uuid4().hex[:8]}"
         try:
             if tmp_path.is_symlink() or tmp_path.exists():
@@ -603,7 +602,7 @@ def _scan_ollama_dir(
                 display = f"{repo_name}:{tag}"
 
                 manifest_key = rel.as_posix()
-                stem_hash = hashlib.sha1(manifest_key.encode()).hexdigest()[:10]
+                stem_hash = hashlib.sha256(manifest_key.encode()).hexdigest()[:10]
 
                 try:
                     manifest = json.loads(tag_file.read_text())
