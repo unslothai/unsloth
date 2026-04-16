@@ -309,10 +309,7 @@ def _get_max_attention_head_dim(config):
 
 def _get_flash_attention_disable_reason(config):
     max_head_dim = _get_max_attention_head_dim(config)
-    if (
-        max_head_dim is not None
-        and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM
-    ):
+    if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
         return (
             f"max attention head dim {max_head_dim} exceeds the Flash Attention 2 "
             f"limit of {_FLASH_ATTENTION_MAX_HEAD_DIM}"
