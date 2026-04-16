@@ -2494,12 +2494,13 @@ class FastLlamaModel:
             # loads.  The bnb loading path places weights on CUDA devices but
             # never calls dispatch_model, so no hooks are installed.
             from unsloth.models.vision import _attach_bnb_multidevice_hooks
+
             _attach_bnb_multidevice_hooks(
                 model,
-                load_in_4bit      = load_in_4bit,
-                load_in_8bit      = False,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = False,
                 offload_embedding = False,
-                fast_inference    = False,
+                fast_inference = False,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None

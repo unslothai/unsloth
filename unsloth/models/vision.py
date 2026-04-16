@@ -236,7 +236,8 @@ def _attach_bnb_multidevice_hooks(
             # so torch.device("cpu") must become "cpu", not stay as an object.
             device_map_int = {
                 k: (v.index if v.type == "cuda" else v.type)
-                   if isinstance(v, torch.device) else v
+                if isinstance(v, torch.device)
+                else v
                 for k, v in inferred_map.items()
             }
 
