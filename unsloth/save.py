@@ -180,21 +180,42 @@ def _quantize_q2_k_l(
 
     try:
         if print_output:
-            result = subprocess.run(
+            with subprocess.Popen(
                 command,
                 shell = False,
-                check = True,
                 text = True,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
-            )
-            print(result.stdout)
+                bufsize = 1,
+            ) as sp:
+                assert sp.stdout is not None
+                for line in sp.stdout:
+                    print(line, end = "", flush = True)
+
+                returncode = sp.wait()
+                if returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to quantize {input_gguf} to q2_k_l: process exited with code {returncode}"
+                    )
         else:
-            subprocess.run(command, shell = False, check = True, capture_output = True)
+            subprocess.run(
+                command,
+                shell = False,
+                check = True,
+                capture_output = True,
+                text = True,
+            )
     except subprocess.CalledProcessError as e:
         if print_output and hasattr(e, "stdout") and e.stdout:
             print(e.stdout)
-        raise RuntimeError(f"Failed to quantize {input_gguf} to q2_k_l: {e}")
+        error_details = ""
+        if hasattr(e, "stdout") and e.stdout:
+            error_details += f"\nSubprocess stdout:\n{e.stdout}"
+        if hasattr(e, "stderr") and e.stderr:
+            error_details += f"\nSubprocess stderr:\n{e.stderr}"
+        raise RuntimeError(
+            f"Failed to quantize {input_gguf} to q2_k_l: {e}{error_details}"
+        )
 
     output_path = Path(output_gguf)
     if not output_path.exists():
