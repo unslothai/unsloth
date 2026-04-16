@@ -511,11 +511,28 @@ def _scan_ollama_dir(
         Developer Mode when target is on the same filesystem), then
         falls back to a file copy as a last resort.  Uses atomic
         ``os.replace`` to avoid a race window where the path is missing.
+
+        Idempotent: skips recreation when a valid link/copy already exists
+        to avoid blocking the model-list API with multi-GB copies on every
+        scan.
         """
         link_dir.mkdir(parents = True, exist_ok = True)
         link_path = link_dir / link_name
-        tmp_path = link_dir / f".{link_name}.tmp-{os.getpid()}"
         resolved = target.resolve()
+
+        # Skip if the link/copy already points at the right target
+        try:
+            if link_path.exists():
+                if os.path.samefile(str(link_path), str(resolved)):
+                    return str(link_path)
+                # Hardlink or copy -- same size is good enough
+                if link_path.is_file() and link_path.stat().st_size == resolved.stat().st_size:
+                    return str(link_path)
+        except OSError as e:
+            logger.debug("Error checking existing link %s: %s", link_path, e)
+
+        import uuid
+        tmp_path = link_dir / f".{link_name}.tmp-{uuid.uuid4().hex[:8]}"
         try:
             if tmp_path.is_symlink() or tmp_path.exists():
                 tmp_path.unlink()
@@ -535,8 +552,8 @@ def _scan_ollama_dir(
             try:
                 if tmp_path.is_symlink() or tmp_path.exists():
                     tmp_path.unlink()
-            except OSError:
-                pass
+            except OSError as cleanup_err:
+                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
             return None
 
     try:
@@ -763,7 +780,8 @@ async def list_local_models(
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
-                    if ".studio_links" not in m.path and "ollama_links" not in m.path
+                    if (os.sep + ".studio_links" + os.sep) not in m.path
+                    and (os.sep + "ollama_links" + os.sep) not in m.path
                 ]
                 custom_models = (
                     _generic
