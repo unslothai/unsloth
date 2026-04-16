@@ -919,17 +919,28 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         if xpu_mask_raw is None:
             # No mask set. In COMPOSITE, torch.xpu.device_count() enumerates
             # root GPUs, which is what the API contract ("Physical GPU
-            # indices") promises. In FLAT (the oneAPI default) the same
-            # count enumerates tile / device-handle ordinals that Intel's
-            # own docs explicitly call out as NOT stable physical GPU IDs.
-            # We expose the enumeration either way so auto-selection and
-            # display still work, but reject explicit gpu_ids in FLAT to
-            # keep the API contract honest. Users who need FLAT-based
+            # indices") promises -- populate numeric_ids so auto-selection
+            # and telemetry can round-trip them safely.
+            if composite:
+                return {
+                    "raw": None,
+                    "numeric_ids": list(range(get_physical_gpu_count())),
+                    "supports_explicit_gpu_ids": True,
+                }
+            # FLAT (the oneAPI default) enumerates tile / device-handle
+            # ordinals that Intel's own docs explicitly call out as NOT
+            # stable physical GPU IDs. Advertising them via numeric_ids
+            # would let downstream telemetry mark them index_kind="physical"
+            # and llama.cpp round-trip them back into ZE_AFFINITY_MASK as
+            # if they were root devices. Leave numeric_ids=None so the
+            # telemetry path falls into its relative-ordinal branch and
+            # auto-selection returns inherit_parent_visible, matching the
+            # supports_explicit_gpu_ids=False contract. Users who want
             # explicit selection can set ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE.
             return {
                 "raw": None,
-                "numeric_ids": list(range(get_physical_gpu_count())),
-                "supports_explicit_gpu_ids": composite,
+                "numeric_ids": None,
+                "supports_explicit_gpu_ids": False,
             }
 
         xpu_mask = xpu_mask_raw.strip()

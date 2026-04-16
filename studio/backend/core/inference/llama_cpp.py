@@ -335,9 +335,21 @@ class LlamaCppBackend:
         """
         import os
 
+        from utils.hardware import get_device
+        from utils.hardware.hardware import DeviceType
+        import utils.hardware.hardware as _hw_mod
+
         # Fast path: NVIDIA / nvidia-smi. Cheap, authoritative, and already
-        # battle-tested across the CUDA fleet. Keep it exactly as-is.
+        # battle-tested across the CUDA fleet. Gate on the active backend so
+        # hybrid NVIDIA+Intel hosts running Studio in XPU mode don't read
+        # NVIDIA memory numbers and then round-trip those indices into
+        # ZE_AFFINITY_MASK (which would pin llama-server to the wrong device).
+        nvidia_eligible = (
+            get_device() == DeviceType.CUDA and not getattr(_hw_mod, "IS_ROCM", False)
+        )
         try:
+            if not nvidia_eligible:
+                raise FileNotFoundError  # skip to generic telemetry path
             result = subprocess.run(
                 [
                     "nvidia-smi",

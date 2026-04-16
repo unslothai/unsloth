@@ -108,6 +108,9 @@ def format_error_message(error: Exception, model_name: str) -> str:
         or "not enough memory" in error_str
         or "cannot allocate memory" in error_str
         or "memory allocation failed" in error_str
+        or "cublas_status_alloc_failed" in error_str  # cuBLAS workspace OOM
+        or ("cuda error" in error_str and "alloc" in error_str)
+        or ("xpu" in error_str and ("alloc" in error_str or "memory" in error_str))
         or isinstance(error, MemoryError)
         or ("mlx" in error_str and ("memory" in error_str or "allocate" in error_str))
     ):
