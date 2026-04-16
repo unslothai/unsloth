@@ -1438,41 +1438,24 @@ def auto_select_gpu_ids(
     parent_visible_spec = _get_parent_visible_gpu_spec()
     metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
 
-    # Some XPU configurations cannot expose stable physical GPU IDs (FLAT
-    # hierarchy + no mask). Rejecting auto-selection there leaves default
-    # Intel hosts stuck on single-device sequential loading even when
-    # multiple devices are visible to torch.xpu. We can safely fall back
-    # to worker-local torch.xpu ordinals ONLY when the parent did not
-    # already narrow ZE_AFFINITY_MASK. If a parent mask is present (even
-    # numeric FLAT like "3,5", or subdevice like "0.0,0.1"), synthesizing
-    # 0..N-1 ordinals and writing them back via apply_gpu_ids() would
-    # overwrite the inherited mask and retarget the child onto different
-    # Level Zero handles (e.g. parent "3,5" -> rewritten "0,1" means the
-    # child now sees tile 0 and tile 1, not tile 3 and tile 5). When a
-    # mask is already set, defer to inherit_parent_visible so the child
-    # inherits the exact visibility the parent intended.
-    xpu_relative_auto_select = (
-        not parent_visible_spec["supports_explicit_gpu_ids"]
-        and get_device() == DeviceType.XPU
-        and parent_visible_spec["raw"] is None
-    )
-    if (
-        not parent_visible_spec["supports_explicit_gpu_ids"]
-        and not xpu_relative_auto_select
-    ):
+    # When the parent-visible spec does not expose stable physical GPU
+    # IDs (FLAT + no mask, FLAT numeric mask, wildcard, subdevice), do
+    # not synthesize gpu_ids. On multi-tile Intel devices (e.g. Data
+    # Center GPU Max) torch.xpu ordinals can enumerate tiles rather
+    # than root GPUs, so materializing range(visible_count) and writing
+    # it back via apply_gpu_ids() would rewrite ZE_AFFINITY_MASK with
+    # tile handles -- narrowing the worker onto a subset of one card
+    # instead of spreading across the parent-visible device set. Defer
+    # to inherit_parent_visible so the child inherits torch.xpu's view
+    # unchanged; get_device_map() still returns "balanced" for
+    # multi-visible XPU without gpu_ids so HF sharding happens via
+    # torch ordinals within the worker process scope (no mask rewrite).
+    if not parent_visible_spec["supports_explicit_gpu_ids"]:
         metadata["selection_mode"] = "inherit_parent_visible"
         metadata["selected_gpu_ids"] = None
         return None, metadata
 
-    if xpu_relative_auto_select:
-        parent_ids = list(range(get_visible_gpu_count()))
-        if not parent_ids:
-            metadata["selection_mode"] = "inherit_parent_visible"
-            metadata["selected_gpu_ids"] = None
-            return None, metadata
-        metadata["xpu_relative_auto_select"] = True
-    else:
-        parent_ids = get_parent_visible_gpu_ids()
+    parent_ids = get_parent_visible_gpu_ids()
 
     if required_gb is None:
         # Cannot estimate model size -- fall back to all visible GPUs
@@ -1995,22 +1978,45 @@ def get_device_map(
     if device in (DeviceType.CUDA, DeviceType.XPU):
         multi_gpu = gpu_ids is not None and len(gpu_ids) > 1
 
-        if not multi_gpu and device == DeviceType.CUDA:
-            # CUDA UUID/MIG masks cannot be split into numeric IDs, so if
-            # multiple GPUs are visible we assume multi-GPU sharding is
-            # intended. This heuristic is CUDA-only: on XPU,
-            # numeric_ids=None almost always means FLAT tile/device-handle
-            # ordinals, wildcards, or subdevice syntax -- none of which are
-            # safe to reinterpret as distinct physical GPUs for automatic
-            # balanced sharding. XPU callers must pass explicit gpu_ids
-            # (via COMPOSITE or a numeric mask + prepare_gpu_selection) to
-            # opt into balanced.
+        # Only apply the "implicit multi-visible" heuristic when the
+        # caller did NOT pass any gpu_ids. Passing gpu_ids=[0] explicitly
+        # is a deliberate "use exactly device 0" signal that must stay
+        # sequential even if more devices are visible.
+        if not multi_gpu and gpu_ids is None:
             parent_visible_spec = _get_parent_visible_gpu_spec()
             if (
-                parent_visible_spec["numeric_ids"] is None
+                device == DeviceType.CUDA
+                and parent_visible_spec["numeric_ids"] is None
                 and get_visible_gpu_count() > 1
             ):
+                # CUDA UUID/MIG masks cannot be split into numeric IDs;
+                # assume multi-GPU sharding is intended across the
+                # visible set.
                 multi_gpu = True
+            elif device == DeviceType.XPU:
+                # XPU: whenever more than one torch.xpu device is
+                # visible and the caller didn't pick a specific one,
+                # shard via HF's balanced device_map. HF uses the
+                # torch.xpu ordinals directly (scope-local within the
+                # worker process), so this is safe regardless of
+                # whether the ordinals represent tiles or roots, and it
+                # does NOT rewrite ZE_AFFINITY_MASK (the inherited
+                # visibility is preserved). Users who don't want
+                # sharding can pass gpu_ids=[0] or narrow
+                # ZE_AFFINITY_MASK to a single device before launching.
+                supports_physical = parent_visible_spec["supports_explicit_gpu_ids"]
+                has_multiple_numeric = (
+                    parent_visible_spec["numeric_ids"] is not None
+                    and len(parent_visible_spec["numeric_ids"]) > 1
+                )
+                has_multiple_unresolved = (
+                    parent_visible_spec["numeric_ids"] is None
+                    and get_visible_gpu_count() > 1
+                )
+                if has_multiple_unresolved or (
+                    not supports_physical and has_multiple_numeric
+                ):
+                    multi_gpu = True
 
         if multi_gpu:
             return "balanced"

@@ -401,29 +401,21 @@ class LlamaCppBackend:
 
             utilization = get_visible_gpu_utilization()
 
-            # CUDA UUID/MIG "relative" telemetry is not safe to round-trip
-            # into CUDA_VISIBLE_DEVICES because the parent process hides
-            # the physical mapping. On Intel XPU, torch.xpu ordinals are
-            # stable ZE_AFFINITY_MASK tokens *only when there is no
-            # inherited mask already narrowing visibility*. If the parent
-            # already set ZE_AFFINITY_MASK (e.g. "3,5" or "0.0,0.1"),
-            # writing back synthesized 0..N-1 ordinals would retarget
-            # the child onto different Level Zero handles than the
-            # parent exposed. Only accept relative XPU telemetry on the
-            # default Intel setup (no inherited mask) so default FLAT
-            # multi-XPU hosts still get VRAM-based placement.
-            index_kind = utilization.get("index_kind")
-            inherited_ze_mask = os.environ.get("ZE_AFFINITY_MASK")
-            allow_relative_xpu = (
-                get_device() == DeviceType.XPU
-                and index_kind == "relative"
-                and inherited_ze_mask is None
-            )
-            if index_kind not in (None, "physical") and not allow_relative_xpu:
+            # Refuse to return relative ordinals. On CUDA (UUID/MIG
+            # masks), the parent has already hidden the physical ID
+            # mapping, so those indices are not safe to round-trip into
+            # CUDA_VISIBLE_DEVICES. On Intel XPU, FLAT-hierarchy
+            # ordinals can enumerate tiles on multi-tile devices, so
+            # writing them back into ZE_AFFINITY_MASK would narrow the
+            # child onto tiles of one card instead of spreading across
+            # the parent-visible set. Returning [] lets llama-server
+            # inherit the parent's mask unchanged and use its own
+            # multi-device machinery.
+            if utilization.get("index_kind") not in (None, "physical"):
                 logger.debug(
                     "Skipping GPU placement: telemetry reports index_kind=%r "
                     "(not reusable for placement)",
-                    index_kind,
+                    utilization.get("index_kind"),
                 )
                 return []
 
