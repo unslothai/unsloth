@@ -1384,10 +1384,14 @@ class FastModel(FastBaseModel):
         global FORCE_BFLOAT16
         for disable_name in FORCE_BFLOAT16:
             if (
-                disable_name.lower()
-                == model_type_arch.lower().replace("-", "").replace("_", "")
-                or disable_name.lower() in model_types_all
-            ) and dtype == torch.float16 and SUPPORTS_BFLOAT16:
+                (
+                    disable_name.lower()
+                    == model_type_arch.lower().replace("-", "").replace("_", "")
+                    or disable_name.lower() in model_types_all
+                )
+                and dtype == torch.float16
+                and SUPPORTS_BFLOAT16
+            ):
                 logger.warning_once(
                     f"Unsloth: {model_type_arch} does not support float16 training. "
                     f"Switching to bfloat16."
