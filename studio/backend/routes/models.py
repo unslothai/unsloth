@@ -411,6 +411,51 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
+def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
+    """Return a writable directory for Ollama ``.gguf`` symlinks.
+
+    Prefers ``<ollama_dir>/.studio_links/`` so the links sit next to the
+    blobs they point at. Falls back to a per-ollama-dir namespace under
+    Studio's own cache when the models directory is read-only (common
+    for system installs under ``/usr/share/ollama`` or ``/var/lib/ollama``)
+    so we still surface Ollama models in those environments.
+    """
+    from utils.paths.storage_roots import cache_root
+
+    primary = ollama_dir / ".studio_links"
+    try:
+        primary.mkdir(exist_ok = True)
+        return primary
+    except OSError as e:
+        logger.debug(
+            "Ollama dir %s not writable for .studio_links (%s); "
+            "falling back to Studio cache",
+            ollama_dir,
+            e,
+        )
+
+    # Fallback: namespace by a hash of the ollama_dir so two different
+    # Ollama roots don't collide. Use sha1 for speed -- this is a cache
+    # path, not a security boundary.
+    try:
+        import hashlib
+
+        digest = hashlib.sha1(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
+    except OSError:
+        digest = "default"
+    fallback = cache_root() / "ollama_links" / digest
+    try:
+        fallback.mkdir(parents = True, exist_ok = True)
+        return fallback
+    except OSError as e:
+        logger.warning(
+            "Could not create Ollama symlink cache at %s: %s",
+            fallback,
+            e,
+        )
+        return None
+
+
 def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
@@ -424,9 +469,11 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
     GGUF weights. We read the config layer to extract family/size info.
 
     Since Ollama blobs lack a ``.gguf`` extension (which the GGUF
-    loading pipeline requires), we create symlinks with proper names
-    under ``<ollama_dir>/.studio_links/`` so that the existing
-    ``detect_gguf_model`` / llama-server ``-m`` path works unchanged.
+    loading pipeline requires), we create ``.gguf``-named symlinks
+    pointing at the blobs so the existing ``detect_gguf_model`` and
+    ``llama-server -m`` paths work unchanged. The symlinks live under
+    ``<ollama_dir>/.studio_links/`` when writable, otherwise under
+    Studio's own cache directory.
     """
     import json as _json
 
@@ -436,10 +483,15 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
 
     found: List[LocalModelInfo] = []
     blobs_dir = ollama_dir / "blobs"
-    links_dir = ollama_dir / ".studio_links"
-    try:
-        links_dir.mkdir(exist_ok = True)
-    except OSError:
+    links_dir = _ollama_links_dir(ollama_dir)
+    if links_dir is None:
+        # No writable spot for the .gguf symlinks; surfacing the raw
+        # sha256 blob path here would fail later because detect_gguf_model
+        # keys off the .gguf suffix.
+        logger.warning(
+            "Skipping Ollama scan for %s: no writable location for .gguf symlinks",
+            ollama_dir,
+        )
         return []
 
     try:
@@ -454,7 +506,12 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                 display = f"{model_name}:{tag}"
                 try:
                     manifest = _json.loads(tag_file.read_text())
-                except Exception:
+                except (_json.JSONDecodeError, OSError) as e:
+                    logger.debug(
+                        "Skipping unreadable/invalid Ollama manifest %s: %s",
+                        tag_file,
+                        e,
+                    )
                     continue
 
                 # Read the config blob for model_type / file_type metadata
@@ -468,8 +525,12 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                             cfg = _json.loads(config_blob.read_text())
                             model_type = cfg.get("model_type", "")
                             file_type = cfg.get("file_type", "")
-                        except Exception:
-                            pass
+                        except (_json.JSONDecodeError, OSError) as e:
+                            logger.debug(
+                                "Could not parse Ollama config blob %s: %s",
+                                config_blob,
+                                e,
+                            )
 
                 # Find the GGUF weights blob and create a .gguf symlink
                 gguf_link_path: Optional[str] = None
@@ -479,7 +540,7 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                         if digest:
                             candidate = blobs_dir / digest.replace(":", "-")
                             if candidate.is_file():
-                                # Create a symlink: .studio_links/gemma3-4b.gguf -> ../blobs/sha256-...
+                                # .studio_links/gemma3-4b-Q4_K_M.gguf -> ../blobs/sha256-...
                                 quant = f"-{file_type}" if file_type else ""
                                 link_name = f"{model_name}-{tag}{quant}.gguf"
                                 link_path = links_dir / link_name
@@ -487,11 +548,13 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                                     if link_path.is_symlink() or link_path.exists():
                                         link_path.unlink()
                                     link_path.symlink_to(candidate.resolve())
-                                except OSError:
-                                    # Fall back to raw blob path if symlink fails
-                                    gguf_link_path = str(candidate)
-                                    break
-                                gguf_link_path = str(link_path)
+                                    gguf_link_path = str(link_path)
+                                except OSError as e:
+                                    logger.debug(
+                                        "Could not create Ollama symlink %s: %s",
+                                        link_path,
+                                        e,
+                                    )
                         break
 
                 if not gguf_link_path:
@@ -519,8 +582,8 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                         updated_at = updated_at,
                     ),
                 )
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
     return found
 
 
@@ -732,8 +795,8 @@ async def get_recommended_folders(
     try:
         for p in lmstudio_model_dirs():
             _add(p)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to scan for LM Studio model directories: %s", e)
 
     # Ollama model directories
     ollama_env = os.environ.get("OLLAMA_MODELS")
