@@ -324,14 +324,19 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per visible GPU, backend-aware.
 
-        Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Returns list of ``(gpu_index, free_mib)`` sorted by index. The index
+        space matches whatever the active backend exposes: physical
+        ``nvidia-smi`` indices on NVIDIA; parent-visible numeric IDs on
+        AMD/ROCm and Intel XPU (via Studio's hardware telemetry layer).
+        Returns an empty list if no per-GPU free-memory data is available,
+        which lets the caller fall through to a non-placement launch path.
         """
         import os
 
+        # Fast path: NVIDIA / nvidia-smi. Cheap, authoritative, and already
+        # battle-tested across the CUDA fleet. Keep it exactly as-is.
         try:
             result = subprocess.run(
                 [
@@ -343,30 +348,55 @@ class LlamaCppBackend:
                 text = True,
                 timeout = 10,
             )
-            if result.returncode != 0:
-                return []
+            if result.returncode == 0:
+                # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
+                allowed = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None and cvd.strip():
+                    try:
+                        allowed = set(int(x.strip()) for x in cvd.split(","))
+                    except ValueError:
+                        pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
 
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
-
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
-            return gpus
+                gpus = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                if gpus:
+                    return sorted(gpus, key = lambda item: item[0])
+        except FileNotFoundError:
+            pass  # nvidia-smi not on PATH — fall through to generic path
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"nvidia-smi free-memory query failed: {e}")
+
+        # Generic path: AMD ROCm, Intel XPU, or any host where nvidia-smi is
+        # absent / returned empty. Uses Studio's backend-aware telemetry
+        # layer so XPU hosts pick up free memory via torch.xpu /
+        # mem_get_info (populated by utils/hardware/hardware.py), and
+        # ROCm hosts pick up AMD smi data.
+        try:
+            from utils.hardware import get_visible_gpu_utilization
+
+            utilization = get_visible_gpu_utilization()
+            gpus: list[tuple[int, int]] = []
+            for device in utilization.get("devices", []) or []:
+                index = device.get("index")
+                total_gb = device.get("vram_total_gb") or device.get("total_gb")
+                used_gb = device.get("vram_used_gb") or device.get("used_gb")
+                if index is None or total_gb is None or used_gb is None:
+                    # Missing telemetry for this device — skip rather than
+                    # invent a free-memory number that drives placement.
+                    continue
+                free_mib = max(int((float(total_gb) - float(used_gb)) * 1024), 0)
+                gpus.append((int(index), free_mib))
+            return sorted(gpus, key = lambda item: item[0])
+        except Exception as e:
+            logger.debug(f"Generic GPU free-memory query failed: {e}")
             return []
 
     @staticmethod
@@ -1525,7 +1555,12 @@ class LlamaCppBackend:
                 mask = ",".join(str(i) for i in gpu_indices)
                 if get_device() == DeviceType.XPU:
                     env["ZE_AFFINITY_MASK"] = mask
-                    env.pop("CUDA_VISIBLE_DEVICES", None)
+                    # Deliberately preserve any inherited CUDA_VISIBLE_DEVICES
+                    # (may be "" on hybrid NVIDIA+Intel hosts to force the
+                    # child onto Intel/SYCL). Popping it here would let a
+                    # SYCL+CUDA llama.cpp build re-discover NVIDIA devices,
+                    # contradicting the design note in apply_gpu_ids() in
+                    # utils/hardware/hardware.py.
                 else:
                     env["CUDA_VISIBLE_DEVICES"] = mask
 

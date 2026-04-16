@@ -102,10 +102,13 @@ def detect_hardware() -> DeviceType:
     Safe to call multiple times (idempotent).
 
     Detection order:
-      1. CUDA  (NVIDIA GPU, requires torch)
-      2. XPU   (Intel GPU, requires torch with XPU support)
-      3. MLX   (Apple Silicon via MLX framework)
-      4. CPU   (fallback)
+      1. XPU-preferred: if ``ZE_AFFINITY_MASK`` is set (and not empty), honor
+         the caller's explicit Intel-GPU intent even on hybrid NVIDIA+Intel
+         hosts where CUDA would otherwise win.
+      2. CUDA  (NVIDIA GPU, requires torch)
+      3. XPU   (Intel GPU, requires torch with XPU support)
+      4. MLX   (Apple Silicon via MLX framework)
+      5. CPU   (fallback)
     """
     global DEVICE, CHAT_ONLY, IS_ROCM
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU sets it to False
@@ -114,6 +117,24 @@ def detect_hardware() -> DeviceType:
     # --- CUDA / ROCm / XPU: try PyTorch ---
     if _has_torch():
         import torch
+
+        # --- Explicit-XPU hint ---
+        # If the caller set ZE_AFFINITY_MASK to a non-empty value, they have
+        # signalled intent to run on Intel GPU. On a hybrid NVIDIA+Intel host
+        # this overrides the default "CUDA wins" order; without this hint we
+        # would silently pick NVIDIA even though the user pinned Intel via
+        # the Level Zero env var. ZE_AFFINITY_MASK="" means "no XPUs visible"
+        # -- fall through to CUDA / CPU instead.
+        if os.environ.get("ZE_AFFINITY_MASK"):
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                DEVICE = DeviceType.XPU
+                CHAT_ONLY = False
+                device_name = torch.xpu.get_device_name(0)
+                print(
+                    f"Hardware detected: XPU — {device_name} "
+                    f"(ZE_AFFINITY_MASK hint honoured)"
+                )
+                return DEVICE
 
         # --- CUDA: NVIDIA GPU ---
         if torch.cuda.is_available():
@@ -417,6 +438,7 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
     if mod is None:
         return []
 
+    device = get_device()
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
@@ -428,6 +450,16 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             if hasattr(mod, "mem_get_info"):
                 free_bytes, total_bytes = mod.mem_get_info(ordinal)
                 used_bytes = total_bytes - free_bytes
+            elif device == DeviceType.XPU:
+                # On XPU without mem_get_info, memory_allocated() only
+                # reports this process's usage -- a value near zero on a
+                # cold worker is uninformative and actively misleading for
+                # auto-placement on multi-tenant Intel hosts. Prefer to
+                # surface "unknown" (used_bytes = None) so the selector
+                # falls back to its no-telemetry heuristic instead of
+                # picking a card that another process may already have
+                # saturated.
+                used_bytes = None
             else:
                 used_bytes = mod.memory_allocated(ordinal)
             devices.append(
@@ -436,7 +468,10 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                     "visible_ordinal": ordinal,
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
-                    "used_gb": round(used_bytes / (1024**3), 2),
+                    "used_gb": (
+                        round(used_bytes / (1024**3), 2)
+                        if used_bytes is not None else None
+                    ),
                 }
             )
         except Exception as e:
@@ -447,6 +482,20 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
 # ========== Live GPU Utilization ==========
 
 
+def _xpu_hierarchy_is_composite() -> bool:
+    """Return True iff Level Zero is running in COMPOSITE device hierarchy.
+
+    In COMPOSITE mode, numeric ``ZE_AFFINITY_MASK`` entries address root
+    GPU IDs with subdevice syntax ``N.M`` for tiles. In FLAT mode (the
+    oneAPI default since the 2024 runtime), numeric entries address tile /
+    device-handle ordinals, so mapping them back to root GPU IDs is not
+    safe. Treat an unset ``ZE_FLAT_DEVICE_HIERARCHY`` as FLAT, which is the
+    documented default. Only COMPOSITE gives stable root-ID semantics.
+    """
+    hierarchy = (os.environ.get("ZE_FLAT_DEVICE_HIERARCHY") or "FLAT").strip().upper()
+    return hierarchy == "COMPOSITE"
+
+
 def _parse_ze_mask_roots(mask: str) -> list[int]:
     """Parse a ``ZE_AFFINITY_MASK`` value into an ordered list of root device IDs.
 
@@ -455,6 +504,10 @@ def _parse_ze_mask_roots(mask: str) -> list[int]:
     ``"0.0,0.1"`` yields ``[0, 0]`` (two logical devices, both under root
     GPU 0) and ``"2.0,0.1,0.2"`` yields ``[2, 0, 0]``. Returns an empty
     list if the mask is empty or contains no parseable digits.
+
+    Only meaningful in COMPOSITE device hierarchy. Callers that need a
+    stable root-ID mapping must gate this call on
+    ``_xpu_hierarchy_is_composite()``.
     """
     roots: list[int] = []
     if not mask:
@@ -472,7 +525,7 @@ def _parse_ze_mask_roots(mask: str) -> list[int]:
     return roots
 
 
-def _resolve_xpu_smi_device_id() -> int:
+def _resolve_xpu_smi_device_id() -> Optional[int]:
     """Resolve the physical root device ID used by ``xpu-smi -d``.
 
     ``torch.xpu.current_device()`` returns the logical ordinal after
@@ -480,7 +533,20 @@ def _resolve_xpu_smi_device_id() -> int:
     root devices. Translate the ordinal through the mask roots so telemetry
     targets the GPU the process is actually running on. Subdevice syntax
     such as ``0.0,0.1`` collapses to a single root device.
+
+    Returns ``None`` when we cannot produce a safe root-ID mapping --
+    either because ``ZE_FLAT_DEVICE_HIERARCHY=FLAT`` (the oneAPI default,
+    in which case numeric mask entries address tile handles, not root GPU
+    IDs) or because torch.xpu is unavailable. Callers should treat ``None``
+    as "skip xpu-smi -d and fall back to torch.xpu memory telemetry".
     """
+    # In FLAT mode, numeric ZE_AFFINITY_MASK entries are tile / device
+    # handles, not root GPU IDs. Querying xpu-smi -d <tile_handle> would
+    # target the wrong physical device (or raise), so signal "no safe
+    # mapping" by returning None.
+    if not _xpu_hierarchy_is_composite():
+        return None
+
     ordinal = 0
     xpu_ok = False
     try:
@@ -553,8 +619,11 @@ def _get_xpu_utilization() -> Dict[str, Any]:
         # _resolve_xpu_smi_binary() so repeated telemetry polls do not
         # re-scan PATH on every tick.
         xpu_smi = _resolve_xpu_smi_binary()
-        if xpu_smi is None:
-            raise FileNotFoundError("xpu-smi not found")
+        if xpu_smi is None or dev_idx is None:
+            # dev_idx is None in FLAT hierarchy where numeric affinity
+            # entries do not map to root GPU IDs -- skip xpu-smi -d and
+            # fall through to the torch.xpu VRAM-only telemetry below.
+            raise FileNotFoundError("xpu-smi unavailable for current hierarchy")
 
         # xpu-smi metric IDs (per Intel xpu-smi docs):
         #   0 = GPU Utilization (%)
@@ -732,6 +801,16 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             for td in torch_devices:
                 total = td["total_gb"]
                 used = td["used_gb"]
+                # used=None is a deliberate "telemetry unavailable" signal
+                # from _torch_get_per_device_info (e.g. XPU without
+                # mem_get_info). Propagate it through as None so downstream
+                # consumers fall back to their no-telemetry path instead of
+                # dividing by None.
+                vram_pct = (
+                    round((used / total) * 100, 1)
+                    if used is not None and total and total > 0
+                    else None
+                )
                 devices.append(
                     {
                         "index": td["index"],
@@ -741,9 +820,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                         "temperature_c": None,
                         "vram_used_gb": used,
                         "vram_total_gb": total,
-                        "vram_utilization_pct": round((used / total) * 100, 1)
-                        if total > 0
-                        else None,
+                        "vram_utilization_pct": vram_pct,
                         "power_draw_w": None,
                         "power_limit_w": None,
                         "power_utilization_pct": None,
@@ -810,10 +887,20 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     if get_device() == DeviceType.XPU:
         xpu_mask_raw = os.environ.get("ZE_AFFINITY_MASK")
         if xpu_mask_raw is None:
+            # No mask set. In COMPOSITE hierarchy torch.xpu ordinals map
+            # 1-to-1 to root GPU IDs, so explicit selection is safe. In
+            # FLAT hierarchy (oneAPI default) the ordinals are tile /
+            # device handles, so we cannot expose stable root IDs.
+            if _xpu_hierarchy_is_composite():
+                return {
+                    "raw": None,
+                    "numeric_ids": list(range(get_physical_gpu_count())),
+                    "supports_explicit_gpu_ids": True,
+                }
             return {
                 "raw": None,
-                "numeric_ids": list(range(get_physical_gpu_count())),
-                "supports_explicit_gpu_ids": True,
+                "numeric_ids": None,
+                "supports_explicit_gpu_ids": False,
             }
 
         xpu_mask = xpu_mask_raw.strip()
@@ -822,6 +909,18 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "raw": xpu_mask,
                 "numeric_ids": [],
                 "supports_explicit_gpu_ids": True,
+            }
+
+        # In FLAT hierarchy, ZE_AFFINITY_MASK numeric entries are tile /
+        # device-handle ordinals, not root GPU IDs. Treating them as
+        # physical IDs would target the wrong card; surface as unsupported
+        # so explicit gpu_ids are rejected and get_device_map() falls back
+        # to the multi-visible heuristic.
+        if not _xpu_hierarchy_is_composite():
+            return {
+                "raw": xpu_mask,
+                "numeric_ids": None,
+                "supports_explicit_gpu_ids": False,
             }
 
         # Subdevice syntax (e.g. "0.0,0.1") expands a single root GPU into
