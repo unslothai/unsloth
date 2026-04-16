@@ -648,7 +648,9 @@ def _find_end_position(template, endfor = None, endif = None):
     with start/end/text/dash_left/dash_right. Tokens inside Jinja comments
     are ignored. `endfor`/`endif` kwargs kept for back-compat, ignored."""
     # Space-pad comments so positions still map 1:1 to the original.
-    scrubbed = _RE_JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), template)
+    scrubbed = _RE_JINJA_COMMENT.sub(
+        lambda m: " " * len(m.group(0)), template
+    )
     endfor_matches = list(_RE_ENDFOR.finditer(scrubbed))
     endif_matches = list(_RE_ENDIF.finditer(scrubbed))
     last_endfor = endfor_matches[-1] if endfor_matches else None
@@ -706,10 +708,7 @@ def _if_body_emits_content(if_node):
     for node in if_node.body:
         if isinstance(node, jinja2.nodes.Output):
             return True
-        if any(
-            isinstance(d, jinja2.nodes.Output)
-            for d in node.find_all(jinja2.nodes.Output)
-        ):
+        if any(isinstance(d, jinja2.nodes.Output) for d in node.find_all(jinja2.nodes.Output)):
             return True
     return False
 
@@ -729,6 +728,10 @@ def _has_add_generation_prompt_block(chat_template):
         return "if add_generation_prompt" in chat_template and "%}" in chat_template
     for if_node in ast.find_all(jinja2.nodes.If):
         test = if_node.test
+        # Reject negated gates: `{% if not add_generation_prompt %}` fires
+        # when agp=False, so it's not a generation block even if it emits.
+        if isinstance(test, jinja2.nodes.Not):
+            continue
         # find_all skips the test root, so check bare Name tests explicitly.
         references_agp = False
         if isinstance(test, jinja2.nodes.Name) and test.name == "add_generation_prompt":
@@ -796,10 +799,11 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         if _RE_JINJA_COMMENT.sub("", after).strip() == "":
             probe_template = chat_template[: end["end"]]
 
-    # Isolated env (no tokenizer globals/filters): a template that needs
-    # them will raise -> return None, which is the correct escalation.
+    # Sandboxed env: the probe renders at model-load time (before the user
+    # calls apply_chat_template), so a malicious template would execute
+    # eagerly. SandboxedEnvironment blocks attribute-chain exploits.
     try:
-        env = jinja2.Environment(
+        env = jinja2.sandbox.SandboxedEnvironment(
             autoescape = False,
             keep_trailing_newline = True,
         )
@@ -811,7 +815,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         return None
 
     # Best-effort: alternation-enforcing templates (e.g. Gemma's
-    # raise_exception) will fail on [user, user]; that's a positive signal
+    # raise_exception) fail on [user, user]; that's a positive signal
     # for Guard C, not a probe failure.
     out_user_c = None
     try:
@@ -828,9 +832,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     if not tail_a or not tail_b:
         return None
 
-    import os as _os
-
-    prefix = _os.path.commonprefix([tail_a, tail_b])
+    prefix = os.path.commonprefix([tail_a, tail_b])
 
     # Guard B: divergence is exactly at the content-insertion site.
     if not (
@@ -910,6 +912,7 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
             assistant_prefix.replace("\\", "\\\\")
             .replace('"', '\\"')
             .replace("\n", "\\n")
+            .replace("\r", "\\r")
         )
         generation_block = (
             open_tag("if add_generation_prompt")
@@ -1019,9 +1022,15 @@ def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     candidate = _fix_chat_template(chat_template, is_sharegpt = is_sharegpt)
     if not _has_add_generation_prompt_block(candidate):
         return None
-    if not _validate_patched_template(tokenizer, candidate, is_sharegpt):
-        return None
-    return candidate
+    # Validate with the caller's is_sharegpt first. If that fails, the
+    # dual-probe in _fix_chat_template may have fallen back to the other
+    # schema internally -- try validating with the opposite schema before
+    # giving up.
+    if _validate_patched_template(tokenizer, candidate, is_sharegpt):
+        return candidate
+    if _validate_patched_template(tokenizer, candidate, not is_sharegpt):
+        return candidate
+    return None
 
 
 def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
@@ -1115,7 +1124,6 @@ class _VariantTokenizerProxy:
     def __init__(self, base_tokenizer, variant_template, variant_label = ""):
         self._base = base_tokenizer
         self._template = variant_template
-        self._label = variant_label
         base_name = getattr(base_tokenizer, "name_or_path", "unknown")
         self.name_or_path = (
             f"{base_name} ({variant_label})" if variant_label else base_name
@@ -1142,10 +1150,8 @@ class _VariantTokenizerProxy:
                 return self._base.apply_chat_template(*args, **kwargs)
             # Read-only base: fall back to isolated Jinja.
             import jinja2
-
             env = jinja2.Environment(
-                autoescape = False,
-                keep_trailing_newline = True,
+                autoescape = False, keep_trailing_newline = True,
             )
             messages = args[0] if args else kwargs.get("messages", [])
             add_generation_prompt = kwargs.get("add_generation_prompt", False)
@@ -1175,7 +1181,7 @@ def fix_chat_template(tokenizer):
                 fixed[key] = tmpl
                 continue
             proxy = _VariantTokenizerProxy(
-                tokenizer, tmpl, variant_label = f"variant='{key}'"
+                tokenizer, tmpl, variant_label = f"variant={key!r}"
             )
             fixed[key] = _fix_chat_template_for_tokenizer(proxy, tmpl)
         return fixed
@@ -1191,7 +1197,7 @@ def fix_chat_template(tokenizer):
             if not isinstance(tmpl, str):
                 fixed.append(item)
                 continue
-            label = "variant='{key}'".format(key = item.get("name", "?"))
+            label = f"variant={item.get('name', '?')!r}"
             proxy = _VariantTokenizerProxy(tokenizer, tmpl, variant_label = label)
             new_tmpl = _fix_chat_template_for_tokenizer(proxy, tmpl)
             if new_tmpl is tmpl or new_tmpl == tmpl:
