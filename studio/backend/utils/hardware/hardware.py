@@ -816,13 +816,28 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         parent_ids = get_parent_visible_gpu_ids()
         # When parent_visible_ids is empty (UUID/MIG mask or no CVD set),
         # enumerate torch-visible ordinals so the UI still shows devices.
-        if parent_ids:
+        # Only advertise index_kind="physical" when the parent-visible spec
+        # actually supports explicit physical IDs. Otherwise (FLAT numeric
+        # masks on XPU, where numeric_ids is populated for display but
+        # supports_explicit_gpu_ids=False because the ordinals are tile
+        # handles), downstream callers like llama.cpp must not round-trip
+        # these IDs back into ZE_AFFINITY_MASK as if they were root GPUs.
+        if parent_ids and parent_visible_spec["supports_explicit_gpu_ids"]:
             torch_indices = parent_ids
             index_kind = "physical"
         else:
-            visible_count = _torch_get_physical_gpu_count() or 0
+            # Fall back to 0-based torch ordinals. When numeric_ids was
+            # populated but not safe as physical IDs, we still want the UI
+            # to see the expected number of devices, so size the enumeration
+            # by whatever the backend currently exposes.
+            visible_count = (
+                len(parent_ids) if parent_ids else (_torch_get_physical_gpu_count() or 0)
+            )
             torch_indices = list(range(visible_count))
             index_kind = "relative"
+            # Clear parent_ids in the payload so consumers don't re-interpret
+            # unsafe mask tokens as authoritative physical GPU IDs.
+            parent_ids = []
         torch_devices = _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
@@ -1701,14 +1716,26 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
 
         # Torch fallback (AMD ROCm, Intel XPU, nvidia-smi missing/failed)
         # When parent_visible_ids is empty (UUID/MIG mask), enumerate by
-        # torch ordinal so the UI still shows devices.
-        if parent_visible_ids:
+        # torch ordinal so the UI still shows devices. Only label as
+        # "physical" when parent_visible_spec actually supports explicit
+        # physical IDs -- FLAT numeric XPU masks populate numeric_ids but
+        # have supports_explicit_gpu_ids=False, and those ordinals are tile
+        # handles that llama.cpp and the UI must not treat as stable
+        # root-GPU IDs.
+        if parent_visible_ids and parent_visible_spec["supports_explicit_gpu_ids"]:
             torch_indices = parent_visible_ids
             index_kind = "physical"
         else:
-            visible_count = _torch_get_physical_gpu_count() or 0
+            visible_count = (
+                len(parent_visible_ids)
+                if parent_visible_ids
+                else (_torch_get_physical_gpu_count() or 0)
+            )
             torch_indices = list(range(visible_count))
             index_kind = "relative"
+            # Clear parent_visible_ids in the payload so API consumers
+            # don't round-trip unsafe mask tokens as physical GPU IDs.
+            parent_visible_ids = []
         torch_devices = _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = [
@@ -1937,10 +1964,16 @@ def get_device_map(
     if device in (DeviceType.CUDA, DeviceType.XPU):
         multi_gpu = gpu_ids is not None and len(gpu_ids) > 1
 
-        if not multi_gpu:
-            # UUID/MIG/wildcard masks cannot be split into numeric IDs, so if
+        if not multi_gpu and device == DeviceType.CUDA:
+            # CUDA UUID/MIG masks cannot be split into numeric IDs, so if
             # multiple GPUs are visible we assume multi-GPU sharding is
-            # intended.
+            # intended. This heuristic is CUDA-only: on XPU,
+            # numeric_ids=None almost always means FLAT tile/device-handle
+            # ordinals, wildcards, or subdevice syntax -- none of which are
+            # safe to reinterpret as distinct physical GPUs for automatic
+            # balanced sharding. XPU callers must pass explicit gpu_ids
+            # (via COMPOSITE or a numeric mask + prepare_gpu_selection) to
+            # opt into balanced.
             parent_visible_spec = _get_parent_visible_gpu_spec()
             if (
                 parent_visible_spec["numeric_ids"] is None
