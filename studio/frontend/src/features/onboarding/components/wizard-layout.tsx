@@ -23,6 +23,7 @@ function sanitizeRedirectTarget(value: string | undefined): string {
   if (!value) return "/chat";
   if (!value.startsWith("/")) return "/chat";
   if (value.startsWith("//")) return "/chat";
+  if (value.includes("\\")) return "/chat";
   return value;
 }
 

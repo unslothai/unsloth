@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useSettingsDialogStore } from "@/features/settings";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -78,6 +79,7 @@ function resetAllPrefs() {
 
 export function GeneralTab() {
   const navigate = useNavigate();
+  const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -178,6 +180,7 @@ export function GeneralTab() {
             size="sm"
             onClick={() => {
               resetOnboardingDone();
+              closeDialog();
               navigate({ to: "/onboarding", search: { redirectTo } });
             }}
           >
