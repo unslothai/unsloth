@@ -124,40 +124,49 @@ def detect_hardware() -> DeviceType:
         import torch
 
         # --- Explicit-XPU hint ---
-        # ``ZE_AFFINITY_MASK`` alone is not enough to flip a hybrid
-        # NVIDIA+Intel host onto XPU -- unrelated tooling (for example
-        # Intel's IPEX samples) can leak ``ZE_AFFINITY_MASK=0`` into the
-        # parent shell. Require an unambiguous signal:
-        #   (a) the caller hid CUDA explicitly via
-        #       ``CUDA_VISIBLE_DEVICES="" / "-1"``, or
-        #   (b) the caller set ``UNSLOTH_FORCE_XPU=1``, or
-        #   (c) CUDA is simply not available on this host.
-        # Combined with a non-empty ``ZE_AFFINITY_MASK`` plus torch.xpu
-        # actually reporting a device, the intent to run on Intel is
-        # unambiguous and we override the default "CUDA wins" order.
+        # Two standalone triggers flip a hybrid NVIDIA+Intel host onto XPU:
+        #   (a) ``UNSLOTH_FORCE_XPU=1`` -- an unconditional opt-in. Works
+        #       even when ``ZE_AFFINITY_MASK`` is unset so callers can
+        #       force Intel without also picking a mask up front.
+        #   (b) ``ZE_AFFINITY_MASK=...`` + (CUDA explicitly hidden via
+        #       ``CUDA_VISIBLE_DEVICES="" / "-1"``) -- a mask alone is
+        #       NOT enough because unrelated tooling (for example Intel's
+        #       IPEX samples) can leak ``ZE_AFFINITY_MASK=0`` into the
+        #       parent shell. Require CUDA to be actively hidden so we
+        #       don't silently reclassify a CUDA-first deployment.
+        # Either way, torch.xpu must actually report a device.
         ze_mask = os.environ.get("ZE_AFFINITY_MASK")
-        if ze_mask:
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
-            force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
+        force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        try:
+            cuda_unavailable = not torch.cuda.is_available()
+        except Exception:
+            cuda_unavailable = True
+
+        prefer_xpu = (
+            force_xpu
+            or (bool(ze_mask) and (cuda_hidden or cuda_unavailable))
+        )
+        if prefer_xpu:
             try:
-                cuda_unavailable = not torch.cuda.is_available()
+                xpu_ok = hasattr(torch, "xpu") and torch.xpu.is_available()
             except Exception:
-                cuda_unavailable = True
-            if cuda_hidden or force_xpu or cuda_unavailable:
-                try:
-                    xpu_ok = hasattr(torch, "xpu") and torch.xpu.is_available()
-                except Exception:
-                    xpu_ok = False
-                if xpu_ok:
-                    DEVICE = DeviceType.XPU
-                    CHAT_ONLY = False
-                    device_name = torch.xpu.get_device_name(0)
-                    print(
-                        f"Hardware detected: XPU -- {device_name} "
-                        f"(ZE_AFFINITY_MASK hint honoured)"
-                    )
-                    return DEVICE
+                xpu_ok = False
+            if xpu_ok:
+                DEVICE = DeviceType.XPU
+                CHAT_ONLY = False
+                device_name = torch.xpu.get_device_name(0)
+                if force_xpu and not ze_mask:
+                    reason = "UNSLOTH_FORCE_XPU=1"
+                elif force_xpu:
+                    reason = "UNSLOTH_FORCE_XPU=1 + ZE_AFFINITY_MASK"
+                else:
+                    reason = "ZE_AFFINITY_MASK hint honoured"
+                print(
+                    f"Hardware detected: XPU -- {device_name} ({reason})"
+                )
+                return DEVICE
 
         # --- CUDA: NVIDIA GPU ---
         if torch.cuda.is_available():
@@ -913,18 +922,19 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         composite = _xpu_hierarchy_is_composite()
 
         if xpu_mask_raw is None:
-            # No mask set. In both COMPOSITE and FLAT hierarchies,
-            # torch.xpu.device_count() enumerates the devices the process
-            # can see: in COMPOSITE those are root GPUs, in FLAT those are
-            # flat (tile) ordinals. Either way, the ordinal space is
-            # stable and safe to expose as gpu_ids for the SAME process
-            # -- torch.xpu and ZE_AFFINITY_MASK agree on that indexing.
-            # (xpu-smi -d <root> still only works in COMPOSITE; see
-            # _resolve_xpu_smi_device_id which gates on the hierarchy.)
+            # No mask set. In COMPOSITE, torch.xpu.device_count() enumerates
+            # root GPUs, which is what the API contract ("Physical GPU
+            # indices") promises. In FLAT (the oneAPI default) the same
+            # count enumerates tile / device-handle ordinals that Intel's
+            # own docs explicitly call out as NOT stable physical GPU IDs.
+            # We expose the enumeration either way so auto-selection and
+            # display still work, but reject explicit gpu_ids in FLAT to
+            # keep the API contract honest. Users who need FLAT-based
+            # explicit selection can set ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE.
             return {
                 "raw": None,
                 "numeric_ids": list(range(get_physical_gpu_count())),
-                "supports_explicit_gpu_ids": True,
+                "supports_explicit_gpu_ids": composite,
             }
 
         xpu_mask = xpu_mask_raw.strip()
@@ -949,31 +959,29 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "supports_explicit_gpu_ids": False,
             }
 
-        # Pure numeric mask. In both hierarchies, the numeric ordinals are
-        # stable identifiers for this process:
-        #   - COMPOSITE: they are root GPU IDs (used directly by xpu-smi).
-        #   - FLAT: they are flat / tile ordinals (xpu-smi -d cannot use
-        #     them, but torch.xpu and ZE_AFFINITY_MASK in the child
-        #     process both honour them 1-to-1).
-        # Either way, callers can safely pass them back through
-        # apply_gpu_ids() and the child sees exactly the same visible
-        # device set.
+        # In FLAT, numeric mask entries are tile / device-handle ordinals
+        # per Intel's "flattening-gpu-tile-hierarchy" docs. They are stable
+        # for the process (torch.xpu honours them 1-to-1) but they are NOT
+        # the "physical GPU indices" promised by models/inference.py and
+        # models/training.py. Expose them in numeric_ids so telemetry and
+        # display still enumerate, but reject them as explicit gpu_ids so
+        # API callers don't accidentally pin work to a tile thinking they
+        # picked a whole GPU.
         if not composite:
             tokens = [token.strip() for token in xpu_mask.split(",") if token.strip()]
             if tokens and all(token.isdecimal() for token in tokens):
                 return {
                     "raw": xpu_mask,
                     "numeric_ids": [int(token) for token in tokens],
-                    "supports_explicit_gpu_ids": True,
+                    "supports_explicit_gpu_ids": False,
                 }
-            # Non-numeric / wildcard mask in FLAT: can't safely enumerate.
             return {
                 "raw": xpu_mask,
                 "numeric_ids": None,
                 "supports_explicit_gpu_ids": False,
             }
 
-        # COMPOSITE + pure numeric (subdevice and FLAT cases returned above).
+        # COMPOSITE + pure numeric (subdevice returned above).
         # Parse the mask into root GPU IDs; _parse_ze_mask_roots silently
         # drops any non-decimal tokens so "*" or "GPU-uuid" yield [].
         roots_with_dupes = _parse_ze_mask_roots(xpu_mask)
@@ -1799,12 +1807,16 @@ def get_visible_gpu_count() -> int:
                 # so "0.0,0.1" is 1 root device, not 2. Without torch we
                 # cannot know which hierarchy mode is active, so fall back
                 # to root-device counting (the more conservative choice).
-                roots = _parse_ze_mask_roots(xpu_visible)
-                # Non-digit wildcards (e.g. "*") yield an empty roots list;
-                # treat those as "all physical XPUs visible".
-                _visible_gpu_count = (
-                    len(set(roots)) if roots else get_physical_gpu_count()
-                )
+                if xpu_visible == "*":
+                    # Documented wildcard: all physical XPUs visible.
+                    _visible_gpu_count = get_physical_gpu_count()
+                else:
+                    roots = _parse_ze_mask_roots(xpu_visible)
+                    # Non-parseable masks (",,,", "GPU-abc", etc.) yield an
+                    # empty roots list and are treated as 0 visible devices,
+                    # not "all visible" -- we have no evidence the user
+                    # intended to expose the whole fleet.
+                    _visible_gpu_count = len(set(roots))
             else:
                 _visible_gpu_count = get_physical_gpu_count()
         return _visible_gpu_count
