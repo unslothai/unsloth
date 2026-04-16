@@ -763,7 +763,7 @@ async def list_local_models(
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
-                    if ".studio_links" not in m.path
+                    if ".studio_links" not in m.path and "ollama_links" not in m.path
                 ]
                 custom_models = (
                     _generic
