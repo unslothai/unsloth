@@ -512,7 +512,7 @@ def _scan_ollama_dir(
         falls back to a file copy as a last resort.  Uses atomic
         ``os.replace`` to avoid a race window where the path is missing.
         """
-        link_dir.mkdir(parents=True, exist_ok=True)
+        link_dir.mkdir(parents = True, exist_ok = True)
         link_path = link_dir / link_name
         tmp_path = link_dir / f".{link_name}.tmp-{os.getpid()}"
         resolved = target.resolve()
@@ -526,6 +526,7 @@ def _scan_ollama_dir(
                     os.link(str(resolved), str(tmp_path))
                 except OSError:
                     import shutil
+
                     shutil.copy2(str(resolved), str(tmp_path))
             os.replace(str(tmp_path), str(link_path))
             return str(link_path)
@@ -559,7 +560,11 @@ def _scan_ollama_dir(
             # - registry.ollama.ai/library/qwen2.5/0.5b -> "qwen2.5:0.5b"
             # - registry.ollama.ai/mradermacher/llama3/latest -> "mradermacher/llama3:latest"
             # - hf.co/NbAiLab/borealis/q4_K_M -> "hf.co/NbAiLab/borealis:q4_K_M"
-            if host == "registry.ollama.ai" and repo_parts and repo_parts[0] == "library":
+            if (
+                host == "registry.ollama.ai"
+                and repo_parts
+                and repo_parts[0] == "library"
+            ):
                 repo_name = "/".join(repo_parts[1:])
             elif host == "registry.ollama.ai":
                 repo_name = "/".join(repo_parts)
@@ -623,7 +628,9 @@ def _scan_ollama_dir(
                     candidate = blobs_dir / digest.replace(":", "-")
                     if candidate.is_file():
                         link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(model_link_dir, link_name, candidate)
+                        gguf_link_path = _make_link(
+                            model_link_dir, link_name, candidate
+                        )
 
                 # Vision projector layer
                 elif media == "application/vnd.ollama.image.projector":
