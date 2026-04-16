@@ -9,7 +9,9 @@ def _find_vision():
     for p in [
         Path(__file__).resolve().parent / "unsloth" / "models" / "vision.py",
         Path(__file__).resolve().parents[1] / "unsloth" / "models" / "vision.py",
-        Path("/mnt/disks/unslothai/ubuntu/workspace_25/github_review/unsloth-pr-5053-staging-3/unsloth/models/vision.py"),
+        Path(
+            "/mnt/disks/unslothai/ubuntu/workspace_25/github_review/unsloth-pr-5053-staging-3/unsloth/models/vision.py"
+        ),
     ]:
         if p.exists():
             return p
@@ -24,8 +26,17 @@ def _load_fns():
             "_infer_device_map_from_loaded_model",
             "_attach_bnb_multidevice_hooks",
         }:
-            exec(compile(ast.Module(body=[node], type_ignores=[]), str(_find_vision()), "exec"), ns)
-    return ns["_infer_device_map_from_loaded_model"], ns["_attach_bnb_multidevice_hooks"]
+            exec(
+                compile(
+                    ast.Module(body = [node], type_ignores = []),
+                    str(_find_vision()),
+                    "exec",
+                ),
+                ns,
+            )
+    return ns["_infer_device_map_from_loaded_model"], ns[
+        "_attach_bnb_multidevice_hooks"
+    ]
 
 
 class _P:
@@ -34,30 +45,32 @@ class _P:
 
 
 class _FakeMod:
-    def __init__(self, params=None, buffers=None, children=None, hf_device_map=None):
+    def __init__(self, params = None, buffers = None, children = None, hf_device_map = None):
         self._p = list(params or [])
         self._b = list(buffers or [])
         self._c = list(children or [])
         self.hf_device_map = hf_device_map
 
-    def named_parameters(self, recurse=True, remove_duplicate=False):
+    def named_parameters(self, recurse = True, remove_duplicate = False):
         for n, d in self._p:
             yield n, _P(d)
         if recurse:
             for cn, cm in self._c:
-                for pn, pp in cm.named_parameters(recurse=True, remove_duplicate=remove_duplicate):
+                for pn, pp in cm.named_parameters(
+                    recurse = True, remove_duplicate = remove_duplicate
+                ):
                     yield f"{cn}.{pn}", pp
 
-    def parameters(self, recurse=True):
-        for _, p in self.named_parameters(recurse=recurse):
+    def parameters(self, recurse = True):
+        for _, p in self.named_parameters(recurse = recurse):
             yield p
 
-    def named_buffers(self, recurse=True):
+    def named_buffers(self, recurse = True):
         for n, d in self._b:
             yield n, _P(d)
         if recurse:
             for cn, cm in self._c:
-                for bn, bb in cm.named_buffers(recurse=True):
+                for bn, bb in cm.named_buffers(recurse = True):
                     yield f"{cn}.{bn}", bb
 
     def named_children(self):
@@ -68,9 +81,20 @@ def test_attach_load_in_4bit_bool_alone_activates(monkeypatch):
     """Minimal contract: when only load_in_4bit=True is passed, the helper
     activates without requiring model.is_loaded_in_4bit to also be True."""
     import accelerate
+
     called = {"n": 0}
-    monkeypatch.setattr(accelerate, "dispatch_model", lambda *a, **kw: called.__setitem__("n", called["n"] + 1))
+    monkeypatch.setattr(
+        accelerate,
+        "dispatch_model",
+        lambda *a, **kw: called.__setitem__("n", called["n"] + 1),
+    )
     _, attach = _load_fns()
-    m = _FakeMod(params=[("w", "cuda:1")])  # no is_loaded_in_* attrs set
-    attach(m, load_in_4bit=True, load_in_8bit=False, offload_embedding=False, fast_inference=False)
+    m = _FakeMod(params = [("w", "cuda:1")])  # no is_loaded_in_* attrs set
+    attach(
+        m,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        offload_embedding = False,
+        fast_inference = False,
+    )
     assert called["n"] == 1

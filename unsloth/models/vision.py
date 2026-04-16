@@ -115,7 +115,9 @@ def _infer_device_map_from_loaded_model(model):
                     device_map[prefix] = next(iter(buf_devs))
                 else:
                     for child_name, child in module.named_children():
-                        child_prefix = f"{prefix}.{child_name}" if prefix else child_name
+                        child_prefix = (
+                            f"{prefix}.{child_name}" if prefix else child_name
+                        )
                         _assign(child, child_prefix)
             return
         if len(subtree_devs) == 1:
@@ -125,8 +127,10 @@ def _infer_device_map_from_loaded_model(model):
             child_prefix = f"{prefix}.{child_name}" if prefix else child_name
             _assign(child, child_prefix)
         local_devs = {
-            p.device for _, p in module.named_parameters(
-                recurse = False, remove_duplicate = False,
+            p.device
+            for _, p in module.named_parameters(
+                recurse = False,
+                remove_duplicate = False,
             )
         }
         if local_devs and len(local_devs) == 1:

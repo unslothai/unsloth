@@ -6,7 +6,9 @@ def _find_vision():
     for p in [
         Path(__file__).resolve().parent / "unsloth" / "models" / "vision.py",
         Path(__file__).resolve().parents[1] / "unsloth" / "models" / "vision.py",
-        Path("/mnt/disks/unslothai/ubuntu/workspace_25/github_review/unsloth-pr-5053-staging-3/unsloth/models/vision.py"),
+        Path(
+            "/mnt/disks/unslothai/ubuntu/workspace_25/github_review/unsloth-pr-5053-staging-3/unsloth/models/vision.py"
+        ),
     ]:
         if p.exists():
             return p
@@ -29,8 +31,11 @@ def test_vision_fastbasemodel_from_pretrained_calls_helper():
             for node in ast.walk(fn):
                 if (
                     isinstance(node, ast.Call)
-                    and getattr(node.func, "id", None) == "_attach_bnb_multidevice_hooks"
+                    and getattr(node.func, "id", None)
+                    == "_attach_bnb_multidevice_hooks"
                 ):
                     found = True
                     break
-    assert found, "FastBaseModel.from_pretrained must call _attach_bnb_multidevice_hooks"
+    assert (
+        found
+    ), "FastBaseModel.from_pretrained must call _attach_bnb_multidevice_hooks"

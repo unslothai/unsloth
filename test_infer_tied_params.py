@@ -9,7 +9,9 @@ def _find_vision():
     for p in [
         Path(__file__).resolve().parent / "unsloth" / "models" / "vision.py",
         Path(__file__).resolve().parents[1] / "unsloth" / "models" / "vision.py",
-        Path("/mnt/disks/unslothai/ubuntu/workspace_25/github_review/unsloth-pr-5053-staging-3/unsloth/models/vision.py"),
+        Path(
+            "/mnt/disks/unslothai/ubuntu/workspace_25/github_review/unsloth-pr-5053-staging-3/unsloth/models/vision.py"
+        ),
     ]:
         if p.exists():
             return p
@@ -24,8 +26,17 @@ def _load_fns():
             "_infer_device_map_from_loaded_model",
             "_attach_bnb_multidevice_hooks",
         }:
-            exec(compile(ast.Module(body=[node], type_ignores=[]), str(_find_vision()), "exec"), ns)
-    return ns["_infer_device_map_from_loaded_model"], ns["_attach_bnb_multidevice_hooks"]
+            exec(
+                compile(
+                    ast.Module(body = [node], type_ignores = []),
+                    str(_find_vision()),
+                    "exec",
+                ),
+                ns,
+            )
+    return ns["_infer_device_map_from_loaded_model"], ns[
+        "_attach_bnb_multidevice_hooks"
+    ]
 
 
 class _P:
@@ -37,19 +48,20 @@ class _TiedMod:
     """Emits the same parameter object under two different names to simulate
     tied weights (lm_head.weight == embed.weight). With remove_duplicate=False
     we yield both names; devices unioned must still be a single device."""
+
     def __init__(self, dev):
         self._shared = _P(dev)
         self.hf_device_map = None
 
-    def named_parameters(self, recurse=True, remove_duplicate=False):
+    def named_parameters(self, recurse = True, remove_duplicate = False):
         yield "embed.weight", self._shared
         if not remove_duplicate:
             yield "lm_head.weight", self._shared
 
-    def parameters(self, recurse=True):
+    def parameters(self, recurse = True):
         yield self._shared
 
-    def named_buffers(self, recurse=True):
+    def named_buffers(self, recurse = True):
         return iter([])
 
     def named_children(self):
