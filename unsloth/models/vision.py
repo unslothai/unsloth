@@ -114,7 +114,7 @@ def _infer_device_map_from_loaded_model(model):
     device_map = {}
 
     def _assign(module, prefix):
-        params = list(module.named_parameters(remove_duplicate=False))
+        params = list(module.named_parameters(remove_duplicate = False))
         if not params:
             bufs = list(module.named_buffers())
             if bufs:
@@ -127,12 +127,11 @@ def _infer_device_map_from_loaded_model(model):
             for child_name, child in module.named_children():
                 child_prefix = f"{prefix}.{child_name}" if prefix else child_name
                 _assign(child, child_prefix)
-            for pname, param in module.named_parameters(remove_duplicate=False):
+            for pname, param in module.named_parameters(remove_duplicate = False):
                 if "." not in pname:
                     full = f"{prefix}.{pname}" if prefix else pname
                     if not any(
-                        full == k or full.startswith(k + ".")
-                        for k in device_map
+                        full == k or full.startswith(k + ".") for k in device_map
                     ):
                         device_map[full] = param.device
 
@@ -213,7 +212,8 @@ def _attach_bnb_multidevice_hooks(
 
         # Determine the "main" device (first CUDA device encountered).
         cuda_device_vals = [
-            v for v in inferred_map.values()
+            v
+            for v in inferred_map.values()
             if isinstance(v, torch.device) and v.type == "cuda"
         ]
         main_device = cuda_device_vals[0] if cuda_device_vals else next(iter(cuda_devs))
@@ -228,20 +228,20 @@ def _attach_bnb_multidevice_hooks(
             offload_dict = {k: False for k in execution_device}
             attach_align_device_hook_on_blocks(
                 model,
-                execution_device=execution_device,
-                offload=offload_dict,
-                weights_map=None,
-                offload_buffers=False,
+                execution_device = execution_device,
+                offload = offload_dict,
+                weights_map = None,
+                offload_buffers = False,
             )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         else:
             # Single non-default device: one root hook sends all inputs to it.
             attach_align_device_hook_on_blocks(
                 model,
-                execution_device=main_device,
-                offload=False,
-                weights_map=None,
-                offload_buffers=False,
+                execution_device = main_device,
+                offload = False,
+                weights_map = None,
+                offload_buffers = False,
             )
             desc = f"root hook -> {main_device} (single non-default device)"
 
@@ -261,13 +261,14 @@ def _attach_bnb_multidevice_hooks(
         )
     except Exception as exc:
         import warnings
+
         warnings.warn(
             f"Unsloth: Could not attach multi-device dispatch hooks automatically "
             f"({type(exc).__name__}: {exc}). "
             "Cross-device inference may fail. Consider using a single GPU or "
             "calling accelerate.dispatch_model() manually.",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel = 2,
         )
 
 
@@ -1016,10 +1017,10 @@ class FastBaseModel:
             # "Expected all tensors to be on the same device".
             _attach_bnb_multidevice_hooks(
                 model,
-                load_in_4bit      = load_in_4bit,
-                load_in_8bit      = load_in_8bit,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
                 offload_embedding = offload_embedding,
-                fast_inference    = fast_inference,
+                fast_inference = fast_inference,
             )
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
