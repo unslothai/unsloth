@@ -681,6 +681,7 @@ def _template_ends_with_toplevel_for(chat_template):
     try:
         import jinja2
         import jinja2.nodes
+
         ast = jinja2.Environment().parse(chat_template)
     except Exception:
         return False
@@ -708,12 +709,10 @@ def _has_add_generation_prompt_block(chat_template):
     try:
         import jinja2
         import jinja2.nodes
+
         ast = jinja2.Environment().parse(chat_template)
     except Exception:
-        return (
-            "if add_generation_prompt" in chat_template
-            and "%}" in chat_template
-        )
+        return "if add_generation_prompt" in chat_template and "%}" in chat_template
     for if_node in ast.find_all(jinja2.nodes.If):
         test = if_node.test
         # `find_all` only walks descendants, so a bare Name test (the common
@@ -767,7 +766,7 @@ def _fix_chat_template(chat_template):
     if end is None:
         return chat_template
 
-    after_endfor = chat_template[end["end"]:]
+    after_endfor = chat_template[end["end"] :]
     dash_l = "-" if end["dash_left"] else ""
     dash_r = "-" if end["dash_right"] else ""
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
@@ -795,10 +794,9 @@ def _fix_chat_template(chat_template):
     # don't inject inside a wider wrapper (e.g. Qwen3-Guard wraps the whole
     # template in an outer If -- there the generation block would be out of
     # place).
-    if (
-        _RE_JINJA_COMMENT.sub("", after_endfor).strip() == ""
-        and _template_ends_with_toplevel_for(chat_template)
-    ):
+    if _RE_JINJA_COMMENT.sub(
+        "", after_endfor
+    ).strip() == "" and _template_ends_with_toplevel_for(chat_template):
         scrubbed = _RE_JINJA_COMMENT.sub("", chat_template)
         if (
             "<|im_start|>" in scrubbed
@@ -813,7 +811,9 @@ def _fix_chat_template(chat_template):
             # the generation prefix.
             generation_block = (
                 open_tag("if add_generation_prompt")
-                + '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
+                + '{{ "'
+                + assistant_prefix.replace('"', '\\"')
+                + '" }}'
                 + open_tag("endif")
             )
             return chat_template[: end["end"]] + generation_block
@@ -886,10 +886,14 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
         tokenizer.chat_template = patched_template
         try:
             yes = tokenizer.apply_chat_template(
-                msgs, add_generation_prompt = True, tokenize = False,
+                msgs,
+                add_generation_prompt = True,
+                tokenize = False,
             )
             no = tokenizer.apply_chat_template(
-                msgs, add_generation_prompt = False, tokenize = False,
+                msgs,
+                add_generation_prompt = False,
+                tokenize = False,
             )
         except Exception:
             return False
@@ -926,14 +930,16 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     try:
         tokenizer.apply_chat_template(
             [{"role": "user", "content": "Who are you?"}],
-            add_generation_prompt = False, tokenize = False,
+            add_generation_prompt = False,
+            tokenize = False,
         )
         is_sharegpt = False
     except Exception:
         try:
             tokenizer.apply_chat_template(
                 [{"from": "human", "value": "Who are you?"}],
-                add_generation_prompt = False, tokenize = False,
+                add_generation_prompt = False,
+                tokenize = False,
             )
             is_sharegpt = True
         except Exception:
@@ -949,10 +955,14 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     )
     try:
         no = tokenizer.apply_chat_template(
-            messages, add_generation_prompt = False, tokenize = False,
+            messages,
+            add_generation_prompt = False,
+            tokenize = False,
         )
         yes = tokenizer.apply_chat_template(
-            messages, add_generation_prompt = True, tokenize = False,
+            messages,
+            add_generation_prompt = True,
+            tokenize = False,
         )
     except Exception:
         return chat_template
