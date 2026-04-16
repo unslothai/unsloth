@@ -2478,6 +2478,16 @@ class FastLlamaModel:
                     and not _head.weight.is_floating_point()
                 ):
                     _head.to(dtype)
+            # Attach dispatch hooks for bnb multi-device loads.
+            from unsloth.models.vision import _attach_bnb_multidevice_hooks
+
+            _attach_bnb_multidevice_hooks(
+                model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = kwargs.get("load_in_8bit", False),
+                offload_embedding = False,
+                fast_inference = fast_inference,
+            )
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
@@ -2489,6 +2499,16 @@ class FastLlamaModel:
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
+            )
+            # Attach dispatch hooks for bnb multi-device loads.
+            from unsloth.models.vision import _attach_bnb_multidevice_hooks
+
+            _attach_bnb_multidevice_hooks(
+                model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = kwargs.get("load_in_8bit", False),
+                offload_embedding = False,
+                fast_inference = False,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
