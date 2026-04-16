@@ -76,7 +76,7 @@ export function WizardLayout() {
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
-          onGoToStudio={() => {
+          onSkipOnboarding={() => {
             markOnboardingDone();
             exitToReturnTo();
           }}
