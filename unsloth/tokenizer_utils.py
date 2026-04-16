@@ -956,8 +956,11 @@ def _name_is_local_path(name_or_path):
 
 
 def _format_chat_template_message(
-    name_or_path, repaired, has_generation_block = False,
-    local_path_source = None, strict = False,
+    name_or_path,
+    repaired,
+    has_generation_block = False,
+    local_path_source = None,
+    strict = False,
 ):
     """Build a user-facing warning/error message that points at the right
     responsible party (user's downstream tool vs. upstream model maintainer)."""
@@ -977,8 +980,10 @@ def _format_chat_template_message(
             "The chat_template shipped with `{name}` appears incomplete. "
             "Consider filing a bug report with the model maintainers."
         ).format(name = name_or_path)
-    strict_suffix = "" if strict else (
-        " Set UNSLOTH_STRICT_CHAT_TEMPLATE=1 to raise instead of warn."
+    strict_suffix = (
+        ""
+        if strict
+        else (" Set UNSLOTH_STRICT_CHAT_TEMPLATE=1 to raise instead of warn.")
     )
     if repaired:
         return (
@@ -993,8 +998,8 @@ def _format_chat_template_message(
         ).format(name = name_or_path, hint = source_hint, suffix = strict_suffix)
     load_clause = (
         "Loading is blocked in strict mode."
-        if strict else
-        "The model will still load, but "
+        if strict
+        else "The model will still load, but "
         "`apply_chat_template(add_generation_prompt=True)` may not produce a "
         "correct assistant-turn marker."
     )
@@ -1003,8 +1008,10 @@ def _format_chat_template_message(
         "{{% if add_generation_prompt %}} block for generation purposes, and "
         "automatic repair was not possible. {load_clause} {hint}{suffix}"
     ).format(
-        name = name_or_path, load_clause = load_clause,
-        hint = source_hint, suffix = strict_suffix,
+        name = name_or_path,
+        load_clause = load_clause,
+        hint = source_hint,
+        suffix = strict_suffix,
     )
 
 
@@ -1127,8 +1134,11 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         # "wasn't provided correctly" case from the pre-warn code path.
         strict = _is_strict_chat_template_mode()
         msg = _format_chat_template_message(
-            name, repaired = False, has_generation_block = True,
-            local_path_source = source_path, strict = strict,
+            name,
+            repaired = False,
+            has_generation_block = True,
+            local_path_source = source_path,
+            strict = strict,
         )
         if strict:
             raise RuntimeError(msg)
@@ -1137,14 +1147,21 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
 
     repaired = _repair_string_template(tokenizer, chat_template, is_sharegpt)
     if repaired is not None:
-        logger.warning_once(_format_chat_template_message(
-            name, repaired = True, local_path_source = source_path,
-        ))
+        logger.warning_once(
+            _format_chat_template_message(
+                name,
+                repaired = True,
+                local_path_source = source_path,
+            )
+        )
         return repaired
 
     strict = _is_strict_chat_template_mode()
     msg = _format_chat_template_message(
-        name, repaired = False, local_path_source = source_path, strict = strict,
+        name,
+        repaired = False,
+        local_path_source = source_path,
+        strict = strict,
     )
     if strict:
         raise RuntimeError(msg)
