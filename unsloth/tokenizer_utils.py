@@ -652,9 +652,19 @@ def _find_end_position(template, endfor = None, endif = None):
     {%- ... -%}) and returns the rightmost match so multi-for templates are
     not locked onto the first loop. The `endfor`/`endif` kwargs are accepted
     for backward compatibility and ignored.
+
+    Jinja comments ({# ... #}) are replaced with equal-length padding before
+    matching so tokens like `{% endfor %}` or `{% endif %}` living inside
+    comments don't get picked up as real end tags. Positions in the padded
+    string still map 1:1 to positions in the original template.
     """
-    endfor_matches = list(_RE_ENDFOR.finditer(template))
-    endif_matches = list(_RE_ENDIF.finditer(template))
+    # Pad comments with spaces so their contents don't match as end tags but
+    # positions are preserved.
+    scrubbed = _RE_JINJA_COMMENT.sub(
+        lambda m: " " * len(m.group(0)), template
+    )
+    endfor_matches = list(_RE_ENDFOR.finditer(scrubbed))
+    endif_matches = list(_RE_ENDIF.finditer(scrubbed))
     last_endfor = endfor_matches[-1] if endfor_matches else None
     last_endif = endif_matches[-1] if endif_matches else None
     candidates = [m for m in (last_endfor, last_endif) if m is not None]
@@ -701,10 +711,36 @@ def _template_ends_with_toplevel_for(chat_template):
     return False
 
 
+def _if_body_emits_content(if_node):
+    """Return True if the If's positive body contains at least one Output
+    node. We use this to distinguish a real generation-prompt block
+    (`{% if add_generation_prompt %}{{ "<|...assistant..." }}{% endif %}`,
+    body has an Output) from a header guard
+    (`{% if not add_generation_prompt is defined %}{% set ... %}{% endif %}`,
+    body is only Assign nodes, emits nothing). Nested control flow counts as
+    emitting if any reachable descendant is an Output."""
+    import jinja2.nodes
+
+    for node in if_node.body:
+        if isinstance(node, jinja2.nodes.Output):
+            return True
+        # Nested If / For / Macro / etc. -- walk descendants for any Output.
+        if any(isinstance(d, jinja2.nodes.Output) for d in node.find_all(jinja2.nodes.Output)):
+            return True
+    return False
+
+
 def _has_add_generation_prompt_block(chat_template):
-    """Return True if the template contains an {% if add_generation_prompt %}
-    block. Uses Jinja AST so comments and whitespace-control variants cannot
-    fool the check. Falls back to a string scan if Jinja cannot parse.
+    """Return True if the template contains a *positive* generation-prompt
+    gate, i.e. an `{% if add_generation_prompt %}` (or equivalent) whose
+    body emits output. Uses Jinja AST so comments and whitespace-control
+    variants cannot fool the check. Falls back to a string scan if Jinja
+    cannot parse.
+
+    Rejects header guards like `{% if not add_generation_prompt is defined %}
+    {% set add_generation_prompt = false %}{% endif %}` -- these reference
+    the name but emit nothing, so they do not gate a generation block and
+    the template still needs repair.
     """
     try:
         import jinja2
@@ -717,11 +753,16 @@ def _has_add_generation_prompt_block(chat_template):
         test = if_node.test
         # `find_all` only walks descendants, so a bare Name test (the common
         # `{% if add_generation_prompt %}` form) needs an explicit check here.
+        references_agp = False
         if isinstance(test, jinja2.nodes.Name) and test.name == "add_generation_prompt":
+            references_agp = True
+        else:
+            for name_node in test.find_all(jinja2.nodes.Name):
+                if name_node.name == "add_generation_prompt":
+                    references_agp = True
+                    break
+        if references_agp and _if_body_emits_content(if_node):
             return True
-        for name_node in test.find_all(jinja2.nodes.Name):
-            if name_node.name == "add_generation_prompt":
-                return True
     return False
 
 
@@ -919,35 +960,39 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     if _RE_JINJA_COMMENT.sub(
         "", after_endfor
     ).strip() == "" and _template_ends_with_toplevel_for(chat_template):
-        scrubbed = _RE_JINJA_COMMENT.sub("", chat_template)
-        if "add_generation_prompt" not in scrubbed:
+        # Note: the fast path above (`_has_add_generation_prompt_block`)
+        # already confirmed there is no *positive* generation block, so we
+        # don't need another string-level "add_generation_prompt not in
+        # scrubbed" check here -- that would reject templates with a header
+        # guard like `{% if not add_generation_prompt is defined %}` that
+        # references the name but emits nothing.
+        assistant_prefix = _derive_assistant_prefix_by_render(
+            chat_template, is_sharegpt
+        )
+        # Dual-probe fallback: dict/list callers don't know the shape up
+        # front, and a template that expects ShareGPT-keyed messages will
+        # raise on HF-keyed probe. Try the other shape before giving up.
+        if assistant_prefix is None and not is_sharegpt:
             assistant_prefix = _derive_assistant_prefix_by_render(
-                chat_template, is_sharegpt
+                chat_template, is_sharegpt = True
             )
-            # Dual-probe fallback: dict/list callers don't know the shape up
-            # front, and a template that expects ShareGPT-keyed messages will
-            # raise on HF-keyed probe. Try the other shape before giving up.
-            if assistant_prefix is None and not is_sharegpt:
-                assistant_prefix = _derive_assistant_prefix_by_render(
-                    chat_template, is_sharegpt = True
-                )
-            if assistant_prefix is None:
-                return chat_template
-            # Double-quoted Jinja literal with \\, \n, and " escaped so the
-            # block is valid regardless of the derived prefix's content.
-            escaped = (
-                assistant_prefix.replace("\\", "\\\\")
-                .replace('"', '\\"')
-                .replace("\n", "\\n")
-            )
-            generation_block = (
-                open_tag("if add_generation_prompt")
-                + '{{ "'
-                + escaped
-                + '" }}'
-                + open_tag("endif")
-            )
-            return chat_template[: end["end"]] + generation_block
+        if assistant_prefix is None:
+            return chat_template
+        # Double-quoted Jinja literal with \\, \n, and " escaped so the
+        # block is valid regardless of the derived prefix's content.
+        escaped = (
+            assistant_prefix.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+        )
+        generation_block = (
+            open_tag("if add_generation_prompt")
+            + '{{ "'
+            + escaped
+            + '" }}'
+            + open_tag("endif")
+        )
+        return chat_template[: end["end"]] + generation_block
 
     return chat_template
 
@@ -1130,57 +1175,113 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     return chat_template
 
 
+class _VariantTokenizerProxy:
+    """Adapter that presents a single variant-template view of a multi-variant
+    tokenizer to `_fix_chat_template_for_tokenizer`. This routes each variant
+    through the same full lifecycle as a string template -- is_sharegpt
+    probe, no==yes diagnostic, warn/strict messaging, and
+    `_validate_patched_template()` -- instead of calling structural repair
+    directly and skipping those guarantees.
+
+    `apply_chat_template` is delegated to the base tokenizer after
+    temporarily swapping in the variant template, so access to tokenizer
+    globals (bos_token, custom filters, raise_exception, etc.) is
+    preserved. If the base is read-only, we fall back to bare-Jinja
+    rendering so the probe still works for stub tokenizers in tests.
+    """
+
+    def __init__(self, base_tokenizer, variant_template, variant_label = ""):
+        self._base = base_tokenizer
+        self._template = variant_template
+        self._label = variant_label
+        base_name = getattr(base_tokenizer, "name_or_path", "unknown")
+        # Append variant label so user-facing messages identify the variant.
+        self.name_or_path = (
+            f"{base_name} ({variant_label})" if variant_label else base_name
+        )
+
+    @property
+    def chat_template(self):
+        return self._template
+
+    @chat_template.setter
+    def chat_template(self, value):
+        self._template = value
+
+    def apply_chat_template(self, *args, **kwargs):
+        base_original = getattr(self._base, "chat_template", None)
+        swapped = False
+        try:
+            try:
+                self._base.chat_template = self._template
+                swapped = True
+            except Exception:
+                swapped = False
+            if swapped:
+                return self._base.apply_chat_template(*args, **kwargs)
+            # Base is read-only or cannot accept a string chat_template.
+            # Fall back to isolated Jinja rendering of the variant directly;
+            # this loses access to tokenizer globals but the probe still
+            # works for templates that don't depend on them.
+            import jinja2
+            env = jinja2.Environment(
+                autoescape = False, keep_trailing_newline = True,
+            )
+            messages = args[0] if args else kwargs.get("messages", [])
+            add_generation_prompt = kwargs.get("add_generation_prompt", False)
+            return env.from_string(self._template).render(
+                messages = messages,
+                add_generation_prompt = add_generation_prompt,
+            )
+        finally:
+            if swapped:
+                try:
+                    self._base.chat_template = base_original
+                except Exception:
+                    pass  # best-effort restore
+
+
 def fix_chat_template(tokenizer):
     chat_template = getattr(tokenizer, "chat_template", None)
     if chat_template is None:
         return None
 
-    # Multi-variant dict form (e.g. Hermes-3 {default, tool_use}): fix each
-    # variant independently. Without this branch, _fix_chat_template was
-    # called with a dict and raised AttributeError on .find() -- surfaced
-    # during PR 4426 testing.
+    # Multi-variant dict form (e.g. Hermes-3 {default, tool_use}): route each
+    # variant through `_fix_chat_template_for_tokenizer` so it honors the
+    # full repair contract (is_sharegpt probe, no==yes diagnostic, warn /
+    # strict messaging, and `_validate_patched_template`). The earlier
+    # implementation called `_fix_chat_template` directly per variant and
+    # silently bypassed these guards.
     if isinstance(chat_template, dict):
-        name = getattr(tokenizer, "name_or_path", "unknown")
         fixed = {}
         for key, tmpl in chat_template.items():
             if not isinstance(tmpl, str):
                 fixed[key] = tmpl
                 continue
-            if _has_add_generation_prompt_block(tmpl):
-                fixed[key] = tmpl
-                continue
-            new_tmpl = _fix_chat_template(tmpl)
-            if _has_add_generation_prompt_block(new_tmpl):
-                logger.warning_once(
-                    _format_chat_template_message(name, repaired = True)
-                    + " (variant='{key}')".format(key = key)
-                )
-                fixed[key] = new_tmpl
-            else:
-                fixed[key] = tmpl
+            proxy = _VariantTokenizerProxy(
+                tokenizer, tmpl, variant_label = f"variant='{key}'"
+            )
+            fixed[key] = _fix_chat_template_for_tokenizer(proxy, tmpl)
         return fixed
 
     # List-of-dicts form (older HF multi-template style).
     if isinstance(chat_template, list):
-        name = getattr(tokenizer, "name_or_path", "unknown")
         fixed = []
         for item in chat_template:
             if not isinstance(item, dict) or "template" not in item:
                 fixed.append(item)
                 continue
             tmpl = item["template"]
-            if not isinstance(tmpl, str) or _has_add_generation_prompt_block(tmpl):
+            if not isinstance(tmpl, str):
                 fixed.append(item)
                 continue
-            new_tmpl = _fix_chat_template(tmpl)
-            if _has_add_generation_prompt_block(new_tmpl):
-                logger.warning_once(
-                    _format_chat_template_message(name, repaired = True)
-                    + " (variant='{key}')".format(key = item.get("name", "?"))
-                )
-                fixed.append({**item, "template": new_tmpl})
-            else:
+            label = "variant='{key}'".format(key = item.get("name", "?"))
+            proxy = _VariantTokenizerProxy(tokenizer, tmpl, variant_label = label)
+            new_tmpl = _fix_chat_template_for_tokenizer(proxy, tmpl)
+            if new_tmpl is tmpl or new_tmpl == tmpl:
                 fixed.append(item)
+            else:
+                fixed.append({**item, "template": new_tmpl})
         return fixed
 
     return _fix_chat_template_for_tokenizer(tokenizer, chat_template)
