@@ -209,8 +209,6 @@ def _attach_bnb_multidevice_hooks(
 
     try:
         from accelerate import dispatch_model
-        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-        from accelerate.utils import find_tied_parameters, retie_parameters
     except ImportError:
         return  # accelerate not available
 
@@ -218,9 +216,6 @@ def _attach_bnb_multidevice_hooks(
         inferred_map = _infer_device_map_from_loaded_model(model)
         if not inferred_map:
             return
-
-        # Preserve tied-parameter references before dispatching.
-        tied_params = find_tied_parameters(model)
 
         # accelerate's set_module_tensor_to_device grabs param.__dict__ and
         # passes it as **kwargs to the parameter class constructor.  HF
@@ -235,35 +230,27 @@ def _attach_bnb_multidevice_hooks(
                     _stripped.append((param, key, param.__dict__.pop(key)))
 
         try:
-            # Convert device_map values from torch.device to int (HF convention)
+            # Convert device_map values to the format dispatch_model expects:
+            # CUDA devices -> int index, non-CUDA devices -> type string.
+            # dispatch_model uses string equality (device == "cpu") internally,
+            # so torch.device("cpu") must become "cpu", not stay as an object.
             device_map_int = {
-                k: v.index if isinstance(v, torch.device) and v.type == "cuda" else v
+                k: (v.index if v.type == "cuda" else v.type)
+                   if isinstance(v, torch.device) else v
                 for k, v in inferred_map.items()
             }
 
             # dispatch_model installs AlignDevicesHook on every module and
             # sub-module, exactly matching HF's own loading behavior.
-            dispatch_model(model, device_map = device_map_int)
-
-            # dispatch_model skips hook installation for single-device maps
-            # (accelerate fast-path).  When all weights sit on a non-default
-            # GPU (e.g. cuda:1) the caller's inputs may still arrive on
-            # cuda:0, causing a device mismatch.  Detect this and manually
-            # add a root-level AlignDevicesHook to route inputs.
-            if len(cuda_devs) == 1 and not hasattr(model, "_hf_hook"):
-                main_device = next(iter(cuda_devs))
-                add_hook_to_module(
-                    model, AlignDevicesHook(execution_device = main_device)
-                )
-
+            # force_hooks=True ensures hooks are installed even for single-
+            # device maps (e.g. all weights on cuda:1), where the default
+            # fast-path would skip hook installation entirely.
+            dispatch_model(model, device_map = device_map_int, force_hooks = True)
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             # Restore stripped keys
             for param, key, val in _stripped:
                 param.__dict__[key] = val
-
-        # Retie parameters that hook installation may have unlinked.
-        retie_parameters(model, tied_params)
 
         print(
             f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
