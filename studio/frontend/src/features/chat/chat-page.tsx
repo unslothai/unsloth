@@ -203,7 +203,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 Base Model
               </span>
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="base"
                 pairId={pairId}
@@ -223,7 +223,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 Fine-tuned
               </span>
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="lora"
                 pairId={pairId}
@@ -324,7 +324,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 className="max-w-[80%]"
               />
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="model1"
                 pairId={pairId}
@@ -357,7 +357,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 className="max-w-[80%]"
               />
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="model2"
                 pairId={pairId}
