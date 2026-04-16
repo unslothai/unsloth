@@ -1042,6 +1042,41 @@ shell.Run cmd, 0, False
     # We do NOT add the venv Scripts dir to PATH (it also holds python.exe
     # and pip.exe, which would hijack the user's system interpreter).
     # Hardlink preferred; falls back to copy if cross-volume or non-NTFS.
+    #
+    # Clean up the legacy venv Scripts PATH entry that older installers wrote.
+    # Without this, upgrade users keep python/pip hijacked even after the shim
+    # approach is in place.
+    $LegacyScriptsDir = Join-Path $VenvDir "Scripts"
+    try {
+        $legacyKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        try {
+            $rawPath = $legacyKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($rawPath) {
+                [string[]]$pathEntries = $rawPath -split ';'
+                $normalLegacy = $LegacyScriptsDir.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $expNormalLegacy = [Environment]::ExpandEnvironmentVariables($LegacyScriptsDir).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $filtered = @($pathEntries | Where-Object {
+                    $stripped = $_.Trim().Trim('"')
+                    $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
+                    $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
+                    ($rawNorm -ne $normalLegacy -and $rawNorm -ne $expNormalLegacy) -and
+                    ($expNorm -ne $normalLegacy -and $expNorm -ne $expNormalLegacy)
+                })
+                $cleanedPath = $filtered -join ';'
+                if ($cleanedPath -ne $rawPath) {
+                    $legacyKey.SetValue('Path', $cleanedPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                    # Broadcast so other processes see the removal immediately.
+                    try {
+                        $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                        [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                        [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
+                    } catch { }
+                }
+            }
+        } finally {
+            $legacyKey.Close()
+        }
+    } catch { }
     $ShimDir = Join-Path $StudioHome "bin"
     New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
     $ShimExe = Join-Path $ShimDir "unsloth.exe"
