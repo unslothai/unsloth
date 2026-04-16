@@ -2483,7 +2483,7 @@ class FastLlamaModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = kwargs.get("load_in_8bit", False),
                 offload_embedding = False,
-                fast_inference = False,
+                fast_inference = fast_inference,
             )
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(

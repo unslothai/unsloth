@@ -106,8 +106,17 @@ def _infer_device_map_from_loaded_model(model):
     def _assign(module, prefix):
         subtree_devs = {
             p.device for _, p in module.named_parameters(remove_duplicate = False)
-        } | {b.device for _, b in module.named_buffers()}
+        }
         if not subtree_devs:
+            bufs = list(module.named_buffers())
+            if bufs:
+                buf_devs = {b.device for _, b in bufs}
+                if len(buf_devs) == 1:
+                    device_map[prefix] = next(iter(buf_devs))
+                else:
+                    for child_name, child in module.named_children():
+                        child_prefix = f"{prefix}.{child_name}" if prefix else child_name
+                        _assign(child, child_prefix)
             return
         if len(subtree_devs) == 1:
             device_map[prefix] = next(iter(subtree_devs))
@@ -119,13 +128,11 @@ def _infer_device_map_from_loaded_model(model):
             p.device for _, p in module.named_parameters(
                 recurse = False, remove_duplicate = False,
             )
-        } | {b.device for _, b in module.named_buffers(recurse = False)}
+        }
         if local_devs and len(local_devs) == 1:
             device_map[prefix] = next(iter(local_devs))
 
     _assign(model, "")
-    if "" in device_map and len(device_map) > 1:
-        device_map.pop("")
     return device_map
 
 
@@ -139,7 +146,14 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
-    if not (load_in_4bit or load_in_8bit):
+    is_bnb = (
+        load_in_4bit
+        or load_in_8bit
+        or getattr(model, "is_loaded_in_4bit", False)
+        or getattr(model, "is_loaded_in_8bit", False)
+        or getattr(model, "quantization_method", None) == "bitsandbytes"
+    )
+    if not is_bnb:
         return
     if offload_embedding:
         return
@@ -147,11 +161,7 @@ def _attach_bnb_multidevice_hooks(
         return  # already dispatched
 
     try:
-        all_devs = {
-            p.device
-            for p in model.parameters()
-            if hasattr(p, "device")
-        }
+        all_devs = {p.device for p in model.parameters()}
     except Exception as exc:
         warnings.warn(
             "Unsloth: Failed to determine device placement from model parameters, "
