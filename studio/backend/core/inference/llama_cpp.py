@@ -339,11 +339,8 @@ class LlamaCppBackend:
         from utils.hardware.hardware import DeviceType
         import utils.hardware.hardware as _hw_mod
 
-        # Fast path: NVIDIA / nvidia-smi. Cheap, authoritative, and already
-        # battle-tested across the CUDA fleet. Gate on the active backend so
-        # hybrid NVIDIA+Intel hosts running Studio in XPU mode don't read
-        # NVIDIA memory numbers and then round-trip those indices into
-        # ZE_AFFINITY_MASK (which would pin llama-server to the wrong device).
+        # Fast path: NVIDIA / nvidia-smi. Only run when backend is CUDA
+        # (not ROCm, not XPU) to avoid feeding wrong indices to other backends.
         nvidia_eligible = get_device() == DeviceType.CUDA and not getattr(
             _hw_mod, "IS_ROCM", False
         )
@@ -361,10 +358,8 @@ class LlamaCppBackend:
                 timeout = 10,
             )
             if result.returncode == 0:
-                # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES.
-                # Skip empty tokens so trailing/doubled commas like "0,1," or
-                # "0,,1" still produce a numeric filter instead of falling
-                # through the ValueError arm and silently disabling it.
+                # Filter nvidia-smi output by CUDA_VISIBLE_DEVICES.
+                # Skip empty tokens so trailing commas don't disable the filter.
                 allowed = None
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
                 if cvd is not None and cvd.strip():
@@ -391,26 +386,15 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"nvidia-smi free-memory query failed: {e}")
 
-        # Generic path: AMD ROCm, Intel XPU, or any host where nvidia-smi is
-        # absent / returned empty. Uses Studio's backend-aware telemetry
-        # layer so XPU hosts pick up free memory via torch.xpu /
-        # mem_get_info (populated by utils/hardware/hardware.py), and
-        # ROCm hosts pick up AMD smi data.
+        # Generic path: ROCm, XPU, or nvidia-smi absent/failed.
         try:
             from utils.hardware import get_visible_gpu_utilization
 
             utilization = get_visible_gpu_utilization()
 
-            # Refuse to return relative ordinals. On CUDA (UUID/MIG
-            # masks), the parent has already hidden the physical ID
-            # mapping, so those indices are not safe to round-trip into
-            # CUDA_VISIBLE_DEVICES. On Intel XPU, FLAT-hierarchy
-            # ordinals can enumerate tiles on multi-tile devices, so
-            # writing them back into ZE_AFFINITY_MASK would narrow the
-            # child onto tiles of one card instead of spreading across
-            # the parent-visible set. Returning [] lets llama-server
-            # inherit the parent's mask unchanged and use its own
-            # multi-device machinery.
+            # Relative ordinals are not safe to round-trip into
+            # visibility env vars. Return [] so llama-server inherits
+            # the parent's mask unchanged.
             if utilization.get("index_kind") not in (None, "physical"):
                 logger.debug(
                     "Skipping GPU placement: telemetry reports index_kind=%r "
@@ -1591,10 +1575,7 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via the backend-appropriate visibility
-            # env var: CUDA_VISIBLE_DEVICES on NVIDIA/ROCm, ZE_AFFINITY_MASK
-            # on Intel XPU (llama-server's SYCL build reads ZE_AFFINITY_MASK,
-            # not CUDA_VISIBLE_DEVICES).
+            # Pin to selected GPU(s) via backend-appropriate env var.
             if gpu_indices is not None:
                 from utils.hardware import get_device
                 from utils.hardware.hardware import DeviceType
@@ -1602,12 +1583,6 @@ class LlamaCppBackend:
                 mask = ",".join(str(i) for i in gpu_indices)
                 if get_device() == DeviceType.XPU:
                     env["ZE_AFFINITY_MASK"] = mask
-                    # Deliberately preserve any inherited CUDA_VISIBLE_DEVICES
-                    # (may be "" on hybrid NVIDIA+Intel hosts to force the
-                    # child onto Intel/SYCL). Popping it here would let a
-                    # SYCL+CUDA llama.cpp build re-discover NVIDIA devices,
-                    # contradicting the design note in apply_gpu_ids() in
-                    # utils/hardware/hardware.py.
                 else:
                     env["CUDA_VISIBLE_DEVICES"] = mask
 
@@ -3353,11 +3328,7 @@ class LlamaCppBackend:
         if LlamaCppBackend._codec_mgr is None:
             LlamaCppBackend._codec_mgr = AudioCodecManager()
 
-        # Preserve the pre-PR CPU fallback on non-CUDA hosts: the SNAC /
-        # BiCodec / DAC codecs are not yet validated on Intel XPU, so
-        # only promote to a GPU device when CUDA is actually available.
-        # A follow-up can extend this once an XPU-specific codec path is
-        # added.
+        # Audio codecs are only validated on CUDA; stay on CPU otherwise.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_repo_path = None
 

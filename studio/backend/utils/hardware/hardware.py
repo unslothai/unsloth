@@ -124,17 +124,10 @@ def detect_hardware() -> DeviceType:
         import torch
 
         # --- Explicit-XPU hint ---
-        # Two standalone triggers flip a hybrid NVIDIA+Intel host onto XPU:
-        #   (a) ``UNSLOTH_FORCE_XPU=1`` -- an unconditional opt-in. Works
-        #       even when ``ZE_AFFINITY_MASK`` is unset so callers can
-        #       force Intel without also picking a mask up front.
-        #   (b) ``ZE_AFFINITY_MASK=...`` + (CUDA explicitly hidden via
-        #       ``CUDA_VISIBLE_DEVICES="" / "-1"``) -- a mask alone is
-        #       NOT enough because unrelated tooling (for example Intel's
-        #       IPEX samples) can leak ``ZE_AFFINITY_MASK=0`` into the
-        #       parent shell. Require CUDA to be actively hidden so we
-        #       don't silently reclassify a CUDA-first deployment.
-        # Either way, torch.xpu must actually report a device.
+        # Prefer XPU when: (a) UNSLOTH_FORCE_XPU=1, or
+        # (b) ZE_AFFINITY_MASK set + CUDA hidden/unavailable.
+        # A bare ZE_AFFINITY_MASK alone is NOT enough (can leak from
+        # unrelated Intel tooling). torch.xpu must report a device.
         ze_mask = os.environ.get("ZE_AFFINITY_MASK")
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
@@ -478,14 +471,9 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                 free_bytes, total_bytes = mod.mem_get_info(ordinal)
                 used_bytes = total_bytes - free_bytes
             elif device == DeviceType.XPU:
-                # On XPU without mem_get_info, memory_allocated() only
-                # reports this process's usage -- a value near zero on a
-                # cold worker is uninformative and actively misleading for
-                # auto-placement on multi-tenant Intel hosts. Prefer to
-                # surface "unknown" (used_bytes = None) so the selector
-                # falls back to its no-telemetry heuristic instead of
-                # picking a card that another process may already have
-                # saturated.
+                # XPU without mem_get_info: memory_allocated() is process-
+                # local and misleading for placement. Return None so the
+                # selector uses its no-telemetry fallback.
                 used_bytes = None
             else:
                 used_bytes = mod.memory_allocated(ordinal)
@@ -814,22 +802,11 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             }
 
         parent_ids = get_parent_visible_gpu_ids()
-        # When parent_visible_ids is empty (UUID/MIG mask or no CVD set),
-        # enumerate torch-visible ordinals so the UI still shows devices.
-        # Only advertise index_kind="physical" when the parent-visible spec
-        # actually supports explicit physical IDs. Otherwise (FLAT numeric
-        # masks on XPU, where numeric_ids is populated for display but
-        # supports_explicit_gpu_ids=False because the ordinals are tile
-        # handles), downstream callers like llama.cpp must not round-trip
-        # these IDs back into ZE_AFFINITY_MASK as if they were root GPUs.
+        # Only label as "physical" when the IDs are safe to round-trip.
         if parent_ids and parent_visible_spec["supports_explicit_gpu_ids"]:
             torch_indices = parent_ids
             index_kind = "physical"
         else:
-            # Fall back to 0-based torch ordinals. When numeric_ids was
-            # populated but not safe as physical IDs, we still want the UI
-            # to see the expected number of devices, so size the enumeration
-            # by whatever the backend currently exposes.
             visible_count = (
                 len(parent_ids)
                 if parent_ids
@@ -837,8 +814,6 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             )
             torch_indices = list(range(visible_count))
             index_kind = "relative"
-            # Clear parent_ids in the payload so consumers don't re-interpret
-            # unsafe mask tokens as authoritative physical GPU IDs.
             parent_ids = []
         torch_devices = _torch_get_per_device_info(torch_indices)
         if torch_devices:
@@ -934,26 +909,17 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         composite = _xpu_hierarchy_is_composite()
 
         if xpu_mask_raw is None:
-            # No mask set. In COMPOSITE, torch.xpu.device_count() enumerates
-            # root GPUs, which is what the API contract ("Physical GPU
-            # indices") promises -- populate numeric_ids so auto-selection
-            # and telemetry can round-trip them safely.
+            # COMPOSITE: root GPU IDs are stable physical IDs.
             if composite:
                 return {
                     "raw": None,
                     "numeric_ids": list(range(get_physical_gpu_count())),
                     "supports_explicit_gpu_ids": True,
                 }
-            # FLAT (the oneAPI default) enumerates tile / device-handle
-            # ordinals that Intel's own docs explicitly call out as NOT
-            # stable physical GPU IDs. Advertising them via numeric_ids
-            # would let downstream telemetry mark them index_kind="physical"
-            # and llama.cpp round-trip them back into ZE_AFFINITY_MASK as
-            # if they were root devices. Leave numeric_ids=None so the
-            # telemetry path falls into its relative-ordinal branch and
-            # auto-selection returns inherit_parent_visible, matching the
-            # supports_explicit_gpu_ids=False contract. Users who want
-            # explicit selection can set ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE.
+            # FLAT (oneAPI default): ordinals are tile/device handles,
+            # not physical GPU IDs. Leave numeric_ids=None so telemetry
+            # uses relative ordinals. Users who need explicit selection
+            # can set ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE.
             return {
                 "raw": None,
                 "numeric_ids": None,
@@ -968,10 +934,8 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "supports_explicit_gpu_ids": True,
             }
 
-        # Subdevice syntax ("N.M") is only meaningful in COMPOSITE
-        # hierarchy. In FLAT it is invalid per Intel's Level Zero docs,
-        # and even in COMPOSITE it expands one root into multiple logical
-        # devices which is not addressable by explicit root-ID selection.
+        # Subdevice syntax ("N.M") expands one root into multiple
+        # logical devices -- not addressable by explicit root-ID selection.
         has_subdevice = any(
             "." in token.strip() for token in xpu_mask.split(",") if token.strip()
         )
@@ -982,14 +946,9 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "supports_explicit_gpu_ids": False,
             }
 
-        # In FLAT, numeric mask entries are tile / device-handle ordinals
-        # per Intel's "flattening-gpu-tile-hierarchy" docs. They are stable
-        # for the process (torch.xpu honours them 1-to-1) but they are NOT
-        # the "physical GPU indices" promised by models/inference.py and
-        # models/training.py. Expose them in numeric_ids so telemetry and
-        # display still enumerate, but reject them as explicit gpu_ids so
-        # API callers don't accidentally pin work to a tile thinking they
-        # picked a whole GPU.
+        # FLAT numeric entries are tile handles, not physical GPU IDs.
+        # Expose in numeric_ids for telemetry but reject as explicit
+        # gpu_ids so callers don't pin to a tile thinking it's a GPU.
         if not composite:
             tokens = [token.strip() for token in xpu_mask.split(",") if token.strip()]
             if tokens and all(token.isdecimal() for token in tokens):
@@ -1009,12 +968,8 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         # drops any non-decimal tokens so "*" or "GPU-uuid" yield [].
         roots_with_dupes = _parse_ze_mask_roots(xpu_mask)
         if not roots_with_dupes:
-            # Non-digit wildcard (e.g. "*") or unparseable mask: we cannot
-            # map logical ordinals to physical root IDs. Mirror the CUDA
-            # UUID/MIG path by returning numeric_ids=None +
-            # supports_explicit_gpu_ids=False, so get_device_map() falls
-            # back to its multi-visible heuristic and explicit ids are
-            # rejected.
+            # Unparseable mask (e.g. "*", "GPU-uuid") -- cannot map to
+            # physical root IDs.
             return {
                 "raw": xpu_mask,
                 "numeric_ids": None,
@@ -1438,18 +1393,10 @@ def auto_select_gpu_ids(
     parent_visible_spec = _get_parent_visible_gpu_spec()
     metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
 
-    # When the parent-visible spec does not expose stable physical GPU
-    # IDs (FLAT + no mask, FLAT numeric mask, wildcard, subdevice), do
-    # not synthesize gpu_ids. On multi-tile Intel devices (e.g. Data
-    # Center GPU Max) torch.xpu ordinals can enumerate tiles rather
-    # than root GPUs, so materializing range(visible_count) and writing
-    # it back via apply_gpu_ids() would rewrite ZE_AFFINITY_MASK with
-    # tile handles -- narrowing the worker onto a subset of one card
-    # instead of spreading across the parent-visible device set. Defer
-    # to inherit_parent_visible so the child inherits torch.xpu's view
-    # unchanged; get_device_map() still returns "balanced" for
-    # multi-visible XPU without gpu_ids so HF sharding happens via
-    # torch ordinals within the worker process scope (no mask rewrite).
+    # No stable physical GPU IDs available (FLAT, wildcard, subdevice).
+    # Do not synthesize gpu_ids -- on multi-tile devices that would
+    # rewrite ZE_AFFINITY_MASK with tile handles. get_device_map()
+    # still returns "balanced" for multi-visible XPU without gpu_ids.
     if not parent_visible_spec["supports_explicit_gpu_ids"]:
         metadata["selection_mode"] = "inherit_parent_visible"
         metadata["selected_gpu_ids"] = None
@@ -1728,14 +1675,8 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             except Exception as e:
                 logger.warning("Backend GPU visibility query failed: %s", e)
 
-        # Torch fallback (AMD ROCm, Intel XPU, nvidia-smi missing/failed)
-        # When parent_visible_ids is empty (UUID/MIG mask), enumerate by
-        # torch ordinal so the UI still shows devices. Only label as
-        # "physical" when parent_visible_spec actually supports explicit
-        # physical IDs -- FLAT numeric XPU masks populate numeric_ids but
-        # have supports_explicit_gpu_ids=False, and those ordinals are tile
-        # handles that llama.cpp and the UI must not treat as stable
-        # root-GPU IDs.
+        # Torch fallback (AMD ROCm, Intel XPU, nvidia-smi missing/failed).
+        # Only label as "physical" when the IDs are safe to round-trip.
         if parent_visible_ids and parent_visible_spec["supports_explicit_gpu_ids"]:
             torch_indices = parent_visible_ids
             index_kind = "physical"
@@ -1747,8 +1688,6 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             )
             torch_indices = list(range(visible_count))
             index_kind = "relative"
-            # Clear parent_visible_ids in the payload so API consumers
-            # don't round-trip unsafe mask tokens as physical GPU IDs.
             parent_visible_ids = []
         torch_devices = _torch_get_per_device_info(torch_indices)
         if torch_devices:
@@ -1923,25 +1862,15 @@ def apply_gpu_ids(gpu_ids) -> None:
     # so worker subprocesses are actually restricted to the intended GPU.
     if get_device() == DeviceType.XPU:
         os.environ["ZE_AFFINITY_MASK"] = value
-        # Deliberately leave any inherited CUDA_VISIBLE_DEVICES alone: on
-        # hybrid NVIDIA+Intel hosts the parent may have set
-        # CUDA_VISIBLE_DEVICES="" to disable NVIDIA and force Studio onto
-        # XPU. Popping the variable here would let the worker's follow-up
-        # detect_hardware() call flip back to CUDA. torch.xpu only reads
-        # ZE_AFFINITY_MASK, so an extra CUDA_VISIBLE_DEVICES entry in env
-        # is cosmetically stale but functionally harmless.
+        # Leave inherited CUDA_VISIBLE_DEVICES alone -- removing it could
+        # let the worker flip back to CUDA on hybrid hosts.
         _visible_gpu_count = None
         logger.info("Applied gpu_ids: ZE_AFFINITY_MASK='%s'", value)
         return
 
     os.environ["CUDA_VISIBLE_DEVICES"] = value
-    # Keep ROCm visibility env vars in sync so _get_parent_visible_gpu_spec()
-    # picks up the narrowed set on AMD systems. Workers can call
-    # apply_gpu_ids() before detect_hardware() runs (so IS_ROCM is still
-    # its default False), so also mirror the selection whenever the
-    # parent process already set a ROCm visibility variable -- that
-    # way a downstream ROCm process inherits the narrowed mask even
-    # before Studio's hardware detection has classified the host.
+    # Keep ROCm visibility env vars in sync so AMD workers inherit the
+    # narrowed set even before detect_hardware() runs.
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
@@ -1994,16 +1923,9 @@ def get_device_map(
                 # visible set.
                 multi_gpu = True
             elif device == DeviceType.XPU:
-                # XPU: whenever more than one torch.xpu device is
-                # visible and the caller didn't pick a specific one,
-                # shard via HF's balanced device_map. HF uses the
-                # torch.xpu ordinals directly (scope-local within the
-                # worker process), so this is safe regardless of
-                # whether the ordinals represent tiles or roots, and it
-                # does NOT rewrite ZE_AFFINITY_MASK (the inherited
-                # visibility is preserved). Users who don't want
-                # sharding can pass gpu_ids=[0] or narrow
-                # ZE_AFFINITY_MASK to a single device before launching.
+                # Shard across visible XPU ordinals via HF (no mask
+                # rewrite). Safe for tiles and roots alike since HF
+                # uses torch ordinals directly within the worker scope.
                 supports_physical = parent_visible_spec["supports_explicit_gpu_ids"]
                 has_multiple_numeric = (
                     parent_visible_spec["numeric_ids"] is not None
