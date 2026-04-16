@@ -1439,17 +1439,22 @@ def auto_select_gpu_ids(
     metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
 
     # Some XPU configurations cannot expose stable physical GPU IDs (FLAT
-    # hierarchy + no mask, FLAT numeric mask, wildcard, subdevice syntax).
-    # Rejecting auto-selection there leaves default Intel hosts stuck on
-    # single-device sequential loading even when multiple devices are
-    # visible to torch.xpu. The worker-local torch.xpu ordinals are still
-    # valid ZE_AFFINITY_MASK tokens for the current inherited visibility
-    # set, so we can safely use them for Studio's internal auto-selection
-    # even though the API contract still refuses to accept them as
-    # user-supplied "Physical GPU indices" in prepare_gpu_selection().
+    # hierarchy + no mask). Rejecting auto-selection there leaves default
+    # Intel hosts stuck on single-device sequential loading even when
+    # multiple devices are visible to torch.xpu. We can safely fall back
+    # to worker-local torch.xpu ordinals ONLY when the parent did not
+    # already narrow ZE_AFFINITY_MASK. If a parent mask is present (even
+    # numeric FLAT like "3,5", or subdevice like "0.0,0.1"), synthesizing
+    # 0..N-1 ordinals and writing them back via apply_gpu_ids() would
+    # overwrite the inherited mask and retarget the child onto different
+    # Level Zero handles (e.g. parent "3,5" -> rewritten "0,1" means the
+    # child now sees tile 0 and tile 1, not tile 3 and tile 5). When a
+    # mask is already set, defer to inherit_parent_visible so the child
+    # inherits the exact visibility the parent intended.
     xpu_relative_auto_select = (
         not parent_visible_spec["supports_explicit_gpu_ids"]
         and get_device() == DeviceType.XPU
+        and parent_visible_spec["raw"] is None
     )
     if (
         not parent_visible_spec["supports_explicit_gpu_ids"]
