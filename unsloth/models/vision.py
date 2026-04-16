@@ -104,28 +104,24 @@ def _infer_device_map_from_loaded_model(model):
     device_map = {}
 
     def _assign(module, prefix):
-        params = list(module.named_parameters(remove_duplicate = False))
-        if not params:
-            bufs = list(module.named_buffers())
-            if bufs:
-                buf_devs = {b.device for _, b in bufs}
-                if len(buf_devs) == 1:
-                    device_map[prefix] = next(iter(buf_devs))
+        subtree_devs = {
+            p.device for _, p in module.named_parameters(remove_duplicate = False)
+        } | {b.device for _, b in module.named_buffers()}
+        if not subtree_devs:
             return
-        devices = {p.device for _, p in params}
-        if len(devices) == 1:
-            device_map[prefix] = next(iter(devices))
-        else:
-            for child_name, child in module.named_children():
-                child_prefix = f"{prefix}.{child_name}" if prefix else child_name
-                _assign(child, child_prefix)
-            for pname, param in module.named_parameters(remove_duplicate = False):
-                if "." not in pname:
-                    full = f"{prefix}.{pname}" if prefix else pname
-                    if not any(
-                        full == k or full.startswith(k + ".") for k in device_map
-                    ):
-                        device_map[full] = param.device
+        if len(subtree_devs) == 1:
+            device_map[prefix] = next(iter(subtree_devs))
+            return
+        for child_name, child in module.named_children():
+            child_prefix = f"{prefix}.{child_name}" if prefix else child_name
+            _assign(child, child_prefix)
+        local_devs = {
+            p.device for _, p in module.named_parameters(
+                recurse = False, remove_duplicate = False,
+            )
+        } | {b.device for _, b in module.named_buffers(recurse = False)}
+        if local_devs and len(local_devs) == 1:
+            device_map[prefix] = next(iter(local_devs))
 
     _assign(model, "")
     if "" in device_map and len(device_map) > 1:
@@ -151,25 +147,26 @@ def _attach_bnb_multidevice_hooks(
         return  # already dispatched
 
     try:
-        cuda_devs = {
+        all_devs = {
             p.device
             for p in model.parameters()
-            if hasattr(p, "device") and p.device.type == "cuda"
+            if hasattr(p, "device")
         }
     except Exception as exc:
         warnings.warn(
-            "Unsloth: Failed to determine CUDA devices from model parameters, "
+            "Unsloth: Failed to determine device placement from model parameters, "
             f"so multi-GPU hooks cannot be attached. ({type(exc).__name__}: {exc})",
             RuntimeWarning,
             stacklevel = 2,
         )
         return
 
+    cuda_devs = {d for d in all_devs if d.type == "cuda"}
     if not cuda_devs:
         return
 
     default_cuda = torch.device("cuda", 0)
-    if cuda_devs == {default_cuda}:
+    if all_devs == {default_cuda}:
         return
 
     try:

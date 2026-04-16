@@ -76,7 +76,7 @@ from transformers.modeling_attn_mask_utils import (
 )
 from ..kernels import *
 from ..tokenizer_utils import *
-from .vision import FastBaseModel
+from .vision import FastBaseModel, _attach_bnb_multidevice_hooks
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (
@@ -2478,8 +2478,6 @@ class FastLlamaModel:
                     and not _head.weight.is_floating_point()
                 ):
                     _head.to(dtype)
-            from unsloth.models.vision import _attach_bnb_multidevice_hooks
-
             _attach_bnb_multidevice_hooks(
                 model,
                 load_in_4bit = load_in_4bit,
@@ -2500,8 +2498,6 @@ class FastLlamaModel:
                 **kwargs,
             )
             # Attach dispatch hooks for bnb multi-device loads.
-            from unsloth.models.vision import _attach_bnb_multidevice_hooks
-
             _attach_bnb_multidevice_hooks(
                 model,
                 load_in_4bit = load_in_4bit,
