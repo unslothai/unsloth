@@ -99,18 +99,7 @@ __all__ = [
 
 
 def _infer_device_map_from_loaded_model(model):
-    """
-    Build a compact device_map dict by inspecting where each parameter of
-    *model* actually lives after a bitsandbytes multi-device load.
-
-    The resulting map satisfies accelerate's check_device_map invariant:
-    every parameter in the state_dict is covered by exactly one prefix key.
-
-    Algorithm: recurse over the module tree top-down.  When all parameters in
-    a subtree share the same device, emit one entry for the whole subtree.
-    Otherwise recurse into children and emit entries for direct-parameter
-    leaves that are not already covered by a child entry.
-    """
+    """Build a compact device_map by inspecting actual parameter placements."""
     device_map = {}
 
     def _assign(module, prefix):
@@ -136,8 +125,6 @@ def _infer_device_map_from_loaded_model(model):
                         device_map[full] = param.device
 
     _assign(model, "")
-    # Remove the root key only when child entries already cover all params.
-    # For single-device models, "" may be the sole entry and must be kept.
     if "" in device_map and len(device_map) > 1:
         device_map.pop("")
     return device_map
@@ -147,31 +134,9 @@ def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
     """
-    Retroactively attach accelerate AlignDevicesHook on a bitsandbytes-
-    quantised model that was loaded with a multi-device (or non-default-device)
-    device_map.
-
-    When load_in_4bit or load_in_8bit is used together with an accelerate
-    device_map, AutoModel.from_pretrained places weights on the target CUDA
-    devices but does NOT call dispatch_model, so no AlignDevicesHook is
-    installed.  Any cross-device forward pass then crashes with:
-      RuntimeError: Expected all tensors to be on the same device
-
-    This function fixes that by installing hooks after loading, without
-    re-moving any quantised weight tensors.  Two scenarios are handled:
-
-    1. Multi-device: weights span multiple CUDA devices.  Per-block hooks
-       route each module's inputs to the correct device.
-    2. Single non-default device: all weights land on e.g. cuda:1 but the
-       caller may pass inputs on cuda:0.  A root-level hook fixes this.
-
-    Guards
-    ------
-    - Only runs when load_in_4bit or load_in_8bit is True.
-    - Skips the vLLM path (fast_inference=True).
-    - Skips the offload_embedding CPU-offload path (handled separately).
-    - Skips models that already have hf_device_map set (already dispatched).
-    - Skips models with no CUDA parameters (CPU-only or meta-device paths).
+    Attach accelerate AlignDevicesHook on a bnb model loaded across multiple
+    devices (or a non-default device).  No-op for single-GPU cuda:0, non-bnb,
+    vLLM, or already-dispatched models.
     """
     if fast_inference:
         return
@@ -200,9 +165,8 @@ def _attach_bnb_multidevice_hooks(
         return
 
     if not cuda_devs:
-        return  # no CUDA parameters -- nothing to do
+        return
 
-    # All weights on the default device -- the common single-GPU case.
     default_cuda = torch.device("cuda", 0)
     if cuda_devs == {default_cuda}:
         return
@@ -217,8 +181,7 @@ def _attach_bnb_multidevice_hooks(
         if not inferred_map:
             return
 
-        # Strip _is_hf_initialized from param.__dict__ -- bnb constructors
-        # reject it when accelerate re-creates params during dispatch.
+        # bnb constructors reject _is_hf_initialized; strip before dispatch.
         _extra_keys = ("_is_hf_initialized",)
         _stripped = []
         for _, param in model.named_parameters():
