@@ -200,7 +200,7 @@ def _attach_bnb_multidevice_hooks(
         return
 
     try:
-        from accelerate.hooks import attach_align_device_hook_on_blocks
+        from accelerate import dispatch_model
         from accelerate.utils import find_tied_parameters, retie_parameters
     except ImportError:
         return  # accelerate not available
@@ -210,50 +210,39 @@ def _attach_bnb_multidevice_hooks(
         if not inferred_map:
             return
 
-        # Determine the "main" device (first CUDA device encountered).
-        cuda_device_vals = [
-            v
-            for v in inferred_map.values()
-            if isinstance(v, torch.device) and v.type == "cuda"
-        ]
-        main_device = cuda_device_vals[0] if cuda_device_vals else next(iter(cuda_devs))
-
-        # Preserve tied-parameter references before installing hooks.
+        # Preserve tied-parameter references before dispatching.
         tied_params = find_tied_parameters(model)
 
-        if len(cuda_devs) > 1:
-            # Multi-device: each block's hook routes inputs to its own device.
-            execution_device = dict(inferred_map)
-            execution_device[""] = main_device
-            offload_dict = {k: False for k in execution_device}
-            attach_align_device_hook_on_blocks(
-                model,
-                execution_device = execution_device,
-                offload = offload_dict,
-                weights_map = None,
-                offload_buffers = False,
-            )
+        # accelerate's set_module_tensor_to_device grabs param.__dict__ and
+        # passes it as **kwargs to the parameter class constructor.  HF
+        # Transformers adds _is_hf_initialized to parameter __dict__ which
+        # bitsandbytes Params4bit/Int8Params do not accept, causing TypeError.
+        # Strip these extra keys before dispatching.
+        _extra_keys = ("_is_hf_initialized",)
+        _stripped = []
+        for _, param in model.named_parameters():
+            for key in _extra_keys:
+                if key in param.__dict__:
+                    _stripped.append((param, key, param.__dict__.pop(key)))
+
+        try:
+            # Convert device_map values from torch.device to int (HF convention)
+            device_map_int = {
+                k: v.index if isinstance(v, torch.device) and v.type == "cuda" else v
+                for k, v in inferred_map.items()
+            }
+
+            # dispatch_model installs AlignDevicesHook on every module and
+            # sub-module, exactly matching HF's own loading behavior.
+            dispatch_model(model, device_map = device_map_int)
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
-        else:
-            # Single non-default device: one root hook sends all inputs to it.
-            attach_align_device_hook_on_blocks(
-                model,
-                execution_device = main_device,
-                offload = False,
-                weights_map = None,
-                offload_buffers = False,
-            )
-            desc = f"root hook -> {main_device} (single non-default device)"
+        finally:
+            # Restore stripped keys
+            for param, key, val in _stripped:
+                param.__dict__[key] = val
 
         # Retie parameters that hook installation may have unlinked.
         retie_parameters(model, tied_params)
-
-        # Expose hf_device_map so downstream generation helpers work.
-        # Use the device index (int) as the value, matching HF's convention.
-        model.hf_device_map = {
-            k: v.index if isinstance(v, torch.device) else v
-            for k, v in inferred_map.items()
-        }
 
         print(
             f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
