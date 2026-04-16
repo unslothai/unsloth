@@ -883,7 +883,10 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
     )
     original = getattr(tokenizer, "chat_template", None)
     try:
-        tokenizer.chat_template = patched_template
+        try:
+            tokenizer.chat_template = patched_template
+        except Exception:
+            return False  # read-only tokenizer, skip validation
         try:
             yes = tokenizer.apply_chat_template(
                 msgs,
@@ -898,7 +901,10 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
         except Exception:
             return False
     finally:
-        tokenizer.chat_template = original
+        try:
+            tokenizer.chat_template = original
+        except Exception:
+            pass  # best-effort restore
     # Contract after a successful repair: the two renders differ, and the
     # "yes" render is a strict extension of the "no" render (we only
     # appended content inside the new add_generation_prompt block).
