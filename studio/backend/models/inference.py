@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
 
 class LoadRequest(BaseModel):
@@ -362,6 +362,19 @@ class ChatMessage(BaseModel):
         None,
         description = "OpenAI tool-result messages: name of the tool whose result this is.",
     )
+
+    @model_validator(mode = "after")
+    def _require_tool_call_id_for_tool_role(self) -> "ChatMessage":
+        # OpenAI's spec requires `tool_call_id` on role="tool" messages so
+        # the upstream backend can associate the result with the assistant's
+        # prior `tool_calls` entry. Reject malformed tool-result messages at
+        # the request boundary instead of forwarding them to llama-server
+        # through the passthrough path, where the failure mode is opaque.
+        if self.role == "tool" and not self.tool_call_id:
+            raise ValueError(
+                'role="tool" messages require "tool_call_id" per the OpenAI spec.'
+            )
+        return self
 
 
 class ChatCompletionRequest(BaseModel):

@@ -114,6 +114,23 @@ class TestChatMessageToolRoles:
         msg = ChatMessage(role = "assistant")
         assert msg.content is None
 
+    def test_tool_role_missing_tool_call_id_rejected(self):
+        # Per OpenAI spec, role="tool" messages must carry tool_call_id so
+        # upstream backends can associate the result with its prior call.
+        # Pin the boundary-level rejection so a malformed tool-result
+        # message never reaches the passthrough path.
+        with pytest.raises(ValidationError) as exc_info:
+            ChatMessage(role = "tool", content = '{"temperature": 72}')
+        assert "tool_call_id" in str(exc_info.value)
+
+    def test_tool_role_empty_tool_call_id_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "",
+                content = '{"temperature": 72}',
+            )
+
 
 # =====================================================================
 # ChatCompletionRequest — standard OpenAI tool fields
