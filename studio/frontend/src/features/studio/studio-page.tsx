@@ -14,7 +14,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { useSidebar } from "@/components/ui/sidebar";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
@@ -49,7 +50,12 @@ export function StudioPage(): ReactElement {
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const [requestedTab, setRequestedTab] = useState("configure");
-  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
+  const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
+
+  useEffect(() => {
+    return () => setSelectedHistoryRunId(null);
+  }, [setSelectedHistoryRunId]);
 
   // Derive activeTab: auto-switch to "current-run" only while training is
   // genuinely running.  Once training ends, honour whatever tab the user clicks.
@@ -61,9 +67,20 @@ export function StudioPage(): ReactElement {
         ? "configure"
         : requestedTab;
 
+  const { setPinned } = useSidebar();
+  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
+
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const tourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
+  const baseTourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
+  // Inject onEnter for navbar-targeting steps so the sidebar expands during the tour.
+  const tourSteps = useMemo(
+    () =>
+      baseTourSteps.map((step) =>
+        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
+      ),
+    [baseTourSteps, pinSidebar],
+  );
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -86,6 +103,14 @@ export function StudioPage(): ReactElement {
     }
   }, [isTrainingRunning, requestedTab]);
 
+  // Selecting a run from the sidebar only sets selectedHistoryRunId; auto-switch
+  // to the History tab so the main panel reflects the selection.
+  useEffect(() => {
+    if (selectedHistoryRunId && requestedTab !== "history") {
+      setRequestedTab("history");
+    }
+  }, [selectedHistoryRunId, requestedTab]);
+
   useEffect(() => {
     ensureModelDefaultsLoaded();
     ensureDatasetChecked();
@@ -106,7 +131,7 @@ export function StudioPage(): ReactElement {
   })();
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background">
+    <div className="relative min-h-screen bg-background">
       <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
