@@ -1312,7 +1312,9 @@ async def openai_chat_completions(
                 # result, nudge the model to synthesise a final answer.
                 # Large models handle multi-step tool use well, so this
                 # is gated to small models only.
-                if _is_small_model and _has_successful_tool_result_in_current_turn(chat_messages):
+                if _is_small_model and _has_successful_tool_result_in_current_turn(
+                    chat_messages
+                ):
                     _nudge += _TOOL_SYNTHESISE_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
@@ -2547,7 +2549,9 @@ async def anthropic_messages(
             # /chat/completions for rationale.  (The OpenAI-compat schema
             # does not yet accept role="tool", so this branch is currently
             # unreachable; kept for when the schema is extended.)
-            if _is_small_model and _has_successful_tool_result_in_current_turn(openai_messages):
+            if _is_small_model and _has_successful_tool_result_in_current_turn(
+                openai_messages
+            ):
                 _nudge += _TOOL_SYNTHESISE_NUDGE
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
