@@ -56,7 +56,7 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	--radius: 0.625rem;
+	--radius: 1.1rem;
 	--sidebar: oklch(0.99 0 0);
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: oklch(0.6929 0.1396 166.5513);
@@ -132,7 +132,7 @@
 	--sidebar-border: oklch(0.38 0 0);
 	--sidebar-ring: oklch(0.6929 0.1396 166.5513);
 	--destructive-foreground: oklch(1 0 0);
-	--radius: 0.625rem;
+	--radius: 1.1rem;
 	--font-sans: Geist, ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -198,7 +198,7 @@
 	--radius-4xl: calc(var(--radius) + 16px);
 	--font-mono: JetBrains Mono, monospace;
 	--font-serif: Source Serif 4, serif;
-	--radius: 0.625rem;
+	--radius: 1.1rem;
 	--tracking-tighter: calc(var(--tracking-normal) - 0.05em);
 	--tracking-tight: calc(var(--tracking-normal) - 0.025em);
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
