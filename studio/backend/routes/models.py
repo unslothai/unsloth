@@ -411,6 +411,119 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
+def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
+    """Scan an Ollama models directory for downloaded models.
+
+    Ollama stores models in a content-addressable layout::
+
+        <ollama_dir>/manifests/registry.ollama.ai/library/<model>/<tag>
+        <ollama_dir>/blobs/sha256-...
+
+    Each manifest is JSON with a ``layers`` array. The layer with
+    ``mediaType == "application/vnd.ollama.image.model"`` contains the
+    GGUF weights. We read the config layer to extract family/size info.
+
+    Since Ollama blobs lack a ``.gguf`` extension (which the GGUF
+    loading pipeline requires), we create symlinks with proper names
+    under ``<ollama_dir>/.studio_links/`` so that the existing
+    ``detect_gguf_model`` / llama-server ``-m`` path works unchanged.
+    """
+    import json as _json
+
+    manifests_root = ollama_dir / "manifests" / "registry.ollama.ai" / "library"
+    if not manifests_root.is_dir():
+        return []
+
+    found: List[LocalModelInfo] = []
+    blobs_dir = ollama_dir / "blobs"
+    links_dir = ollama_dir / ".studio_links"
+    try:
+        links_dir.mkdir(exist_ok = True)
+    except OSError:
+        return []
+
+    try:
+        for model_dir in manifests_root.iterdir():
+            if not model_dir.is_dir():
+                continue
+            model_name = model_dir.name
+            for tag_file in model_dir.iterdir():
+                if not tag_file.is_file():
+                    continue
+                tag = tag_file.name
+                display = f"{model_name}:{tag}"
+                try:
+                    manifest = _json.loads(tag_file.read_text())
+                except Exception:
+                    continue
+
+                # Read the config blob for model_type / file_type metadata
+                config_digest = manifest.get("config", {}).get("digest", "")
+                model_type = ""
+                file_type = ""
+                if config_digest and blobs_dir.is_dir():
+                    config_blob = blobs_dir / config_digest.replace(":", "-")
+                    if config_blob.is_file():
+                        try:
+                            cfg = _json.loads(config_blob.read_text())
+                            model_type = cfg.get("model_type", "")
+                            file_type = cfg.get("file_type", "")
+                        except Exception:
+                            pass
+
+                # Find the GGUF weights blob and create a .gguf symlink
+                gguf_link_path: Optional[str] = None
+                for layer in manifest.get("layers", []):
+                    if layer.get("mediaType") == "application/vnd.ollama.image.model":
+                        digest = layer.get("digest", "")
+                        if digest:
+                            candidate = blobs_dir / digest.replace(":", "-")
+                            if candidate.is_file():
+                                # Create a symlink: .studio_links/gemma3-4b.gguf -> ../blobs/sha256-...
+                                quant = f"-{file_type}" if file_type else ""
+                                link_name = f"{model_name}-{tag}{quant}.gguf"
+                                link_path = links_dir / link_name
+                                try:
+                                    if link_path.is_symlink() or link_path.exists():
+                                        link_path.unlink()
+                                    link_path.symlink_to(candidate.resolve())
+                                except OSError:
+                                    # Fall back to raw blob path if symlink fails
+                                    gguf_link_path = str(candidate)
+                                    break
+                                gguf_link_path = str(link_path)
+                        break
+
+                if not gguf_link_path:
+                    continue
+
+                suffix = ""
+                if model_type:
+                    suffix += f" ({model_type}"
+                    if file_type:
+                        suffix += f" {file_type}"
+                    suffix += ")"
+
+                try:
+                    updated_at = tag_file.stat().st_mtime
+                except OSError:
+                    updated_at = None
+
+                found.append(
+                    LocalModelInfo(
+                        id = gguf_link_path,
+                        model_id = f"ollama/{model_name}:{tag}",
+                        display_name = display + suffix,
+                        path = gguf_link_path,
+                        source = "custom",
+                        updated_at = updated_at,
+                    ),
+                )
+    except OSError:
+        pass
+    return found
+
+
 @router.get("/local", response_model = LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
@@ -493,10 +606,19 @@ async def list_local_models(
         for folder in custom_folders:
             folder_path = Path(folder["path"])
             try:
+                # Ollama scanner creates .studio_links/ with .gguf symlinks.
+                # Filter those from the generic scanners to avoid duplicates
+                # and leaking internal paths into the UI.
+                _generic = [
+                    m for m in (
+                        _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                        + _scan_hf_cache(folder_path)
+                        + _scan_lmstudio_dir(folder_path)
+                    )
+                    if ".studio_links" not in m.path
+                ]
                 custom_models = (
-                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + _scan_hf_cache(folder_path)
-                    + _scan_lmstudio_dir(folder_path)
+                    _generic + _scan_ollama_dir(folder_path)
                 )[:_MAX_MODELS_PER_FOLDER]
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
@@ -573,6 +695,57 @@ async def remove_scan_folder_endpoint(
     remove_scan_folder(folder_id)
     logger.info("Scan folder removed: id=%s", folder_id)
     return {"ok": True}
+
+
+@router.get("/recommended-folders")
+async def get_recommended_folders(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return well-known model directories that exist on this machine.
+
+    Lightweight alternative to ``browse-folders`` for showing quick-pick
+    chips without the overhead of enumerating a directory tree.  Returns
+    paths that actually exist on disk (HF cache, LM Studio, Ollama,
+    ``~/models``, etc.) so the frontend can offer them as one-click
+    "Recommended" shortcuts in the Custom Folders section.
+    """
+    from utils.paths.storage_roots import lmstudio_model_dirs
+
+    folders: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: Optional[Path]) -> None:
+        if p is None:
+            return
+        try:
+            resolved = str(p.resolve())
+        except OSError:
+            return
+        if resolved in seen:
+            return
+        if Path(resolved).is_dir():
+            seen.add(resolved)
+            folders.append(resolved)
+
+    # LM Studio model directories
+    try:
+        for p in lmstudio_model_dirs():
+            _add(p)
+    except Exception:
+        pass
+
+    # Ollama model directories
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        _add(Path(ollama_env).expanduser())
+    for candidate in (
+        Path.home() / ".ollama" / "models",
+        Path("/usr/share/ollama/.ollama/models"),
+        Path("/var/lib/ollama/.ollama/models"),
+    ):
+        _add(candidate)
+
+    return {"folders": folders}
 
 
 # Heuristic ceiling on how many children to stat when checking whether a

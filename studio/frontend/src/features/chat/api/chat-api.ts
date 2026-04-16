@@ -262,6 +262,12 @@ export interface BrowseFoldersResponse {
   model_files_here?: number;
 }
 
+export async function listRecommendedFolders(): Promise<string[]> {
+  const response = await authFetch("/api/models/recommended-folders");
+  const data = await parseJsonOrThrow<{ folders: string[] }>(response);
+  return data.folders;
+}
+
 export async function browseFolders(
   path?: string,
   showHidden = false,
