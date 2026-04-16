@@ -109,6 +109,16 @@ FORCE_FLOAT32 = [
     "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
 ]
 
+global FORCE_LOGIT_UPCAST
+# Forces float32 for the hidden_states @ lm_head matmul in RL training.
+# Prevents fp16 overflow / NaN in the GRPO logit projection for models
+# with large hidden state magnitudes.  Read by unsloth_zoo via
+# UNSLOTH_FORCE_LOGIT_UPCAST env var.
+FORCE_LOGIT_UPCAST = [
+    "gemma4,",  # Gemma-4 fp16 can NaN in RL training
+    "gemma4text",
+]
+
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
 
@@ -1372,6 +1382,17 @@ class FastModel(FastBaseModel):
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
+                break
+        # Set logit matmul upcast flag for RL training (Gemma-4 etc)
+        os.environ["UNSLOTH_FORCE_LOGIT_UPCAST"] = "0"
+        global FORCE_LOGIT_UPCAST
+        for disable_name in FORCE_LOGIT_UPCAST:
+            if (
+                disable_name.lower()
+                == model_type_arch.lower().replace("-", "").replace("_", "")
+                or disable_name.lower() in model_types_all
+            ) and (dtype == torch.float16):
+                os.environ["UNSLOTH_FORCE_LOGIT_UPCAST"] = "1"
                 break
         # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
