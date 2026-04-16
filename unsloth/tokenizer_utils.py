@@ -765,19 +765,13 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
 
     if is_sharegpt:
         base_msgs = [{"from": "human", "value": "Hi"}]
-        sent_a_msgs = base_msgs + [
-            {"from": "gpt", "value": _RENDER_DIFF_SENTINEL_A}
-        ]
-        sent_b_msgs = base_msgs + [
-            {"from": "gpt", "value": _RENDER_DIFF_SENTINEL_B}
-        ]
+        sent_a_msgs = base_msgs + [{"from": "gpt", "value": _RENDER_DIFF_SENTINEL_A}]
+        sent_b_msgs = base_msgs + [{"from": "gpt", "value": _RENDER_DIFF_SENTINEL_B}]
         # Negative cross-check: another *user* turn instead of an assistant
         # turn. If the derived prefix also appears before a user-role sentinel,
         # the template does not distinguish assistant turns from user turns
         # (e.g. a {% set %}-only template) and we must reject.
-        sent_c_msgs = base_msgs + [
-            {"from": "human", "value": _RENDER_DIFF_SENTINEL_C}
-        ]
+        sent_c_msgs = base_msgs + [{"from": "human", "value": _RENDER_DIFF_SENTINEL_C}]
     else:
         base_msgs = [{"role": "user", "content": "Hi"}]
         sent_a_msgs = base_msgs + [
@@ -786,9 +780,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         sent_b_msgs = base_msgs + [
             {"role": "assistant", "content": _RENDER_DIFF_SENTINEL_B}
         ]
-        sent_c_msgs = base_msgs + [
-            {"role": "user", "content": _RENDER_DIFF_SENTINEL_C}
-        ]
+        sent_c_msgs = base_msgs + [{"role": "user", "content": _RENDER_DIFF_SENTINEL_C}]
 
     # Trim trailing whitespace / Jinja comments that live AFTER the last
     # {% endfor %}/{% endif %}. Without this, a template like
@@ -801,7 +793,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     probe_template = chat_template
     end = _find_end_position(chat_template)
     if end is not None:
-        after = chat_template[end["end"]:]
+        after = chat_template[end["end"] :]
         if _RE_JINJA_COMMENT.sub("", after).strip() == "":
             probe_template = chat_template[: end["end"]]
 
@@ -841,8 +833,8 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     if not (out_a.startswith(out_base) and out_b.startswith(out_base)):
         return None
 
-    tail_a = out_a[len(out_base):]
-    tail_b = out_b[len(out_base):]
+    tail_a = out_a[len(out_base) :]
+    tail_b = out_b[len(out_base) :]
 
     # Both tails must be non-empty (template actually renders something for
     # an assistant turn).
@@ -850,14 +842,15 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         return None
 
     import os as _os
+
     prefix = _os.path.commonprefix([tail_a, tail_b])
 
     # Guard B: after stripping the common prefix, each tail must begin with
     # its own sentinel. This confirms the divergence point is exactly the
     # content-insertion site, not some earlier difference in the output.
     if not (
-        tail_a[len(prefix):].startswith(_RENDER_DIFF_SENTINEL_A)
-        and tail_b[len(prefix):].startswith(_RENDER_DIFF_SENTINEL_B)
+        tail_a[len(prefix) :].startswith(_RENDER_DIFF_SENTINEL_A)
+        and tail_b[len(prefix) :].startswith(_RENDER_DIFF_SENTINEL_B)
     ):
         return None
 
@@ -872,7 +865,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     # role distinguishes turns (e.g. Gemma's `raise_exception` on
     # non-alternating roles), so we accept the derived prefix.
     if out_user_c is not None and out_user_c.startswith(out_base):
-        tail_c = out_user_c[len(out_base):]
+        tail_c = out_user_c[len(out_base) :]
         if tail_c.startswith(prefix) and prefix != "":
             return None
 
