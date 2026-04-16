@@ -40,6 +40,7 @@ import {
   Search01Icon,
   NewReleasesIcon,
   PackageIcon,
+  PowerIcon,
   PencilEdit02Icon,
   Settings02Icon,
   ZapIcon,
@@ -65,7 +66,9 @@ import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
 import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { ShutdownDialog } from "@/components/shutdown-dialog";
+import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
@@ -165,14 +168,16 @@ export function AppSidebar() {
 
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const [shutdownOpen, setShutdownOpen] = useState(false);
 
-  // Chat collapsible state — open by default, syncs with route
+  // Chat collapsible state — open by default, auto-expand on route entry
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
-  const effectiveChatOpen = isChatRoute || chatOpen;
-  const effectiveRunsOpen = isStudioRoute || runsOpen;
+
+  useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
+  useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
 
@@ -356,9 +361,9 @@ export function AppSidebar() {
           <div className="my-2" />
         </SidebarGroup>
 
-        {/* Recent Chats — only on /chat */}
-        {isChatRoute && chatItems.length > 0 && (
-          <Collapsible open={effectiveChatOpen} onOpenChange={setChatOpen} asChild>
+        {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
+        {!isStudioRoute && chatItems.length > 0 && (
+          <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-3 py-0">
             <SidebarGroupLabel className="pt-3.5 pb-1.5 pl-3 pr-2" asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
@@ -409,7 +414,7 @@ export function AppSidebar() {
 
         {/* Recent Runs */}
         {isStudioRoute && runItems.length > 0 && !chatOnly && (
-          <Collapsible open={effectiveRunsOpen} onOpenChange={setRunsOpen} asChild>
+          <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-3 py-0">
             <SidebarGroupLabel className="pt-3.5 pb-1.5 pl-3 pr-2" asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
@@ -510,7 +515,7 @@ export function AppSidebar() {
               <DropdownMenuContent
                 side="top"
                 align="start"
-                className="w-56"
+                className="w-[15rem]"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem
@@ -571,20 +576,24 @@ export function AppSidebar() {
                       <span>What's New</span>
                     </a>
                   </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <a
+                      href="https://github.com/unslothai/unsloth/issues"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <HugeiconsIcon
+                        icon={MessageSearch01Icon}
+                        className="size-4"
+                      />
+                      <span>Feedback</span>
+                    </a>
+                  </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <a
-                    href="https://github.com/unslothai/unsloth/issues"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <HugeiconsIcon
-                      icon={MessageSearch01Icon}
-                      className="size-4"
-                    />
-                    <span>Feedback</span>
-                  </a>
+                <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
+                  <HugeiconsIcon icon={PowerIcon} className="size-4" />
+                  <span>Shutdown Studio</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -593,6 +602,11 @@ export function AppSidebar() {
       </SidebarFooter>
     </Sidebar>
     <ChatSearchDialog />
+    <ShutdownDialog
+      open={shutdownOpen}
+      onOpenChange={setShutdownOpen}
+      onAfterShutdown={removeTrainingUnloadGuard}
+    />
     </>
   );
 }
