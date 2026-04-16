@@ -438,8 +438,8 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         )
 
     # Fallback: namespace by a hash of the ollama_dir so two different
-    # Ollama roots don't collide. Use sha1 for speed -- this is a cache
-    # path, not a security boundary.
+    # Ollama roots don't collide. This is a cache path, not a security
+    # boundary.
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except OSError:
@@ -471,7 +471,7 @@ def _scan_ollama_dir(
     ``library`` (official models), but users can pull from custom
     namespaces (``mradermacher/llama3``) or entirely different hosts
     (``hf.co/org/repo:tag``).  We iterate all manifest files via
-    ``rglob`` so every layout is discovered.
+    targeted ``glob`` patterns so every layout is discovered.
 
     Each manifest is JSON with a ``layers`` array. The layer with
     ``mediaType == "application/vnd.ollama.image.model"`` contains the
@@ -487,7 +487,7 @@ def _scan_ollama_dir(
     the manifest path) so that ``detect_mmproj_file`` only sees the
     projector for *that* model.  Links are created as symlinks when
     possible, falling back to hardlinks (Windows without Developer
-    Mode) or file copies as a last resort.  The link dir lives under
+    Mode) as a last resort.  The link dir lives under
     ``<ollama_dir>/.studio_links/`` when writable, otherwise under
     Studio's own cache directory.
     """
