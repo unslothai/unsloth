@@ -1147,6 +1147,23 @@ async def openai_chat_completions(
         and not payload.enable_tools
         and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
     ):
+        # Preserve the vision guard that would otherwise run in the
+        # non-passthrough path below: text-only tool-capable GGUFs
+        # should return a clear 400 here rather than forwarding the
+        # image to llama-server and surfacing an opaque upstream error.
+        if not llama_backend.is_vision and (
+            payload.image_base64
+            or any(
+                isinstance(m.content, list)
+                and any(isinstance(p, ImageContentPart) for p in m.content)
+                for m in payload.messages
+            )
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Image provided but current GGUF model does not support vision.",
+            )
+
         cancel_event = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         if payload.stream:
