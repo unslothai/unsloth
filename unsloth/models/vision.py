@@ -190,6 +190,7 @@ def _attach_bnb_multidevice_hooks(
         }
     except Exception as exc:
         import warnings
+
         warnings.warn(
             "Unsloth: Failed to determine CUDA devices from model parameters, "
             f"so multi-GPU hooks cannot be attached. ({type(exc).__name__}: {exc})",
@@ -251,7 +252,9 @@ def _attach_bnb_multidevice_hooks(
             # add a root-level AlignDevicesHook to route inputs.
             if len(cuda_devs) == 1 and not hasattr(model, "_hf_hook"):
                 main_device = next(iter(cuda_devs))
-                add_hook_to_module(model, AlignDevicesHook(execution_device = main_device))
+                add_hook_to_module(
+                    model, AlignDevicesHook(execution_device = main_device)
+                )
 
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
