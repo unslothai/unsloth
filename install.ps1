@@ -100,20 +100,153 @@ function Install-UnslothStudio {
     Write-Host ""
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
+    # Merge order:
+    #   1. Activated venv Scripts dir (only if $env:VIRTUAL_ENV is set) so an
+    #      explicitly-activated venv keeps precedence.
+    #   2. Machine, then User PATH freshly read from registry so a tool we
+    #      just installed wins over any stale shim still in $env:Path.
+    #   3. Current $env:Path as fallback so process-only entries that nothing
+    #      else covers are not lost.
+    # Dedup compares both raw and expanded forms so %VAR% references don't
+    # survive twice (once as %VAR%\foo and once as the expanded literal).
     function Refresh-SessionPath {
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
-        $merged  = "$machine;$user;$env:Path"
+        $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts" } else { $null }
+        $sources = @()
+        if ($venvScripts) { $sources += $venvScripts }
+        $sources += @($machine, $user, $env:Path)
+        $merged = ($sources | Where-Object { $_ }) -join ";"
         $seen    = @{}
-        $unique  = @()
+        $unique  = New-Object System.Collections.Generic.List[string]
         foreach ($p in $merged -split ";") {
-            $key = $p.TrimEnd("\").ToLowerInvariant()
-            if ($key -and -not $seen.ContainsKey($key)) {
-                $seen[$key] = $true
-                $unique += $p
+            $rawKey = $p.Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+            $expKey = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+            if ($rawKey -and -not $seen.ContainsKey($rawKey) -and -not $seen.ContainsKey($expKey)) {
+                $seen[$rawKey] = $true
+                if ($expKey -and $expKey -ne $rawKey) { $seen[$expKey] = $true }
+                $unique.Add($p)
             }
         }
         $env:Path = $unique -join ";"
+    }
+
+    # ── Helper: safely add a directory to the persistent User PATH ──
+    # Uses direct registry access to preserve REG_EXPAND_SZ type
+    # (avoids .NET SetEnvironmentVariable bug that converts to REG_SZ).
+    #
+    # Position: 'Append' (default) adds $Directory to the END of the persisted
+    # User PATH so existing user tools (e.g. system python, pip) keep taking
+    # precedence in new shells. This matches rustup/cargo/nvm/pyenv/uv behavior
+    # and avoids silently hijacking resolution of common executables. Pass
+    # 'Prepend' only when a caller truly needs the new entry to win over
+    # existing ones at registry scope. In-session precedence should be handled
+    # by an inline $env:Path = "$Dir;$env:Path" prepend instead.
+    function Add-ToUserPath {
+        param(
+            [Parameter(Mandatory = $true)][string]$Directory,
+            [ValidateSet('Append','Prepend')]
+            [string]$Position = 'Append'
+        )
+        try {
+            $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+            try {
+                $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                # Explicit string[] cast: a single-entry split otherwise collapses
+                # to a scalar string, which then gets char-indexed and breaks the
+                # partition loop below.
+                [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+                # Normalize both the raw and expanded forms of the new directory
+                # so dedup catches mirror-image cases: PATH holding %USERPROFILE%\foo
+                # vs Directory passed as C:\Users\me\foo, and vice versa.
+                $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                # Partition existing entries into "kept" (not our dir) and "dropped"
+                # (matches our dir). Track match indices so we can distinguish
+                # "already at position 0" from "present but at a late position".
+                $kept = New-Object System.Collections.Generic.List[string]
+                $matchIndices = New-Object System.Collections.Generic.List[int]
+                for ($i = 0; $i -lt $entries.Count; $i++) {
+                    $stripped = $entries[$i].Trim().Trim('"')
+                    $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
+                    $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
+                    $isMatch = ($rawNorm -and ($rawNorm -eq $normalDir -or $rawNorm -eq $expNormalDir)) -or
+                               ($expNorm -and ($expNorm -eq $normalDir -or $expNorm -eq $expNormalDir))
+                    if ($isMatch) {
+                        $matchIndices.Add($i)
+                        continue
+                    }
+                    $kept.Add($entries[$i])
+                }
+                $alreadyPresent = $matchIndices.Count -gt 0
+                # Append semantics: if the entry is already anywhere in PATH we
+                # leave it untouched (idempotent, never reorder user-curated order).
+                if ($alreadyPresent -and $Position -eq 'Append') {
+                    return $false
+                }
+                # Prepend semantics: if the entry is already at position 0 with
+                # exactly one copy, preserve the user's existing casing/form and
+                # no-op. Only rebuild when a reorder or dedup is actually needed.
+                if ($alreadyPresent -and $Position -eq 'Prepend' -and
+                    $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
+                    return $false
+                }
+                # One-time backup of the pristine User PATH before our first
+                # mutation. Stored under HKCU\Software\Unsloth so a wiped/clobbered
+                # PATH can be recovered. Idempotent: existing backup is preserved.
+                if ($rawPath) {
+                    try {
+                        $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+                        try {
+                            $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                            if (-not $existingBackup) {
+                                $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                            }
+                        } finally {
+                            $backupKey.Close()
+                        }
+                    } catch { }
+                }
+                if (-not $rawPath) {
+                    Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
+                }
+                $newPath = if ($rawPath) {
+                    if ($Position -eq 'Prepend') {
+                        (@($Directory) + $kept) -join ';'
+                    } else {
+                        ($kept + @($Directory)) -join ';'
+                    }
+                } else {
+                    $Directory
+                }
+                # Prepend idempotency: if the new directory was already at
+                # position 0 (and no duplicates existed elsewhere) the composed
+                # string matches rawPath byte-for-byte. Skip the registry write
+                # so we do not broadcast an unnecessary WM_SETTINGCHANGE.
+                if ($newPath -ceq $rawPath) {
+                    return $false
+                }
+                $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                # Broadcast WM_SETTINGCHANGE so other processes pick up the change.
+                # Use [NullString]::Value (not $null) for the delete call so the
+                # sentinel crosses into .NET as a real null reference -- on
+                # PowerShell 7.5+ / .NET 9, a bare $null here can be coerced to
+                # an empty string, which sets the dummy variable to "" instead
+                # of deleting it and leaves UnslothPathRefresh_XXXXXXXX in
+                # HKCU\Environment permanently.
+                try {
+                    $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                    [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                    [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
+                } catch { }
+                return $true
+            } finally {
+                $regKey.Close()
+            }
+        } catch {
+            Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+            return $false
+        }
     }
 
     function step {
@@ -945,18 +1078,80 @@ shell.Run cmd, 0, False
 
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
-    # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
-    $ScriptsDir = Join-Path $VenvDir "Scripts"
-    $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
-        if ($UserPath) {
-            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir;$UserPath", "User")
-        } else {
-            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
+    # ── Expose the `unsloth` command via a single-purpose shim directory ──
+    # The venv's Scripts dir holds python.exe and pip.exe alongside unsloth.exe,
+    # so adding that dir to PATH (at either position) has unwanted side effects:
+    # Prepend hijacks the user's system python / pip in every future shell;
+    # Append makes the installer's newly-built unsloth.exe lose to any older
+    # unsloth.exe the user already had earlier on PATH. Both are bad.
+    #
+    # Instead we create a small directory that contains only the unsloth
+    # launcher (hardlinked or copied from the venv's Scripts\unsloth.exe),
+    # and Prepend just that directory. Benefits over a .cmd wrapper:
+    #   - no batch %...% expansion of user arguments (e.g. prompts with `%`)
+    #   - works in Git Bash / MSYS2 / POSIX-style shells on Windows that do
+    #     not resolve .cmd by bare name
+    #   - no source encoding concerns on non-ASCII profile paths
+    #   - programmatic callers (subprocess.run, child_process.execFile) hit
+    #     the native executable directly instead of shelling into cmd.exe
+    # We try a hardlink first so pip upgrades inside the venv propagate
+    # automatically (same inode). If the filesystem or volume rejects the
+    # hardlink we fall back to a plain copy, which the next install run
+    # will refresh.
+    $ShimDir = Join-Path $StudioHome "bin"
+    New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
+    $ShimExe = Join-Path $ShimDir "unsloth.exe"
+    # Wrap the whole remove/link/copy sequence in a try/catch so a locked
+    # launcher does not crash the installer. The common case is a re-run
+    # while the user still has `unsloth studio` open: the existing shim is
+    # held open by the running process, Remove-Item refuses (and under the
+    # script's $ErrorActionPreference this would otherwise be fatal). When
+    # that happens the existing shim is perfectly usable, so we log and
+    # keep going instead of aborting the install.
+    $shimUpdated = $false
+    try {
+        if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force -ErrorAction Stop }
+        try {
+            New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+        } catch {
+            # Hardlink unavailable (cross-volume, non-NTFS, permissions). Copy
+            # is self-contained; future pip upgrades inside the venv will not
+            # update the copy until the user re-runs the installer.
+            Copy-Item -Path $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop
         }
-        Refresh-SessionPath
-        step "path" "added unsloth to PATH"
+        $shimUpdated = $true
+    } catch {
+        if (Test-Path $ShimExe) {
+            Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
+            Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
+            Write-Host "       Close Studio and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
+            Write-Host "       Continuing with the existing launcher." -ForegroundColor Yellow
+        } else {
+            Write-Host "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
+        }
     }
+    # Only add the shim directory to PATH when the launcher actually exists
+    # in it. Otherwise a total shim-creation failure on a fresh install (e.g.
+    # antivirus blocks unsloth.exe, disk full, restrictive FS permissions)
+    # would prepend an empty directory to User PATH and leave the user with
+    # an install that reports success but cannot resolve `unsloth` in a new
+    # shell. Also gate the "added to PATH" step message on both a successful
+    # shim (re)create AND a fresh PATH insertion, so idempotent re-runs stay
+    # quiet.
+    $pathAdded = $false
+    if (Test-Path $ShimExe) {
+        $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+    }
+    if ($shimUpdated -and $pathAdded) {
+        step "path" "added unsloth launcher to PATH"
+    }
+    # Sync the current session unconditionally so re-runs in stale terminals
+    # see the shim, and so PATH entries that the studio/setup.ps1 subprocess
+    # persisted (cmake, nvcc, Python Scripts) are visible in this parent
+    # process before it returns control to the user's shell.
+    Refresh-SessionPath
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.
