@@ -105,10 +105,15 @@ FORCE_FLOAT32 = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
-    "gemma4,",  # Add comma bc gemma4 will match gemma4_text
-    "gemma4text",  # Gemma4TextModel (standalone text-only Gemma4)
     "gpt_oss",
     "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
+]
+
+# Models that must use bfloat16 instead of float16.
+# torch.compile backward graphs overflow fp16 intermediates for these models.
+FORCE_BFLOAT16 = [
+    "gemma4,",  # Add comma bc gemma4 will match gemma4_text
+    "gemma4text",  # Gemma4TextModel (standalone text-only Gemma4)
 ]
 
 global DISABLE_COMPILE_MODEL_NAMES
@@ -1374,6 +1379,20 @@ class FastModel(FastBaseModel):
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
+                break
+        # Switch fp16 to bf16 for models whose torch.compile backward overflows fp16
+        global FORCE_BFLOAT16
+        for disable_name in FORCE_BFLOAT16:
+            if (
+                disable_name.lower()
+                == model_type_arch.lower().replace("-", "").replace("_", "")
+                or disable_name.lower() in model_types_all
+            ) and dtype == torch.float16 and SUPPORTS_BFLOAT16:
+                logger.warning_once(
+                    f"Unsloth: {model_type_arch} does not support float16 training. "
+                    f"Switching to bfloat16."
+                )
+                dtype = torch.bfloat16
                 break
         # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
