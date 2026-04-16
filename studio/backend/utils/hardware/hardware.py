@@ -831,7 +831,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             # to see the expected number of devices, so size the enumeration
             # by whatever the backend currently exposes.
             visible_count = (
-                len(parent_ids) if parent_ids else (_torch_get_physical_gpu_count() or 0)
+                len(parent_ids)
+                if parent_ids
+                else (_torch_get_physical_gpu_count() or 0)
             )
             torch_indices = list(range(visible_count))
             index_kind = "relative"
