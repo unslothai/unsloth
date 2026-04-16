@@ -537,7 +537,7 @@ export function ChatPage(): ReactElement {
   );
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
-  const { setPinned } = useSidebar();
+  const { setPinned, isMobile } = useSidebar();
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
   const enterCompare = useCallback(() => {
@@ -758,7 +758,8 @@ export function ChatPage(): ReactElement {
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <div
           className={cn(
-            "absolute top-0 left-0 right-2 z-30 flex h-11 shrink-0 items-center pl-12 pr-1.5 sm:pl-2 sm:pr-2 bg-background",
+            "absolute top-0 left-0 right-2 z-30 flex h-11 shrink-0 items-center pr-2 bg-background",
+            isMobile ? "pl-12 pr-1.5" : "pl-2",
             view.mode === "compare" && "right-2 left-auto w-auto bg-transparent pl-0 pr-2",
           )}
         >

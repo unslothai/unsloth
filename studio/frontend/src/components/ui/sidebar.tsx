@@ -31,7 +31,6 @@ import { SidebarLeftIcon } from "@hugeicons/core-free-icons"
 const noop = () => {}
 
 const SIDEBAR_WIDTH = "16rem"
-const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
@@ -81,6 +80,14 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+
+  const prevIsMobileRef = React.useRef(isMobile)
+  React.useEffect(() => {
+    if (prevIsMobileRef.current && !isMobile) {
+      setOpenMobile(false)
+    }
+    prevIsMobileRef.current = isMobile
+  }, [isMobile])
 
   // Whether pin mode is active (caller provides pinned + setPinned + togglePinned).
   const hasPinMode = pinnedProp !== undefined && setPinnedProp !== undefined && togglePinnedProp !== undefined
@@ -221,12 +228,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) p-0 [&>button]:hidden"
-          style={
-            {
-              "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
-            } as React.CSSProperties
-          }
+          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[18rem] p-0 [&>button]:hidden"
           side={side}
         >
           <SheetHeader className="sr-only">
@@ -242,7 +244,7 @@ function Sidebar({
   return (
     <div
       className={cn(
-        "group peer text-sidebar-foreground hidden md:block relative shrink-0 transition-[width] duration-200 ease-linear",
+        "group peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
         hasPinMode && !pinned && "w-(--sidebar-width-icon)",
       )}
@@ -256,7 +258,7 @@ function Sidebar({
       <div
         data-slot="sidebar-gap"
         className={cn(
-          "transition-[width] duration-200 ease-linear relative bg-transparent shrink-0",
+          "relative bg-transparent shrink-0",
           "group-data-[side=right]:rotate-180",
           hasPinMode
             ? cn(
@@ -284,12 +286,12 @@ function Sidebar({
           hasPinMode
             ? cn(
                 // Pin mode: always push content, full height.
-                "absolute top-0 bottom-0 hidden w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 md:flex",
+                "absolute top-0 bottom-0 flex w-(--sidebar-width) data-[side=left]:left-0",
                 "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
               )
             : cn(
                 // Legacy mode: fixed to viewport (original shadcn behavior).
-                "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+                "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
               ),
           // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
@@ -435,7 +437,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
       data-slot="sidebar-content"
       data-sidebar="content"
       className={cn(
-        "no-scrollbar gap-2 flex min-h-0 flex-1 flex-col overflow-auto group-data-[collapsible=icon]:overflow-hidden",
+        "gap-2 flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden group-data-[collapsible=icon]:overflow-hidden [&>*]:shrink-0",
         className
       )}
       {...props}
@@ -469,7 +471,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        "text-[#94a3b8] dark:text-[#64748b] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-[10px] font-semibold uppercase tracking-[0.08em] transition-[margin,opacity] duration-200 ease-linear group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-2 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
+        "text-[#94a3b8] dark:text-[#64748b] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-[10px] font-semibold uppercase tracking-[0.08em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-2 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
         className
       )}
       {...props}

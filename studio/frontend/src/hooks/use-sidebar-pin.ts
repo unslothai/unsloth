@@ -6,11 +6,13 @@ import { useCallback, useSyncExternalStore } from "react";
 const PINNED_KEY = "sidebar_pinned";
 
 function loadPinned(): boolean {
-  if (typeof window === "undefined") return false;
+  if (typeof window === "undefined") return true;
   try {
-    return window.localStorage.getItem(PINNED_KEY) === "true";
+    const raw = window.localStorage.getItem(PINNED_KEY);
+    if (raw === null) return true;
+    return raw === "true";
   } catch {
-    return false;
+    return true;
   }
 }
 

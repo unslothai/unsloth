@@ -49,8 +49,8 @@ import {
 import {
   Tooltip,
   TooltipContent,
-  TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, Moon, PanelLeft, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
@@ -211,7 +211,12 @@ export function AppSidebar() {
   const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
-  const activeThreadId = (search.thread as string | undefined) ?? (search.compare as string | undefined) ?? storeThreadId ?? undefined;
+  const activeThreadId = isChatRoute
+    ? (search.thread as string | undefined) ??
+      (search.compare as string | undefined) ??
+      storeThreadId ??
+      undefined
+    : undefined;
 
   // Training runs
   const { items: runItems, refresh: refreshRuns } = useTrainingHistorySidebarItems(!chatOnly);
@@ -254,43 +259,38 @@ export function AppSidebar() {
             />
           </Link>
           {!isMobile && (
-            <button
-              type="button"
-              onClick={togglePinned}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              title="Close sidebar"
-              aria-label="Close sidebar"
-            >
-              <PanelLeft strokeWidth={1.5} className="size-4" />
-            </button>
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={togglePinned}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close sidebar"
+                >
+                  <PanelLeft strokeWidth={1.5} className="size-4" />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                Close sidebar
+              </TooltipContent>
+            </Tooltip>
           )}
         </div>
 
         {/* Collapsed: sticker with hover-swap to open toggle */}
         {!isMobile && (
-          <div className="hidden group-data-[collapsible=icon]:flex relative group/logo items-center justify-center h-9 w-full">
-            <Link
-              to={chatOnly ? "/chat" : "/studio"}
-              onClick={closeMobileIfOpen}
-              className="flex items-center justify-center transition-opacity group-hover/logo:opacity-0 pointer-events-auto group-hover/logo:pointer-events-none"
-              aria-label="Unsloth home"
-            >
-              <img src="/sticker.png" alt="Unsloth" className="size-7" />
-            </Link>
+          <div className="hidden group-data-[collapsible=icon]:flex items-center justify-center h-9 w-full">
             <Tooltip>
-              <TooltipTrigger asChild>
+              <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="absolute inset-0 flex items-center justify-center rounded-md opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/logo:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Open sidebar"
                 >
-                  <PanelLeft
-                    strokeWidth={1.5}
-                    className="size-5 text-sidebar-foreground/70"
-                  />
+                  <PanelLeft strokeWidth={1.5} className="size-4" />
                 </button>
-              </TooltipTrigger>
+              </TooltipPrimitive.Trigger>
               <TooltipContent side="right" sideOffset={8}>
                 Open sidebar
               </TooltipContent>
@@ -299,52 +299,51 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarContent className="gap-0">
-        {/* Top actions: New Chat + Compare */}
-        <SidebarGroup className="group-data-[collapsible=icon]:p-0 p-0 pt-1">
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <NavItem
-                icon={PencilEdit02Icon}
-                label="New Chat"
-                active={false}
-                disabled={chatDisabled}
-                onClick={() => {
-                  if (chatDisabled) return;
-                  setActiveThreadId(null);
-                  navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-                  closeMobileIfOpen();
-                }}
-              />
-              <NavItem
-                icon={ColumnInsertIcon}
-                label="Compare"
-                active={!!search.compare}
-                disabled={chatDisabled}
-                dataTour="chat-compare"
-                onClick={() => {
-                  if (chatDisabled) return;
-                  setActiveThreadId(null);
-                  navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-                  closeMobileIfOpen();
-                }}
-              />
-              <NavItem
-                icon={Search01Icon}
-                label="Search"
-                active={false}
-                disabled={chatDisabled}
-                onClick={() => {
-                  if (chatDisabled) return;
-                  useChatSearchStore.getState().open();
-                  closeMobileIfOpen();
-                }}
-              />
-            </SidebarMenu>
-          </SidebarGroupContent>
-          <div className="my-2" />
-        </SidebarGroup>
+      <SidebarGroup className="group-data-[collapsible=icon]:p-0 p-0 pt-1 shrink-0">
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <NavItem
+              icon={PencilEdit02Icon}
+              label="New Chat"
+              active={false}
+              disabled={chatDisabled}
+              onClick={() => {
+                if (chatDisabled) return;
+                setActiveThreadId(null);
+                navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+                closeMobileIfOpen();
+              }}
+            />
+            <NavItem
+              icon={ColumnInsertIcon}
+              label="Compare"
+              active={!!search.compare}
+              disabled={chatDisabled}
+              dataTour="chat-compare"
+              onClick={() => {
+                if (chatDisabled) return;
+                setActiveThreadId(null);
+                navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+                closeMobileIfOpen();
+              }}
+            />
+            <NavItem
+              icon={Search01Icon}
+              label="Search"
+              active={false}
+              disabled={chatDisabled}
+              onClick={() => {
+                if (chatDisabled) return;
+                useChatSearchStore.getState().open();
+                closeMobileIfOpen();
+              }}
+            />
+          </SidebarMenu>
+        </SidebarGroupContent>
+        <div className="my-2" />
+      </SidebarGroup>
 
+      <SidebarContent className="gap-0 overflow-y-auto overscroll-contain min-h-0">
         {/* Navigate (no header) */}
         <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:p-0 p-0">
           <SidebarGroupContent>
@@ -388,7 +387,7 @@ export function AppSidebar() {
         </SidebarGroup>
 
         {/* Recent Chats */}
-        {!isStudioRoute && chatItems.length > 0 && (
+        {chatItems.length > 0 && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
             <SidebarGroupLabel asChild>
@@ -398,7 +397,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-            <SidebarGroupContent className="overflow-y-auto">
+            <SidebarGroupContent>
               <SidebarMenu>
                 {chatItems.map((item) => (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
@@ -449,7 +448,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="overflow-y-auto">
+              <SidebarGroupContent>
                 <SidebarMenu>
                   {runItems.map((run) => {
                     const isActiveRun =

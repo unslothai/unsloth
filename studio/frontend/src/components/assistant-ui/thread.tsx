@@ -78,7 +78,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
     >
       <ThreadPrimitive.Viewport
         className={cn(
-          "aui-thread-viewport relative flex h-0 min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4",
+          "aui-thread-viewport relative flex h-0 min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-5",
           hideComposer ? "pt-4" : "pt-[56px]",
         )}
       >
@@ -124,13 +124,13 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
       </ThreadPrimitive.Viewport>
       {!hideComposer && (
         <AuiIf condition={({ thread }) => !thread.isEmpty}>
-          <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-2 z-20">
+          <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-2 z-20">
             <div
               aria-hidden
               className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
             />
-            <div className="relative px-4 pb-2">
-              <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width) px-4">
+            <div className="relative px-5 pb-2">
+              <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
                 <ComposerAnimated />
               </div>
               <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
@@ -614,7 +614,7 @@ const GeneratingIndicator: FC = () => {
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15px] duration-150"
+      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] duration-150"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
@@ -767,7 +767,7 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15px] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
@@ -777,7 +777,7 @@ const UserMessage: FC = () => {
         <div className="aui-user-message-content wrap-break-word w-fit rounded-2xl bg-muted px-4 py-2.5 text-foreground">
           <MessagePrimitive.Parts />
         </div>
-        <div className="flex min-h-6">
+        <div className="mt-1 flex min-h-6">
           <UserActionBar />
         </div>
       </div>
@@ -791,7 +791,7 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-muted-foreground"
+      className="aui-user-action-bar-root -mr-1 flex gap-1 text-muted-foreground"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>

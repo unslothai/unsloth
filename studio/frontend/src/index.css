@@ -488,6 +488,14 @@
 	background: var(--sidebar);
 }
 
+[data-sidebar="content"] {
+	scrollbar-color: oklch(0.5 0 0 / 0.7) transparent;
+}
+
+.dark [data-sidebar="content"] {
+	scrollbar-color: oklch(0.72 0 0 / 0.65) transparent;
+}
+
 /*---break---*/
 
 @layer base {
