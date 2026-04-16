@@ -1095,16 +1095,43 @@ shell.Run cmd, 0, False
     $ShimDir = Join-Path $StudioHome "bin"
     New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
     $ShimExe = Join-Path $ShimDir "unsloth.exe"
-    if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force }
+    # Wrap the whole remove/link/copy sequence in a try/catch so a locked
+    # launcher does not crash the installer. The common case is a re-run
+    # while the user still has `unsloth studio` open: the existing shim is
+    # held open by the running process, Remove-Item refuses (and under the
+    # script's $ErrorActionPreference this would otherwise be fatal). When
+    # that happens the existing shim is perfectly usable, so we log and
+    # keep going instead of aborting the install.
+    $shimUpdated = $false
     try {
-        New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+        if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force -ErrorAction Stop }
+        try {
+            New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+        } catch {
+            # Hardlink unavailable (cross-volume, non-NTFS, permissions). Copy
+            # is self-contained; future pip upgrades inside the venv will not
+            # update the copy until the user re-runs the installer.
+            Copy-Item -Path $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop
+        }
+        $shimUpdated = $true
     } catch {
-        # Hardlink unavailable (cross-volume, non-NTFS, permissions). Copy is
-        # self-contained; future pip upgrades inside the venv will not update
-        # the copy until the user re-runs the installer.
-        Copy-Item -Path $UnslothExe -Destination $ShimExe -Force
+        if (Test-Path $ShimExe) {
+            Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
+            Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
+            Write-Host "       Close Studio and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
+            Write-Host "       Continuing with the existing launcher." -ForegroundColor Yellow
+        } else {
+            Write-Host "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
+        }
     }
-    if (Add-ToUserPath -Directory $ShimDir -Position 'Prepend') {
+    # Only advertise the new launcher when it was actually (re)created and
+    # the shim directory was newly added to PATH. If the shim already
+    # existed on disk AND was already on PATH, both conditions are false
+    # and we stay quiet.
+    $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+    if ($shimUpdated -and $pathAdded) {
         step "path" "added unsloth launcher to PATH"
     }
     # Sync the current session unconditionally so re-runs in stale terminals
