@@ -1033,6 +1033,11 @@ shell.Run cmd, 0, False
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
     # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
+    # Use the default Append position here: this venv dir holds python.exe and
+    # pip.exe alongside unsloth.exe, so prepending would silently hijack the
+    # user's system python / pip in every future shell. Desktop shortcuts and
+    # the launch-studio wrapper call unsloth.exe by absolute path, so studio
+    # itself does not rely on this entry winning resolution races.
     $ScriptsDir = Join-Path $VenvDir "Scripts"
     if (Add-ToUserPath -Directory $ScriptsDir) {
         Refresh-SessionPath

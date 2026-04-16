@@ -752,8 +752,11 @@ if (-not $HasCmake) {
         foreach ($d in $cmakeDefaults) {
             if (Test-Path (Join-Path $d "cmake.exe")) {
                 $env:Path = "$d;$env:Path"
-                # Persist to user PATH so Refresh-Environment does not drop it later
-                Add-ToUserPath -Directory $d | Out-Null
+                # Persist to user PATH so Refresh-Environment does not drop it later.
+                # Prepend so the newly-selected cmake wins over any older cmake
+                # entry already in the user PATH (this dir has only cmake.exe, no
+                # python.exe, so prepending does not hijack the user's interpreter).
+                Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
                     Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
@@ -1019,8 +1022,12 @@ $nvccBinDir = Split-Path $NvccPath -Parent
 if ($env:PATH -notlike "*$nvccBinDir*") {
     [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
 }
-# Persist nvcc bin dir to User PATH so it works in new terminals
-if (Add-ToUserPath -Directory $nvccBinDir) {
+# Persist nvcc bin dir to User PATH so it works in new terminals.
+# Prepend so the toolkit we just selected (driver-compatible) wins over any
+# older CUDA bin dir already on the user PATH. Critical for llama.cpp builds:
+# a later Refresh-Environment could otherwise reorder the selected nvcc behind
+# a stale one. No hijack risk since this dir has only CUDA tools, no python.
+if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
     substep "Persisted CUDA bin dir to user PATH"
 }
 
@@ -1181,7 +1188,11 @@ if ($HasPython) {
 # Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
 $ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
-    if (Add-ToUserPath -Directory $ScriptsDir) {
+    # Prepend so the freshly installed `unsloth` console script wins over any
+    # older pip-installed copy already earlier on the user PATH. This dir holds
+    # entry points only (python.exe lives one level up), so prepending does not
+    # hijack the user's python interpreter.
+    if (Add-ToUserPath -Directory $ScriptsDir -Position 'Prepend') {
         # Also add to current process so it's available immediately
         $ProcessPathEntries = $env:PATH.Split(';')
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
