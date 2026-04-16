@@ -42,7 +42,7 @@ def _load_seed_module(monkeypatch: pytest.MonkeyPatch):
     utils_paths = types.ModuleType("utils.paths")
 
     def ensure_dir(path: Path) -> Path:
-        path.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents = True, exist_ok = True)
         return path
 
     utils_paths.ensure_dir = ensure_dir
@@ -106,17 +106,17 @@ def test_unstructured_multi_file_upload_quota_is_server_side(monkeypatch):
         seed._extract_text_from_file = lambda file_path, ext: "ok"
 
         async def do_upload(name: str, payload: bytes, existing_ids: str):
-            upload = UploadFile(filename=name, file=io.BytesIO(payload))
+            upload = UploadFile(filename = name, file = io.BytesIO(payload))
             return await seed.upload_unstructured_file(
-                file=upload,
-                block_id="block1",
-                existing_file_ids=existing_ids,
+                file = upload,
+                block_id = "block1",
+                existing_file_ids = existing_ids,
             )
 
         first = asyncio.run(do_upload("a.txt", b"A" * 9, ""))
         assert first.status == "ok"
 
-        with pytest.raises(HTTPException, match="Total upload limit"):
+        with pytest.raises(HTTPException, match = "Total upload limit"):
             asyncio.run(do_upload("b.txt", b"B" * 9, ""))
 
         raw_total = sum(
