@@ -470,7 +470,8 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                     "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": (
                         round(used_bytes / (1024**3), 2)
-                        if used_bytes is not None else None
+                        if used_bytes is not None
+                        else None
                     ),
                 }
             )
