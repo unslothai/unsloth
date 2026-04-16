@@ -1537,7 +1537,6 @@ async def openai_chat_completions(
         _gguf_sentinel = object()
 
         if payload.stream:
-
             _cancel_keys_nt = (payload.session_id, completion_id)
 
             async def gguf_stream_chunks():

@@ -2343,7 +2343,9 @@ class LlamaCppBackend:
         # Pass enable_thinking per-request for reasoning models
         if self._supports_reasoning and enable_thinking is not None:
             payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-        payload["max_tokens"] = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+        payload["max_tokens"] = (
+            max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+        )
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
@@ -2364,7 +2366,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
@@ -2558,7 +2562,9 @@ class LlamaCppBackend:
             }
             if self._supports_reasoning and enable_thinking is not None:
                 payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-            payload["max_tokens"] = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+            payload["max_tokens"] = (
+                max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+            )
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
@@ -2598,7 +2604,10 @@ class LlamaCppBackend:
                     write = 10,
                     pool = 10,
                 )
-                with httpx.Client(timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)) as client:
+                with httpx.Client(
+                    timeout = stream_timeout,
+                    limits = httpx.Limits(max_keepalive_connections = 0),
+                ) as client:
                     with self._stream_with_retry(
                         client,
                         url,
@@ -3232,7 +3241,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
