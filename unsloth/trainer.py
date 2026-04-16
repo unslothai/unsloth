@@ -381,8 +381,74 @@ def _resolve_trainer_params(trainer_class, init_fn):
             continue
     return set(params.keys())
 
+def _fix_full_finetuning_precision_on_non_bf16_gpu(trainer_kwargs):
+    """
+    Fix for issue #4082.
+
+    When full_finetuning=True on a non-BF16 GPU (V100, T4, P100):
+      - FastLanguageModel loads the model in float32 (not float16)
+      - The standard Unsloth pattern sets fp16=not is_bfloat16_supported() → True
+      - The compiled trainer check fires:
+            not force_float32 and (not float16 and use_fp16) → TypeError
+        because float32 is also "not float16"
+      - The UNSLOTH_FORCE_FLOAT32 escape hatch is useless here because the
+        compiled trainer guards it with "if not full_finetuning"
+
+    Fix: when model is float32 + full finetuning active + non-BF16 hardware,
+    set fp16=False so the check does not fire and training runs in float32.
+    """
+    import os
+    import torch
+    import warnings
+
+    # Only relevant for the full finetuning path
+    if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") != "1":
+        return
+
+    model = trainer_kwargs.get("model")
+    args  = trainer_kwargs.get("args")
+    if model is None or args is None:
+        return
+
+    # Check the actual loaded dtype
+    try:
+        actual_dtype = model.get_input_embeddings().weight.dtype
+    except Exception:
+        return
+
+    # Only act when model is genuinely float32
+    if actual_dtype != torch.float32:
+        return
+
+    # Only act on hardware that doesn't support BF16
+    from unsloth.models._utils import is_bfloat16_supported
+    if is_bfloat16_supported():
+        return
+
+    # Only act if mixed precision was requested
+    wants_fp16 = bool(getattr(args, "fp16", False))
+    wants_bf16 = bool(getattr(args, "bf16", False))
+    if not wants_fp16 and not wants_bf16:
+        return
+
+    # Override: train in pure float32
+    args.fp16 = False
+    args.bf16 = False
+
+    warnings.warn(
+        "Unsloth: GPU (CUDA compute capability "
+        f"{torch.cuda.get_device_capability()}) does not support BFloat16. "
+        "For full finetuning the model was loaded in float32. "
+        "Mixed precision (fp16) has been disabled automatically. "
+        "Training will proceed in pure float32. "
+        "To suppress this warning set fp16=False and bf16=False explicitly. "
+        "(fix for issue #4082)",
+        UserWarning,
+        stacklevel=4,
+    )
 
 def _backwards_compatible_trainer(trainer_class, config_class):
+    
     original_init = trainer_class.__init__
 
     @wraps(original_init)
@@ -449,6 +515,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
+        _fix_full_finetuning_precision_on_non_bf16_gpu(kwargs)
         original_init(self, *args, **kwargs)
 
     return new_init
