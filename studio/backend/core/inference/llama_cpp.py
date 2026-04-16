@@ -383,15 +383,41 @@ class LlamaCppBackend:
             from utils.hardware import get_visible_gpu_utilization
 
             utilization = get_visible_gpu_utilization()
+
+            # Refuse to return relative ordinals. When the backend exposes
+            # the device set via index_kind="relative" (subdevice / wildcard /
+            # UUID masks), those indices are NOT safe to round-trip back into
+            # ZE_AFFINITY_MASK or CUDA_VISIBLE_DEVICES because the parent
+            # process has already hidden the physical ID mapping. Returning
+            # [] lets the caller skip the placement path entirely and
+            # inherit the parent's visibility mask unchanged.
+            if utilization.get("index_kind") not in (None, "physical"):
+                logger.debug(
+                    "Skipping GPU placement: telemetry reports index_kind=%r "
+                    "(not physical)", utilization.get("index_kind"),
+                )
+                return []
+
             gpus: list[tuple[int, int]] = []
             for device in utilization.get("devices", []) or []:
                 index = device.get("index")
-                total_gb = device.get("vram_total_gb") or device.get("total_gb")
-                used_gb = device.get("vram_used_gb") or device.get("used_gb")
+
+                # Use explicit ``is None`` checks -- ``or`` would treat an
+                # idle GPU with vram_used_gb == 0.0 as missing telemetry and
+                # silently drop a perfectly valid free card.
+                total_gb = device.get("vram_total_gb")
+                if total_gb is None:
+                    total_gb = device.get("total_gb")
+
+                used_gb = device.get("vram_used_gb")
+                if used_gb is None:
+                    used_gb = device.get("used_gb")
+
                 if index is None or total_gb is None or used_gb is None:
-                    # Missing telemetry for this device — skip rather than
+                    # Missing telemetry for this device -- skip rather than
                     # invent a free-memory number that drives placement.
                     continue
+
                 free_mib = max(int((float(total_gb) - float(used_gb)) * 1024), 0)
                 gpus.append((int(index), free_mib))
             return sorted(gpus, key = lambda item: item[0])
