@@ -80,7 +80,7 @@ function ModelSelectorTrigger({
         {isLoaded && (
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
-        <span className={isLoaded ? "text-foreground" : "text-muted-foreground"}>
+        <span className={cn("font-semibold", isLoaded ? "text-foreground" : "text-muted-foreground")}>
           {currentModel?.name ?? "Select model..."}
         </span>
         {currentModel?.description && (

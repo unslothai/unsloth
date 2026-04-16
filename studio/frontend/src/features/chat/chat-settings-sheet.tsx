@@ -889,7 +889,7 @@ export function ChatSettingsPanel({
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
             placeholder="You are a helpful assistant..."
-            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle"
+            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle focus-visible:ring-[1px]"
             rows={3}
           />
         </div>

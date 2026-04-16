@@ -52,7 +52,6 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, Moon, PanelLeft, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
 import { usePlatformStore } from "@/config/env";
@@ -74,8 +73,6 @@ function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/chat")) return "chat";
   return null;
 }
-
-const NAV_SPRING = { type: "spring", stiffness: 500, damping: 35, mass: 0.5 } as const;
 
 function runStatusDotClass(status: TrainingRunSummary["status"]): string {
   switch (status) {
@@ -129,13 +126,6 @@ function NavItem({
   return (
     <SidebarMenuItem>
       <div className="relative">
-        {isNav && active && (
-          <motion.div
-            layoutId="sidebar-active-indicator"
-            className="absolute left-0 top-0 bottom-0 w-[3px] rounded-full bg-primary"
-            transition={NAV_SPRING}
-          />
-        )}
         <SidebarMenuButton
           tooltip={label}
           disabled={disabled}
@@ -144,8 +134,8 @@ function NavItem({
           data-tour={dataTour}
           className={
             isNav
-              ? "rounded-none pr-0 pl-4 text-[#475569] dark:text-[#94a3b8] data-active:text-foreground!"
-              : "rounded-none pr-0 pl-4 text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
+              ? "h-8 rounded-lg gap-2.5 px-3 text-[#475569] dark:text-muted-foreground hover:bg-muted! hover:text-foreground! data-active:text-foreground! dark:data-active:text-primary! dark:data-active:font-semibold!"
+              : "h-8 rounded-lg gap-2.5 px-3 text-[#475569] dark:text-muted-foreground hover:bg-muted! hover:text-foreground! data-active:text-foreground! dark:data-active:text-primary! dark:data-active:font-semibold!"
           }
         >
           <HugeiconsIcon icon={icon} strokeWidth={2} className="size-[18px]" />
@@ -218,9 +208,9 @@ export function AppSidebar() {
   return (
     <>
     <Sidebar collapsible="icon" variant="sidebar">
-      <SidebarHeader className="group-data-[collapsible=icon]:px-0">
+      <SidebarHeader className="pl-5 pr-3 pt-[22px] pb-[22px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
-        <div className="flex items-center justify-between gap-2 px-1 py-1 group-data-[collapsible=icon]:hidden">
+        <div className="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
           <Link
             to={chatOnly ? "/chat" : "/studio"}
             onClick={closeMobileIfOpen}
@@ -228,12 +218,12 @@ export function AppSidebar() {
             aria-label="Unsloth home"
           >
             <img
-              src="/blacklogo-c.png"
+              src="/unsloth-beta-black.png"
               alt="Unsloth"
               className="h-7 w-auto dark:hidden"
             />
             <img
-              src="/whitelogo-c.png"
+              src="/unsloth-beta-white.png"
               alt="Unsloth"
               className="hidden h-7 w-auto dark:block"
             />
@@ -279,7 +269,7 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:p-0 p-0 pt-1 shrink-0">
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-3 pt-1 pb-0 shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -297,7 +287,7 @@ export function AppSidebar() {
             <NavItem
               icon={ColumnInsertIcon}
               label="Compare"
-              active={!!search.compare}
+              active={!!search.compare && !chatItems.some((i) => i.id === search.compare)}
               disabled={chatDisabled}
               dataTour="chat-compare"
               onClick={() => {
@@ -325,7 +315,7 @@ export function AppSidebar() {
 
       <SidebarContent className="gap-0 overflow-y-auto overscroll-contain min-h-0">
         {/* Navigate (no header) */}
-        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:p-0 p-0">
+        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-3 py-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
@@ -366,11 +356,11 @@ export function AppSidebar() {
           <div className="my-2" />
         </SidebarGroup>
 
-        {/* Recent Chats */}
-        {chatItems.length > 0 && (
+        {/* Recent Chats — only on /chat */}
+        {isChatRoute && chatItems.length > 0 && (
           <Collapsible open={effectiveChatOpen} onOpenChange={setChatOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
-            <SidebarGroupLabel asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-3 py-0">
+            <SidebarGroupLabel className="pt-3.5 pb-1.5 pl-3 pr-2" asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
                 Recent Chats
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
@@ -383,7 +373,7 @@ export function AppSidebar() {
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
-                      className="rounded-none pl-4 pr-7 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
+                      className="h-8 rounded-lg pl-3 pr-7 text-[13px] font-medium text-[#475569] dark:text-muted-foreground hover:bg-muted! hover:text-foreground! data-active:text-foreground! dark:data-active:text-primary!"
                       onClick={() => {
                         navigate({
                           to: "/chat",
@@ -420,8 +410,8 @@ export function AppSidebar() {
         {/* Recent Runs */}
         {isStudioRoute && runItems.length > 0 && !chatOnly && (
           <Collapsible open={effectiveRunsOpen} onOpenChange={setRunsOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden p-0">
-            <SidebarGroupLabel asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-3 py-0">
+            <SidebarGroupLabel className="pt-3.5 pb-1.5 pl-3 pr-2" asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
                 Recent Runs
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
@@ -440,7 +430,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="h-auto flex-col items-start gap-0.5 py-2 rounded-none pl-4 pr-7 text-[13px] font-medium text-[#475569] dark:text-[#94a3b8] hover:bg-muted! hover:text-foreground! data-active:bg-[oklch(0.94_0_0)]! data-active:text-foreground! dark:data-active:bg-[oklch(0.3_0_0)]!"
+                          className="h-auto flex-col items-start gap-0.5 py-1.5 rounded-lg pl-3 pr-7 text-[13px] font-medium text-[#475569] dark:text-muted-foreground hover:bg-muted! hover:text-foreground! data-active:text-foreground! dark:data-active:text-primary!"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
@@ -504,14 +494,15 @@ export function AppSidebar() {
                   size="lg"
                   className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
                 >
-                  <img
-                    src="/Sloth emojis/sloth rounded.png"
-                    alt="Unsloth"
-                    className="size-8 rounded-lg shrink-0"
-                  />
+                  <div
+                    aria-label="User"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-full border border-sidebar-border bg-primary text-[15px] font-bold text-primary-foreground"
+                  >
+                    U
+                  </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate text-sm font-semibold">Unsloth</span>
-                    <span className="truncate text-[11px] text-muted-foreground">Train</span>
+                    <span className="truncate text-sm font-semibold">User</span>
+                    <span className="truncate text-[11px] text-muted-foreground">Studio</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>

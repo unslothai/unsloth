@@ -211,7 +211,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="base" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-10">
                   <Thread hideComposer={true} hideWelcome={true} />
                 </div>
               </ChatRuntimeProvider>
@@ -231,15 +231,18 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="lora" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-10">
                   <Thread hideComposer={true} hideWelcome={true} />
                 </div>
               </ChatRuntimeProvider>
             </div>
           </div>
         </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
+        <div className="z-20 mx-auto w-full max-w-[44rem] shrink-0 bg-background px-4 pt-2 pb-4">
           <SharedComposer handlesRef={handlesRef} />
+          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+            LLM's can make mistakes. Double-check all responses.
+          </p>
         </div>
       </div>
     </CompareHandlesProvider>
@@ -305,8 +308,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           data-tour="chat-compare-view"
           className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
         >
-          <div className="flex min-h-0 flex-col">
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3">
+          <div className="relative flex min-h-0 flex-col [&_.aui-thread-viewport]:pt-14 [&_.aui-thread-viewport]:px-10">
+            <div className="absolute top-0 left-0 right-3 z-20 flex h-11 items-center gap-2 bg-background px-3">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -320,7 +323,6 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 }
                 onFoldersChange={onFoldersChange}
                 variant="ghost"
-                size="sm"
                 className="max-w-[80%]"
               />
             </div>
@@ -332,14 +334,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model1" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-10">
                   <Thread hideComposer={true} hideWelcome={true} />
                 </div>
               </ChatRuntimeProvider>
             </div>
           </div>
-          <div className="flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l">
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3">
+          <div className="relative flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l [&_.aui-thread-viewport]:pt-14 [&_.aui-thread-viewport]:px-10">
+            <div className="absolute top-0 left-0 right-3 z-20 flex h-11 items-center gap-2 bg-background px-3">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -353,7 +355,6 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 }
                 onFoldersChange={onFoldersChange}
                 variant="ghost"
-                size="sm"
                 className="max-w-[80%]"
               />
             </div>
@@ -365,19 +366,22 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model2" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-10">
                   <Thread hideComposer={true} hideWelcome={true} />
                 </div>
               </ChatRuntimeProvider>
             </div>
           </div>
         </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
+        <div className="z-20 mx-auto w-full max-w-[44rem] shrink-0 bg-background px-4 pt-2 pb-4">
           <SharedComposer
             handlesRef={handlesRef}
             model1={model1}
             model2={model2}
           />
+          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+            LLM's can make mistakes. Double-check all responses.
+          </p>
         </div>
       </div>
     </CompareHandlesProvider>

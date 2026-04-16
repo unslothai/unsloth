@@ -303,7 +303,7 @@ const PendingAudioChip: FC = () => {
 const Composer: FC = () => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <PendingAudioChip />
         <ToolStatusDisplay />
@@ -798,7 +798,7 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-2xl bg-muted px-4 py-2.5 text-foreground">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-2xl rounded-tr-md bg-muted px-4 py-2.5 text-foreground dark:bg-card dark:border dark:border-border">
           <MessagePrimitive.Parts />
         </div>
         <div className="mt-1 flex min-h-6">

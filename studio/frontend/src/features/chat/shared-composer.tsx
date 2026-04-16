@@ -455,7 +455,7 @@ export function SharedComposer({
 
   return (
     <div
-      className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
+      className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
