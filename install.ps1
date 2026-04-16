@@ -227,11 +227,17 @@ function Install-UnslothStudio {
                     return $false
                 }
                 $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                # Broadcast WM_SETTINGCHANGE so other processes pick up the change
+                # Broadcast WM_SETTINGCHANGE so other processes pick up the change.
+                # Use [NullString]::Value (not $null) for the delete call so the
+                # sentinel crosses into .NET as a real null reference -- on
+                # PowerShell 7.5+ / .NET 9, a bare $null here can be coerced to
+                # an empty string, which sets the dummy variable to "" instead
+                # of deleting it and leaves UnslothPathRefresh_XXXXXXXX in
+                # HKCU\Environment permanently.
                 try {
                     $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
                     [Environment]::SetEnvironmentVariable($d, '1', 'User')
-                    [Environment]::SetEnvironmentVariable($d, $null, 'User')
+                    [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
                 } catch { }
                 return $true
             } finally {
@@ -1126,11 +1132,18 @@ shell.Run cmd, 0, False
             Write-Host "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
         }
     }
-    # Only advertise the new launcher when it was actually (re)created and
-    # the shim directory was newly added to PATH. If the shim already
-    # existed on disk AND was already on PATH, both conditions are false
-    # and we stay quiet.
-    $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+    # Only add the shim directory to PATH when the launcher actually exists
+    # in it. Otherwise a total shim-creation failure on a fresh install (e.g.
+    # antivirus blocks unsloth.exe, disk full, restrictive FS permissions)
+    # would prepend an empty directory to User PATH and leave the user with
+    # an install that reports success but cannot resolve `unsloth` in a new
+    # shell. Also gate the "added to PATH" step message on both a successful
+    # shim (re)create AND a fresh PATH insertion, so idempotent re-runs stay
+    # quiet.
+    $pathAdded = $false
+    if (Test-Path $ShimExe) {
+        $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+    }
     if ($shimUpdated -and $pathAdded) {
         step "path" "added unsloth launcher to PATH"
     }

@@ -199,11 +199,17 @@ function Add-ToUserPath {
                 return $false
             }
             $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-            # Broadcast WM_SETTINGCHANGE so other processes pick up the change
+            # Broadcast WM_SETTINGCHANGE so other processes pick up the change.
+            # Use [NullString]::Value (not $null) for the delete call so the
+            # sentinel crosses into .NET as a real null reference -- on
+            # PowerShell 7.5+ / .NET 9, a bare $null here can be coerced to
+            # an empty string, which sets the dummy variable to "" instead
+            # of deleting it and leaves UnslothPathRefresh_XXXXXXXX in
+            # HKCU\Environment permanently.
             try {
                 $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
                 [Environment]::SetEnvironmentVariable($d, '1', 'User')
-                [Environment]::SetEnvironmentVariable($d, $null, 'User')
+                [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
             } catch { }
             return $true
         } finally {
