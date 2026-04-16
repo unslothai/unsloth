@@ -365,7 +365,9 @@ def _disable_flash_attention_if_needed(
 
     requested_attn_implementation = attn_implementation
     if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(config, "_attn_implementation", None)
+        requested_attn_implementation = _config_get(
+            config, "_attn_implementation", None
+        )
     if requested_attn_implementation is None:
         requested_attn_implementation = _config_get(config, "attn_implementation", None)
 
@@ -473,7 +475,9 @@ def resolve_attention_implementation(
                         and getattr(model_class, "_supports_flex_attn", False)
                         and not _is_flex_excluded(model_type)
                     ):
-                        attention_dropout = _config_get(config, "attention_dropout", 0) or 0
+                        attention_dropout = (
+                            _config_get(config, "attention_dropout", 0) or 0
+                        )
                         if attention_dropout == 0:
                             attn_impl = _set_attn_impl(config, "flex_attention")
                 except Exception:
