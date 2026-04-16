@@ -73,15 +73,7 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    # Merge order:
-    #   1. Activated venv Scripts dir (only if $env:VIRTUAL_ENV is set) so an
-    #      explicitly-activated venv keeps precedence.
-    #   2. Machine, then User PATH freshly read from registry so a tool we
-    #      just installed wins over any stale shim still in $env:Path.
-    #   3. Current $env:Path as fallback so process-only entries that nothing
-    #      else covers are not lost.
-    # Dedup compares both raw and expanded forms so %VAR% references don't
-    # survive twice (once as %VAR%\foo and once as the expanded literal).
+    # Merge: venv Scripts (if active) > Machine > User > current $env:Path. Dedup raw+expanded.
     $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
     $sources = @()
     if ($venvScripts) { $sources += $venvScripts }
@@ -102,16 +94,8 @@ function Refresh-Environment {
 }
 
 # ── Helper: safely add a directory to the persistent User PATH ──
-# Uses direct registry access to preserve REG_EXPAND_SZ type
-# (avoids .NET SetEnvironmentVariable bug that converts to REG_SZ).
-#
-# Position: 'Append' (default) adds $Directory to the END of the persisted
-# User PATH so existing user tools (e.g. system python, pip) keep taking
-# precedence in new shells. This matches rustup/cargo/nvm/pyenv/uv behavior
-# and avoids silently hijacking resolution of common executables. Pass
-# 'Prepend' only when a caller truly needs the new entry to win over
-# existing ones at registry scope. In-session precedence should be handled
-# by an inline $env:Path = "$Dir;$env:Path" prepend instead.
+# Direct registry access preserves REG_EXPAND_SZ (avoids dotnet/runtime#1442).
+# Append (default) keeps existing tools first; Prepend for must-win entries.
 function Add-ToUserPath {
     param(
         [Parameter(Mandatory = $true)][string]$Directory,
@@ -122,18 +106,9 @@ function Add-ToUserPath {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
             $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-            # Explicit string[] cast: a single-entry split otherwise collapses
-            # to a scalar string, which then gets char-indexed and breaks the
-            # partition loop below.
-            [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() }
-            # Normalize both the raw and expanded forms of the new directory
-            # so dedup catches mirror-image cases: PATH holding %USERPROFILE%\foo
-            # vs Directory passed as C:\Users\me\foo, and vice versa.
+            [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() } # string[] prevents scalar collapse
             $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
             $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
-            # Partition existing entries into "kept" (not our dir) and "dropped"
-            # (matches our dir). Track match indices so we can distinguish
-            # "already at position 0" from "present but at a late position".
             $kept = New-Object System.Collections.Generic.List[string]
             $matchIndices = New-Object System.Collections.Generic.List[int]
             for ($i = 0; $i -lt $entries.Count; $i++) {
@@ -149,23 +124,14 @@ function Add-ToUserPath {
                 $kept.Add($entries[$i])
             }
             $alreadyPresent = $matchIndices.Count -gt 0
-            # Append semantics: if the entry is already anywhere in PATH we
-            # leave it untouched (idempotent, never reorder user-curated order).
-            if ($alreadyPresent -and $Position -eq 'Append') {
+            if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
                 return $false
             }
-            # Prepend semantics: if the entry is already at position 0 with
-            # exactly one copy, preserve the user's existing casing/form and
-            # no-op. Only rebuild when a reorder or dedup is actually needed.
-            if ($alreadyPresent -and $Position -eq 'Prepend' -and
+            if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front
                 $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
                 return $false
             }
-            # One-time backup of the pristine User PATH before our first
-            # mutation. Stored under HKCU\Software\Unsloth so a wiped/clobbered
-            # PATH can be recovered. Idempotent: existing backup is preserved.
-            # The script-top backup at line ~547 covers the studio entry point;
-            # this in-helper backup also covers callers that bypass that block.
+            # One-time backup under HKCU\Software\Unsloth\PathBackup
             if ($rawPath) {
                 try {
                     $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
@@ -191,21 +157,12 @@ function Add-ToUserPath {
             } else {
                 $Directory
             }
-            # Prepend idempotency: if the new directory was already at
-            # position 0 (and no duplicates existed elsewhere) the composed
-            # string matches rawPath byte-for-byte. Skip the registry write
-            # so we do not broadcast an unnecessary WM_SETTINGCHANGE.
-            if ($newPath -ceq $rawPath) {
+            if ($newPath -ceq $rawPath) { # no actual change
                 return $false
             }
             $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-            # Broadcast WM_SETTINGCHANGE so other processes pick up the change.
-            # Use [NullString]::Value (not $null) for the delete call so the
-            # sentinel crosses into .NET as a real null reference -- on
-            # PowerShell 7.5+ / .NET 9, a bare $null here can be coerced to
-            # an empty string, which sets the dummy variable to "" instead
-            # of deleting it and leaves UnslothPathRefresh_XXXXXXXX in
-            # HKCU\Environment permanently.
+            # Broadcast WM_SETTINGCHANGE via dummy env-var roundtrip.
+            # [NullString]::Value avoids PS 7.5+/.NET 9 $null-to-"" coercion.
             try {
                 $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
                 [Environment]::SetEnvironmentVariable($d, '1', 'User')
@@ -638,9 +595,7 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
-# Back up User PATH before any modifications for recovery.
-# Stored under HKCU\Software\Unsloth (not HKCU\Environment) to avoid
-# polluting the process environment block with a multi-KB variable.
+# Back up User PATH under HKCU\Software\Unsloth before any modifications.
 try {
     $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
     if ($envKey) {
@@ -798,10 +753,7 @@ if (-not $HasCmake) {
         foreach ($d in $cmakeDefaults) {
             if (Test-Path (Join-Path $d "cmake.exe")) {
                 $env:Path = "$d;$env:Path"
-                # Persist to user PATH so Refresh-Environment does not drop it later.
-                # Prepend so the newly-selected cmake wins over any older cmake
-                # entry already in the user PATH (this dir has only cmake.exe, no
-                # python.exe, so prepending does not hijack the user's interpreter).
+                # Persist to user PATH (Prepend so this cmake wins over older ones).
                 Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
@@ -1068,11 +1020,7 @@ $nvccBinDir = Split-Path $NvccPath -Parent
 if ($env:PATH -notlike "*$nvccBinDir*") {
     [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
 }
-# Persist nvcc bin dir to User PATH so it works in new terminals.
-# Prepend so the toolkit we just selected (driver-compatible) wins over any
-# older CUDA bin dir already on the user PATH. Critical for llama.cpp builds:
-# a later Refresh-Environment could otherwise reorder the selected nvcc behind
-# a stale one. No hijack risk since this dir has only CUDA tools, no python.
+# Persist nvcc bin dir (Prepend so the driver-compatible toolkit wins).
 if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
     substep "Persisted CUDA bin dir to user PATH"
 }
@@ -1231,21 +1179,10 @@ if ($HasPython) {
     $PythonOk = $true
 }
 
-# Ensure the user-scheme Python Scripts dir is on PATH so any pip-installed
-# console scripts (including `unsloth` if installed via `pip install --user`)
-# are discoverable in new terminals. Stick strictly to the 'nt_user' scheme:
-# we do NOT fall back to sysconfig.get_path('scripts') because that returns
-# the venv's Scripts dir when this setup.ps1 is invoked inside an activated
-# venv, which would re-introduce the python / pip hijack that the dedicated
-# shim directory (install.ps1) was designed to avoid.
+# Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
 $ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
-    # Use Append semantics here: this dir holds ALL user-installed pip
-    # console scripts (pip, pytest, huggingface-cli, etc.), and reordering
-    # it to the front of PATH would silently change resolution precedence
-    # for every one of those tools. Install.ps1 already guarantees the new
-    # `unsloth` wins via a dedicated shim dir at PATH position 0, so we
-    # only need to make sure this directory is present, not at the front.
+    # Append (not Prepend) -- this dir has other pip scripts; shim handles unsloth.
     if (Add-ToUserPath -Directory $ScriptsDir) {
         # Also add to current process so it's available immediately
         $ProcessPathEntries = $env:PATH.Split(';')
