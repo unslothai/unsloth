@@ -73,13 +73,18 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    $merged = "$machinePath;$userPath;$env:Path"
+    # Process entries first so an activated venv keeps precedence, then
+    # machine/user. Dedup by both raw and expanded form so %VAR% and
+    # already-expanded copies of the same dir don't both survive.
+    $merged = "$env:Path;$machinePath;$userPath"
     $seen = @{}
     $unique = New-Object System.Collections.Generic.List[string]
     foreach ($p in $merged -split ";") {
-        $key = $p.TrimEnd("\").ToLowerInvariant()
-        if ($key -and -not $seen.ContainsKey($key)) {
-            $seen[$key] = $true
+        $rawKey = $p.Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+        $expKey = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+        if ($rawKey -and -not $seen.ContainsKey($rawKey) -and -not $seen.ContainsKey($expKey)) {
+            $seen[$rawKey] = $true
+            if ($expKey -and $expKey -ne $rawKey) { $seen[$expKey] = $true }
             $unique.Add($p)
         }
     }
@@ -98,10 +103,11 @@ function Add-ToUserPath {
         try {
             $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
-            $normalDir = $Directory.TrimEnd('\').ToLowerInvariant()
+            $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
             foreach ($entry in $entries) {
-                $rawNorm = $entry.TrimEnd('\').ToLowerInvariant()
-                $expNorm = [Environment]::ExpandEnvironmentVariables($entry).TrimEnd('\').ToLowerInvariant()
+                $stripped = $entry.Trim().Trim('"')
+                $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
+                $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
                 if ($rawNorm -eq $normalDir -or $expNorm -eq $normalDir) {
                     return $false  # already present
                 }
