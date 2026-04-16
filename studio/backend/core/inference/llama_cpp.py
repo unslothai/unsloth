@@ -2473,6 +2473,39 @@ class LlamaCppBackend:
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
 
+        # Flipped once a tool result has been appended to the conversation
+        # and the system message updated with a synthesise-now directive.
+        # Small models otherwise keep honouring the initial "prefer tools"
+        # nudge and loop on search forever, even when the result they need
+        # is already in context.
+        _synthesise_nudge_applied = False
+        # Phrased as a concrete action rather than an opt-out clause --
+        # the "do not call more tools" wording actively harmed small-model
+        # synthesis rate in our benchmarks.
+        _SYNTHESISE_NUDGE = (
+            " Tool results have been gathered. Now write the final answer to the"
+            " user's original question using what you have. Tool calls are no"
+            " longer needed for this turn."
+        )
+
+        def _apply_synthesise_nudge() -> None:
+            nonlocal _synthesise_nudge_applied
+            if _synthesise_nudge_applied:
+                return
+            for _msg in conversation:
+                if _msg.get("role") == "system":
+                    _content = _msg.get("content") or ""
+                    if _SYNTHESISE_NUDGE.strip() not in _content:
+                        _msg["content"] = _content.rstrip() + _SYNTHESISE_NUDGE
+                    _synthesise_nudge_applied = True
+                    return
+            # No system message yet: insert one
+            conversation.insert(
+                0,
+                {"role": "system", "content": _SYNTHESISE_NUDGE.lstrip()},
+            )
+            _synthesise_nudge_applied = True
+
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
@@ -3134,6 +3167,10 @@ class LlamaCppBackend:
                     if tool_call_id:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
+
+                # First tool result of the loop: tell the model to
+                # synthesise an answer rather than continue searching.
+                _apply_synthesise_nudge()
 
                 # Clear tool status badge before next generation iteration
                 yield {"type": "status", "text": ""}
