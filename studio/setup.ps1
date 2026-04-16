@@ -1225,14 +1225,22 @@ if ($HasPython) {
     $PythonOk = $true
 }
 
-# Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
-$ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
+# Ensure the user-scheme Python Scripts dir is on PATH so any pip-installed
+# console scripts (including `unsloth` if installed via `pip install --user`)
+# are discoverable in new terminals. Stick strictly to the 'nt_user' scheme:
+# we do NOT fall back to sysconfig.get_path('scripts') because that returns
+# the venv's Scripts dir when this setup.ps1 is invoked inside an activated
+# venv, which would re-introduce the python / pip hijack that the dedicated
+# shim directory (install.ps1) was designed to avoid.
+$ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
-    # Prepend so the freshly installed `unsloth` console script wins over any
-    # older pip-installed copy already earlier on the user PATH. This dir holds
-    # entry points only (python.exe lives one level up), so prepending does not
-    # hijack the user's python interpreter.
-    if (Add-ToUserPath -Directory $ScriptsDir -Position 'Prepend') {
+    # Use Append semantics here: this dir holds ALL user-installed pip
+    # console scripts (pip, pytest, huggingface-cli, etc.), and reordering
+    # it to the front of PATH would silently change resolution precedence
+    # for every one of those tools. Install.ps1 already guarantees the new
+    # `unsloth` wins via a dedicated shim dir at PATH position 0, so we
+    # only need to make sure this directory is present, not at the front.
+    if (Add-ToUserPath -Directory $ScriptsDir) {
         # Also add to current process so it's available immediately
         $ProcessPathEntries = $env:PATH.Split(';')
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {

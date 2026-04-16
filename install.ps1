@@ -1079,18 +1079,31 @@ shell.Run cmd, 0, False
     # Append makes the installer's newly-built unsloth.exe lose to any older
     # unsloth.exe the user already had earlier on PATH. Both are bad.
     #
-    # Instead we create a small directory that contains only a wrapper batch
-    # file pointing at the venv's unsloth.exe by absolute path, and Prepend
-    # just that directory. Result:
-    #   - `unsloth` in any terminal resolves to the studio install
-    #   - `python` / `pip` stay untouched (only unsloth.cmd sits in the shim dir)
-    #   - the wrapper always calls the venv's unsloth.exe by absolute path so
-    #     future pip-upgrades of unsloth inside the venv propagate automatically
+    # Instead we create a small directory that contains only the unsloth
+    # launcher (hardlinked or copied from the venv's Scripts\unsloth.exe),
+    # and Prepend just that directory. Benefits over a .cmd wrapper:
+    #   - no batch %...% expansion of user arguments (e.g. prompts with `%`)
+    #   - works in Git Bash / MSYS2 / POSIX-style shells on Windows that do
+    #     not resolve .cmd by bare name
+    #   - no source encoding concerns on non-ASCII profile paths
+    #   - programmatic callers (subprocess.run, child_process.execFile) hit
+    #     the native executable directly instead of shelling into cmd.exe
+    # We try a hardlink first so pip upgrades inside the venv propagate
+    # automatically (same inode). If the filesystem or volume rejects the
+    # hardlink we fall back to a plain copy, which the next install run
+    # will refresh.
     $ShimDir = Join-Path $StudioHome "bin"
     New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
-    $ShimCmd = Join-Path $ShimDir "unsloth.cmd"
-    $ShimBody = "@echo off`r`n`"$UnslothExe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
-    Set-Content -Path $ShimCmd -Value $ShimBody -Encoding ASCII -NoNewline
+    $ShimExe = Join-Path $ShimDir "unsloth.exe"
+    if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force }
+    try {
+        New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+    } catch {
+        # Hardlink unavailable (cross-volume, non-NTFS, permissions). Copy is
+        # self-contained; future pip upgrades inside the venv will not update
+        # the copy until the user re-runs the installer.
+        Copy-Item -Path $UnslothExe -Destination $ShimExe -Force
+    }
     if (Add-ToUserPath -Directory $ShimDir -Position 'Prepend') {
         step "path" "added unsloth launcher to PATH"
     }
