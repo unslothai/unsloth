@@ -2503,7 +2503,7 @@ class FastLlamaModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = kwargs.get("load_in_8bit", False),
                 offload_embedding = False,
-                fast_inference = False,
+                fast_inference = fast_inference,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None

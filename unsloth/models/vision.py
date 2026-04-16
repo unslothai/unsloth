@@ -207,9 +207,16 @@ def _attach_bnb_multidevice_hooks(
             }
 
             # force_hooks=True: install hooks even for single-device maps.
+            main_device = device_map_int.get("")
+            if main_device in (None, "cpu", "disk"):
+                main_device = next(
+                    (d for d in device_map_int.values() if d not in ("cpu", "disk")),
+                    None,
+                )
             dispatch_model(
                 model,
                 device_map = device_map_int,
+                main_device = main_device,
                 skip_keys = getattr(model, "_skip_keys_device_placement", None),
                 force_hooks = True,
             )
