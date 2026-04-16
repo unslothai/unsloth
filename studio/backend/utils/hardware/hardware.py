@@ -1451,7 +1451,10 @@ def auto_select_gpu_ids(
         not parent_visible_spec["supports_explicit_gpu_ids"]
         and get_device() == DeviceType.XPU
     )
-    if not parent_visible_spec["supports_explicit_gpu_ids"] and not xpu_relative_auto_select:
+    if (
+        not parent_visible_spec["supports_explicit_gpu_ids"]
+        and not xpu_relative_auto_select
+    ):
         metadata["selection_mode"] = "inherit_parent_visible"
         metadata["selected_gpu_ids"] = None
         return None, metadata
