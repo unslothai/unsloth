@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
 
 class LoadRequest(BaseModel):
@@ -362,6 +362,23 @@ class ChatMessage(BaseModel):
         None,
         description = "OpenAI tool-result messages: name of the tool whose result this is.",
     )
+
+    @model_validator(mode = "after")
+    def _validate_role_shape(self):
+        if self.role == "assistant":
+            if self.content is None and not self.tool_calls:
+                raise ValueError(
+                    "assistant messages require content or tool_calls"
+                )
+        elif self.role == "tool":
+            if self.content is None:
+                raise ValueError("tool messages require content")
+            if not self.tool_call_id:
+                raise ValueError("tool messages require tool_call_id")
+        else:
+            if self.content is None:
+                raise ValueError(f"{self.role} messages require content")
+        return self
 
 
 class ChatCompletionRequest(BaseModel):

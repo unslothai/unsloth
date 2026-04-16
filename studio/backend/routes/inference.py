@@ -1141,27 +1141,47 @@ async def openai_chat_completions(
     # carry `tool_calls` (content=None) — both of which are valid in
     # multi-turn client-side tool loops.
     _has_tool_messages = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    if (
+    _has_inline_image = any(
+        isinstance(m.content, list)
+        and any(getattr(p, "type", None) == "image_url" for p in m.content)
+        for m in payload.messages
+    )
+    _openai_tool_passthrough = (
         using_gguf
         and llama_backend.supports_tools
         and not payload.enable_tools
-        and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
-    ):
+        and (bool(payload.tools) or _has_tool_messages)
+    )
+    if _openai_tool_passthrough:
+        if (payload.image_base64 or _has_inline_image) and not llama_backend.is_vision:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Image provided but current GGUF model does not support vision.",
+            )
         cancel_event = threading.Event()
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         if payload.stream:
             return await _openai_passthrough_stream(
                 request,
                 cancel_event,
                 llama_backend,
                 payload,
-                model_name,
-                completion_id,
             )
         return await _openai_passthrough_non_streaming(
             llama_backend,
             payload,
-            model_name,
+        )
+
+    _has_assistant_tool_only = any(
+        m.role == "assistant" and m.content is None and m.tool_calls
+        for m in payload.messages
+    )
+    if _has_assistant_tool_only:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Assistant messages with only `tool_calls` (content=None) are "
+                "only supported on the GGUF llama-server tool passthrough path."
+            ),
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
@@ -2795,13 +2815,14 @@ def _build_passthrough_payload(
 ):
     body = {
         "messages": openai_messages,
-        "tools": openai_tools,
-        "tool_choice": tool_choice,
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
         "stream": stream,
     }
+    if openai_tools is not None:
+        body["tools"] = openai_tools
+        body["tool_choice"] = tool_choice
     if stream:
         body["stream_options"] = {"include_usage": True}
     if max_tokens is not None:
@@ -3057,6 +3078,15 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     if not payload.image_base64:
         return messages
 
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in content
+        ):
+            return messages
+
     try:
         import base64 as _b64
         from io import BytesIO as _BytesIO
@@ -3125,8 +3155,6 @@ async def _openai_passthrough_stream(
     cancel_event,
     llama_backend,
     payload,
-    model_name,
-    completion_id,
 ):
     """Streaming client-side pass-through for /v1/chat/completions.
 
@@ -3228,7 +3256,6 @@ async def _openai_passthrough_stream(
 async def _openai_passthrough_non_streaming(
     llama_backend,
     payload,
-    model_name,
 ):
     """Non-streaming client-side pass-through for /v1/chat/completions.
 
