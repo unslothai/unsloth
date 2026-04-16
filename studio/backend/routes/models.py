@@ -610,16 +610,17 @@ async def list_local_models(
                 # Filter those from the generic scanners to avoid duplicates
                 # and leaking internal paths into the UI.
                 _generic = [
-                    m for m in (
+                    m
+                    for m in (
                         _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
                     if ".studio_links" not in m.path
                 ]
-                custom_models = (
-                    _generic + _scan_ollama_dir(folder_path)
-                )[:_MAX_MODELS_PER_FOLDER]
+                custom_models = (_generic + _scan_ollama_dir(folder_path))[
+                    :_MAX_MODELS_PER_FOLDER
+                ]
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
