@@ -80,5 +80,5 @@ export function resetOnboardingDone(): void {
 export function getPostAuthRoute(): PostAuthRoute {
   if (mustChangePassword()) return "/change-password";
   if (usePlatformStore.getState().isChatOnly()) return "/chat";
-  return isOnboardingDone() ? "/studio" : "/onboarding";
+  return "/chat";
 }
