@@ -440,6 +440,7 @@ class TestLlamaAuthHeaders:
     def test_returns_bearer_header_when_api_key_set(self):
         class _Backend:
             _api_key = "k_secret_123"
+
         assert _llama_auth_headers(_Backend()) == {
             "Authorization": "Bearer k_secret_123",
         }
@@ -447,16 +448,19 @@ class TestLlamaAuthHeaders:
     def test_returns_none_when_api_key_none(self):
         class _Backend:
             _api_key = None
+
         assert _llama_auth_headers(_Backend()) is None
 
     def test_returns_none_when_api_key_attribute_missing(self):
         class _Backend:
             pass
+
         assert _llama_auth_headers(_Backend()) is None
 
     def test_returns_none_when_api_key_empty_string(self):
         class _Backend:
             _api_key = ""
+
         assert _llama_auth_headers(_Backend()) is None
 
 
@@ -586,15 +590,23 @@ async def _call_openai_chat_completions(payload, llama):
     with (
         patch.object(inference_module, "get_llama_cpp_backend", return_value = llama),
         patch.object(
-            inference_module, "get_inference_backend", return_value = _FakeInferenceBackend(),
+            inference_module,
+            "get_inference_backend",
+            return_value = _FakeInferenceBackend(),
         ),
-        patch.object(inference_module, "_openai_passthrough_stream", new = _marker_stream),
         patch.object(
-            inference_module, "_openai_passthrough_non_streaming", new = _marker_nonstream,
+            inference_module, "_openai_passthrough_stream", new = _marker_stream
+        ),
+        patch.object(
+            inference_module,
+            "_openai_passthrough_non_streaming",
+            new = _marker_nonstream,
         ),
     ):
         return await inference_module.openai_chat_completions(
-            payload, _FakeFastAPIRequest(), current_subject = "u",
+            payload,
+            _FakeFastAPIRequest(),
+            current_subject = "u",
         )
 
 
@@ -617,7 +629,8 @@ class TestOpenAIChatCompletionsToolGuards:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 _call_openai_chat_completions(
-                    payload, _FakeLlamaBackend(is_loaded = False),
+                    payload,
+                    _FakeLlamaBackend(is_loaded = False),
                 )
             )
         assert exc_info.value.status_code == 400
@@ -627,7 +640,8 @@ class TestOpenAIChatCompletionsToolGuards:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 _call_openai_chat_completions(
-                    payload, _FakeLlamaBackend(supports_tools = False),
+                    payload,
+                    _FakeLlamaBackend(supports_tools = False),
                 )
             )
         assert exc_info.value.status_code == 400
@@ -658,7 +672,8 @@ class TestOpenAIChatCompletionsToolGuards:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 _call_openai_chat_completions(
-                    payload, _FakeLlamaBackend(supports_tools = False),
+                    payload,
+                    _FakeLlamaBackend(supports_tools = False),
                 )
             )
         assert exc_info.value.status_code == 400
@@ -670,7 +685,8 @@ class TestOpenAIChatCompletionsToolGuards:
         try:
             asyncio.run(
                 _call_openai_chat_completions(
-                    payload, _FakeLlamaBackend(supports_tools = False),
+                    payload,
+                    _FakeLlamaBackend(supports_tools = False),
                 )
             )
         except HTTPException as exc:
@@ -709,7 +725,9 @@ class TestAnthropicEnableToolsToolChoiceConflict:
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(
                     inference_module.anthropic_messages(
-                        payload, _FakeFastAPIRequest(), current_subject = "u",
+                        payload,
+                        _FakeFastAPIRequest(),
+                        current_subject = "u",
                     )
                 )
         assert exc_info.value.status_code == 400
@@ -726,7 +744,9 @@ class TestAnthropicEnableToolsToolChoiceConflict:
             try:
                 asyncio.run(
                     inference_module.anthropic_messages(
-                        payload, _FakeFastAPIRequest(), current_subject = "u",
+                        payload,
+                        _FakeFastAPIRequest(),
+                        current_subject = "u",
                     )
                 )
             except HTTPException as exc:
@@ -832,9 +852,12 @@ class TestOpenAIPassthroughNonStreaming:
         client_cls = _mock_async_client_post(200, json_body = native)
         with patch.object(inference_module.httpx, "AsyncClient", client_cls):
             resp = asyncio.run(
-                _openai_passthrough_non_streaming(_FakeLlamaBase(), _openai_tools_payload())
+                _openai_passthrough_non_streaming(
+                    _FakeLlamaBase(), _openai_tools_payload()
+                )
             )
         import json
+
         body = json.loads(resp.body.decode("utf-8"))
         assert body == native
         assert body["choices"][0]["finish_reason"] == "tool_calls"
@@ -854,9 +877,12 @@ class TestOpenAIPassthroughNonStreaming:
         client_cls = _mock_async_client_post(200, json_body = native)
         with patch.object(inference_module.httpx, "AsyncClient", client_cls):
             resp = asyncio.run(
-                _openai_passthrough_non_streaming(_FakeLlamaBase(), _openai_tools_payload())
+                _openai_passthrough_non_streaming(
+                    _FakeLlamaBase(), _openai_tools_payload()
+                )
             )
         import json
+
         body = json.loads(resp.body.decode("utf-8"))
         assert body["id"] == "chatcmpl-native-xyz"
         assert body["model"] == "llama-native"
@@ -864,14 +890,16 @@ class TestOpenAIPassthroughNonStreaming:
     def test_httpx_connect_error_mapped_to_502(self):
         client_cls = _mock_async_client_raise(
             lambda: httpx.ConnectError(
-                "refused", request = httpx.Request("POST", "http://x"),
+                "refused",
+                request = httpx.Request("POST", "http://x"),
             )
         )
         with patch.object(inference_module.httpx, "AsyncClient", client_cls):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(
                     _openai_passthrough_non_streaming(
-                        _FakeLlamaBase(), _openai_tools_payload(),
+                        _FakeLlamaBase(),
+                        _openai_tools_payload(),
                     )
                 )
         assert exc_info.value.status_code == 502
@@ -885,7 +913,8 @@ class TestOpenAIPassthroughNonStreaming:
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(
                     _openai_passthrough_non_streaming(
-                        _FakeLlamaBase(), _openai_tools_payload(),
+                        _FakeLlamaBase(),
+                        _openai_tools_payload(),
                     )
                 )
         assert exc_info.value.status_code == 502
@@ -969,22 +998,26 @@ def _run_passthrough_stream(*, send_returns = None, send_raises = None):
 class TestOpenAIPassthroughStreamVerbatim:
     def test_relays_data_lines_verbatim(self):
         chunks = _run_passthrough_stream(
-            send_returns = _FakeStreamResponse([
-                'data: {"id":"abc","choices":[{"delta":{"content":"hi"}}]}',
-                "data: [DONE]",
-            ]),
+            send_returns = _FakeStreamResponse(
+                [
+                    'data: {"id":"abc","choices":[{"delta":{"content":"hi"}}]}',
+                    "data: [DONE]",
+                ]
+            ),
         )
         assert any('"id":"abc"' in c for c in chunks)
         assert any("data: [DONE]" in c for c in chunks)
 
     def test_ignores_blank_and_non_data_lines(self):
         chunks = _run_passthrough_stream(
-            send_returns = _FakeStreamResponse([
-                "",
-                ": heartbeat",
-                'data: {"x":1}',
-                "data: [DONE]",
-            ]),
+            send_returns = _FakeStreamResponse(
+                [
+                    "",
+                    ": heartbeat",
+                    'data: {"x":1}',
+                    "data: [DONE]",
+                ]
+            ),
         )
         for chunk in chunks:
             assert chunk.startswith("data: ") or chunk == ""
@@ -992,11 +1025,13 @@ class TestOpenAIPassthroughStreamVerbatim:
 
     def test_breaks_on_done(self):
         chunks = _run_passthrough_stream(
-            send_returns = _FakeStreamResponse([
-                'data: {"a":1}',
-                "data: [DONE]",
-                'data: {"should_not_appear":true}',
-            ]),
+            send_returns = _FakeStreamResponse(
+                [
+                    'data: {"a":1}',
+                    "data: [DONE]",
+                    'data: {"should_not_appear":true}',
+                ]
+            ),
         )
         assert not any("should_not_appear" in c for c in chunks)
 
@@ -1023,7 +1058,8 @@ class TestOpenAIPassthroughStreamErrorTermination:
     def test_done_emitted_after_transport_exception(self):
         chunks = _run_passthrough_stream(
             send_raises = lambda: httpx.ConnectError(
-                "boom", request = httpx.Request("POST", "http://x"),
+                "boom",
+                request = httpx.Request("POST", "http://x"),
             ),
         )
         assert any('"error"' in c for c in chunks)
@@ -1032,7 +1068,8 @@ class TestOpenAIPassthroughStreamErrorTermination:
     def test_done_comes_after_error_chunk(self):
         chunks = _run_passthrough_stream(
             send_raises = lambda: httpx.ReadError(
-                "reset", request = httpx.Request("POST", "http://x"),
+                "reset",
+                request = httpx.Request("POST", "http://x"),
             ),
         )
         err_idx = next(i for i, c in enumerate(chunks) if '"error"' in c)
