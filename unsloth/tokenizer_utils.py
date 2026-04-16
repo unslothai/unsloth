@@ -648,7 +648,9 @@ def _find_end_position(template, endfor = None, endif = None):
     with start/end/text/dash_left/dash_right. Tokens inside Jinja comments
     are ignored. `endfor`/`endif` kwargs kept for back-compat, ignored."""
     # Space-pad comments so positions still map 1:1 to the original.
-    scrubbed = _RE_JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), template)
+    scrubbed = _RE_JINJA_COMMENT.sub(
+        lambda m: " " * len(m.group(0)), template
+    )
     endfor_matches = list(_RE_ENDFOR.finditer(scrubbed))
     endif_matches = list(_RE_ENDIF.finditer(scrubbed))
     last_endfor = endfor_matches[-1] if endfor_matches else None
@@ -706,10 +708,7 @@ def _if_body_emits_content(if_node):
     for node in if_node.body:
         if isinstance(node, jinja2.nodes.Output):
             return True
-        if any(
-            isinstance(d, jinja2.nodes.Output)
-            for d in node.find_all(jinja2.nodes.Output)
-        ):
+        if any(isinstance(d, jinja2.nodes.Output) for d in node.find_all(jinja2.nodes.Output)):
             return True
     return False
 
@@ -770,7 +769,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     template is known to use this.
     """
     try:
-        import jinja2
+        from jinja2.sandbox import SandboxedEnvironment
     except Exception:
         return None
 
@@ -800,11 +799,10 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         if _RE_JINJA_COMMENT.sub("", after).strip() == "":
             probe_template = chat_template[: end["end"]]
 
-    # Sandboxed env: the probe renders at model-load time (before the user
-    # calls apply_chat_template), so a malicious template would execute
-    # eagerly. SandboxedEnvironment blocks attribute-chain exploits.
+    # Sandboxed: probe renders at load time, before user calls
+    # apply_chat_template. SandboxedEnvironment blocks attribute-chain exploits.
     try:
-        env = jinja2.sandbox.SandboxedEnvironment(
+        env = SandboxedEnvironment(
             autoescape = False,
             keep_trailing_newline = True,
         )
@@ -1149,12 +1147,10 @@ class _VariantTokenizerProxy:
                 swapped = False
             if swapped:
                 return self._base.apply_chat_template(*args, **kwargs)
-            # Read-only base: fall back to isolated Jinja.
-            import jinja2
-
-            env = jinja2.Environment(
-                autoescape = False,
-                keep_trailing_newline = True,
+            # Read-only base: fall back to sandboxed Jinja.
+            from jinja2.sandbox import SandboxedEnvironment
+            env = SandboxedEnvironment(
+                autoescape = False, keep_trailing_newline = True,
             )
             messages = args[0] if args else kwargs.get("messages", [])
             add_generation_prompt = kwargs.get("add_generation_prompt", False)
