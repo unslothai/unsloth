@@ -344,8 +344,8 @@ class LlamaCppBackend:
         # hybrid NVIDIA+Intel hosts running Studio in XPU mode don't read
         # NVIDIA memory numbers and then round-trip those indices into
         # ZE_AFFINITY_MASK (which would pin llama-server to the wrong device).
-        nvidia_eligible = (
-            get_device() == DeviceType.CUDA and not getattr(_hw_mod, "IS_ROCM", False)
+        nvidia_eligible = get_device() == DeviceType.CUDA and not getattr(
+            _hw_mod, "IS_ROCM", False
         )
         try:
             if not nvidia_eligible:
