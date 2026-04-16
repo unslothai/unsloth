@@ -152,15 +152,44 @@ function Install-UnslothStudio {
             $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
             try {
                 $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-                $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+                # Explicit string[] cast: a single-entry split otherwise collapses
+                # to a scalar string, which then gets char-indexed and breaks the
+                # partition loop below.
+                [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+                # Normalize both the raw and expanded forms of the new directory
+                # so dedup catches mirror-image cases: PATH holding %USERPROFILE%\foo
+                # vs Directory passed as C:\Users\me\foo, and vice versa.
                 $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
-                foreach ($entry in $entries) {
-                    $stripped = $entry.Trim().Trim('"')
+                $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                # Partition existing entries into "kept" (not our dir) and "dropped"
+                # (matches our dir). Track match indices so we can distinguish
+                # "already at position 0" from "present but at a late position".
+                $kept = New-Object System.Collections.Generic.List[string]
+                $matchIndices = New-Object System.Collections.Generic.List[int]
+                for ($i = 0; $i -lt $entries.Count; $i++) {
+                    $stripped = $entries[$i].Trim().Trim('"')
                     $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
                     $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
-                    if ($rawNorm -eq $normalDir -or $expNorm -eq $normalDir) {
-                        return $false  # already present
+                    $isMatch = ($rawNorm -and ($rawNorm -eq $normalDir -or $rawNorm -eq $expNormalDir)) -or
+                               ($expNorm -and ($expNorm -eq $normalDir -or $expNorm -eq $expNormalDir))
+                    if ($isMatch) {
+                        $matchIndices.Add($i)
+                        continue
                     }
+                    $kept.Add($entries[$i])
+                }
+                $alreadyPresent = $matchIndices.Count -gt 0
+                # Append semantics: if the entry is already anywhere in PATH we
+                # leave it untouched (idempotent, never reorder user-curated order).
+                if ($alreadyPresent -and $Position -eq 'Append') {
+                    return $false
+                }
+                # Prepend semantics: if the entry is already at position 0 with
+                # exactly one copy, preserve the user's existing casing/form and
+                # no-op. Only rebuild when a reorder or dedup is actually needed.
+                if ($alreadyPresent -and $Position -eq 'Prepend' -and
+                    $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
+                    return $false
                 }
                 # One-time backup of the pristine User PATH before our first
                 # mutation. Stored under HKCU\Software\Unsloth so a wiped/clobbered
@@ -179,12 +208,23 @@ function Install-UnslothStudio {
                     } catch { }
                 }
                 if (-not $rawPath) {
-                    Write-Host "[WARN] User PATH is empty — initializing with $Directory" -ForegroundColor Yellow
+                    Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
                 }
                 $newPath = if ($rawPath) {
-                    if ($Position -eq 'Prepend') { "$Directory;$rawPath" } else { "$rawPath;$Directory" }
+                    if ($Position -eq 'Prepend') {
+                        (@($Directory) + $kept) -join ';'
+                    } else {
+                        ($kept + @($Directory)) -join ';'
+                    }
                 } else {
                     $Directory
+                }
+                # Prepend idempotency: if the new directory was already at
+                # position 0 (and no duplicates existed elsewhere) the composed
+                # string matches rawPath byte-for-byte. Skip the registry write
+                # so we do not broadcast an unnecessary WM_SETTINGCHANGE.
+                if ($newPath -ceq $rawPath) {
+                    return $false
                 }
                 $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
                 # Broadcast WM_SETTINGCHANGE so other processes pick up the change
@@ -1032,17 +1072,33 @@ shell.Run cmd, 0, False
 
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
-    # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
-    # Use the default Append position here: this venv dir holds python.exe and
-    # pip.exe alongside unsloth.exe, so prepending would silently hijack the
-    # user's system python / pip in every future shell. Desktop shortcuts and
-    # the launch-studio wrapper call unsloth.exe by absolute path, so studio
-    # itself does not rely on this entry winning resolution races.
-    $ScriptsDir = Join-Path $VenvDir "Scripts"
-    if (Add-ToUserPath -Directory $ScriptsDir) {
-        Refresh-SessionPath
-        step "path" "added unsloth to PATH"
+    # ── Expose the `unsloth` command via a single-purpose shim directory ──
+    # The venv's Scripts dir holds python.exe and pip.exe alongside unsloth.exe,
+    # so adding that dir to PATH (at either position) has unwanted side effects:
+    # Prepend hijacks the user's system python / pip in every future shell;
+    # Append makes the installer's newly-built unsloth.exe lose to any older
+    # unsloth.exe the user already had earlier on PATH. Both are bad.
+    #
+    # Instead we create a small directory that contains only a wrapper batch
+    # file pointing at the venv's unsloth.exe by absolute path, and Prepend
+    # just that directory. Result:
+    #   - `unsloth` in any terminal resolves to the studio install
+    #   - `python` / `pip` stay untouched (only unsloth.cmd sits in the shim dir)
+    #   - the wrapper always calls the venv's unsloth.exe by absolute path so
+    #     future pip-upgrades of unsloth inside the venv propagate automatically
+    $ShimDir = Join-Path $StudioHome "bin"
+    New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
+    $ShimCmd = Join-Path $ShimDir "unsloth.cmd"
+    $ShimBody = "@echo off`r`n`"$UnslothExe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+    Set-Content -Path $ShimCmd -Value $ShimBody -Encoding ASCII -NoNewline
+    if (Add-ToUserPath -Directory $ShimDir -Position 'Prepend') {
+        step "path" "added unsloth launcher to PATH"
     }
+    # Sync the current session unconditionally so re-runs in stale terminals
+    # see the shim, and so PATH entries that the studio/setup.ps1 subprocess
+    # persisted (cmake, nvcc, Python Scripts) are visible in this parent
+    # process before it returns control to the user's shell.
+    Refresh-SessionPath
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.

@@ -122,15 +122,44 @@ function Add-ToUserPath {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
             $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-            $entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+            # Explicit string[] cast: a single-entry split otherwise collapses
+            # to a scalar string, which then gets char-indexed and breaks the
+            # partition loop below.
+            [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() }
+            # Normalize both the raw and expanded forms of the new directory
+            # so dedup catches mirror-image cases: PATH holding %USERPROFILE%\foo
+            # vs Directory passed as C:\Users\me\foo, and vice versa.
             $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
-            foreach ($entry in $entries) {
-                $stripped = $entry.Trim().Trim('"')
+            $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+            # Partition existing entries into "kept" (not our dir) and "dropped"
+            # (matches our dir). Track match indices so we can distinguish
+            # "already at position 0" from "present but at a late position".
+            $kept = New-Object System.Collections.Generic.List[string]
+            $matchIndices = New-Object System.Collections.Generic.List[int]
+            for ($i = 0; $i -lt $entries.Count; $i++) {
+                $stripped = $entries[$i].Trim().Trim('"')
                 $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
                 $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
-                if ($rawNorm -eq $normalDir -or $expNorm -eq $normalDir) {
-                    return $false  # already present
+                $isMatch = ($rawNorm -and ($rawNorm -eq $normalDir -or $rawNorm -eq $expNormalDir)) -or
+                           ($expNorm -and ($expNorm -eq $normalDir -or $expNorm -eq $expNormalDir))
+                if ($isMatch) {
+                    $matchIndices.Add($i)
+                    continue
                 }
+                $kept.Add($entries[$i])
+            }
+            $alreadyPresent = $matchIndices.Count -gt 0
+            # Append semantics: if the entry is already anywhere in PATH we
+            # leave it untouched (idempotent, never reorder user-curated order).
+            if ($alreadyPresent -and $Position -eq 'Append') {
+                return $false
+            }
+            # Prepend semantics: if the entry is already at position 0 with
+            # exactly one copy, preserve the user's existing casing/form and
+            # no-op. Only rebuild when a reorder or dedup is actually needed.
+            if ($alreadyPresent -and $Position -eq 'Prepend' -and
+                $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
+                return $false
             }
             # One-time backup of the pristine User PATH before our first
             # mutation. Stored under HKCU\Software\Unsloth so a wiped/clobbered
@@ -151,12 +180,23 @@ function Add-ToUserPath {
                 } catch { }
             }
             if (-not $rawPath) {
-                Write-Host "[WARN] User PATH is empty — initializing with $Directory" -ForegroundColor Yellow
+                Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
             }
             $newPath = if ($rawPath) {
-                if ($Position -eq 'Prepend') { "$Directory;$rawPath" } else { "$rawPath;$Directory" }
+                if ($Position -eq 'Prepend') {
+                    (@($Directory) + $kept) -join ';'
+                } else {
+                    ($kept + @($Directory)) -join ';'
+                }
             } else {
                 $Directory
+            }
+            # Prepend idempotency: if the new directory was already at
+            # position 0 (and no duplicates existed elsewhere) the composed
+            # string matches rawPath byte-for-byte. Skip the registry write
+            # so we do not broadcast an unnecessary WM_SETTINGCHANGE.
+            if ($newPath -ceq $rawPath) {
+                return $false
             }
             $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
             # Broadcast WM_SETTINGCHANGE so other processes pick up the change
