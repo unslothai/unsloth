@@ -131,7 +131,7 @@ export function StudioPage(): ReactElement {
   })();
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background">
+    <div className="relative min-h-screen bg-background">
       <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
