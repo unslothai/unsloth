@@ -5,6 +5,8 @@
 Model Management API routes
 """
 
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -438,8 +440,6 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     # Ollama roots don't collide. Use sha1 for speed -- this is a cache
     # path, not a security boundary.
     try:
-        import hashlib
-
         digest = hashlib.sha1(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except OSError:
         digest = "default"
@@ -456,7 +456,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return None
 
 
-def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
+def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
     Ollama stores models in a content-addressable layout::
@@ -483,8 +483,6 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
     under ``<ollama_dir>/.studio_links/`` when writable, otherwise
     under Studio's own cache directory.
     """
-    import json as _json
-
     registry_root = ollama_dir / "manifests" / "registry.ollama.ai"
     if not registry_root.is_dir():
         return []
@@ -542,8 +540,8 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                         link_prefix = f"{namespace}-{model_name}-{tag}"
 
                     try:
-                        manifest = _json.loads(tag_file.read_text())
-                    except (_json.JSONDecodeError, OSError) as e:
+                        manifest = json.loads(tag_file.read_text())
+                    except (json.JSONDecodeError, OSError) as e:
                         logger.debug(
                             "Skipping unreadable/invalid Ollama manifest %s: %s",
                             tag_file,
@@ -559,10 +557,10 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                         config_blob = blobs_dir / config_digest.replace(":", "-")
                         if config_blob.is_file():
                             try:
-                                cfg = _json.loads(config_blob.read_text())
+                                cfg = json.loads(config_blob.read_text())
                                 model_type = cfg.get("model_type", "")
                                 file_type = cfg.get("file_type", "")
-                            except (_json.JSONDecodeError, OSError) as e:
+                            except (json.JSONDecodeError, OSError) as e:
                                 logger.debug(
                                     "Could not parse Ollama config blob %s: %s",
                                     config_blob,
@@ -617,6 +615,8 @@ def _scan_ollama_dir(ollama_dir: Path) -> List[LocalModelInfo]:
                             updated_at = updated_at,
                         ),
                     )
+                    if limit is not None and len(found) >= limit:
+                        return found
     except OSError as e:
         logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
     return found
@@ -716,9 +716,9 @@ async def list_local_models(
                     )
                     if ".studio_links" not in m.path
                 ]
-                custom_models = (_generic + _scan_ollama_dir(folder_path))[
-                    :_MAX_MODELS_PER_FOLDER
-                ]
+                custom_models = (_generic + _scan_ollama_dir(
+                    folder_path, limit=_MAX_MODELS_PER_FOLDER
+                ))[:_MAX_MODELS_PER_FOLDER]
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
