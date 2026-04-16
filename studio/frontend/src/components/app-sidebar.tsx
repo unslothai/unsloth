@@ -330,7 +330,7 @@ export function AppSidebar() {
             <SidebarMenu>
               <NavItem
                 icon={ZapIcon}
-                label="Studio"
+                label="Train"
                 active={pathname === "/studio" || pathname.startsWith("/studio/")}
                 disabled={chatOnly}
                 onClick={() => {
@@ -511,7 +511,7 @@ export function AppSidebar() {
                   />
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
                     <span className="truncate text-sm font-semibold">Unsloth</span>
-                    <span className="truncate text-[11px] text-muted-foreground">Studio</span>
+                    <span className="truncate text-[11px] text-muted-foreground">Train</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
