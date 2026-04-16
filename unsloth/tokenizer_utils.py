@@ -660,9 +660,7 @@ def _find_end_position(template, endfor = None, endif = None):
     """
     # Pad comments with spaces so their contents don't match as end tags but
     # positions are preserved.
-    scrubbed = _RE_JINJA_COMMENT.sub(
-        lambda m: " " * len(m.group(0)), template
-    )
+    scrubbed = _RE_JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), template)
     endfor_matches = list(_RE_ENDFOR.finditer(scrubbed))
     endif_matches = list(_RE_ENDIF.finditer(scrubbed))
     last_endfor = endfor_matches[-1] if endfor_matches else None
@@ -725,7 +723,10 @@ def _if_body_emits_content(if_node):
         if isinstance(node, jinja2.nodes.Output):
             return True
         # Nested If / For / Macro / etc. -- walk descendants for any Output.
-        if any(isinstance(d, jinja2.nodes.Output) for d in node.find_all(jinja2.nodes.Output)):
+        if any(
+            isinstance(d, jinja2.nodes.Output)
+            for d in node.find_all(jinja2.nodes.Output)
+        ):
             return True
     return False
 
@@ -1224,8 +1225,10 @@ class _VariantTokenizerProxy:
             # this loses access to tokenizer globals but the probe still
             # works for templates that don't depend on them.
             import jinja2
+
             env = jinja2.Environment(
-                autoescape = False, keep_trailing_newline = True,
+                autoescape = False,
+                keep_trailing_newline = True,
             )
             messages = args[0] if args else kwargs.get("messages", [])
             add_generation_prompt = kwargs.get("add_generation_prompt", False)
