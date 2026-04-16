@@ -633,7 +633,46 @@ def load_correct_tokenizer(
         pass
 
     tokenizer.chat_template = chat_template
+
+    # Fix incorrect pad_token - issue #4104
+    # Some Unsloth Hub models (e.g. Qwen3-*B-unsloth-bnb-4bit) have
+    # pad_token set to a vision-specific token like <|vision_pad|> in
+    # their tokenizer_config.json. Using a vision token as pad_token
+    # corrupts attention masks in text-only batches and causes NaN
+    # gradients when batch_size > 1.
+    _VISION_PAD_TOKENS = frozenset({
+        "<|vision_pad|>",
+        "<|image_pad|>",
+        "<|video_pad|>",
+        "<|audio_pad|>",
+    })
+    _current_pad = getattr(tokenizer, "pad_token", None)
+    if _current_pad in _VISION_PAD_TOKENS:
+        _vocab = tokenizer.get_vocab()
+        _safe_candidates = ["<|endoftext|>", "<pad>", "[PAD]", "<unk>"]
+        _replacement = next(
+            (t for t in _safe_candidates if t in _vocab), None
+        )
+        if _replacement is None:
+            _replacement    = tokenizer.eos_token
+            _replacement_id = tokenizer.eos_token_id
+        else:
+            _replacement_id = _vocab[_replacement]
+        tokenizer.pad_token    = _replacement
+        tokenizer.pad_token_id = _replacement_id
+        import warnings
+        warnings.warn(
+            f"Unsloth: pad_token was '{_current_pad}' (a vision token) "
+            f"which causes NaN gradients in text-only training. "
+            f"Corrected to '{_replacement}'. (issue #4104)",
+            UserWarning,
+            stacklevel = 2,
+        )
+
+
+
     return tokenizer
+
 
 
 # All four Jinja whitespace-control variants of endfor/endif:
