@@ -134,9 +134,19 @@ function Install-UnslothStudio {
     # ── Helper: safely add a directory to the persistent User PATH ──
     # Uses direct registry access to preserve REG_EXPAND_SZ type
     # (avoids .NET SetEnvironmentVariable bug that converts to REG_SZ).
+    #
+    # Position: 'Append' (default) adds $Directory to the END of the persisted
+    # User PATH so existing user tools (e.g. system python, pip) keep taking
+    # precedence in new shells. This matches rustup/cargo/nvm/pyenv/uv behavior
+    # and avoids silently hijacking resolution of common executables. Pass
+    # 'Prepend' only when a caller truly needs the new entry to win over
+    # existing ones at registry scope. In-session precedence should be handled
+    # by an inline $env:Path = "$Dir;$env:Path" prepend instead.
     function Add-ToUserPath {
         param(
-            [Parameter(Mandatory = $true)][string]$Directory
+            [Parameter(Mandatory = $true)][string]$Directory,
+            [ValidateSet('Append','Prepend')]
+            [string]$Position = 'Append'
         )
         try {
             $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
@@ -171,7 +181,11 @@ function Install-UnslothStudio {
                 if (-not $rawPath) {
                     Write-Host "[WARN] User PATH is empty — initializing with $Directory" -ForegroundColor Yellow
                 }
-                $newPath = if ($rawPath) { "$Directory;$rawPath" } else { $Directory }
+                $newPath = if ($rawPath) {
+                    if ($Position -eq 'Prepend') { "$Directory;$rawPath" } else { "$rawPath;$Directory" }
+                } else {
+                    $Directory
+                }
                 $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
                 # Broadcast WM_SETTINGCHANGE so other processes pick up the change
                 try {
