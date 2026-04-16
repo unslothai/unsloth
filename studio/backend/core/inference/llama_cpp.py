@@ -1703,6 +1703,28 @@ class LlamaCppBackend:
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
+                _gguf = gguf_path or ""
+                _is_ollama = (
+                    ".studio_links" in _gguf
+                    or os.sep + "ollama_links" + os.sep in _gguf
+                    or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
+                    or (self._model_identifier or "").startswith("ollama/")
+                )
+                # Only show the Ollama-specific message when the server
+                # output indicates a GGUF compatibility issue, not for
+                # unrelated failures like OOM or missing binaries.
+                if _is_ollama:
+                    _output = "\n".join(self._stdout_lines[-50:]).lower()
+                    _gguf_compat_hints = (
+                        "key not found",
+                        "unknown model architecture",
+                        "failed to load model",
+                    )
+                    if any(h in _output for h in _gguf_compat_hints):
+                        raise RuntimeError(
+                            "Some Ollama models do not work with llama.cpp. "
+                            "Try a different model, or use this model directly through Ollama instead."
+                        )
                 raise RuntimeError(
                     "llama-server failed to start. "
                     "Check that the GGUF file is valid and you have enough memory."
