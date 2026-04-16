@@ -959,6 +959,20 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         scan_order.append(resolved)
 
     _add(start_dir)
+
+    # When ``path`` is a symlink (e.g. Ollama's ``.studio_links/...gguf``
+    # -> ``blobs/sha256-...``), the symlink's parent directory rarely
+    # contains the mmproj sibling; the real mmproj file lives next to
+    # the symlink target. Add the target's parent to the scan so vision
+    # GGUFs that are surfaced via symlinks are still recognised as
+    # vision models.
+    try:
+        if p.is_symlink() and p.is_file():
+            target_parent = p.resolve().parent
+            if target_parent.is_dir():
+                _add(target_parent)
+    except OSError:
+        pass
     if search_root is not None:
         try:
             root_resolved = Path(search_root).resolve()
