@@ -394,7 +394,8 @@ class LlamaCppBackend:
             if utilization.get("index_kind") not in (None, "physical"):
                 logger.debug(
                     "Skipping GPU placement: telemetry reports index_kind=%r "
-                    "(not physical)", utilization.get("index_kind"),
+                    "(not physical)",
+                    utilization.get("index_kind"),
                 )
                 return []
 
