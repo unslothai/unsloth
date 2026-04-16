@@ -105,6 +105,8 @@ FORCE_FLOAT32 = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
+    "gemma4,",  # Add comma bc gemma4 will match gemma4_text
+    "gemma4text",  # Gemma4TextModel (standalone text-only Gemma4)
     "gpt_oss",
     "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
 ]
