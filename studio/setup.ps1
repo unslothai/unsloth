@@ -73,10 +73,20 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    # Process entries first so an activated venv keeps precedence, then
-    # machine/user. Dedup by both raw and expanded form so %VAR% and
-    # already-expanded copies of the same dir don't both survive.
-    $merged = "$env:Path;$machinePath;$userPath"
+    # Merge order:
+    #   1. Activated venv Scripts dir (only if $env:VIRTUAL_ENV is set) so an
+    #      explicitly-activated venv keeps precedence.
+    #   2. Machine, then User PATH freshly read from registry so a tool we
+    #      just installed wins over any stale shim still in $env:Path.
+    #   3. Current $env:Path as fallback so process-only entries that nothing
+    #      else covers are not lost.
+    # Dedup compares both raw and expanded forms so %VAR% references don't
+    # survive twice (once as %VAR%\foo and once as the expanded literal).
+    $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
+    $sources = @()
+    if ($venvScripts) { $sources += $venvScripts }
+    $sources += @($machinePath, $userPath, $env:Path)
+    $merged = ($sources | Where-Object { $_ }) -join ';'
     $seen = @{}
     $unique = New-Object System.Collections.Generic.List[string]
     foreach ($p in $merged -split ";") {
