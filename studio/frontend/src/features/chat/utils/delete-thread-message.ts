@@ -111,13 +111,61 @@ function collectSubtreeIds(
   return ids;
 }
 
+function getSurvivingChildren(
+  childrenByParentId: Map<string | null, string[]>,
+  deletedIds: Set<string>,
+  parentId: string | null,
+): string[] {
+  return (childrenByParentId.get(parentId) ?? []).filter((id) => !deletedIds.has(id));
+}
+
+function findPreferredLeaf(
+  childrenByParentId: Map<string | null, string[]>,
+  deletedIds: Set<string>,
+  rootId: string,
+): string {
+  let currentId = rootId;
+
+  while (true) {
+    const children = getSurvivingChildren(childrenByParentId, deletedIds, currentId);
+    if (children.length === 0) {
+      return currentId;
+    }
+    currentId = children[children.length - 1]!;
+  }
+}
+
+function findReplacementHeadId(
+  childrenByParentId: Map<string | null, string[]>,
+  deletedIds: Set<string>,
+  startParentId: string | null,
+): string | null {
+  if (startParentId === null) {
+    const roots = getSurvivingChildren(childrenByParentId, deletedIds, null);
+    return roots.length > 0
+      ? findPreferredLeaf(childrenByParentId, deletedIds, roots[roots.length - 1]!)
+      : null;
+  }
+
+  const siblings = getSurvivingChildren(childrenByParentId, deletedIds, startParentId);
+  if (siblings.length > 0) {
+    return findPreferredLeaf(
+      childrenByParentId,
+      deletedIds,
+      siblings[siblings.length - 1]!,
+    );
+  }
+
+  return startParentId;
+}
+
 /**
  * Delete a message from exported history without leaving malformed user->user /
  * assistant->assistant adjacency behind.
  *
- * The assistant delete button is only shown on assistant messages, so we treat
- * deleting an assistant as deleting the entire assistant turn: the parent user
- * prompt, the assistant response, and all descendants under that prompt.
+ * The assistant delete button is only shown on assistant messages, so deleting
+ * an assistant removes that assistant branch and its descendants while keeping
+ * sibling assistant branches under the same user prompt intact.
  *
  * This avoids assistant-ui's default reparenting behavior, which can turn
  * `user -> assistant -> user -> assistant` into `user -> user -> assistant`
@@ -142,16 +190,11 @@ export function deleteMessageFromExportedRepository(
     throw new Error(`Message ${messageId} not found in exported thread history.`);
   }
 
-  const parent = target.parentId ? messageById.get(target.parentId) : undefined;
-  const deleteRoot =
-    target.message.role === "assistant" && parent?.message.role === "user"
-      ? parent
-      : target;
-  const idsToDelete = collectSubtreeIds(childrenByParentId, deleteRoot.message.id);
+  const idsToDelete = collectSubtreeIds(childrenByParentId, target.message.id);
   const nextHeadId =
     exported.headId && !idsToDelete.has(exported.headId)
       ? exported.headId
-      : deleteRoot.parentId;
+      : findReplacementHeadId(childrenByParentId, idsToDelete, target.parentId);
 
   return {
     headId: nextHeadId,
