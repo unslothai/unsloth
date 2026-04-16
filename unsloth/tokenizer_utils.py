@@ -673,31 +673,20 @@ def _fix_chat_template(chat_template):
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
 
     elif re.sub(r"\{#.*?#\}", "", after_endfor, flags = re.DOTALL).strip() == "":
-        # GH#4150: ChatML-style templates (Hermes, Magnum, Phi-4, etc.) that
-        # end with {% endfor %} (optionally followed by only whitespace
-        # and/or Jinja comments) and have no add_generation_prompt block.
-        # Strip Jinja `{# ... #}` comments before any regex / substring check
-        # so that neither the guard nor the separator inference can be fooled
-        # by ChatML tokens or `add_generation_prompt` mentions that appear
-        # only inside a comment.
+        # GH#4150: ChatML templates ending at {% endfor %} without an
+        # add_generation_prompt block. Scrub Jinja `{# ... #}` comments so
+        # tokens inside comments cannot fool the guard below.
         scrubbed = re.sub(r"\{#.*?#\}", "", chat_template, flags = re.DOTALL)
         if (
             "<|im_start|>" in scrubbed
             and "<|im_end|>" in scrubbed
             and "add_generation_prompt" not in scrubbed
         ):
-            # Infer the model-specific separator after "assistant" from the
-            # template itself. Strategy:
-            #   1. Prefer an explicit assistant literal
-            #      ('<|im_start|>assistant<sep>') if the template contains one.
-            #   2. Otherwise scan all role-concatenation separators
-            #      (message['role'] + '<sep>'). If they all agree, use that
-            #      single separator.
-            #   3. If multiple different role separators are present (e.g. a
-            #      Phi-4-mini style template that uses '\n' for system and
-            #      '<|im_sep|>' for user/assistant), prefer '<|im_sep|>' when
-            #      it appears in the template, otherwise fall back to the
-            #      ChatML newline default.
+            # Infer the assistant-turn separator. Prefer an explicit
+            # '<|im_start|>assistant<sep>' literal; else the unique
+            # `message['role'] + '<sep>'` from role concatenations; else
+            # '<|im_sep|>' if present (Phi-4-mini uses '\n' for system and
+            # '<|im_sep|>' for user/assistant); else '\n'.
             assistant_match = re.search(
                 r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
                 scrubbed,
@@ -709,38 +698,25 @@ def _fix_chat_template(chat_template):
                     scrubbed,
                 )
             ]
-            unique_role_seps = list(dict.fromkeys(role_seps))  # preserves order
+            unique_role_seps = list(dict.fromkeys(role_seps))
             if assistant_match is not None and assistant_match.group(2):
-                # Non-empty captured separator (e.g. '<|im_start|>assistant\n').
                 separator = assistant_match.group(2)
             elif len(unique_role_seps) == 1:
                 separator = unique_role_seps[0]
             elif "<|im_sep|>" in scrubbed:
                 separator = "<|im_sep|>"
             else:
-                # Fallback for both the no-match case and the degenerate
-                # `'<|im_start|>assistant'` bare-literal case, so the
-                # injected Jinja block always produces a usable ChatML
-                # generation prefix.
                 separator = "\\n"
-            # Use a double-quoted Jinja string literal so a single quote in
-            # the separator (should one ever appear) cannot break the
-            # generated block.
+            # Emit a double-quoted Jinja literal so a single quote in the
+            # separator cannot break the block. Drop trailing whitespace/
+            # comments after endfor: they would render as stray output
+            # after the generation prefix.
             assistant_prefix = "<|im_start|>assistant" + separator
             generation_block = (
                 "{%" + dash + " if add_generation_prompt %}"
                 '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
                 "{%" + dash + " endif %}"
             )
-            # `after_endfor` contains only whitespace and/or Jinja comments
-            # at this point (verified by the scrubbed emptiness check
-            # above). Whitespace would render as stray trailing output
-            # after the generation prefix when
-            # `apply_chat_template(add_generation_prompt=True)` is called,
-            # so drop it entirely and place the generation block directly
-            # after `endfor`. Jinja comments are also dropped for the same
-            # reason: they have no runtime effect but their surrounding
-            # whitespace would be preserved if we kept them.
             chat_template = chat_template[: where + len(chosen_end)] + generation_block
 
     return chat_template
