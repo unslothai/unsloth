@@ -83,7 +83,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
     >
       <ThreadPrimitive.Viewport
         className={cn(
-          "aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-5",
+          "aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
           hideComposer
             ? "pt-4"
             : "h-0 min-h-0 basis-0 pt-[56px]",
@@ -104,29 +104,31 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
         />
 
         {/* Small overlap and extra slack so the last lines can scroll under the composer cleanly */}
-        {!hideComposer && <div className="h-40 shrink-0" aria-hidden />}
+        {!hideComposer && (
+          <AuiIf condition={({ thread }) => !thread.isEmpty}>
+            <div className="h-40 shrink-0" aria-hidden />
+          </AuiIf>
+        )}
 
-        <ThreadPrimitive.ViewportFooter
-          className={cn(
-            "aui-thread-viewport-footer sticky z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
-            hideComposer
-              ? "bottom-0 gap-2"
-              : "bottom-[140px] shrink-0 gap-3",
-            // Compare: pointer-events pass-through so messages behind footer stay clickable
-            hideComposer
-              ? "pointer-events-none pb-3"
-              : "pb-2",
-          )}
-        >
-          <div
-            className={cn(
-              "flex justify-center",
-              hideComposer && "pointer-events-auto",
-            )}
+        {hideComposer ? (
+          <ThreadPrimitive.ViewportFooter
+            className="aui-thread-viewport-footer sticky bottom-0 z-20 flex w-full flex-col gap-2 overflow-visible bg-transparent pointer-events-none"
           >
-            <ThreadScrollToBottom />
-          </div>
-        </ThreadPrimitive.ViewportFooter>
+            <div className="flex justify-center pointer-events-auto">
+              <ThreadScrollToBottom />
+            </div>
+          </ThreadPrimitive.ViewportFooter>
+        ) : (
+          <AuiIf condition={({ thread }) => !thread.isEmpty}>
+            <ThreadPrimitive.ViewportFooter
+              className="aui-thread-viewport-footer sticky bottom-[140px] z-20 flex w-full flex-col gap-3 overflow-visible bg-transparent shrink-0"
+            >
+              <div className="flex justify-center">
+                <ThreadScrollToBottom />
+              </div>
+            </ThreadPrimitive.ViewportFooter>
+          </AuiIf>
+        )}
       </ThreadPrimitive.Viewport>
       {!hideComposer && (
         <AuiIf condition={({ thread }) => !thread.isEmpty}>
@@ -150,13 +152,32 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
   );
 };
 
+const SCROLL_THRESHOLD = 350;
+
 const ThreadScrollToBottom: FC = () => {
+  const [pastThreshold, setPastThreshold] = useState(false);
+
+  useEffect(() => {
+    const viewport = document.querySelector(".aui-thread-viewport");
+    if (!viewport) return;
+    const check = () => {
+      const dist = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      setPastThreshold(dist >= SCROLL_THRESHOLD);
+    };
+    viewport.addEventListener("scroll", check, { passive: true });
+    check();
+    return () => viewport.removeEventListener("scroll", check);
+  }, []);
+
   return (
     <ThreadPrimitive.ScrollToBottom asChild={true}>
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom absolute -top-6 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
+        className={cn(
+          "aui-thread-scroll-to-bottom absolute -top-14 z-10 self-center rounded-full p-4 dark:bg-background dark:hover:bg-accent",
+          pastThreshold ? "disabled:invisible" : "invisible",
+        )}
       >
         <ArrowDownIcon />
       </TooltipIconButton>

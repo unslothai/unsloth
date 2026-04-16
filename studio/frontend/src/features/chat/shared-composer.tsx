@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { loadModel, validateModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
@@ -177,6 +177,24 @@ export function RegisterCompareHandle({
   return null;
 }
 
+function CodeToggleIcon({ className }: { className?: string }): ReactElement {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  );
+}
+
 type PendingImage = { id: string; file: File };
 
 function PendingImageThumb({
@@ -266,6 +284,21 @@ export function SharedComposer({
     }, 200);
     return () => clearInterval(id);
   }, [handlesRef]);
+
+  // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const styles = window.getComputedStyle(ta);
+    const lineHeight = parseFloat(styles.lineHeight) || 20;
+    const paddingY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const borderY = parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
+    const maxHeight = lineHeight * 6 + paddingY + borderY;
+    const next = Math.min(ta.scrollHeight, maxHeight);
+    ta.style.height = `${next}px`;
+    ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [text]);
 
   const addFiles = useCallback((files: FileList | null) => {
     if (!files?.length) return;
@@ -498,7 +531,7 @@ export function SharedComposer({
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="Send to both models..."
-        className="mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground"
+        className="mb-1 min-h-12 w-full resize-none overflow-y-hidden bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
         rows={1}
       />
       <div className="relative mx-2 mb-2 flex items-center justify-between">
@@ -515,13 +548,13 @@ export function SharedComposer({
             }}
           />
           <TooltipIconButton
-            tooltip="Add attachment"
+            tooltip="Add Attachment"
             side="bottom"
             variant="ghost"
             size="icon"
-            className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Add attachment"
+            aria-label="Add Attachment"
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />
           </TooltipIconButton>
@@ -542,11 +575,11 @@ export function SharedComposer({
                 side="bottom"
                 variant="ghost"
                 size="icon"
-                className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+                className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
                 onClick={() => audioInputRef.current?.click()}
                 aria-label="Upload audio"
               >
-                <HeadphonesIcon className="size-4 stroke-[1.5px]" />
+                <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
               </TooltipIconButton>
             </>
           )}
@@ -569,7 +602,7 @@ export function SharedComposer({
               }
             }}
             className={cn(
-              "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
               reasoningDisabled
                 ? "cursor-not-allowed opacity-40"
                 : (reasoningEnabled || reasoningAlwaysOn)
@@ -579,9 +612,9 @@ export function SharedComposer({
             aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
           >
             {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
-              <LightbulbIcon className="size-3" />
+              <LightbulbIcon className="size-3.5" />
             ) : (
-              <LightbulbOffIcon className="size-3" />
+              <LightbulbOffIcon className="size-3.5" />
             )}
             <span>Think</span>
           </button>
@@ -616,7 +649,7 @@ export function SharedComposer({
             )}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
-            <TerminalIcon className="size-3.5" />
+            <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
           </button>
         </div>
@@ -629,7 +662,7 @@ export function SharedComposer({
                   side="bottom"
                   variant="ghost"
                   size="icon"
-                  className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+                  className="size-8 rounded-full text-muted-foreground"
                   onClick={startDictation}
                   aria-label="Dictate"
                 >
