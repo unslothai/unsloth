@@ -98,6 +98,7 @@ __all__ = [
     "FastBaseModel",
 ]
 
+
 def _infer_device_map_from_loaded_model(model):
     """Build a compact device_map by inspecting actual parameter placements."""
     device_map = {}
@@ -921,10 +922,10 @@ class FastBaseModel:
             # Attach dispatch hooks for bnb multi-device loads.
             _attach_bnb_multidevice_hooks(
                 model,
-                load_in_4bit      = load_in_4bit,
-                load_in_8bit      = load_in_8bit,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
                 offload_embedding = offload_embedding,
-                fast_inference    = fast_inference,
+                fast_inference = fast_inference,
             )
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
