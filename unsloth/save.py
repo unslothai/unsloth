@@ -161,6 +161,10 @@ def _quantize_q2_k_l(
     n_threads: int,
     print_output: bool = True,
 ):
+    # "Q2_K_L" is a Unsloth-side preset, not a native llama.cpp ftype. It
+    # maps to the `q2_k` ftype with `--output-tensor-type q8_0` and
+    # `--token-embedding-type q8_0` so the output/embedding tensors retain
+    # higher precision than a plain Q2_K quant.
     command = [
         str(quantizer_location),
         "--output-tensor-type",
@@ -169,13 +173,14 @@ def _quantize_q2_k_l(
         "q8_0",
         str(input_gguf),
         str(output_gguf),
-        "q2_k_l",
+        "q2_k",
         str(n_threads),
     ]
 
     if print_output:
         print(
-            "Unsloth: Quantizing to q2_k_l with --output-tensor-type q8_0 and --token-embedding-type q8_0..."
+            "Unsloth: Quantizing as Q2_K_L preset "
+            "(q2_k + --output-tensor-type q8_0 --token-embedding-type q8_0)..."
         )
 
     try:
