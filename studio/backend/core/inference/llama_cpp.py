@@ -361,12 +361,17 @@ class LlamaCppBackend:
                 timeout = 10,
             )
             if result.returncode == 0:
-                # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
+                # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES.
+                # Skip empty tokens so trailing/doubled commas like "0,1," or
+                # "0,,1" still produce a numeric filter instead of falling
+                # through the ValueError arm and silently disabling it.
                 allowed = None
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
                 if cvd is not None and cvd.strip():
                     try:
-                        allowed = set(int(x.strip()) for x in cvd.split(","))
+                        allowed = set(
+                            int(x.strip()) for x in cvd.split(",") if x.strip()
+                        )
                     except ValueError:
                         pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
 
