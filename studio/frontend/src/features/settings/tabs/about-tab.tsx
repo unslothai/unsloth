@@ -13,17 +13,36 @@ import {
   MessageNotification01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
-
-const VERSION: string =
-  (import.meta.env.VITE_APP_VERSION as string | undefined) ?? "dev";
 
 export function AboutTab() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [version, setVersion] = useState("dev");
+
+  useEffect(() => {
+    let canceled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/health");
+        if (!res.ok) return;
+        const data = (await res.json()) as { version?: string };
+        if (!canceled && data.version) {
+          setVersion(data.version);
+        }
+      } catch {
+        // fall back to dev label
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   return (
     <div className="flex flex-col gap-6">
@@ -36,7 +55,7 @@ export function AboutTab() {
 
       <SettingsSection title="Studio">
         <SettingsRow label="Version">
-          <code className="font-mono text-xs text-muted-foreground">{VERSION}</code>
+          <code className="font-mono text-xs text-muted-foreground">{version}</code>
         </SettingsRow>
       </SettingsSection>
 
