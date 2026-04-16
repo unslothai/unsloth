@@ -100,20 +100,113 @@ function Install-UnslothStudio {
     Write-Host ""
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
+    # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
+    # Dedup compares both raw and expanded forms (%VAR% vs literal).
     function Refresh-SessionPath {
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
-        $merged  = "$machine;$user;$env:Path"
+        $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts" } else { $null }
+        $sources = @()
+        if ($venvScripts) { $sources += $venvScripts }
+        $sources += @($machine, $user, $env:Path)
+        $merged = ($sources | Where-Object { $_ }) -join ";"
         $seen    = @{}
-        $unique  = @()
+        $unique  = New-Object System.Collections.Generic.List[string]
         foreach ($p in $merged -split ";") {
-            $key = $p.TrimEnd("\").ToLowerInvariant()
-            if ($key -and -not $seen.ContainsKey($key)) {
-                $seen[$key] = $true
-                $unique += $p
+            $rawKey = $p.Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+            $expKey = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+            if ($rawKey -and -not $seen.ContainsKey($rawKey) -and -not $seen.ContainsKey($expKey)) {
+                $seen[$rawKey] = $true
+                if ($expKey -and $expKey -ne $rawKey) { $seen[$expKey] = $true }
+                $unique.Add($p)
             }
         }
         $env:Path = $unique -join ";"
+    }
+
+    # ── Helper: safely add a directory to the persistent User PATH ──
+    # Direct registry access preserves REG_EXPAND_SZ (avoids dotnet/runtime#1442).
+    # Append (default) keeps existing tools first; Prepend for must-win entries.
+    function Add-ToUserPath {
+        param(
+            [Parameter(Mandatory = $true)][string]$Directory,
+            [ValidateSet('Append','Prepend')]
+            [string]$Position = 'Append'
+        )
+        try {
+            $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+            try {
+                $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() } # string[] prevents scalar collapse
+                $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $kept = New-Object System.Collections.Generic.List[string]
+                $matchIndices = New-Object System.Collections.Generic.List[int]
+                for ($i = 0; $i -lt $entries.Count; $i++) {
+                    $stripped = $entries[$i].Trim().Trim('"')
+                    $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
+                    $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
+                    $isMatch = ($rawNorm -and ($rawNorm -eq $normalDir -or $rawNorm -eq $expNormalDir)) -or
+                               ($expNorm -and ($expNorm -eq $normalDir -or $expNorm -eq $expNormalDir))
+                    if ($isMatch) {
+                        $matchIndices.Add($i)
+                        continue
+                    }
+                    $kept.Add($entries[$i])
+                }
+                $alreadyPresent = $matchIndices.Count -gt 0
+                if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+                    return $false
+                }
+                if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front
+                    $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
+                    return $false
+                }
+                # One-time backup under HKCU\Software\Unsloth\PathBackup
+                if ($rawPath) {
+                    try {
+                        $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+                        try {
+                            $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                            if (-not $existingBackup) {
+                                $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                            }
+                        } finally {
+                            $backupKey.Close()
+                        }
+                    } catch { }
+                }
+                if (-not $rawPath) {
+                    Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
+                }
+                $newPath = if ($rawPath) {
+                    if ($Position -eq 'Prepend') {
+                        (@($Directory) + $kept) -join ';'
+                    } else {
+                        ($kept + @($Directory)) -join ';'
+                    }
+                } else {
+                    $Directory
+                }
+                if ($newPath -ceq $rawPath) { # no actual change
+                    return $false
+                }
+                $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                # Broadcast WM_SETTINGCHANGE via dummy env-var roundtrip.
+                # [NullString]::Value avoids PS 7.5+/.NET 9 $null-to-"" coercion.
+                try {
+                    $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                    [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                    [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
+                } catch { }
+                return $true
+            } finally {
+                $regKey.Close()
+            }
+        } catch {
+            Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+            return $false
+        }
     }
 
     function step {
@@ -945,18 +1038,76 @@ shell.Run cmd, 0, False
 
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
-    # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
-    $ScriptsDir = Join-Path $VenvDir "Scripts"
-    $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
-        if ($UserPath) {
-            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir;$UserPath", "User")
-        } else {
-            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
+    # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──
+    # We do NOT add the venv Scripts dir to PATH (it also holds python.exe
+    # and pip.exe, which would hijack the user's system interpreter).
+    # Hardlink preferred; falls back to copy if cross-volume or non-NTFS.
+    #
+    # Remove the legacy venv Scripts PATH entry that older installers wrote.
+    $LegacyScriptsDir = Join-Path $VenvDir "Scripts"
+    try {
+        $legacyKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        try {
+            $rawPath = $legacyKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($rawPath) {
+                [string[]]$pathEntries = $rawPath -split ';'
+                $normalLegacy = $LegacyScriptsDir.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $expNormalLegacy = [Environment]::ExpandEnvironmentVariables($LegacyScriptsDir).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+                $filtered = @($pathEntries | Where-Object {
+                    $stripped = $_.Trim().Trim('"')
+                    $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
+                    $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
+                    ($rawNorm -ne $normalLegacy -and $rawNorm -ne $expNormalLegacy) -and
+                    ($expNorm -ne $normalLegacy -and $expNorm -ne $expNormalLegacy)
+                })
+                $cleanedPath = $filtered -join ';'
+                if ($cleanedPath -ne $rawPath) {
+                    $legacyKey.SetValue('Path', $cleanedPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                    try {
+                        $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                        [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                        [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
+                    } catch { }
+                }
+            }
+        } finally {
+            $legacyKey.Close()
         }
-        Refresh-SessionPath
-        step "path" "added unsloth to PATH"
+    } catch { }
+    $ShimDir = Join-Path $StudioHome "bin"
+    New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
+    $ShimExe = Join-Path $ShimDir "unsloth.exe"
+    # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
+    $shimUpdated = $false
+    try {
+        if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force -ErrorAction Stop }
+        try {
+            New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+        } catch {
+            Copy-Item -Path $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
+        }
+        $shimUpdated = $true
+    } catch {
+        if (Test-Path $ShimExe) {
+            Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
+            Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
+            Write-Host "       Close Studio and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
+            Write-Host "       Continuing with the existing launcher." -ForegroundColor Yellow
+        } else {
+            Write-Host "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
+        }
     }
+    # Only add to PATH when the launcher actually exists on disk.
+    $pathAdded = $false
+    if (Test-Path $ShimExe) {
+        $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+    }
+    if ($shimUpdated -and $pathAdded) {
+        step "path" "added unsloth launcher to PATH"
+    }
+    Refresh-SessionPath  # sync current session with registry
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.
