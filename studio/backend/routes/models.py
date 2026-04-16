@@ -508,13 +508,11 @@ def _scan_ollama_dir(
         """Create a .gguf-named link to an Ollama blob.
 
         Tries symlink first, then hardlink (works on Windows without
-        Developer Mode when target is on the same filesystem), then
-        falls back to a file copy as a last resort.  Uses atomic
-        ``os.replace`` to avoid a race window where the path is missing.
+        Developer Mode when target is on the same filesystem).  Skips
+        the model if neither works -- a full file copy of a multi-GB
+        GGUF inside a synchronous API request would block the backend.
 
-        Idempotent: skips recreation when a valid link/copy already exists
-        to avoid blocking the model-list API with multi-GB copies on every
-        scan.
+        Idempotent: skips recreation when a valid link already exists.
         """
         link_dir.mkdir(parents = True, exist_ok = True)
         link_path = link_dir / link_name
@@ -546,9 +544,13 @@ def _scan_ollama_dir(
                 try:
                     os.link(str(resolved), str(tmp_path))
                 except OSError:
-                    import shutil
-
-                    shutil.copy2(str(resolved), str(tmp_path))
+                    logger.warning(
+                        "Could not create link for Ollama blob %s "
+                        "(symlinks and hardlinks both failed). "
+                        "Skipping model to avoid blocking the API.",
+                        target,
+                    )
+                    return None
             os.replace(str(tmp_path), str(link_path))
             return str(link_path)
         except OSError as e:
@@ -563,132 +565,125 @@ def _scan_ollama_dir(
             return None
 
     try:
-        for tag_file in manifests_root.rglob("*"):
-            if not tag_file.is_file():
-                continue
+        # Ollama manifests live at depth 3-4 under manifests/:
+        #   host/model/tag           (3 levels)
+        #   host/namespace/model/tag (4 levels, e.g. registry.ollama.ai/library/...)
+        # Use targeted globs instead of rglob to avoid traversing
+        # unrelated subdirectories in large custom folders.
+        _seen_manifests: set[Path] = set()
+        for _depth_pattern in ("*/*/*", "*/*/*/*"):
+            for tag_file in manifests_root.glob(_depth_pattern):
+                if not tag_file.is_file() or tag_file in _seen_manifests:
+                    continue
+                _seen_manifests.add(tag_file)
 
-            # Manifest path relative to manifests_root gives us:
-            # <host>/<namespace_or_org>/.../<model>/<tag>
-            # Minimum depth is 3: host/model/tag
-            rel = tag_file.relative_to(manifests_root)
-            parts = rel.parts
-            if len(parts) < 3:
-                continue
-
-            host = parts[0]
-            repo_parts = list(parts[1:-1])  # namespace/model or org/repo
-            tag = parts[-1]
-
-            # Build display name and model_id:
-            # - registry.ollama.ai/library/qwen2.5/0.5b -> "qwen2.5:0.5b"
-            # - registry.ollama.ai/mradermacher/llama3/latest -> "mradermacher/llama3:latest"
-            # - hf.co/NbAiLab/borealis/q4_K_M -> "hf.co/NbAiLab/borealis:q4_K_M"
-            if (
-                host == "registry.ollama.ai"
-                and repo_parts
-                and repo_parts[0] == "library"
-            ):
-                repo_name = "/".join(repo_parts[1:])
-            elif host == "registry.ollama.ai":
-                repo_name = "/".join(repo_parts)
-            else:
-                repo_name = "/".join([host] + repo_parts)
-
-            if not repo_name:
-                continue
-
-            display = f"{repo_name}:{tag}"
-
-            # Stable hash of the full manifest path to avoid filename
-            # collisions between models that would otherwise normalize
-            # to the same stem (e.g. library/foo-bar:baz vs foo/bar:baz).
-            manifest_key = rel.as_posix()
-            stem_hash = hashlib.sha1(manifest_key.encode()).hexdigest()[:10]
-
-            try:
-                manifest = json.loads(tag_file.read_text())
-            except (json.JSONDecodeError, OSError) as e:
-                logger.debug(
-                    "Skipping unreadable/invalid Ollama manifest %s: %s",
-                    tag_file,
-                    e,
-                )
-                continue
-
-            # Read the config blob for model_type / file_type metadata
-            config_digest = manifest.get("config", {}).get("digest", "")
-            model_type = ""
-            file_type = ""
-            if config_digest and blobs_dir.is_dir():
-                config_blob = blobs_dir / config_digest.replace(":", "-")
-                if config_blob.is_file():
-                    try:
-                        cfg = json.loads(config_blob.read_text())
-                        model_type = cfg.get("model_type", "")
-                        file_type = cfg.get("file_type", "")
-                    except (json.JSONDecodeError, OSError) as e:
-                        logger.debug(
-                            "Could not parse Ollama config blob %s: %s",
-                            config_blob,
-                            e,
-                        )
-
-            # Per-model subdirectory so detect_mmproj_file only sees
-            # the projector for this model, not siblings from other models.
-            model_link_dir = links_root / stem_hash
-
-            # Find the GGUF weights blob and create a .gguf link
-            gguf_link_path: Optional[str] = None
-            quant = f"-{file_type}" if file_type else ""
-            safe_name = repo_name.replace("/", "-")
-            for layer in manifest.get("layers", []):
-                media = layer.get("mediaType", "")
-                digest = layer.get("digest", "")
-                if not digest:
+                rel = tag_file.relative_to(manifests_root)
+                parts = rel.parts
+                if len(parts) < 3:
                     continue
 
-                if media == "application/vnd.ollama.image.model":
-                    candidate = blobs_dir / digest.replace(":", "-")
-                    if candidate.is_file():
-                        link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(
-                            model_link_dir, link_name, candidate
-                        )
+                host = parts[0]
+                repo_parts = list(parts[1:-1])
+                tag = parts[-1]
 
-                # Vision projector layer
-                elif media == "application/vnd.ollama.image.projector":
-                    candidate = blobs_dir / digest.replace(":", "-")
-                    if candidate.is_file():
-                        mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
-                        _make_link(model_link_dir, mmproj_name, candidate)
+                if (
+                    host == "registry.ollama.ai"
+                    and repo_parts
+                    and repo_parts[0] == "library"
+                ):
+                    repo_name = "/".join(repo_parts[1:])
+                elif host == "registry.ollama.ai":
+                    repo_name = "/".join(repo_parts)
+                else:
+                    repo_name = "/".join([host] + repo_parts)
 
-            if not gguf_link_path:
-                continue
+                if not repo_name:
+                    continue
 
-            suffix = ""
-            if model_type:
-                suffix += f" ({model_type}"
-                if file_type:
-                    suffix += f" {file_type}"
-                suffix += ")"
+                display = f"{repo_name}:{tag}"
 
-            try:
-                updated_at = tag_file.stat().st_mtime
-            except OSError:
-                updated_at = None
+                manifest_key = rel.as_posix()
+                stem_hash = hashlib.sha1(manifest_key.encode()).hexdigest()[:10]
 
-            found.append(
-                LocalModelInfo(
-                    id = gguf_link_path,
-                    model_id = f"ollama/{repo_name}:{tag}",
-                    display_name = display + suffix,
-                    path = gguf_link_path,
-                    source = "custom",
-                    updated_at = updated_at,
-                ),
-            )
-            if limit is not None and len(found) >= limit:
-                return found
+                try:
+                    manifest = json.loads(tag_file.read_text())
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.debug(
+                        "Skipping unreadable/invalid Ollama manifest %s: %s",
+                        tag_file,
+                        e,
+                    )
+                    continue
+
+                config_digest = manifest.get("config", {}).get("digest", "")
+                model_type = ""
+                file_type = ""
+                if config_digest and blobs_dir.is_dir():
+                    config_blob = blobs_dir / config_digest.replace(":", "-")
+                    if config_blob.is_file():
+                        try:
+                            cfg = json.loads(config_blob.read_text())
+                            model_type = cfg.get("model_type", "")
+                            file_type = cfg.get("file_type", "")
+                        except (json.JSONDecodeError, OSError) as e:
+                            logger.debug(
+                                "Could not parse Ollama config blob %s: %s",
+                                config_blob,
+                                e,
+                            )
+
+                model_link_dir = links_root / stem_hash
+
+                gguf_link_path: Optional[str] = None
+                quant = f"-{file_type}" if file_type else ""
+                safe_name = repo_name.replace("/", "-")
+                for layer in manifest.get("layers", []):
+                    media = layer.get("mediaType", "")
+                    digest = layer.get("digest", "")
+                    if not digest:
+                        continue
+
+                    if media == "application/vnd.ollama.image.model":
+                        candidate = blobs_dir / digest.replace(":", "-")
+                        if candidate.is_file():
+                            link_name = f"{safe_name}-{tag}{quant}.gguf"
+                            gguf_link_path = _make_link(
+                                model_link_dir, link_name, candidate
+                            )
+
+                    elif media == "application/vnd.ollama.image.projector":
+                        candidate = blobs_dir / digest.replace(":", "-")
+                        if candidate.is_file():
+                            mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
+                            _make_link(model_link_dir, mmproj_name, candidate)
+
+                if not gguf_link_path:
+                    continue
+
+                suffix = ""
+                if model_type:
+                    suffix += f" ({model_type}"
+                    if file_type:
+                        suffix += f" {file_type}"
+                    suffix += ")"
+
+                try:
+                    updated_at = tag_file.stat().st_mtime
+                except OSError:
+                    updated_at = None
+
+                found.append(
+                    LocalModelInfo(
+                        id = gguf_link_path,
+                        model_id = f"ollama/{repo_name}:{tag}",
+                        display_name = display + suffix,
+                        path = gguf_link_path,
+                        source = "custom",
+                        updated_at = updated_at,
+                    ),
+                )
+                if limit is not None and len(found) >= limit:
+                    return found
     except OSError as e:
         logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
     return found
@@ -786,13 +781,17 @@ async def list_local_models(
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
-                    if (os.sep + ".studio_links" + os.sep) not in m.path
-                    and (os.sep + "ollama_links" + os.sep) not in m.path
+                    if not any(
+                        p in (".studio_links", "ollama_links")
+                        for p in Path(m.path).parts
+                    )
                 ]
-                custom_models = (
-                    _generic
-                    + _scan_ollama_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                )[:_MAX_MODELS_PER_FOLDER]
+                custom_models = _generic
+                if len(custom_models) < _MAX_MODELS_PER_FOLDER:
+                    custom_models += _scan_ollama_dir(
+                        folder_path,
+                        limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                    )
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
