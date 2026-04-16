@@ -122,6 +122,7 @@ ALLOWED_QUANTS = {
     "q4_k_m": "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K",
     "q5_k_m": "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K",
     "q2_k": "Uses Q4_K for the attention.vw and feed_forward.w2 tensors, Q2_K for the other tensors.",
+    "q2_k_l": "Q2_K_L with q8_0 output/token embeddings for higher quality than plain Q2_K.",
     "q3_k_l": "Uses Q5_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K",
     "q3_k_m": "Uses Q4_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K",
     "q3_k_s": "Uses Q3_K for all tensors",
@@ -151,6 +152,61 @@ CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
+
+
+def _quantize_q2_k_l(
+    input_gguf: Union[str, os.PathLike],
+    output_gguf: Union[str, os.PathLike],
+    quantizer_location: Union[str, os.PathLike],
+    n_threads: int,
+    print_output: bool = True,
+):
+    command = [
+        str(quantizer_location),
+        "--output-tensor-type",
+        "q8_0",
+        "--token-embedding-type",
+        "q8_0",
+        str(input_gguf),
+        str(output_gguf),
+        "q2_k_l",
+        str(n_threads),
+    ]
+
+    if print_output:
+        print(
+            "Unsloth: Quantizing to q2_k_l with --output-tensor-type q8_0 and --token-embedding-type q8_0..."
+        )
+
+    try:
+        if print_output:
+            result = subprocess.run(
+                command,
+                shell = False,
+                check = True,
+                text = True,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+            )
+            print(result.stdout)
+        else:
+            subprocess.run(command, shell = False, check = True, capture_output = True)
+    except subprocess.CalledProcessError as e:
+        if print_output and hasattr(e, "stdout") and e.stdout:
+            print(e.stdout)
+        raise RuntimeError(f"Failed to quantize {input_gguf} to q2_k_l: {e}")
+
+    output_path = Path(output_gguf)
+    if not output_path.exists():
+        raise RuntimeError(f"Quantization failed - output file {output_gguf} not created")
+
+    if print_output:
+        file_size_bytes = output_path.stat().st_size
+        file_size_gb = file_size_bytes / (1024**3)
+        print(
+            f"Unsloth: Successfully quantized to {output_gguf} (size: {file_size_gb:.2f}GB)"
+        )
+    return str(output_gguf)
 
 
 def check_if_sentencepiece_model(
@@ -1305,14 +1361,23 @@ def save_to_gguf(
                     gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
                 )
                 try:
-                    # Use the quantize_gguf function we created
-                    quantized_file = quantize_gguf(
-                        input_gguf = base_gguf,
-                        output_gguf = output_location,
-                        quant_type = quant_method,
-                        quantizer_location = quantizer_location,
-                        print_output = print_output,
-                    )
+                    if quant_method == "q2_k_l":
+                        quantized_file = _quantize_q2_k_l(
+                            input_gguf = base_gguf,
+                            output_gguf = output_location,
+                            quantizer_location = quantizer_location,
+                            n_threads = n_cpus,
+                            print_output = print_output,
+                        )
+                    else:
+                        # Use unsloth-zoo's standard quantization for all other methods
+                        quantized_file = quantize_gguf(
+                            input_gguf = base_gguf,
+                            output_gguf = output_location,
+                            quant_type = quant_method,
+                            quantizer_location = quantizer_location,
+                            print_output = print_output,
+                        )
                     all_saved_locations.append(quantized_file)
                     quants_created = True
                 except Exception as e:
@@ -1880,6 +1945,7 @@ def unsloth_save_pretrained_gguf(
     "q4_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K",
     "q5_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K",
     "q2_k"    : "Uses Q4_K for the attention.vw and feed_forward.w2 tensors, Q2_K for the other tensors.",
+    "q2_k_l"  : "Q2_K_L with --output-tensor-type q8_0 --token-embedding-type q8_0.",
     "q3_k_l"  : "Uses Q5_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K",
     "q3_k_m"  : "Uses Q4_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K",
     "q3_k_s"  : "Uses Q3_K for all tensors",
@@ -2203,6 +2269,7 @@ def unsloth_push_to_hub_gguf(
     "q4_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K",
     "q5_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K",
     "q2_k"    : "Uses Q4_K for the attention.vw and feed_forward.w2 tensors, Q2_K for the other tensors.",
+    "q2_k_l"  : "Q2_K_L with --output-tensor-type q8_0 --token-embedding-type q8_0.",
     "q3_k_l"  : "Uses Q5_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K",
     "q3_k_m"  : "Uses Q4_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K",
     "q3_k_s"  : "Uses Q3_K for all tensors",
