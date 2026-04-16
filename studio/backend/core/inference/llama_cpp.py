@@ -3041,6 +3041,7 @@ class LlamaCppBackend:
                     assistant_msg["tool_calls"] = tool_calls
                 conversation.append(assistant_msg)
 
+                _any_tool_succeeded = False
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
@@ -3146,6 +3147,8 @@ class LlamaCppBackend:
                         _error_prefixes
                     )
                     _tool_call_history.append((_tc_key, _is_error))
+                    if not _is_error:
+                        _any_tool_succeeded = True
                     # Strip image sentinel before feeding result to the LLM
                     # (the full result with sentinel is still yielded via
                     # tool_end so the frontend can extract image paths).
@@ -3168,9 +3171,12 @@ class LlamaCppBackend:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
 
-                # First tool result of the loop: tell the model to
-                # synthesise an answer rather than continue searching.
-                _apply_synthesise_nudge()
+                # First successful tool result of the loop: tell the model
+                # to synthesise an answer rather than continue searching.
+                # Skip if every tool call in this batch errored -- let the
+                # model retry or try a different approach instead.
+                if _any_tool_succeeded:
+                    _apply_synthesise_nudge()
 
                 # Clear tool status badge before next generation iteration
                 yield {"type": "status", "text": ""}

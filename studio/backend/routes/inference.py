@@ -155,6 +155,24 @@ _TOOL_SYNTHESISE_NUDGE = (
     " longer needed for this turn."
 )
 
+
+def _has_tool_result_in_current_turn(messages: list[dict]) -> bool:
+    """Check if the current turn (after the last user message) has tool results.
+
+    Scans backwards from the end -- if we find a tool result before hitting
+    a user message, the current turn has tool results. If we hit a user
+    message first (or the list is empty), the tool results are from prior
+    turns and should not trigger the synthesis nudge.
+    """
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "tool":
+            return True
+        if role == "user":
+            return False
+    return False
+
+
 # Regex for stripping leaked tool-call XML from assistant messages/stream
 _TOOL_XML_RE = _re.compile(
     r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
@@ -1273,12 +1291,12 @@ async def openai_chat_completions(
                 _nudge += (
                     _TOOL_ACTION_NUDGE_SMALL if _is_small_model else _TOOL_ACTION_NUDGE
                 )
-                # If the current conversation already has a tool result
-                # message, append the synthesise-now directive. Covers
-                # forked chats and long-running sessions where the prior
-                # "prefer tools" line keeps biasing the model into search
-                # loops instead of answering from what it already has.
-                if any(m.get("role") == "tool" for m in chat_messages):
+                # If the current turn (after the last user message) has
+                # tool results, append the synthesise directive. Only
+                # scoped to the current turn so that historical tool
+                # results from earlier questions do not suppress
+                # legitimate new tool calls.
+                if _has_tool_result_in_current_turn(chat_messages):
                     _nudge += _TOOL_SYNTHESISE_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
@@ -2508,7 +2526,7 @@ async def anthropic_messages(
             _nudge += (
                 _TOOL_ACTION_NUDGE_SMALL if _is_small_model else _TOOL_ACTION_NUDGE
             )
-            if any(m.get("role") == "tool" for m in openai_messages):
+            if _has_tool_result_in_current_turn(openai_messages):
                 _nudge += _TOOL_SYNTHESISE_NUDGE
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
