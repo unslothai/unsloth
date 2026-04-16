@@ -644,23 +644,13 @@ _RE_JINJA_COMMENT = re.compile(r"\{#.*?#\}", flags = re.DOTALL)
 
 
 def _find_end_position(template, endfor = None, endif = None):
-    """Return the last {% endfor %}/{% endif %} in the template (whichever is
-    further right), as a dict with start, end, dash_left, dash_right.
-
-    Unlike the older substring-based version, this accepts any of the four
-    Jinja whitespace-control variants ({% ... %}, {%- ... %}, {% ... -%},
-    {%- ... -%}) and returns the rightmost match so multi-for templates are
-    not locked onto the first loop. The `endfor`/`endif` kwargs are accepted
-    for backward compatibility and ignored.
-
-    Jinja comments ({# ... #}) are replaced with equal-length padding before
-    matching so tokens like `{% endfor %}` or `{% endif %}` living inside
-    comments don't get picked up as real end tags. Positions in the padded
-    string still map 1:1 to positions in the original template.
-    """
-    # Pad comments with spaces so their contents don't match as end tags but
-    # positions are preserved.
-    scrubbed = _RE_JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), template)
+    """Rightmost {% endfor %}/{% endif %} (any dash variant), as a dict
+    with start/end/text/dash_left/dash_right. Tokens inside Jinja comments
+    are ignored. `endfor`/`endif` kwargs kept for back-compat, ignored."""
+    # Space-pad comments so positions still map 1:1 to the original.
+    scrubbed = _RE_JINJA_COMMENT.sub(
+        lambda m: " " * len(m.group(0)), template
+    )
     endfor_matches = list(_RE_ENDFOR.finditer(scrubbed))
     endif_matches = list(_RE_ENDIF.finditer(scrubbed))
     last_endfor = endfor_matches[-1] if endfor_matches else None
@@ -710,39 +700,25 @@ def _template_ends_with_toplevel_for(chat_template):
 
 
 def _if_body_emits_content(if_node):
-    """Return True if the If's positive body contains at least one Output
-    node. We use this to distinguish a real generation-prompt block
-    (`{% if add_generation_prompt %}{{ "<|...assistant..." }}{% endif %}`,
-    body has an Output) from a header guard
-    (`{% if not add_generation_prompt is defined %}{% set ... %}{% endif %}`,
-    body is only Assign nodes, emits nothing). Nested control flow counts as
-    emitting if any reachable descendant is an Output."""
+    """True if the If's body contains any Output node (directly or nested).
+    Distinguishes a real generation block from a header guard that only
+    does `{% set ... %}`."""
     import jinja2.nodes
 
     for node in if_node.body:
         if isinstance(node, jinja2.nodes.Output):
             return True
-        # Nested If / For / Macro / etc. -- walk descendants for any Output.
-        if any(
-            isinstance(d, jinja2.nodes.Output)
-            for d in node.find_all(jinja2.nodes.Output)
-        ):
+        if any(isinstance(d, jinja2.nodes.Output) for d in node.find_all(jinja2.nodes.Output)):
             return True
     return False
 
 
 def _has_add_generation_prompt_block(chat_template):
-    """Return True if the template contains a *positive* generation-prompt
-    gate, i.e. an `{% if add_generation_prompt %}` (or equivalent) whose
-    body emits output. Uses Jinja AST so comments and whitespace-control
-    variants cannot fool the check. Falls back to a string scan if Jinja
-    cannot parse.
-
-    Rejects header guards like `{% if not add_generation_prompt is defined %}
-    {% set add_generation_prompt = false %}{% endif %}` -- these reference
-    the name but emit nothing, so they do not gate a generation block and
-    the template still needs repair.
-    """
+    """True if the template has a *positive* `{% if add_generation_prompt %}`
+    gate whose body emits output. Rejects header guards like
+    `{% if not add_generation_prompt is defined %}{% set ... %}{% endif %}`
+    that reference the name but emit nothing. AST-based; string-scan
+    fallback if Jinja fails to parse."""
     try:
         import jinja2
         import jinja2.nodes
@@ -752,8 +728,7 @@ def _has_add_generation_prompt_block(chat_template):
         return "if add_generation_prompt" in chat_template and "%}" in chat_template
     for if_node in ast.find_all(jinja2.nodes.If):
         test = if_node.test
-        # `find_all` only walks descendants, so a bare Name test (the common
-        # `{% if add_generation_prompt %}` form) needs an explicit check here.
+        # find_all skips the test root, so check bare Name tests explicitly.
         references_agp = False
         if isinstance(test, jinja2.nodes.Name) and test.name == "add_generation_prompt":
             references_agp = True
@@ -767,38 +742,27 @@ def _has_add_generation_prompt_block(chat_template):
     return False
 
 
-# Sentinels used by _derive_assistant_prefix_by_render. The first character of
-# each sentinel differs so os.path.commonprefix() cannot absorb them, and the
-# random-looking tail makes accidental collision with real template literals
-# vanishingly unlikely (tested as T18 in test_chat_template_followups.py).
+# Sentinels for _derive_assistant_prefix_by_render. Diverge at char 0 so
+# commonprefix can't absorb them; long random tail makes collision with real
+# template literals negligible (see T18).
 _RENDER_DIFF_SENTINEL_A = "AAAA_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_B = "BBBB_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_C = "CCCC_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 
 
 def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
-    """Return the exact assistant-turn prefix the template emits, derived by
-    rendering the template against two dialogs that differ only in assistant
-    content. The common prefix/suffix around the varying sentinel is the prefix
-    the template actually emits for an assistant turn.
+    """Return the assistant-turn prefix the template emits, derived by
+    rendering two dialogs that differ only in assistant content: the common
+    prefix of their tails (after the base [user]-only render) is what the
+    template emits for an assistant turn. None if any guard fails.
 
-    This replaces the earlier regex-based `_infer_assistant_separator`, which
-    only worked for ChatML-shaped templates and could be fooled by variables,
-    conditional prefixes, and unusual quoting. Render-diff derivation uses the
-    template itself as ground truth, so Llama-3 / Gemma / Phi-3 and other
-    non-ChatML shapes work as long as the assistant block is a literal the
-    template emits once per message.
+    Works for Llama-3 / Gemma / Phi-3 and other non-ChatML shapes; the
+    template is its own ground truth.
 
-    Returns the derived prefix string on success, or None if any guard fails
-    (ambiguous divergence, template cannot render without context, reordering
-    templates, or templates where role has no effect on output).
-
-    Known limitation: a template that emits the turn-end sentinel only for
-    non-last messages (`eos-on-non-last` pattern) would produce a consistent
-    but slightly wrong derived prefix. `_validate_patched_template` would not
-    catch it because the repaired template would still satisfy
-    `yes != no and yes.startswith(no)`. No real-world template is known to use
-    this pattern.
+    Known limitation: an `eos-on-non-last` pattern (turn-end sentinel only
+    emitted for non-last messages) would produce a consistent but wrong
+    prefix that `_validate_patched_template` can't catch. No real-world
+    template is known to use this.
     """
     try:
         import jinja2
@@ -809,10 +773,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         base_msgs = [{"from": "human", "value": "Hi"}]
         sent_a_msgs = base_msgs + [{"from": "gpt", "value": _RENDER_DIFF_SENTINEL_A}]
         sent_b_msgs = base_msgs + [{"from": "gpt", "value": _RENDER_DIFF_SENTINEL_B}]
-        # Negative cross-check: another *user* turn instead of an assistant
-        # turn. If the derived prefix also appears before a user-role sentinel,
-        # the template does not distinguish assistant turns from user turns
-        # (e.g. a {% set %}-only template) and we must reject.
+        # User-role cross-check (Guard C below).
         sent_c_msgs = base_msgs + [{"from": "human", "value": _RENDER_DIFF_SENTINEL_C}]
     else:
         base_msgs = [{"role": "user", "content": "Hi"}]
@@ -824,14 +785,9 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         ]
         sent_c_msgs = base_msgs + [{"role": "user", "content": _RENDER_DIFF_SENTINEL_C}]
 
-    # Trim trailing whitespace / Jinja comments that live AFTER the last
-    # {% endfor %}/{% endif %}. Without this, a template like
-    # `{% for m in messages %}...{% endfor %}   \n` renders base (1 message)
-    # as `MSG   \n` and render with 2 messages as `MSG1MSG2   \n` -- the
-    # trailing whitespace appears *after* the message loop in both, so
-    # out_a does not start with out_base. Since `_fix_chat_template` also
-    # discards that trailing content when it splices in the generation block,
-    # stripping it in the probe matches the eventual emitted behavior.
+    # Strip trailing whitespace/comments after the last endfor/endif: they
+    # appear after the message loop and would break Guard A. The splice in
+    # `_fix_chat_template` drops them too.
     probe_template = chat_template
     end = _find_end_position(chat_template)
     if end is not None:
@@ -839,13 +795,8 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         if _RE_JINJA_COMMENT.sub("", after).strip() == "":
             probe_template = chat_template[: end["end"]]
 
-    # Isolated Jinja environment. autoescape=False: chat templates are strings,
-    # not HTML. keep_trailing_newline=True: preserve final newline in the
-    # output so the diff captures it. No custom filters/globals/bos_token
-    # added on purpose: any template that relies on them will fail at render
-    # time and we'll return None, which is the correct outcome -- we don't
-    # want to silently fall back for a template the caller can't render
-    # either.
+    # Isolated env (no tokenizer globals/filters): a template that needs
+    # them will raise -> return None, which is the correct escalation.
     try:
         env = jinja2.Environment(
             autoescape = False,
@@ -858,28 +809,21 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     except Exception:
         return None
 
-    # The user-cross-check render is best-effort: some templates enforce
-    # role alternation via `raise_exception` (e.g. Gemma), which means a
-    # [user, user] dialog deliberately fails to render. A render failure
-    # here is evidence that role matters -- the template rejects two
-    # consecutive users -- and we should *not* reject the derived prefix.
+    # Best-effort: alternation-enforcing templates (e.g. Gemma's
+    # raise_exception) will fail on [user, user]; that's a positive signal
+    # for Guard C, not a probe failure.
     out_user_c = None
     try:
         out_user_c = tmpl.render(messages = sent_c_msgs, add_generation_prompt = False)
     except Exception:
         pass
 
-    # Guard A: both assistant renders must be extensions of the base render
-    # (i.e. the template appends to produce the assistant turn, rather than
-    # reordering or deleting content).
+    # Guard A: assistant renders extend base (no reordering).
     if not (out_a.startswith(out_base) and out_b.startswith(out_base)):
         return None
 
     tail_a = out_a[len(out_base) :]
     tail_b = out_b[len(out_base) :]
-
-    # Both tails must be non-empty (template actually renders something for
-    # an assistant turn).
     if not tail_a or not tail_b:
         return None
 
@@ -887,25 +831,15 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
 
     prefix = _os.path.commonprefix([tail_a, tail_b])
 
-    # Guard B: after stripping the common prefix, each tail must begin with
-    # its own sentinel. This confirms the divergence point is exactly the
-    # content-insertion site, not some earlier difference in the output.
+    # Guard B: divergence is exactly at the content-insertion site.
     if not (
         tail_a[len(prefix) :].startswith(_RENDER_DIFF_SENTINEL_A)
         and tail_b[len(prefix) :].startswith(_RENDER_DIFF_SENTINEL_B)
     ):
         return None
 
-    # Guard C: negative user-role cross-check. Only run if the user-cross
-    # render succeeded. If a third render with a user sentinel produces the
-    # *same* prefix after the base, then role has no effect on output --
-    # the derived prefix is not assistant-specific and must be rejected.
-    # This catches templates like `{% set greeting = 'Hi' %}
-    # {% for m in messages %}{{ greeting }} {{ m.content }}{% endfor %}`
-    # where any new message gets the same "Hi " prefix regardless of role.
-    # A render failure on the user-cross render is ALSO evidence that
-    # role distinguishes turns (e.g. Gemma's `raise_exception` on
-    # non-alternating roles), so we accept the derived prefix.
+    # Guard C: reject if a [user, user] render also emits the same prefix
+    # (role-insensitive template, e.g. `{% set greeting='Hi' %}...`).
     if out_user_c is not None and out_user_c.startswith(out_base):
         tail_c = out_user_c[len(out_base) :]
         if tail_c.startswith(prefix) and prefix != "":
@@ -950,37 +884,27 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
         )
         return chat_template[: end["end"]] + wrapped
 
-    # Case 2 (GH#4150): template ends at {% endfor %} with only whitespace or
-    # Jinja comments left. Inject an {% if add_generation_prompt %} block
-    # with the exact assistant-turn prefix the template emits, derived by
-    # render-diff probe (no regex / no hard ChatML token gate -- so Llama-3,
-    # Gemma, Phi-3 stripped templates work too). Require the top-level body
-    # to END in a For node so we don't inject inside a wider wrapper (e.g.
-    # Qwen3-Guard wraps the whole template in an outer If -- there the
-    # generation block would be out of place).
+    # Case 2 (GH#4150): template ends at {% endfor %} with only whitespace
+    # or comments left. Inject an {% if add_generation_prompt %} block with
+    # the assistant prefix derived by render-diff. The top-level-For gate
+    # keeps us out of outer-If wrappers (e.g. Qwen3-Guard).
     if _RE_JINJA_COMMENT.sub(
         "", after_endfor
     ).strip() == "" and _template_ends_with_toplevel_for(chat_template):
-        # Note: the fast path above (`_has_add_generation_prompt_block`)
-        # already confirmed there is no *positive* generation block, so we
-        # don't need another string-level "add_generation_prompt not in
-        # scrubbed" check here -- that would reject templates with a header
-        # guard like `{% if not add_generation_prompt is defined %}` that
-        # references the name but emits nothing.
+        # No redundant "agp not in scrubbed" check: the fast path already
+        # confirmed no *positive* block, and a mere reference (header
+        # guard) should still get repaired.
         assistant_prefix = _derive_assistant_prefix_by_render(
             chat_template, is_sharegpt
         )
-        # Dual-probe fallback: dict/list callers don't know the shape up
-        # front, and a template that expects ShareGPT-keyed messages will
-        # raise on HF-keyed probe. Try the other shape before giving up.
+        # Dual-probe: dict/list callers don't know the shape up front.
         if assistant_prefix is None and not is_sharegpt:
             assistant_prefix = _derive_assistant_prefix_by_render(
                 chat_template, is_sharegpt = True
             )
         if assistant_prefix is None:
             return chat_template
-        # Double-quoted Jinja literal with \\, \n, and " escaped so the
-        # block is valid regardless of the derived prefix's content.
+        # Escape for a double-quoted Jinja string literal.
         escaped = (
             assistant_prefix.replace("\\", "\\\\")
             .replace('"', '\\"')
@@ -1177,18 +1101,14 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
 
 
 class _VariantTokenizerProxy:
-    """Adapter that presents a single variant-template view of a multi-variant
-    tokenizer to `_fix_chat_template_for_tokenizer`. This routes each variant
-    through the same full lifecycle as a string template -- is_sharegpt
-    probe, no==yes diagnostic, warn/strict messaging, and
-    `_validate_patched_template()` -- instead of calling structural repair
-    directly and skipping those guarantees.
+    """Single-variant view of a multi-variant tokenizer. Routes each variant
+    through `_fix_chat_template_for_tokenizer` so the full contract
+    (is_sharegpt probe, no==yes, warn/strict, `_validate_patched_template`)
+    applies instead of jumping straight to structural repair.
 
-    `apply_chat_template` is delegated to the base tokenizer after
-    temporarily swapping in the variant template, so access to tokenizer
-    globals (bos_token, custom filters, raise_exception, etc.) is
-    preserved. If the base is read-only, we fall back to bare-Jinja
-    rendering so the probe still works for stub tokenizers in tests.
+    `apply_chat_template` swaps `base.chat_template` to the variant before
+    calling so tokenizer globals (bos_token, filters, raise_exception) are
+    preserved; falls back to bare Jinja for read-only stubs.
     """
 
     def __init__(self, base_tokenizer, variant_template, variant_label = ""):
@@ -1196,7 +1116,6 @@ class _VariantTokenizerProxy:
         self._template = variant_template
         self._label = variant_label
         base_name = getattr(base_tokenizer, "name_or_path", "unknown")
-        # Append variant label so user-facing messages identify the variant.
         self.name_or_path = (
             f"{base_name} ({variant_label})" if variant_label else base_name
         )
@@ -1220,15 +1139,10 @@ class _VariantTokenizerProxy:
                 swapped = False
             if swapped:
                 return self._base.apply_chat_template(*args, **kwargs)
-            # Base is read-only or cannot accept a string chat_template.
-            # Fall back to isolated Jinja rendering of the variant directly;
-            # this loses access to tokenizer globals but the probe still
-            # works for templates that don't depend on them.
+            # Read-only base: fall back to isolated Jinja.
             import jinja2
-
             env = jinja2.Environment(
-                autoescape = False,
-                keep_trailing_newline = True,
+                autoescape = False, keep_trailing_newline = True,
             )
             messages = args[0] if args else kwargs.get("messages", [])
             add_generation_prompt = kwargs.get("add_generation_prompt", False)
@@ -1249,12 +1163,8 @@ def fix_chat_template(tokenizer):
     if chat_template is None:
         return None
 
-    # Multi-variant dict form (e.g. Hermes-3 {default, tool_use}): route each
-    # variant through `_fix_chat_template_for_tokenizer` so it honors the
-    # full repair contract (is_sharegpt probe, no==yes diagnostic, warn /
-    # strict messaging, and `_validate_patched_template`). The earlier
-    # implementation called `_fix_chat_template` directly per variant and
-    # silently bypassed these guards.
+    # Multi-variant dict (e.g. Hermes-3 {default, tool_use}): route each
+    # variant through the full repair contract via _VariantTokenizerProxy.
     if isinstance(chat_template, dict):
         fixed = {}
         for key, tmpl in chat_template.items():
