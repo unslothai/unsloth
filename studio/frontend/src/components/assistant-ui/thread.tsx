@@ -69,7 +69,12 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 }) => {
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+      className={cn(
+        "aui-root aui-thread-root @container flex flex-col",
+        hideComposer
+          ? "h-full"
+          : "relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
+      )}
       style={{
         ["--thread-max-width" as string]: "44rem",
         ["--thread-content-max-width" as string]:
@@ -78,8 +83,10 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
     >
       <ThreadPrimitive.Viewport
         className={cn(
-          "aui-thread-viewport relative flex h-0 min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4",
-          hideComposer ? "pt-4" : "pt-[56px]",
+          "aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4",
+          hideComposer
+            ? "pt-4"
+            : "h-0 min-h-0 basis-0 pt-[56px]",
         )}
       >
         {!hideWelcome && (
@@ -97,15 +104,14 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
         />
 
         {/* Small overlap and extra slack so the last lines can scroll under the composer cleanly */}
-        <div
-          className={cn("shrink-0", hideComposer ? "h-6" : "h-40")}
-          aria-hidden
-        />
+        {!hideComposer && <div className="h-40 shrink-0" aria-hidden />}
 
         <ThreadPrimitive.ViewportFooter
           className={cn(
-            "aui-thread-viewport-footer sticky z-20 mt-auto flex w-full shrink-0 flex-col overflow-visible bg-transparent",
-            hideComposer ? "bottom-0 gap-2" : "bottom-[140px] gap-3",
+            "aui-thread-viewport-footer sticky z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
+            hideComposer
+              ? "bottom-0 gap-2"
+              : "bottom-[140px] shrink-0 gap-3",
             // Compare: pointer-events pass-through so messages behind footer stay clickable
             hideComposer
               ? "pointer-events-none pb-3"
