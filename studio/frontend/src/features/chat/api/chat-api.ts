@@ -247,6 +247,48 @@ export async function removeScanFolder(id: number): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+export interface BrowseEntry {
+  name: string;
+  has_models: boolean;
+  hidden: boolean;
+}
+
+export interface BrowseFoldersResponse {
+  current: string;
+  parent: string | null;
+  entries: BrowseEntry[];
+  suggestions: string[];
+  truncated?: boolean;
+  model_files_here?: number;
+}
+
+export async function listRecommendedFolders(): Promise<string[]> {
+  const response = await authFetch("/api/models/recommended-folders");
+  const data = await parseJsonOrThrow<{ folders: string[] }>(response);
+  return data.folders;
+}
+
+export async function browseFolders(
+  path?: string,
+  showHidden = false,
+  signal?: AbortSignal,
+): Promise<BrowseFoldersResponse> {
+  const params = new URLSearchParams();
+  if (path !== undefined && path !== null) params.set("path", path);
+  if (showHidden) params.set("show_hidden", "true");
+  const qs = params.toString();
+  // Forward the AbortSignal through authFetch -> fetch so that a
+  // navigation cancelled in the FolderBrowser (rapid breadcrumb / row /
+  // hidden-toggle clicks) actually cancels the in-flight HTTP request
+  // server-side, instead of merely dropping the response client-side
+  // while the backend keeps walking large directory trees.
+  const response = await authFetch(
+    `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
+    signal ? { signal } : undefined,
+  );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
+}
+
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,

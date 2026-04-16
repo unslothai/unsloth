@@ -15,7 +15,11 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
-from ._utils import SUPPORTS_BFLOAT16
+from ._utils import (
+    SUPPORTS_BFLOAT16,
+    resolve_model_class,
+    resolve_encoder_attention_implementation,
+)
 import inspect
 import json
 import os
@@ -31,7 +35,6 @@ import transformers
 from packaging.version import Version
 import re
 from transformers import AutoModel, AutoConfig
-from transformers.models.auto.auto_factory import _get_model_class
 import tempfile
 from huggingface_hub import HfApi, get_token
 from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
@@ -870,7 +873,7 @@ class FastSentenceTransformer(FastModel):
             if auto_model_class is None:
                 auto_model_class = AutoModel
             # try to resolve the class
-            model_class = _get_model_class(config, auto_model_class._model_mapping)
+            model_class = resolve_model_class(auto_model_class, config)
 
             if model_class:
                 sig = inspect.signature(model_class.__init__)
@@ -1446,32 +1449,18 @@ class FastSentenceTransformer(FastModel):
             ):
                 st_device = "cuda"
 
-            # Check if model supports SDPA (Scaled Dot Product Attention) for extra speedup
-            supports_sdpa = False
-            if config is not None:
-                try:
-                    model_class = _get_model_class(
-                        config, kwargs.get("auto_model", AutoModel)._model_mapping
-                    )
-                    supports_sdpa = getattr(model_class, "_supports_sdpa", False)
-                except:
-                    pass
-
             # Build model_kwargs for SentenceTransformer
             model_kwargs = {"torch_dtype": dtype}
 
-            # Enable SDPA if supported (1.2x extra speedup on top of torch.compile)
-            # But disable for models with known SDPA + torch.compile backward issues
-            _force_eager = False
-            for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
-                if _sdpa_model in model_type.lower():
-                    supports_sdpa = False
-                    _force_eager = True
-                    break
-            if supports_sdpa:
-                model_kwargs["attn_implementation"] = "sdpa"
-            elif _force_eager:
-                model_kwargs["attn_implementation"] = "eager"
+            encoder_attn_impl = resolve_encoder_attention_implementation(
+                kwargs.get("auto_model", AutoModel),
+                config,
+                model_type = model_type,
+                disable_sdpa_model_names = DISABLE_SDPA_MODEL_NAMES,
+            )
+            supports_sdpa = encoder_attn_impl == "sdpa"
+            if encoder_attn_impl is not None:
+                model_kwargs["attn_implementation"] = encoder_attn_impl
 
             # Print optimization status
             sdpa_str = " + SDPA" if supports_sdpa else ""

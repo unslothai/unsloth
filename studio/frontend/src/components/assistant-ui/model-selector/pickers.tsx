@@ -27,6 +27,7 @@ import {
   listCachedModels,
   listGgufVariants,
   listLocalModels,
+  listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
 } from "@/features/chat/api/chat-api";
@@ -48,7 +49,8 @@ import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Trash2Icon } from "lucide-react";
+import { FolderBrowser } from "./folder-browser";
+import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon, Trash2Icon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -72,10 +74,35 @@ function normalizeForSearch(s: string): string {
   return s.toLowerCase().replace(/[\s\-_\.]/g, "");
 }
 
-function ListLabel({ children }: { children: ReactNode }) {
+function ListLabel({
+  children,
+  icon,
+  collapsed,
+  onToggle,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}) {
   return (
-    <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
+    <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
+      <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {icon}
+        {children}
+      </span>
+      {onToggle && (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={collapsed ? "Expand section" : "Collapse section"}
+          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+        >
+          {collapsed
+            ? <ChevronRightIcon className="size-3" />
+            : <ChevronDownIcon className="size-3" />}
+        </button>
+      )}
     </div>
   );
 }
@@ -488,6 +515,9 @@ export function HubModelPicker({
   // Delete confirmation dialog state
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
+  const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
+  const [recommendedCollapsed, setRecommendedCollapsed] = useState(false);
 
   // Cached (already downloaded) repos -- use module-level cache so
   // re-mounting the popover does not flash an empty "Downloaded" section.
@@ -512,6 +542,8 @@ export function HubModelPicker({
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
   const [folderLoading, setFolderLoading] = useState(false);
+  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
+  const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
 
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
@@ -537,11 +569,22 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    const trimmed = folderInput.trim();
+  const handleAddFolder = useCallback(async (overridePath?: string) => {
+    // Accept an explicit path so the folder browser can submit the
+    // chosen path in the same tick it calls `setFolderInput`; reading
+    // `folderInput` alone would race the state update.
+    const raw = overridePath !== undefined ? overridePath : folderInput;
+    const trimmed = raw.trim();
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
+    // True when the request originated from the folder browser's
+    // ``onSelect`` (one-click "Use this folder"). In that flow the
+    // typed-input panel is closed, so the inline ``folderError``
+    // paragraph is invisible. Surface failures via toast instead so
+    // the action doesn't appear to silently no-op when the backend
+    // rejects (denylisted path, sandbox 403, etc.).
+    const fromBrowser = overridePath !== undefined;
     try {
       const created = await addScanFolder(trimmed);
       // Backend returns existing row for duplicates, so deduplicate
@@ -557,7 +600,11 @@ export function HubModelPicker({
       // Background reconciliation with the server
       void refreshScanFolders();
     } catch (e) {
-      setFolderError(e instanceof Error ? e.message : "Failed to add folder");
+      const message = e instanceof Error ? e.message : "Failed to add folder";
+      setFolderError(message);
+      if (fromBrowser) {
+        toast.error("Couldn't add folder", { description: message });
+      }
     } finally {
       setFolderLoading(false);
     }
@@ -599,8 +646,15 @@ export function HubModelPicker({
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached)
     refreshLocalModelsList();
     refreshScanFolders();
+    listRecommendedFolders()
+      .then(setRecommendedFolders)
+      .catch(() => {});
 
-    if (alreadyCached) return;
+    // Always refetch cached GGUF/model lists. The module-level caches give
+    // an instant render with stale data (no spinner flash), but newly
+    // downloaded repos won't appear unless we re-hit the backend on every
+    // mount.  Initial state already has cachedReady=alreadyCached, so the
+    // background refresh is invisible when we already had data.
     let done = 0;
     const check = () => {
       if (++done >= 2) setCachedReady(true);
@@ -619,7 +673,7 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-  }, [alreadyCached, refreshLocalModelsList, refreshScanFolders]);
+  }, [refreshLocalModelsList, refreshScanFolders]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return;
@@ -872,8 +926,12 @@ export function HubModelPicker({
             (cachedGguf.length > 0 ||
               (!chatOnly && cachedModels.length > 0)) ? (
             <>
-              <ListLabel>Downloaded</ListLabel>
-              {cachedGguf.map((c) => (
+              <ListLabel
+                icon={<DownloadIcon className="size-3" />}
+                collapsed={downloadedCollapsed}
+                onToggle={() => setDownloadedCollapsed((v) => !v)}
+              >Downloaded</ListLabel>
+              {!downloadedCollapsed && cachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
                     label={c.repo_id}
@@ -901,7 +959,7 @@ export function HubModelPicker({
                   )}
                 </div>
               ))}
-              {!chatOnly &&
+              {!downloadedCollapsed && !chatOnly &&
                 cachedModels.map((c) => (
                   <div key={c.repo_id} className="flex items-center gap-0.5">
                     <div className="min-w-0 flex-1">
@@ -980,30 +1038,56 @@ export function HubModelPicker({
 
           {!showHfSection ? (
             <>
-              <div className="flex items-center justify-between px-2.5 py-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <div className="flex items-center gap-1 px-2.5 py-1.5">
+                <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <HugeiconsIcon icon={Folder02Icon} className="size-3" />
                   Custom Folders
                 </span>
-                <button
-                  type="button"
-                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
-                  onClick={() => {
-                    setShowFolderInput((open) => {
-                      if (open) { setFolderInput(""); setFolderError(null); }
-                      return !open;
-                    });
-                  }}
-                  className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
-                >
-                  <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
+                    title={showFolderInput ? "Cancel" : "Add by typing a path"}
+                    onClick={() => {
+                      setShowFolderInput((open) => {
+                        if (open) { setFolderInput(""); setFolderError(null); }
+                        return !open;
+                      });
+                    }}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Browse for a folder on the server"
+                    title="Browse folders on the server"
+                    onClick={() => setShowFolderBrowser(true)}
+                    className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Search01Icon} className="size-2.5" />
+                  </button>
+                </div>
+                <div className="ml-auto">
+                  <button
+                    type="button"
+                    aria-label={customFoldersCollapsed ? "Expand custom folders" : "Collapse custom folders"}
+                    title={customFoldersCollapsed ? "Expand" : "Collapse"}
+                    onClick={() => setCustomFoldersCollapsed((v) => !v)}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    {customFoldersCollapsed
+                      ? <ChevronRightIcon className="size-3" />
+                      : <ChevronDownIcon className="size-3" />}
+                  </button>
+                </div>
               </div>
 
               {/* Folder paths */}
-              {scanFolders.map((f) => (
+              {!customFoldersCollapsed && scanFolders.map((f) => (
                 <div
                   key={f.id}
-                  className="group flex items-center gap-1.5 px-3 py-0.5"
+                  className="group flex items-center gap-1.5 px-2.5 py-0.5"
                 >
                   <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
                   <span
@@ -1016,15 +1100,38 @@ export function HubModelPicker({
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
                     aria-label={`Remove folder ${f.path}`}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                    className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                   >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                   </button>
                 </div>
               ))}
 
+              {/* Recommended folders */}
+              {!customFoldersCollapsed && (() => {
+                const registered = new Set(scanFolders.map((f) => f.path));
+                const unregistered = recommendedFolders.filter((p) => !registered.has(p));
+                if (unregistered.length === 0) return null;
+                return (
+                  <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
+                    {unregistered.map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => void handleAddFolder(p)}
+                        disabled={folderLoading}
+                        title={`Add ${p}`}
+                        className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
+                      >
+                        <span className="text-[11px] font-semibold">+</span> {p.length > 30 ? `...${p.slice(-27)}` : p}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {/* Add folder input */}
-              {showFolderInput && (
+              {!customFoldersCollapsed && showFolderInput && (
                 <div className="px-2.5 pb-1 pt-0.5">
                   <div className="flex items-center gap-1">
                     <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
@@ -1042,7 +1149,17 @@ export function HubModelPicker({
                     />
                     <button
                       type="button"
-                      onClick={handleAddFolder}
+                      onClick={() => setShowFolderBrowser(true)}
+                      disabled={folderLoading}
+                      aria-label="Browse for folder"
+                      title="Browse folders on the server"
+                      className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleAddFolder(); }}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
@@ -1055,23 +1172,31 @@ export function HubModelPicker({
                 </div>
               )}
 
-              {/* Empty state */}
-              {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
-                <button
-                  type="button"
-                  onClick={() => setShowFolderInput(true)}
-                  className="px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground"
-                >
-                  + Add a folder to scan for local models
-                </button>
-              )}
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                  // One-click UX: the "Use this folder" button submits
+                  // the scan folder directly. Pass the path explicitly
+                  // because `folderInput` state hasn't flushed yet.
+                  void handleAddFolder(picked);
+                }}
+              />
+
 
               {/* Models from custom folders */}
-              {customFolderModels.map((m) => {
+              {!customFoldersCollapsed && customFolderModels.map((m) => {
+                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf =
+                  isGgufFile ||
                   isGgufRepo(m.id) ||
-                  isGgufRepo(m.display_name) ||
-                  m.path.toLowerCase().endsWith(".gguf");
+                  isGgufRepo(m.display_name);
+                // Single .gguf files (e.g. Ollama blobs) load directly;
+                // GGUF repos/directories expand to pick a variant.
+                const isDirectGguf = isGgufFile;
                 return (
                   <div key={m.id}>
                     <ModelRow
@@ -1079,7 +1204,13 @@ export function HubModelPicker({
                       meta={isGguf ? "GGUF" : "Local"}
                       selected={value === m.id}
                       onClick={() => {
-                        if (isGguf) {
+                        if (isDirectGguf) {
+                          onSelect(m.id, {
+                            source: "local",
+                            isLora: false,
+                            isDownloaded: true,
+                          });
+                        } else if (isGguf) {
                           setExpandedGguf((prev) =>
                             prev === m.id ? null : m.id,
                           );
@@ -1111,8 +1242,12 @@ export function HubModelPicker({
 
           {!showHfSection && cachedReady ? (
             <>
-              <ListLabel>Recommended</ListLabel>
-              {visibleRecommendedIds.length === 0 ? (
+              <ListLabel
+                icon={<StarIcon className="size-3" />}
+                collapsed={recommendedCollapsed}
+                onToggle={() => setRecommendedCollapsed((v) => !v)}
+              >Recommended</ListLabel>
+              {recommendedCollapsed ? null : visibleRecommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
                 </div>
@@ -1156,7 +1291,7 @@ export function HubModelPicker({
                   );
                 })
               )}
-              {hasMoreRecommended && (
+              {!recommendedCollapsed && hasMoreRecommended && (
                 <>
                   <div ref={recommendedSentinelRef} className="h-px" />
                   <div className="flex items-center justify-center py-2">
@@ -1169,7 +1304,7 @@ export function HubModelPicker({
 
           {showHfSection && filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel>Recommended</ListLabel>
+              <ListLabel icon={<StarIcon className="size-3" />}>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
                 return (

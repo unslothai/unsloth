@@ -29,7 +29,13 @@ except:
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import (
+    __version__,
+    importlib_version,
+    _prepare_model_for_qat,
+    resolve_model_class,
+    resolve_attention_implementation,
+)
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -607,37 +613,18 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        try:
-            model_class = auto_model._model_mapping[auto_config.__class__]
-        except Exception:
-            model_class = None
-        if model_class is None:
-            # When model_class cannot be resolved (remote-code or unmapped
-            # configs), preserve the old fallback of sdpa when supported.
-            attn_impl = _set_attn_impl(
-                auto_config, "sdpa" if supports_sdpa else "eager"
-            )
-        else:
-            attn_impl = determine_attention_implementation(model_class, auto_config)
+        model_class = resolve_model_class(auto_model, auto_config)
+        attn_impl = resolve_attention_implementation(
+            model_class,
+            auto_config,
+            requested_attn_implementation = kwargs.get("attn_implementation", None),
+            supports_sdpa = supports_sdpa,
+        )
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
         # FP8 weights. We just need to update it here for sanity.
         auto_config.model_name = model_name
-        # Re-resolve model_class after potential config change
-        try:
-            model_class = auto_model._model_mapping[auto_config.__class__]
-        except Exception:
-            model_class = None
-
-        if not ("attn_implementation" in kwargs):
-            kwargs["attn_implementation"] = attn_impl
-        if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
-            print(
-                f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
-            )
-            del kwargs["attn_implementation"]
-            # Re-stamp config so it stays consistent with the actual impl
-            _set_attn_impl(auto_config, "eager")
+        kwargs["attn_implementation"] = attn_impl
 
         bnb_config = None
         user_quantization_config = kwargs.get("quantization_config", None)
@@ -780,9 +767,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        setattr(auto_config, "_attn_implementation", config_attn_impl)
-        if hasattr(auto_config, "attn_implementation"):
-            setattr(auto_config, "attn_implementation", config_attn_impl)
+        _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
 
         verify_fp8_support_if_applicable(model_config)
@@ -1123,9 +1108,10 @@ class FastBaseModel:
                     )
         patch_saving_functions(tokenizer, vision = True)
 
-        # Fix gradient accumulation
+        # Fix gradient accumulation. See issue #4982.
         from transformers.trainer import Trainer
 
+        apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
