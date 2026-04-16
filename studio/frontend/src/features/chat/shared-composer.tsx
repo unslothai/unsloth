@@ -455,7 +455,7 @@ export function SharedComposer({
 
   return (
     <div
-      className={`shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "ring-ring bg-accent/50" : ""}`}
+      className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -557,13 +557,14 @@ export function SharedComposer({
               if (reasoningAlwaysOn) return;
               const next = !reasoningEnabled;
               setReasoningEnabled(next);
-              // Qwen3/3.5: adjust params for thinking on/off
+              // Qwen3/3.5/3.6: adjust params for thinking on/off
               const store = useChatRuntimeStore.getState();
               const cp = store.params.checkpoint?.toLowerCase() ?? "";
               if (cp.includes("qwen3")) {
+                const needsPresencePenalty = cp.includes("qwen3.5") || cp.includes("qwen3.6");
                 const p = next
-                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
+                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
                 store.setParams({ ...store.params, ...p });
               }
             }}
