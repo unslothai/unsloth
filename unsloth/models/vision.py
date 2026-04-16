@@ -961,11 +961,7 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            # Attach AlignDevicesHook for bnb multi-device / non-default-device
-            # loads.  The bnb loading path places weights on CUDA devices but
-            # never calls dispatch_model, so no hooks are installed.  Without
-            # hooks, any cross-device module call crashes at forward time with
-            # "Expected all tensors to be on the same device".
+            # Attach dispatch hooks for bnb multi-device loads.
             _attach_bnb_multidevice_hooks(
                 model,
                 load_in_4bit = load_in_4bit,
