@@ -142,6 +142,22 @@ function Install-UnslothStudio {
                         return $false  # already present
                     }
                 }
+                # One-time backup of the pristine User PATH before our first
+                # mutation. Stored under HKCU\Software\Unsloth so a wiped/clobbered
+                # PATH can be recovered. Idempotent: existing backup is preserved.
+                if ($rawPath) {
+                    try {
+                        $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+                        try {
+                            $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                            if (-not $existingBackup) {
+                                $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                            }
+                        } finally {
+                            $backupKey.Close()
+                        }
+                    } catch { }
+                }
                 if (-not $rawPath) {
                     Write-Host "[WARN] User PATH is empty — initializing with $Directory" -ForegroundColor Yellow
                 }
