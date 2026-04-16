@@ -6,17 +6,6 @@ import type {
   ExportedMessageRepository,
   ThreadMessage,
 } from "@assistant-ui/react";
-/**
- * assistant-ui does not expose a public `deleteMessage` on `ThreadRuntime` / `MessageRuntime`
- * in our version, but it already implements branch-safe deletion inside `MessageRepository`.
- * We import that helper from an **internal** package path (`runtime/utils/message-repository`).
- *
- * **Maintainability:** treat this file as the only place that imports `MessageRepository` from
- * `@assistant-ui/core`. When bumping `@assistant-ui/react` / `@assistant-ui/core`, re-run chat
- * delete + reload smoke tests; the path or API may change without a semver signal on “public”
- * surface area.
- */
-import { MessageRepository } from "@assistant-ui/core/runtime/utils/message-repository";
 import { db } from "@/features/chat/db";
 import type { MessageRecord } from "@/features/chat/types";
 
@@ -98,6 +87,78 @@ type ThreadImportExport = {
   import: (data: ExportedMessageRepository) => void;
 };
 
+type ExportedMessageItem = ExportedMessageRepository["messages"][number];
+
+function collectSubtreeIds(
+  childrenByParentId: Map<string | null, string[]>,
+  rootId: string,
+): Set<string> {
+  const ids = new Set<string>();
+  const stack = [rootId];
+
+  while (stack.length > 0) {
+    const currentId = stack.pop();
+    if (!currentId || ids.has(currentId)) {
+      continue;
+    }
+    ids.add(currentId);
+    const children = childrenByParentId.get(currentId) ?? [];
+    for (const childId of children) {
+      stack.push(childId);
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * Delete a message from exported history without leaving malformed user->user /
+ * assistant->assistant adjacency behind.
+ *
+ * The assistant delete button is only shown on assistant messages, so we treat
+ * deleting an assistant as deleting the entire assistant turn: the parent user
+ * prompt, the assistant response, and all descendants under that prompt.
+ *
+ * This avoids assistant-ui's default reparenting behavior, which can turn
+ * `user -> assistant -> user -> assistant` into `user -> user -> assistant`
+ * after deleting an assistant message.
+ */
+export function deleteMessageFromExportedRepository(
+  exported: ExportedMessageRepository,
+  messageId: string,
+): ExportedMessageRepository {
+  const messageById = new Map<string, ExportedMessageItem>();
+  const childrenByParentId = new Map<string | null, string[]>();
+
+  for (const item of exported.messages) {
+    messageById.set(item.message.id, item);
+    const siblings = childrenByParentId.get(item.parentId) ?? [];
+    siblings.push(item.message.id);
+    childrenByParentId.set(item.parentId, siblings);
+  }
+
+  const target = messageById.get(messageId);
+  if (!target) {
+    throw new Error(`Message ${messageId} not found in exported thread history.`);
+  }
+
+  const parent = target.parentId ? messageById.get(target.parentId) : undefined;
+  const deleteRoot =
+    target.message.role === "assistant" && parent?.message.role === "user"
+      ? parent
+      : target;
+  const idsToDelete = collectSubtreeIds(childrenByParentId, deleteRoot.message.id);
+  const nextHeadId =
+    exported.headId && !idsToDelete.has(exported.headId)
+      ? exported.headId
+      : deleteRoot.parentId;
+
+  return {
+    headId: nextHeadId,
+    messages: exported.messages.filter((item) => !idsToDelete.has(item.message.id)),
+  };
+}
+
 /**
  * Remove a message from the thread and mirror the result to IndexedDB.
  */
@@ -108,10 +169,7 @@ export async function deleteThreadMessage(args: {
 }): Promise<void> {
   const { thread, messageId, remoteId } = args;
   const exported = thread.export();
-  const repo = new MessageRepository();
-  repo.import(exported);
-  repo.deleteMessage(messageId);
-  const next = repo.export();
+  const next = deleteMessageFromExportedRepository(exported, messageId);
   if (remoteId) {
     await syncExportedRepositoryToDexie(remoteId, next);
   }
