@@ -47,6 +47,13 @@ _INTENT_SIGNAL = re.compile(
     r")"
 )
 _MAX_REPROMPTS = 3
+
+# Default generation caps sent to llama-server. Prevents the runaway where
+# a user-unset max_tokens makes llama-server default to n_predict = n_ctx
+# (up to 262144 tokens for Qwen3.5), producing many-minute "zombie" decodes
+# that ignore stop-button requests. Override per-call with explicit kwargs.
+_DEFAULT_MAX_TOKENS = 4096
+_DEFAULT_T_MAX_PREDICT_MS = 120_000  # 2 minutes wall-clock per request
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -2336,8 +2343,8 @@ class LlamaCppBackend:
         # Pass enable_thinking per-request for reasoning models
         if self._supports_reasoning and enable_thinking is not None:
             payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        payload["max_tokens"] = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -2357,7 +2364,7 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)) as client:
                 with self._stream_with_retry(
                     client,
                     url,
@@ -2551,8 +2558,8 @@ class LlamaCppBackend:
             }
             if self._supports_reasoning and enable_thinking is not None:
                 payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-            if max_tokens is not None:
-                payload["max_tokens"] = max_tokens
+            payload["max_tokens"] = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -2591,7 +2598,7 @@ class LlamaCppBackend:
                     write = 10,
                     pool = 10,
                 )
-                with httpx.Client(timeout = stream_timeout) as client:
+                with httpx.Client(timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)) as client:
                     with self._stream_with_retry(
                         client,
                         url,
@@ -3203,8 +3210,10 @@ class LlamaCppBackend:
             stream_payload["chat_template_kwargs"] = {
                 "enable_thinking": enable_thinking
             }
-        if max_tokens is not None:
-            stream_payload["max_tokens"] = max_tokens
+        stream_payload["max_tokens"] = (
+            max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+        )
+        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
@@ -3223,7 +3232,7 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)) as client:
                 with self._stream_with_retry(
                     client,
                     url,

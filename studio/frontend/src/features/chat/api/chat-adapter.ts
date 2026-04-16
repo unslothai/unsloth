@@ -4,6 +4,7 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
+import { authFetch } from "@/features/auth";
 import {
   generateAudio,
   listCachedGguf,
@@ -696,6 +697,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
       try {
+        // Some proxies (e.g. Colab) do not propagate fetch aborts to the
+        // backend, so request.is_disconnected() never fires server-side
+        // and the tool-loop keeps running. Explicitly POST /inference/cancel
+        // on abort so the backend can signal its cancel_event.
+        const onAbortCancel = () => {
+          const body = resolvedThreadId ? { session_id: resolvedThreadId } : {};
+          authFetch("/api/inference/cancel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            keepalive: true,
+          }).catch(() => {});
+        };
+        if (abortSignal.aborted) {
+          onAbortCancel();
+        } else {
+          abortSignal.addEventListener("abort", onAbortCancel, { once: true });
+        }
+
         const { supportsReasoning, reasoningEnabled } = runtime;
         const stream = streamChatCompletions(
           {
