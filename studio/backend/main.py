@@ -85,7 +85,9 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    version_file = (
+        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    )
     try:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
