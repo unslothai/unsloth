@@ -47,6 +47,7 @@ const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
+  const isChatRoute = pathname.startsWith("/chat");
   const { pinned, setPinned, togglePinned } = useSidebarPin();
 
   useTrainingUnloadGuard();
@@ -80,9 +81,11 @@ function RootLayout() {
           className="!min-h-0 h-dvh overflow-hidden"
         >
           <AppSidebar />
-          <SidebarInset className="overflow-hidden">
+          <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
             <Navbar />
-            <div className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden ${pathname.startsWith("/chat") ? "" : "pt-14 md:pt-0"}`}>
+            <div
+              className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
+            >
               <AnimatePresence initial={false} mode="wait">
                 <motion.div
                   key={pathname}
@@ -90,7 +93,7 @@ function RootLayout() {
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.15 }}
-                  className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                  className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
                 >
                   <Suspense fallback={null}>
                     <Outlet />

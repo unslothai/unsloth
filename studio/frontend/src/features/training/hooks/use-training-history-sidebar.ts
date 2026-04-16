@@ -12,17 +12,26 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
   const [items, setItems] = useState<TrainingRunSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
 
   const fetchRuns = useCallback(async () => {
-    controllerRef.current?.abort();
+    if (inFlightRef.current) {
+      return;
+    }
     const controller = new AbortController();
     controllerRef.current = controller;
+    inFlightRef.current = true;
     try {
       const result = await listTrainingRuns(SIDEBAR_LIMIT, 0, controller.signal);
       setItems(result.runs);
       setLoaded(true);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+    } finally {
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
+      inFlightRef.current = false;
     }
   }, []);
 

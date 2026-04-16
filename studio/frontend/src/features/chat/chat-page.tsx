@@ -439,14 +439,14 @@ export function ChatPage(): ReactElement {
           search.compare,
       };
     }
-    if (search.new) {
-      return { mode: "single", newThreadNonce: search.new };
-    }
     if (search.thread) {
       return { mode: "single", threadId: search.thread };
     }
     if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
       return { mode: "single", threadId: activeThreadId };
+    }
+    if (search.new) {
+      return { mode: "single", newThreadNonce: search.new };
     }
     return { mode: "single" };
   }, [search.thread, search.compare, search.new, activeThreadId]);
@@ -511,20 +511,6 @@ export function ChatPage(): ReactElement {
   const handleEject = useCallback(() => {
     void ejectModel();
   }, [ejectModel]);
-  const handleNewThread = useCallback(() => {
-    // Skip if we are already on a fresh unsaved draft with no messages sent.
-    if (!search.thread && !search.compare && !activeThreadId) {
-      return;
-    }
-
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-  }, [navigate, search.thread, search.compare, activeThreadId]);
-  const handleNewCompare = useCallback(() => {
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-    useChatRuntimeStore.getState().setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-  }, [navigate]);
 
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
@@ -543,8 +529,8 @@ export function ChatPage(): ReactElement {
     },
     [modelSelectorLocked],
   );
-  const openSettings = useCallback(() => setSettingsOpen(true), []);
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openSettings = useCallback(() => setSettingsOpen(true), [setSettingsOpen]);
+  const closeSettings = useCallback(() => setSettingsOpen(false), [setSettingsOpen]);
   const { setPinned, isMobile } = useSidebar();
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
@@ -576,24 +562,6 @@ export function ChatPage(): ReactElement {
         });
     }
   }, [navigate]);
-
-  const handleThreadSelect = useCallback(
-    (nextView: ChatView) => {
-      if (nextView.mode === "single" && nextView.threadId) {
-        navigate({ to: "/chat", search: { thread: nextView.threadId } });
-      } else if (nextView.mode === "compare") {
-        navigate({ to: "/chat", search: { compare: nextView.pairId } });
-      } else {
-        navigate({
-          to: "/chat",
-          search: {
-            new: nextView.newThreadNonce ?? crypto.randomUUID(),
-          },
-        });
-      }
-    },
-    [navigate],
-  );
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -637,7 +605,7 @@ export function ChatPage(): ReactElement {
         );
       })
       .catch(() => {});
-  }, []);
+  }, [navigate]);
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({

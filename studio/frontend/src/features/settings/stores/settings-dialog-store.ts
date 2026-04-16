@@ -22,7 +22,12 @@ const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
 
 function loadInitialTab(): SettingsTab {
   if (typeof window === "undefined") return "general";
-  const stored = window.localStorage.getItem(ACTIVE_TAB_KEY);
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(ACTIVE_TAB_KEY);
+  } catch {
+    return "general";
+  }
   const valid: SettingsTab[] = ["general", "appearance", "chat", "api-keys", "about"];
   return valid.includes(stored as SettingsTab) ? (stored as SettingsTab) : "general";
 }
@@ -39,7 +44,9 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   setActiveTab: (tab) => {
     try {
       window.localStorage.setItem(ACTIVE_TAB_KEY, tab);
-    } catch {}
+    } catch {
+      // ignore storage failures
+    }
     set({ activeTab: tab });
   },
 }));

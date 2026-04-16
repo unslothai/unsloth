@@ -10,7 +10,12 @@ const STORAGE_KEY = "theme";
 
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
-  const stored = window.localStorage.getItem(STORAGE_KEY);
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return "system";
+  }
   if (stored === "light" || stored === "dark" || stored === "system") return stored;
   return "system";
 }
@@ -37,15 +42,18 @@ function subscribe(cb: () => void) {
     return () => listeners.delete(cb);
   }
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  const onMq = () => cb();
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY || e.key === null) cb();
+  const syncTheme = () => {
+    applyToDocument(resolveTheme(readStoredTheme()));
+    cb();
   };
-  mq.addEventListener("change", onMq);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY || e.key === null) syncTheme();
+  };
+  mq.addEventListener("change", syncTheme);
   window.addEventListener("storage", onStorage);
   return () => {
     listeners.delete(cb);
-    mq.removeEventListener("change", onMq);
+    mq.removeEventListener("change", syncTheme);
     window.removeEventListener("storage", onStorage);
   };
 }
@@ -68,7 +76,11 @@ export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
   // Persist "system" explicitly so next-themes (mounted with
   // defaultTheme="light") doesn't clobber the choice on reload.
-  window.localStorage.setItem(STORAGE_KEY, next);
+  try {
+    window.localStorage.setItem(STORAGE_KEY, next);
+  } catch {
+    // ignore storage failures
+  }
   applyToDocument(resolveTheme(next));
   listeners.forEach((cb) => cb());
 }
