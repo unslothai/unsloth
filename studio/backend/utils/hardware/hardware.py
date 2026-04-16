@@ -244,8 +244,8 @@ def clear_gpu_cache():
                     torch.xpu.synchronize()
                 if hasattr(torch.xpu, "empty_cache"):
                     torch.xpu.empty_cache()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to clear XPU cache: %s", e)
     elif device == DeviceType.MLX:
         # MLX manages memory automatically; no explicit cache clear needed.
         # mlx.core has no empty_cache equivalent — gc.collect() above is enough.
@@ -583,8 +583,8 @@ def _resolve_xpu_smi_device_id() -> Optional[int]:
         xpu_ok = hasattr(torch, "xpu") and torch.xpu.is_available()
         if xpu_ok:
             ordinal = int(torch.xpu.current_device())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("torch.xpu.current_device() probe failed: %s", e)
 
     mask = (os.environ.get("ZE_AFFINITY_MASK") or "").strip()
     roots = _parse_ze_mask_roots(mask)
@@ -677,8 +677,8 @@ def _get_xpu_utilization() -> Dict[str, Any]:
                     power_w = _parse_xpu_smi_metric(parts[3])
                     temp = _parse_xpu_smi_metric(parts[4])
                     break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("xpu-smi query failed: %s", e)
 
     # Get VRAM from torch.xpu (only reports PyTorch-managed memory).
     # Use the same logical ordinal that torch exposes; xpu-smi physical id is
@@ -693,8 +693,8 @@ def _get_xpu_utilization() -> Dict[str, Any]:
             props = torch.xpu.get_device_properties(idx)
             vram_total_gb = round(props.total_memory / (1024**3), 2)
             vram_used_gb = round(torch.xpu.memory_allocated(idx) / (1024**3), 2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("torch.xpu VRAM query failed: %s", e)
 
     vram_pct = (
         round((vram_used_gb / vram_total_gb) * 100, 1)
@@ -1795,7 +1795,11 @@ def get_visible_gpu_count() -> int:
             import torch
 
             _visible_gpu_count = torch.xpu.device_count()
-        except Exception:
+        except Exception as e:
+            logger.debug(
+                "torch.xpu.device_count() failed, falling back to mask parsing: %s",
+                e,
+            )
             if xpu_visible:
                 # Fallback: count unique root device IDs from the mask.
                 # ZE_AFFINITY_MASK can use "device.subdevice" notation,
@@ -1835,7 +1839,11 @@ def get_visible_gpu_count() -> int:
         import torch
 
         _visible_gpu_count = torch.cuda.device_count()
-    except Exception:
+    except Exception as e:
+        logger.debug(
+            "torch.cuda.device_count() failed, falling back to physical count: %s",
+            e,
+        )
         _visible_gpu_count = get_physical_gpu_count()
 
     return _visible_gpu_count
@@ -2074,9 +2082,9 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
             try:
                 if is_initialized():
                     return None
-            except Exception:
+            except Exception as e:
                 # Treat a failing probe as "runtime not touched yet" so
                 # pre-init CPU preprocessing can still parallelize.
-                pass
+                logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
     return safe_num_proc(desired)
