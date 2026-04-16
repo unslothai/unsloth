@@ -198,7 +198,9 @@ def _quantize_q2_k_l(
 
     output_path = Path(output_gguf)
     if not output_path.exists():
-        raise RuntimeError(f"Quantization failed - output file {output_gguf} not created")
+        raise RuntimeError(
+            f"Quantization failed - output file {output_gguf} not created"
+        )
 
     if print_output:
         file_size_bytes = output_path.stat().st_size
