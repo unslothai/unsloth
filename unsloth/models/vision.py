@@ -75,6 +75,7 @@ import functools
 import os
 import gc
 import math
+import warnings
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
@@ -107,7 +108,9 @@ def _infer_device_map_from_loaded_model(model):
         if not params:
             bufs = list(module.named_buffers())
             if bufs:
-                device_map[prefix] = bufs[0][1].device
+                buf_devs = {b.device for _, b in bufs}
+                if len(buf_devs) == 1:
+                    device_map[prefix] = next(iter(buf_devs))
             return
         devices = {p.device for _, p in params}
         if len(devices) == 1:
@@ -154,8 +157,6 @@ def _attach_bnb_multidevice_hooks(
             if hasattr(p, "device") and p.device.type == "cuda"
         }
     except Exception as exc:
-        import warnings
-
         warnings.warn(
             "Unsloth: Failed to determine CUDA devices from model parameters, "
             f"so multi-GPU hooks cannot be attached. ({type(exc).__name__}: {exc})",
@@ -199,20 +200,23 @@ def _attach_bnb_multidevice_hooks(
             }
 
             # force_hooks=True: install hooks even for single-device maps.
-            dispatch_model(model, device_map = device_map_int, force_hooks = True)
+            dispatch_model(
+                model,
+                device_map = device_map_int,
+                skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                force_hooks = True,
+            )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             # Restore stripped keys.
             for param, key, val in _stripped:
                 param.__dict__[key] = val
 
-        print(
+        logger.info(
             f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
             f"for bnb multi-GPU inference."
         )
     except Exception as exc:
-        import warnings
-
         warnings.warn(
             f"Unsloth: Could not attach multi-device dispatch hooks automatically "
             f"({type(exc).__name__}: {exc}). "
