@@ -677,6 +677,54 @@ def _fix_chat_template(chat_template):
         )
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
+
+    elif re.sub(r"\{#.*?#\}", "", after_endfor, flags = re.DOTALL).strip() == "":
+        # GH#4150: ChatML templates ending at {% endfor %} without an
+        # add_generation_prompt block. Scrub Jinja `{# ... #}` comments so
+        # tokens inside comments cannot fool the guard below.
+        scrubbed = re.sub(r"\{#.*?#\}", "", chat_template, flags = re.DOTALL)
+        if (
+            "<|im_start|>" in scrubbed
+            and "<|im_end|>" in scrubbed
+            and "add_generation_prompt" not in scrubbed
+        ):
+            # Infer the assistant-turn separator. Prefer an explicit
+            # '<|im_start|>assistant<sep>' literal; else the unique
+            # `message['role'] + '<sep>'` from role concatenations; else
+            # '<|im_sep|>' if present (Phi-4-mini uses '\n' for system and
+            # '<|im_sep|>' for user/assistant); else '\n'.
+            assistant_match = re.search(
+                r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
+                scrubbed,
+            )
+            role_seps = [
+                m.group(2)
+                for m in re.finditer(
+                    r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
+                    scrubbed,
+                )
+            ]
+            unique_role_seps = list(dict.fromkeys(role_seps))
+            if assistant_match is not None and assistant_match.group(2):
+                separator = assistant_match.group(2)
+            elif len(unique_role_seps) == 1:
+                separator = unique_role_seps[0]
+            elif "<|im_sep|>" in scrubbed:
+                separator = "<|im_sep|>"
+            else:
+                separator = "\\n"
+            # Emit a double-quoted Jinja literal so a single quote in the
+            # separator cannot break the block. Drop trailing whitespace/
+            # comments after endfor: they would render as stray output
+            # after the generation prefix.
+            assistant_prefix = "<|im_start|>assistant" + separator
+            generation_block = (
+                "{%" + dash + " if add_generation_prompt %}"
+                '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
+                "{%" + dash + " endif %}"
+            )
+            chat_template = chat_template[: where + len(chosen_end)] + generation_block
+
     return chat_template
 
 
