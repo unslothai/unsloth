@@ -200,6 +200,14 @@ class TestChatCompletionRequestToolFields:
         assert req.enabled_tools == ["web_search", "python"]
         assert req.session_id == "abc"
 
+    def test_stream_defaults_false_matching_openai_spec(self):
+        # OpenAI's /v1/chat/completions spec defaults `stream` to false.
+        # Studio previously defaulted to true, which broke naive curl
+        # clients that omit `stream` (they expect a JSON blob, got SSE).
+        # Pin the corrected default so it can't silently regress.
+        req = self._make()
+        assert req.stream is False
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [

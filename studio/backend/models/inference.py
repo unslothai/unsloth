@@ -382,7 +382,13 @@ class ChatCompletionRequest(BaseModel):
         description = "Model identifier (informational; the active model is used)",
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
-    stream: bool = Field(True, description = "Whether to stream the response via SSE")
+    stream: bool = Field(
+        False,
+        description = (
+            "Whether to stream the response via SSE. Default matches OpenAI's "
+            "spec (`false`); opt into streaming by sending `stream: true`."
+        ),
+    )
     temperature: float = Field(0.6, ge = 0.0, le = 2.0)
     top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
