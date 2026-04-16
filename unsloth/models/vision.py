@@ -141,7 +141,14 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
-    if not (load_in_4bit or load_in_8bit):
+    is_bnb = (
+        load_in_4bit
+        or load_in_8bit
+        or getattr(model, "is_loaded_in_4bit", False)
+        or getattr(model, "is_loaded_in_8bit", False)
+        or getattr(model, "quantization_method", None) == "bitsandbytes"
+    )
+    if not is_bnb:
         return
     if offload_embedding:
         return
@@ -149,25 +156,22 @@ def _attach_bnb_multidevice_hooks(
         return  # already dispatched
 
     try:
-        cuda_devs = {
-            p.device
-            for p in model.parameters()
-            if hasattr(p, "device") and p.device.type == "cuda"
-        }
+        all_devs = {p.device for p in model.parameters()}
     except Exception as exc:
         warnings.warn(
-            "Unsloth: Failed to determine CUDA devices from model parameters, "
+            "Unsloth: Failed to determine device placement from model parameters, "
             f"so multi-GPU hooks cannot be attached. ({type(exc).__name__}: {exc})",
             RuntimeWarning,
             stacklevel = 2,
         )
         return
 
+    cuda_devs = {d for d in all_devs if d.type == "cuda"}
     if not cuda_devs:
         return
 
     default_cuda = torch.device("cuda", 0)
-    if cuda_devs == {default_cuda}:
+    if all_devs == {default_cuda}:
         return
 
     try:
@@ -198,14 +202,26 @@ def _attach_bnb_multidevice_hooks(
             }
 
             # force_hooks=True: install hooks even for single-device maps.
-            dispatch_model(model, device_map = device_map_int, force_hooks = True)
+            main_device = device_map_int.get("")
+            if main_device in (None, "cpu", "disk"):
+                main_device = next(
+                    (d for d in device_map_int.values() if d not in ("cpu", "disk")),
+                    None,
+                )
+            dispatch_model(
+                model,
+                device_map = device_map_int,
+                main_device = main_device,
+                skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                force_hooks = True,
+            )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             # Restore stripped keys.
             for param, key, val in _stripped:
                 param.__dict__[key] = val
 
-        print(
+        logger.info(
             f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
             f"for bnb multi-GPU inference."
         )
