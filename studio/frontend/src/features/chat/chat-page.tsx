@@ -203,7 +203,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 Base Model
               </span>
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="base"
                 pairId={pairId}
@@ -211,7 +211,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="base" />
-                <Thread hideComposer={true} hideWelcome={true} />
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                  <Thread hideComposer={true} hideWelcome={true} />
+                </div>
               </ChatRuntimeProvider>
             </div>
           </div>
@@ -221,7 +223,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 Fine-tuned
               </span>
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="lora"
                 pairId={pairId}
@@ -229,7 +231,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="lora" />
-                <Thread hideComposer={true} hideWelcome={true} />
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                  <Thread hideComposer={true} hideWelcome={true} />
+                </div>
               </ChatRuntimeProvider>
             </div>
           </div>
@@ -320,7 +324,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 className="max-w-[80%]"
               />
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="model1"
                 pairId={pairId}
@@ -328,7 +332,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model1" />
-                <Thread hideComposer={true} hideWelcome={true} />
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                  <Thread hideComposer={true} hideWelcome={true} />
+                </div>
               </ChatRuntimeProvider>
             </div>
           </div>
@@ -351,7 +357,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 className="max-w-[80%]"
               />
             </div>
-            <div className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col">
               <ChatRuntimeProvider
                 modelType="model2"
                 pairId={pairId}
@@ -359,7 +365,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 syncActiveThreadId={false}
               >
                 <RegisterCompareHandle name="model2" />
-                <Thread hideComposer={true} hideWelcome={true} />
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                  <Thread hideComposer={true} hideWelcome={true} />
+                </div>
               </ChatRuntimeProvider>
             </div>
           </div>
