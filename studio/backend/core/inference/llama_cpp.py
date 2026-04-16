@@ -2453,6 +2453,7 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        synthesise_after_tool_result: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -3173,9 +3174,11 @@ class LlamaCppBackend:
 
                 # First successful tool result of the loop: tell the model
                 # to synthesise an answer rather than continue searching.
+                # Only enabled for small models (via synthesise_after_tool_result)
+                # since large models handle multi-step tool use well.
                 # Skip if every tool call in this batch errored -- let the
                 # model retry or try a different approach instead.
-                if _any_tool_succeeded:
+                if synthesise_after_tool_result and _any_tool_succeeded:
                     _apply_synthesise_nudge()
 
                 # Clear tool status badge before next generation iteration

@@ -156,18 +156,34 @@ _TOOL_SYNTHESISE_NUDGE = (
 )
 
 
-def _has_tool_result_in_current_turn(messages: list[dict]) -> bool:
-    """Check if the current turn (after the last user message) has tool results.
+_TOOL_ERROR_PREFIXES = (
+    "Error",
+    "Search failed",
+    "Execution error",
+    "Blocked:",
+    "Exit code",
+    "Failed to fetch",
+    "Failed to resolve",
+    "No query provided",
+)
 
-    Scans backwards from the end -- if we find a tool result before hitting
-    a user message, the current turn has tool results. If we hit a user
-    message first (or the list is empty), the tool results are from prior
-    turns and should not trigger the synthesis nudge.
+
+def _has_successful_tool_result_in_current_turn(messages: list[dict]) -> bool:
+    """Check if the current turn has at least one successful tool result.
+
+    Scans backwards from the end of the message list. Only returns True
+    when a non-error tool result appears after the last user message.
+    Error-only tool results (timeouts, failed fetches, etc.) return False
+    so the model can retry rather than being forced to synthesise.
     """
     for msg in reversed(messages):
         role = msg.get("role")
         if role == "tool":
-            return True
+            content = (msg.get("content") or "").lstrip()
+            if not content.startswith(_TOOL_ERROR_PREFIXES):
+                return True
+            # Error tool result -- keep scanning for a successful one
+            continue
         if role == "user":
             return False
     return False
@@ -1291,12 +1307,12 @@ async def openai_chat_completions(
                 _nudge += (
                     _TOOL_ACTION_NUDGE_SMALL if _is_small_model else _TOOL_ACTION_NUDGE
                 )
-                # If the current turn (after the last user message) has
-                # tool results, append the synthesise directive. Only
-                # scoped to the current turn so that historical tool
-                # results from earlier questions do not suppress
-                # legitimate new tool calls.
-                if _has_tool_result_in_current_turn(chat_messages):
+                # Small models loop on tool calls instead of answering.
+                # If the current turn already has a successful tool
+                # result, nudge the model to synthesise a final answer.
+                # Large models handle multi-step tool use well, so this
+                # is gated to small models only.
+                if _is_small_model and _has_successful_tool_result_in_current_turn(chat_messages):
                     _nudge += _TOOL_SYNTHESISE_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
@@ -1339,6 +1355,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    synthesise_after_tool_result = _is_small_model,
                 )
 
             _tool_sentinel = object()
@@ -2526,7 +2543,11 @@ async def anthropic_messages(
             _nudge += (
                 _TOOL_ACTION_NUDGE_SMALL if _is_small_model else _TOOL_ACTION_NUDGE
             )
-            if _has_tool_result_in_current_turn(openai_messages):
+            # Only nudge small models to synthesise -- see comment in
+            # /chat/completions for rationale.  (The OpenAI-compat schema
+            # does not yet accept role="tool", so this branch is currently
+            # unreachable; kept for when the schema is extended.)
+            if _is_small_model and _has_successful_tool_result_in_current_turn(openai_messages):
                 _nudge += _TOOL_SYNTHESISE_NUDGE
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
@@ -2558,6 +2579,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                synthesise_after_tool_result = _is_small_model,
             )
 
         if payload.stream:
