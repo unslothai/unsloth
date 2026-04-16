@@ -374,7 +374,9 @@ class ChatMessage(BaseModel):
             if self.content is None:
                 raise ValueError("tool messages require content")
             if not self.tool_call_id:
-                raise ValueError("tool messages require tool_call_id")
+                raise ValueError(
+                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
+                )
         else:
             if self.content is None:
                 raise ValueError(f"{self.role} messages require content")
