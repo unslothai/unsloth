@@ -906,11 +906,34 @@ shell.Run cmd, 0, False
         }
     }
 
+    # ── Stage standalone launcher outside the venv ──
+    # Copying the distlib-generated unsloth.exe to $LOCALAPPDATA\Unsloth Studio\bin
+    # (and prepending that dir to User PATH) means future `unsloth studio update`
+    # invocations run from the standalone copy, so pip/uv can freely rewrite
+    # the venv's in-use Scripts\unsloth.exe during dependency upgrades.
+    $VenvScriptsExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+    $StandaloneBinDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio\bin"
+    $StandaloneExe = Join-Path $StandaloneBinDir "unsloth.exe"
+    if (Test-Path $VenvScriptsExe) {
+        if (-not (Test-Path $StandaloneBinDir)) {
+            New-Item -ItemType Directory -Force $StandaloneBinDir | Out-Null
+        }
+        try { Copy-Item -LiteralPath $VenvScriptsExe -Destination $StandaloneExe -Force } catch {}
+        $_userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+        if (-not $_userPath -or $_userPath -notlike "*$StandaloneBinDir*") {
+            $_newPath = if ($_userPath) { "$StandaloneBinDir;$_userPath" } else { $StandaloneBinDir }
+            [System.Environment]::SetEnvironmentVariable("Path", $_newPath, "User")
+            Refresh-SessionPath
+        }
+    }
+
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
     step "setup" "running unsloth studio setup..."
-    $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+    # Prefer the standalone launcher (so the running .exe is not inside the venv)
+    # and fall back to the venv copy if the staging step above did not succeed.
+    $UnslothExe = if (Test-Path $StandaloneExe) { $StandaloneExe } else { $VenvScriptsExe }
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow

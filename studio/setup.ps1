@@ -1418,6 +1418,22 @@ $ErrorActionPreference = "Continue"
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
 
+# ── Standalone launcher locations (Windows in-use .exe lock workaround) ──
+# Windows forbids DeleteFile on a mapped (running) .exe but permits
+# MoveFileEx.  Keeping the CLI launcher outside the venv means pip/uv
+# never fights a lock when it reinstalls the unsloth wheel during update.
+$StandaloneBinDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio\bin"
+$StandaloneExe    = Join-Path $StandaloneBinDir "unsloth.exe"
+$VenvExe          = Join-Path $VenvDir "Scripts\unsloth.exe"
+
+# Sweep stale parked launchers left by prior migrations (safe: not in use)
+foreach ($_dir in @((Join-Path $VenvDir "Scripts"), $StandaloneBinDir)) {
+    if (Test-Path $_dir) {
+        Get-ChildItem $_dir -Filter "unsloth.exe.old-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
@@ -1489,6 +1505,15 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 # }
 
 if (-not $SkipPythonDeps) {
+
+# Migration: if there is no standalone launcher yet AND install.ps1 is not
+# the caller (SKIP_STUDIO_BASE != 1 => uv will reinstall the unsloth wheel),
+# park the (possibly-running) venv launcher so uv's reinstall succeeds.
+# Fresh-install flow leaves $VenvExe alone: install.ps1 creates the
+# standalone copy before invoking setup, so this branch is a no-op there.
+if (-not (Test-Path $StandaloneExe) -and (Test-Path $VenvExe) -and $env:SKIP_STUDIO_BASE -ne "1") {
+    try { Move-Item -LiteralPath $VenvExe -Destination "$VenvExe.old-$PID" -Force } catch {}
+}
 
 if ($script:UnslothVerbose) {
     Fast-Install --upgrade pip
@@ -1585,6 +1610,39 @@ if ($stackExit -ne 0) {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
+}
+
+# ── Sync standalone launcher and prepend its dir to user PATH ──
+# Runs unconditionally (both fast-path and reinstall branches) so that users
+# on an old layout migrate on the first update where no standalone exists.
+# Copy path uses park-and-replace (MoveFileEx) so even a currently-running
+# $StandaloneExe can be swapped when distlib's launcher bytes actually change.
+if (Test-Path $VenvExe) {
+    if (-not (Test-Path $StandaloneBinDir)) {
+        New-Item -ItemType Directory -Force $StandaloneBinDir | Out-Null
+    }
+    $needsCopy = -not (Test-Path $StandaloneExe)
+    if (-not $needsCopy) {
+        try {
+            $needsCopy = (Get-FileHash $VenvExe).Hash -ne (Get-FileHash $StandaloneExe).Hash
+        } catch {
+            $needsCopy = $true
+        }
+    }
+    if ($needsCopy) {
+        if (Test-Path $StandaloneExe) {
+            try { Move-Item -LiteralPath $StandaloneExe -Destination "$StandaloneExe.old-$PID" -Force } catch {}
+        }
+        try { Copy-Item -LiteralPath $VenvExe -Destination $StandaloneExe -Force } catch {}
+    }
+}
+
+if (Test-Path $StandaloneExe) {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath -or $userPath -notlike "*$StandaloneBinDir*") {
+        $newPath = if ($userPath) { "$StandaloneBinDir;$userPath" } else { $StandaloneBinDir }
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    }
 }
 
 # ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
