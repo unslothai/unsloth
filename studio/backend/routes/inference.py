@@ -2926,7 +2926,9 @@ async def _anthropic_passthrough_stream(
         # has anything orphaned to finalize. Each aclose is wrapped in
         # `try: ... except Exception: pass` so anyio cleanup noise from
         # nested aclose paths can't bubble out.
-        client = httpx.AsyncClient(timeout = 600, headers = _llama_auth_headers(llama_backend))
+        client = httpx.AsyncClient(
+            timeout = 600, headers = _llama_auth_headers(llama_backend)
+        )
         resp = None
         lines_iter = None
         try:
@@ -3015,7 +3017,9 @@ async def _anthropic_passthrough_non_streaming(
     )
 
     try:
-        async with httpx.AsyncClient(headers = _llama_auth_headers(llama_backend)) as client:
+        async with httpx.AsyncClient(
+            headers = _llama_auth_headers(llama_backend)
+        ) as client:
             resp = await client.post(target_url, json = body, timeout = 600)
     except httpx.RequestError as e:
         logger.error("anthropic passthrough non-streaming: upstream unreachable: %s", e)
@@ -3104,9 +3108,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     if not payload.image_base64:
         return messages
 
-    last_user = next(
-        (m for m in reversed(messages) if m.get("role") == "user"), None
-    )
+    last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
     if last_user is not None:
         content = last_user.get("content")
         if isinstance(content, list) and any(
@@ -3205,7 +3207,9 @@ async def _openai_passthrough_stream(
         # producing "Exception ignored in:" / "async generator ignored
         # GeneratorExit" / anyio cancel-scope traces on Python 3.13 +
         # httpcore 1.0.x.
-        client = httpx.AsyncClient(timeout = 600, headers = _llama_auth_headers(llama_backend))
+        client = httpx.AsyncClient(
+            timeout = 600, headers = _llama_auth_headers(llama_backend)
+        )
         resp = None
         lines_iter = None
         try:
@@ -3297,7 +3301,9 @@ async def _openai_passthrough_non_streaming(
     body = _build_openai_passthrough_body(payload)
 
     try:
-        async with httpx.AsyncClient(headers = _llama_auth_headers(llama_backend)) as client:
+        async with httpx.AsyncClient(
+            headers = _llama_auth_headers(llama_backend)
+        ) as client:
             resp = await client.post(target_url, json = body, timeout = 600)
     except httpx.RequestError as e:
         # llama-server subprocess crashed / still starting / unreachable.

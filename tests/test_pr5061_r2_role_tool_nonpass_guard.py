@@ -12,7 +12,7 @@ from models.inference import ChatCompletionRequest
 
 
 class _Llama:
-    def __init__(self, is_loaded=True, supports_tools=True, is_vision=False):
+    def __init__(self, is_loaded = True, supports_tools = True, is_vision = False):
         self.is_loaded = is_loaded
         self.supports_tools = supports_tools
         self.is_vision = is_vision
@@ -42,21 +42,28 @@ async def _marker_nonstream(*a, **kw):
 
 async def _call(payload, llama):
     from routes import inference as inf_mod
-    with patch.object(inf_mod, "get_llama_cpp_backend", return_value=llama), \
-         patch.object(inf_mod, "get_inference_backend", return_value=_Inf()), \
-         patch.object(inf_mod, "_openai_passthrough_stream", new=_marker_stream), \
-         patch.object(inf_mod, "_openai_passthrough_non_streaming", new=_marker_nonstream):
-        return await inf_mod.openai_chat_completions(payload, _Req(), current_subject="u")
+
+    with (
+        patch.object(inf_mod, "get_llama_cpp_backend", return_value = llama),
+        patch.object(inf_mod, "get_inference_backend", return_value = _Inf()),
+        patch.object(inf_mod, "_openai_passthrough_stream", new = _marker_stream),
+        patch.object(
+            inf_mod, "_openai_passthrough_non_streaming", new = _marker_nonstream
+        ),
+    ):
+        return await inf_mod.openai_chat_completions(
+            payload, _Req(), current_subject = "u"
+        )
 
 
 def test_role_tool_on_non_gguf_rejected():
     payload = ChatCompletionRequest(
-        messages=[
+        messages = [
             {"role": "user", "content": "q"},
             {"role": "tool", "tool_call_id": "c1", "content": "r"},
         ],
     )
-    llama = _Llama(is_loaded=False)
+    llama = _Llama(is_loaded = False)
     with pytest.raises(HTTPException) as ei:
         asyncio.run(_call(payload, llama))
     assert ei.value.status_code == 400
@@ -65,12 +72,12 @@ def test_role_tool_on_non_gguf_rejected():
 
 def test_role_tool_on_gguf_without_tool_support_rejected():
     payload = ChatCompletionRequest(
-        messages=[
+        messages = [
             {"role": "user", "content": "q"},
             {"role": "tool", "tool_call_id": "c1", "content": "r"},
         ],
     )
-    llama = _Llama(supports_tools=False)
+    llama = _Llama(supports_tools = False)
     with pytest.raises(HTTPException) as ei:
         asyncio.run(_call(payload, llama))
     assert ei.value.status_code == 400
@@ -78,11 +85,11 @@ def test_role_tool_on_gguf_without_tool_support_rejected():
 
 def test_role_tool_with_enable_tools_true_rejected():
     payload = ChatCompletionRequest(
-        messages=[
+        messages = [
             {"role": "user", "content": "q"},
             {"role": "tool", "tool_call_id": "c1", "content": "r"},
         ],
-        enable_tools=True,
+        enable_tools = True,
     )
     llama = _Llama()
     with pytest.raises(HTTPException) as ei:
@@ -92,18 +99,22 @@ def test_role_tool_with_enable_tools_true_rejected():
 
 def test_assistant_tool_only_still_rejected_on_non_passthrough():
     payload = ChatCompletionRequest(
-        messages=[
+        messages = [
             {"role": "user", "content": "q"},
             {
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
                 ],
             },
         ],
     )
-    llama = _Llama(supports_tools=False)
+    llama = _Llama(supports_tools = False)
     with pytest.raises(HTTPException) as ei:
         asyncio.run(_call(payload, llama))
     assert ei.value.status_code == 400
@@ -111,9 +122,9 @@ def test_assistant_tool_only_still_rejected_on_non_passthrough():
 
 def test_no_tool_messages_passes_through():
     payload = ChatCompletionRequest(
-        messages=[{"role": "user", "content": "plain"}],
+        messages = [{"role": "user", "content": "plain"}],
     )
-    llama = _Llama(supports_tools=False)
+    llama = _Llama(supports_tools = False)
     # Should not raise the tool-shape guard; may raise later for non-GGUF/inf path,
     # but specifically this guard must not fire.
     try:

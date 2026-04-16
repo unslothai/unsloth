@@ -114,7 +114,11 @@ class TestChatMessageToolRoles:
         msg = ChatMessage(
             role = "assistant",
             tool_calls = [
-                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
             ],
         )
         assert msg.content is None

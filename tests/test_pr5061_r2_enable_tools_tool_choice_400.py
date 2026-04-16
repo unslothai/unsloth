@@ -26,21 +26,25 @@ class _Req:
 
 def _build_payload(enable_tools, tool_choice):
     from models.inference import AnthropicMessagesRequest
+
     return AnthropicMessagesRequest(
-        model="default",
-        max_tokens=64,
-        messages=[{"role": "user", "content": "q"}],
-        tool_choice=tool_choice,
-        enable_tools=enable_tools,
+        model = "default",
+        max_tokens = 64,
+        messages = [{"role": "user", "content": "q"}],
+        tool_choice = tool_choice,
+        enable_tools = enable_tools,
     )
 
 
 def test_enable_tools_true_with_tool_choice_raises_400():
     from routes import inference as inf_mod
-    payload = _build_payload(enable_tools=True, tool_choice={"type": "any"})
-    with patch.object(inf_mod, "get_llama_cpp_backend", return_value=_Llama()):
+
+    payload = _build_payload(enable_tools = True, tool_choice = {"type": "any"})
+    with patch.object(inf_mod, "get_llama_cpp_backend", return_value = _Llama()):
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(inf_mod.anthropic_messages(payload, _Req(), current_subject="u"))
+            asyncio.run(
+                inf_mod.anthropic_messages(payload, _Req(), current_subject = "u")
+            )
     assert ei.value.status_code == 400
     assert "tool_choice" in ei.value.detail
     assert "enable_tools" in ei.value.detail
@@ -60,10 +64,13 @@ def test_guard_logic_unit():
 
 def test_enable_tools_false_with_tool_choice_does_not_raise_the_guard():
     from routes import inference as inf_mod
-    payload = _build_payload(enable_tools=False, tool_choice={"type": "any"})
-    with patch.object(inf_mod, "get_llama_cpp_backend", return_value=_Llama()):
+
+    payload = _build_payload(enable_tools = False, tool_choice = {"type": "any"})
+    with patch.object(inf_mod, "get_llama_cpp_backend", return_value = _Llama()):
         try:
-            asyncio.run(inf_mod.anthropic_messages(payload, _Req(), current_subject="u"))
+            asyncio.run(
+                inf_mod.anthropic_messages(payload, _Req(), current_subject = "u")
+            )
         except HTTPException as e:
             assert not (
                 e.status_code == 400

@@ -367,9 +367,7 @@ class ChatMessage(BaseModel):
     def _validate_role_shape(self):
         if self.role == "assistant":
             if self.content is None and not self.tool_calls:
-                raise ValueError(
-                    "assistant messages require content or tool_calls"
-                )
+                raise ValueError("assistant messages require content or tool_calls")
         elif self.role == "tool":
             if self.content is None:
                 raise ValueError("tool messages require content")

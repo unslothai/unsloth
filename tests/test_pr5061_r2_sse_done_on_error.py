@@ -26,14 +26,20 @@ def _collect(stream_response):
         async for chunk in stream_response.body_iterator:
             out.append(chunk if isinstance(chunk, str) else chunk.decode("utf-8"))
         return out
+
     return asyncio.run(_run())
 
 
 def _make_payload():
     return ChatCompletionRequest(
-        messages=[{"role": "user", "content": "q"}],
-        tools=[{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
-        stream=True,
+        messages = [{"role": "user", "content": "q"}],
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"type": "object"}},
+            }
+        ],
+        stream = True,
     )
 
 
@@ -42,8 +48,10 @@ def test_done_emitted_after_non_200_error():
 
     class _Resp:
         status_code = 500
+
         async def aread(self):
             return b"server oops"
+
         async def aclose(self):
             pass
 
@@ -52,7 +60,7 @@ def test_done_emitted_after_non_200_error():
 
     with patch.object(inf_mod.httpx, "AsyncClient") as mock_cls:
         inst = MagicMock()
-        inst.build_request = MagicMock(return_value=MagicMock())
+        inst.build_request = MagicMock(return_value = MagicMock())
         inst.send = _send
         inst.aclose = AsyncMock()
         mock_cls.return_value = inst
@@ -72,11 +80,11 @@ def test_done_emitted_after_exception():
     from routes import inference as inf_mod
 
     async def _send(req, stream):
-        raise httpx.ConnectError("boom", request=httpx.Request("POST", "http://x"))
+        raise httpx.ConnectError("boom", request = httpx.Request("POST", "http://x"))
 
     with patch.object(inf_mod.httpx, "AsyncClient") as mock_cls:
         inst = MagicMock()
-        inst.build_request = MagicMock(return_value=MagicMock())
+        inst.build_request = MagicMock(return_value = MagicMock())
         inst.send = _send
         inst.aclose = AsyncMock()
         mock_cls.return_value = inst
@@ -96,11 +104,11 @@ def test_done_comes_after_error_chunk():
     from routes import inference as inf_mod
 
     async def _send(req, stream):
-        raise httpx.ReadError("reset", request=httpx.Request("POST", "http://x"))
+        raise httpx.ReadError("reset", request = httpx.Request("POST", "http://x"))
 
     with patch.object(inf_mod.httpx, "AsyncClient") as mock_cls:
         inst = MagicMock()
-        inst.build_request = MagicMock(return_value=MagicMock())
+        inst.build_request = MagicMock(return_value = MagicMock())
         inst.send = _send
         inst.aclose = AsyncMock()
         mock_cls.return_value = inst

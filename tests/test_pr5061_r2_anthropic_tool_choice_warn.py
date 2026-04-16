@@ -14,7 +14,7 @@ def _simulate_coerce(tool_choice):
         if tool_choice is not None:
             inf_mod.logger.warning(
                 "anthropic_messages.tool_choice_unrecognized",
-                tool_choice=tool_choice,
+                tool_choice = tool_choice,
             )
         translated = "auto"
     return translated

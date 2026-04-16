@@ -20,9 +20,14 @@ class _Req:
 
 def _payload():
     return ChatCompletionRequest(
-        messages=[{"role": "user", "content": "q"}],
-        tools=[{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
-        stream=True,
+        messages = [{"role": "user", "content": "q"}],
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"type": "object"}},
+            }
+        ],
+        stream = True,
     )
 
 
@@ -71,7 +76,7 @@ def _run_stream(fake_lines):
 
     with patch.object(inf_mod.httpx, "AsyncClient") as mock_cls:
         inst = MagicMock()
-        inst.build_request = MagicMock(return_value=MagicMock())
+        inst.build_request = MagicMock(return_value = MagicMock())
         inst.send = _send
         inst.aclose = _aclose_noop
         mock_cls.return_value = inst
@@ -92,21 +97,25 @@ def _run_stream(fake_lines):
 
 
 def test_passthrough_relays_data_lines_verbatim():
-    chunks = _run_stream([
-        'data: {"id":"abc","choices":[{"delta":{"content":"hi"}}]}',
-        'data: [DONE]',
-    ])
+    chunks = _run_stream(
+        [
+            'data: {"id":"abc","choices":[{"delta":{"content":"hi"}}]}',
+            "data: [DONE]",
+        ]
+    )
     assert any('"id":"abc"' in c for c in chunks)
     assert any("data: [DONE]" in c for c in chunks)
 
 
 def test_passthrough_ignores_blank_and_non_data_lines():
-    chunks = _run_stream([
-        "",
-        ": heartbeat",
-        'data: {"x":1}',
-        'data: [DONE]',
-    ])
+    chunks = _run_stream(
+        [
+            "",
+            ": heartbeat",
+            'data: {"x":1}',
+            "data: [DONE]",
+        ]
+    )
     # Only data: lines propagate.
     for c in chunks:
         assert c.startswith("data: ") or c == ""
@@ -114,9 +123,11 @@ def test_passthrough_ignores_blank_and_non_data_lines():
 
 
 def test_passthrough_breaks_on_done():
-    chunks = _run_stream([
-        'data: {"a":1}',
-        'data: [DONE]',
-        'data: {"should_not_appear":true}',
-    ])
+    chunks = _run_stream(
+        [
+            'data: {"a":1}',
+            "data: [DONE]",
+            'data: {"should_not_appear":true}',
+        ]
+    )
     assert not any("should_not_appear" in c for c in chunks)

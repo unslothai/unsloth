@@ -21,27 +21,37 @@ def test_httpx_connect_error_mapped_to_502():
     class _BadClient:
         def __init__(self, *a, **kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def post(self, *a, **kw):
-            raise httpx.ConnectError("refused", request=httpx.Request("POST", "http://x"))
+            raise httpx.ConnectError(
+                "refused", request = httpx.Request("POST", "http://x")
+            )
 
     with patch.object(inf_mod.httpx, "AsyncClient", _BadClient):
         with pytest.raises(HTTPException) as ei:
             asyncio.run(
                 inf_mod._anthropic_passthrough_non_streaming(
                     _Llama(),
-                    openai_messages=[{"role": "user", "content": "q"}],
-                    openai_tools=[{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
-                    temperature=0.6,
-                    top_p=0.95,
-                    top_k=20,
-                    max_tokens=None,
-                    message_id="msg_1",
-                    model_name="stub",
-                    tool_choice="auto",
+                    openai_messages = [{"role": "user", "content": "q"}],
+                    openai_tools = [
+                        {
+                            "type": "function",
+                            "function": {"name": "f", "parameters": {"type": "object"}},
+                        }
+                    ],
+                    temperature = 0.6,
+                    top_p = 0.95,
+                    top_k = 20,
+                    max_tokens = None,
+                    message_id = "msg_1",
+                    model_name = "stub",
+                    tool_choice = "auto",
                 )
             )
     assert ei.value.status_code == 502
@@ -54,26 +64,34 @@ def test_httpx_read_error_mapped_to_502():
     class _BadClient:
         def __init__(self, *a, **kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def post(self, *a, **kw):
-            raise httpx.ReadError("eof", request=httpx.Request("POST", "http://x"))
+            raise httpx.ReadError("eof", request = httpx.Request("POST", "http://x"))
 
     with patch.object(inf_mod.httpx, "AsyncClient", _BadClient):
         with pytest.raises(HTTPException) as ei:
             asyncio.run(
                 inf_mod._anthropic_passthrough_non_streaming(
                     _Llama(),
-                    openai_messages=[{"role": "user", "content": "q"}],
-                    openai_tools=[{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
-                    temperature=0.6,
-                    top_p=0.95,
-                    top_k=20,
-                    max_tokens=None,
-                    message_id="msg_1",
-                    model_name="stub",
+                    openai_messages = [{"role": "user", "content": "q"}],
+                    openai_tools = [
+                        {
+                            "type": "function",
+                            "function": {"name": "f", "parameters": {"type": "object"}},
+                        }
+                    ],
+                    temperature = 0.6,
+                    top_p = 0.95,
+                    top_k = 20,
+                    max_tokens = None,
+                    message_id = "msg_1",
+                    model_name = "stub",
                 )
             )
     assert ei.value.status_code == 502
