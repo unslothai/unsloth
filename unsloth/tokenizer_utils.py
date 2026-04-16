@@ -636,95 +636,350 @@ def load_correct_tokenizer(
     return tokenizer
 
 
-def _find_end_position(template, endfor, endif):
-    where_endfor = template.find(endfor)
-    where_endif = template.find(endif)
-    if where_endfor == where_endif == -1:
+# All four Jinja whitespace-control variants of endfor/endif:
+#   {% endfor %}    {%- endfor %}    {% endfor -%}    {%- endfor -%}
+_RE_ENDFOR = re.compile(r"\{%(-?)\s*endfor\s*(-?)%\}")
+_RE_ENDIF = re.compile(r"\{%(-?)\s*endif\s*(-?)%\}")
+_RE_JINJA_COMMENT = re.compile(r"\{#.*?#\}", flags = re.DOTALL)
+
+
+def _find_end_position(template, endfor = None, endif = None):
+    """Return the last {% endfor %}/{% endif %} in the template (whichever is
+    further right), as a dict with start, end, dash_left, dash_right.
+
+    Unlike the older substring-based version, this accepts any of the four
+    Jinja whitespace-control variants ({% ... %}, {%- ... %}, {% ... -%},
+    {%- ... -%}) and returns the rightmost match so multi-for templates are
+    not locked onto the first loop. The `endfor`/`endif` kwargs are accepted
+    for backward compatibility and ignored.
+    """
+    endfor_matches = list(_RE_ENDFOR.finditer(template))
+    endif_matches = list(_RE_ENDIF.finditer(template))
+    last_endfor = endfor_matches[-1] if endfor_matches else None
+    last_endif = endif_matches[-1] if endif_matches else None
+    candidates = [m for m in (last_endfor, last_endif) if m is not None]
+    if not candidates:
         return None
-    elif where_endfor > where_endif:
-        return endfor
-    else:
-        return endif
+    m = max(candidates, key = lambda x: x.end())
+    return {
+        "start": m.start(),
+        "end": m.end(),
+        "text": m.group(0),
+        "dash_left": bool(m.group(1)),
+        "dash_right": bool(m.group(2)),
+    }
+
+
+def _template_ends_with_toplevel_for(chat_template):
+    """Return True if the last structural node at the template's top level is
+    a For (message-iteration) loop, ignoring trailing pure-whitespace Output
+    nodes. Used to gate the GH#4150 ChatML repair: if the outermost structure
+    is something else (e.g. an outer If that wraps the whole template, as in
+    Qwen3-Guard), we shouldn't inject an {% if add_generation_prompt %}
+    block at the end -- it would land inside or after an unrelated control
+    structure."""
+    try:
+        import jinja2
+        import jinja2.nodes
+        ast = jinja2.Environment().parse(chat_template)
+    except Exception:
+        return False
+    for node in reversed(ast.body):
+        # Skip trailing output nodes that are only whitespace -- they come
+        # from trailing whitespace/newlines in the source, not from real
+        # message-rendering logic.
+        if isinstance(node, jinja2.nodes.Output):
+            only_ws = all(
+                isinstance(child, jinja2.nodes.TemplateData)
+                and child.data.strip() == ""
+                for child in node.nodes
+            )
+            if only_ws:
+                continue
+        return isinstance(node, jinja2.nodes.For)
+    return False
+
+
+def _has_add_generation_prompt_block(chat_template):
+    """Return True if the template contains an {% if add_generation_prompt %}
+    block. Uses Jinja AST so comments and whitespace-control variants cannot
+    fool the check. Falls back to a string scan if Jinja cannot parse.
+    """
+    try:
+        import jinja2
+        import jinja2.nodes
+        ast = jinja2.Environment().parse(chat_template)
+    except Exception:
+        return (
+            "if add_generation_prompt" in chat_template
+            and "%}" in chat_template
+        )
+    for if_node in ast.find_all(jinja2.nodes.If):
+        test = if_node.test
+        # `find_all` only walks descendants, so a bare Name test (the common
+        # `{% if add_generation_prompt %}` form) needs an explicit check here.
+        if isinstance(test, jinja2.nodes.Name) and test.name == "add_generation_prompt":
+            return True
+        for name_node in test.find_all(jinja2.nodes.Name):
+            if name_node.name == "add_generation_prompt":
+                return True
+    return False
+
+
+def _infer_assistant_separator(scrubbed):
+    """Infer the separator that follows 'assistant' in a ChatML template.
+
+    Strategy: prefer an explicit '<|im_start|>assistant<sep>' literal; else
+    the unique `message['role'] + '<sep>'` from role concatenations; else
+    '<|im_sep|>' if present (Phi-4-mini mixes '\\n' for system with
+    '<|im_sep|>' for user/assistant); else '\\n'.
+    """
+    assistant_match = re.search(
+        r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
+        scrubbed,
+    )
+    role_seps = [
+        m.group(2)
+        for m in re.finditer(
+            r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
+            scrubbed,
+        )
+    ]
+    unique_role_seps = list(dict.fromkeys(role_seps))
+    if assistant_match is not None and assistant_match.group(2):
+        return assistant_match.group(2)
+    if len(unique_role_seps) == 1:
+        return unique_role_seps[0]
+    if "<|im_sep|>" in scrubbed:
+        return "<|im_sep|>"
+    return "\\n"
 
 
 def _fix_chat_template(chat_template):
-    endfor = "{% endfor %}"
-    endif = "{% endif %}"
-    chosen_end = _find_end_position(chat_template, endfor, endif)
-    if chosen_end is None:
-        endfor = "{%- endfor %}"
-        endif = "{%- endif %}"
-        chosen_end = _find_end_position(chat_template, endfor, endif)
-    if chosen_end is None:
+    # Fast path: already has an {% if add_generation_prompt %} block, nothing
+    # to do. This catches cases the old string-based check would miss (e.g.
+    # templates that use {%- if add_generation_prompt -%} with both-side dash,
+    # or that sneak the block into a nested If/For).
+    if _has_add_generation_prompt_block(chat_template):
         return chat_template
 
-    where = chat_template.find(chosen_end)
+    end = _find_end_position(chat_template)
+    if end is None:
+        return chat_template
 
-    after_endfor = chat_template[where + len(chosen_end) :]
+    after_endfor = chat_template[end["end"]:]
+    dash_l = "-" if end["dash_left"] else ""
+    dash_r = "-" if end["dash_right"] else ""
+    open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
-    dash = "-" if chosen_end.startswith("{%-") else ""
-
+    # Case 1 (pre-existing base case): template ends with a single trailing
+    # {{ expr }} that is the generation prefix. Wrap it in an
+    # {% if add_generation_prompt %} ... {% endif %}.
     if (
-        "{%" + dash + " if" not in after_endfor
-        and "{%" + dash + " set " not in after_endfor
+        "{%" + dash_l + " if" not in after_endfor
+        and "{%" + dash_l + " set " not in after_endfor
         and after_endfor.startswith("{{")
         and after_endfor.endswith("}}")
         and after_endfor.count("{{") == 1
         and after_endfor.count("}}") == 1
     ):
-        after_endfor = (
-            "{%" + dash + " if add_generation_prompt %}" + after_endfor + endif
+        wrapped = (
+            open_tag("if add_generation_prompt") + after_endfor + open_tag("endif")
         )
+        return chat_template[: end["end"]] + wrapped
 
-        chat_template = chat_template[: where + len(chosen_end)] + after_endfor
-
-    elif re.sub(r"\{#.*?#\}", "", after_endfor, flags = re.DOTALL).strip() == "":
-        # GH#4150: ChatML templates ending at {% endfor %} without an
-        # add_generation_prompt block. Scrub Jinja `{# ... #}` comments so
-        # tokens inside comments cannot fool the guard below.
-        scrubbed = re.sub(r"\{#.*?#\}", "", chat_template, flags = re.DOTALL)
+    # Case 2 (GH#4150): template ends at {% endfor %} with only whitespace or
+    # Jinja comments left. Inject an {% if add_generation_prompt %} block
+    # with a model-specific assistant-turn separator inferred from the
+    # template body. Require the top-level body to END in a For node so we
+    # don't inject inside a wider wrapper (e.g. Qwen3-Guard wraps the whole
+    # template in an outer If -- there the generation block would be out of
+    # place).
+    if (
+        _RE_JINJA_COMMENT.sub("", after_endfor).strip() == ""
+        and _template_ends_with_toplevel_for(chat_template)
+    ):
+        scrubbed = _RE_JINJA_COMMENT.sub("", chat_template)
         if (
             "<|im_start|>" in scrubbed
             and "<|im_end|>" in scrubbed
             and "add_generation_prompt" not in scrubbed
         ):
-            # Infer the assistant-turn separator. Prefer an explicit
-            # '<|im_start|>assistant<sep>' literal; else the unique
-            # `message['role'] + '<sep>'` from role concatenations; else
-            # '<|im_sep|>' if present (Phi-4-mini uses '\n' for system and
-            # '<|im_sep|>' for user/assistant); else '\n'.
-            assistant_match = re.search(
-                r"""(['"])<\|im_start\|>assistant([^'"]*)\1""",
-                scrubbed,
-            )
-            role_seps = [
-                m.group(2)
-                for m in re.finditer(
-                    r"""message(?:\[['"]role['"]\]|\.role)\s*\+\s*(['"])([^'"]*)\1""",
-                    scrubbed,
-                )
-            ]
-            unique_role_seps = list(dict.fromkeys(role_seps))
-            if assistant_match is not None and assistant_match.group(2):
-                separator = assistant_match.group(2)
-            elif len(unique_role_seps) == 1:
-                separator = unique_role_seps[0]
-            elif "<|im_sep|>" in scrubbed:
-                separator = "<|im_sep|>"
-            else:
-                separator = "\\n"
-            # Emit a double-quoted Jinja literal so a single quote in the
-            # separator cannot break the block. Drop trailing whitespace/
-            # comments after endfor: they would render as stray output
-            # after the generation prefix.
+            separator = _infer_assistant_separator(scrubbed)
             assistant_prefix = "<|im_start|>assistant" + separator
+            # Double-quoted Jinja literal so a single quote in the separator
+            # cannot break the block. Trailing whitespace/comments after
+            # endfor are dropped: they would render as stray output after
+            # the generation prefix.
             generation_block = (
-                "{%" + dash + " if add_generation_prompt %}"
-                '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
-                "{%" + dash + " endif %}"
+                open_tag("if add_generation_prompt")
+                + '{{ "' + assistant_prefix.replace('"', '\\"') + '" }}'
+                + open_tag("endif")
             )
-            chat_template = chat_template[: where + len(chosen_end)] + generation_block
+            return chat_template[: end["end"]] + generation_block
 
+    return chat_template
+
+
+def _is_strict_chat_template_mode():
+    """Opt-in strict mode restores the pre-warn RuntimeError behavior."""
+    val = os.environ.get("UNSLOTH_STRICT_CHAT_TEMPLATE", "0")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _name_is_local_path(name_or_path):
+    """True if name_or_path refers to an existing local directory. Used to
+    tailor the warning message: for local paths the user cannot 'file a bug
+    report to the maintainers of <path>' since that path is their own."""
+    if not name_or_path:
+        return False
+    try:
+        return os.path.isdir(str(name_or_path))
+    except Exception:
+        return False
+
+
+def _format_chat_template_message(name_or_path, repaired):
+    """Build a user-facing warning/error message that points at the right
+    responsible party (user's downstream tool vs. upstream model maintainer)."""
+    local = _name_is_local_path(name_or_path)
+    if local:
+        source_hint = (
+            "This tokenizer was loaded from a local path. The likely cause is a "
+            "downstream tool (LlamaFactory, Axolotl, etc.) that re-serialized "
+            "the tokenizer during save and stripped the generation-prompt "
+            "block. Either re-save with the original template, or set "
+            "`tokenizer.chat_template` manually before loading."
+        )
+    else:
+        source_hint = (
+            "The chat_template shipped with `{name}` appears incomplete. "
+            "Consider filing a bug report with the model maintainers."
+        ).format(name = name_or_path)
+    if repaired:
+        return (
+            "Unsloth: Patched the chat_template on `{name}` to add a "
+            "{{% if add_generation_prompt %}} block. {hint}"
+        ).format(name = name_or_path, hint = source_hint)
+    return (
+        "Unsloth: The tokenizer `{name}` does not have a "
+        "{{% if add_generation_prompt %}} block for generation purposes, and "
+        "automatic repair was not possible. The model will still load, but "
+        "`apply_chat_template(add_generation_prompt=True)` may not produce a "
+        "correct assistant-turn marker. {hint} Set "
+        "UNSLOTH_STRICT_CHAT_TEMPLATE=1 to raise instead of warn."
+    ).format(name = name_or_path, hint = source_hint)
+
+
+def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
+    """Render the just-patched template with and without
+    add_generation_prompt, and confirm the patched output responds to the
+    flag by appending (not replacing) content. Returns True if validation
+    passes."""
+    msgs = (
+        [{"from": "human", "value": "Hi"}]
+        if is_sharegpt
+        else [{"role": "user", "content": "Hi"}]
+    )
+    original = getattr(tokenizer, "chat_template", None)
+    try:
+        tokenizer.chat_template = patched_template
+        try:
+            yes = tokenizer.apply_chat_template(
+                msgs, add_generation_prompt = True, tokenize = False,
+            )
+            no = tokenizer.apply_chat_template(
+                msgs, add_generation_prompt = False, tokenize = False,
+            )
+        except Exception:
+            return False
+    finally:
+        tokenizer.chat_template = original
+    # Contract after a successful repair: the two renders differ, and the
+    # "yes" render is a strict extension of the "no" render (we only
+    # appended content inside the new add_generation_prompt block).
+    return yes != no and yes.startswith(no)
+
+
+def _repair_string_template(tokenizer, chat_template, is_sharegpt):
+    """Core string-template repair. Returns the repaired template on success,
+    or None if repair was not possible / failed validation."""
+    candidate = _fix_chat_template(chat_template)
+    if not _has_add_generation_prompt_block(candidate):
+        return None
+    if not _validate_patched_template(tokenizer, candidate, is_sharegpt):
+        return None
+    return candidate
+
+
+def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
+    """Entry point for a string chat_template. Runs the no==yes diagnostic,
+    attempts repair if needed, and returns the (possibly patched) template.
+
+    On repair failure, the behavior is controlled by
+    UNSLOTH_STRICT_CHAT_TEMPLATE: warn + return original (default) or raise
+    RuntimeError (strict)."""
+    name = getattr(tokenizer, "name_or_path", "unknown")
+
+    # Detect ShareGPT vs HF style by probing apply_chat_template.
+    is_sharegpt = None
+    try:
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": "Who are you?"}],
+            add_generation_prompt = False, tokenize = False,
+        )
+        is_sharegpt = False
+    except Exception:
+        try:
+            tokenizer.apply_chat_template(
+                [{"from": "human", "value": "Who are you?"}],
+                add_generation_prompt = False, tokenize = False,
+            )
+            is_sharegpt = True
+        except Exception:
+            is_sharegpt = None
+
+    if is_sharegpt is None:
+        return chat_template
+
+    messages = (
+        [{"from": "human", "value": "Who are you?"}]
+        if is_sharegpt
+        else [{"role": "user", "content": "Who are you?"}]
+    )
+    try:
+        no = tokenizer.apply_chat_template(
+            messages, add_generation_prompt = False, tokenize = False,
+        )
+        yes = tokenizer.apply_chat_template(
+            messages, add_generation_prompt = True, tokenize = False,
+        )
+    except Exception:
+        return chat_template
+
+    if no != yes:
+        # Template already responds to the flag; leave as is.
+        return chat_template
+
+    # no == yes: template ignores add_generation_prompt. Try to repair.
+    if _has_add_generation_prompt_block(chat_template):
+        # Template has the block but it does not change output. This is the
+        # "wasn't provided correctly" case from the pre-warn code path.
+        msg = _format_chat_template_message(name, repaired = False)
+        if _is_strict_chat_template_mode():
+            raise RuntimeError(msg)
+        logger.warning_once(msg)
+        return chat_template
+
+    repaired = _repair_string_template(tokenizer, chat_template, is_sharegpt)
+    if repaired is not None:
+        logger.warning_once(_format_chat_template_message(name, repaired = True))
+        return repaired
+
+    msg = _format_chat_template_message(name, repaired = False)
+    if _is_strict_chat_template_mode():
+        raise RuntimeError(msg)
+    logger.warning_once(msg)
     return chat_template
 
 
@@ -733,76 +988,55 @@ def fix_chat_template(tokenizer):
     if chat_template is None:
         return None
 
-    ### 1. Check if add_generation_prompt works
-    # Check for ShareGPT style first
-    is_sharegpt = None
-    try:
-        messages = [
-            {"role": "user", "content": "Who are you?"},
-        ]
-        tokenizer.apply_chat_template(
-            messages, add_generation_prompt = False, tokenize = False
-        )
-        is_sharegpt = False
-    except:
-        try:
-            messages = [
-                {"from": "human", "value": "Who are you?"},
-            ]
-            tokenizer.apply_chat_template(
-                messages, add_generation_prompt = False, tokenize = False
-            )
-            is_sharegpt = True
-        except:
-            is_sharegpt = None
-
-    # Not ShareGPT or HF style - just return
-    if is_sharegpt is None:
-        return chat_template
-
-    # Tokenize
-    messages = [
-        {"role": "user", "content": "Who are you?"}
-        if not is_sharegpt
-        else {"from": "human", "value": "Who are you?"}
-    ]
-    no = tokenizer.apply_chat_template(
-        messages, add_generation_prompt = False, tokenize = False
-    )
-    yes = tokenizer.apply_chat_template(
-        messages, add_generation_prompt = True, tokenize = False
-    )
-
-    if no == yes:
-        # SAME?! That's not good! We check for add_generation_prompt
-        if (
-            "{% if add_generation_prompt %}" not in chat_template
-            and "{%- if add_generation_prompt %}" not in chat_template
-        ):
-            # Try fixing it by adding it
-            new_chat_template = _fix_chat_template(chat_template)
-            if (
-                "{% if add_generation_prompt %}" not in new_chat_template
-                and "{%- if add_generation_prompt %}" not in new_chat_template
-            ):
-                raise RuntimeError(
-                    f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"
-                    "does not have a {% if add_generation_prompt %} for generation purposes.\n"
-                    f"Please file a bug report to the maintainers of `{tokenizer.name_or_path}` - thanks!"
-                )
-            else:
+    # Multi-variant dict form (e.g. Hermes-3 {default, tool_use}): fix each
+    # variant independently. Without this branch, _fix_chat_template was
+    # called with a dict and raised AttributeError on .find() -- surfaced
+    # during PR 4426 testing.
+    if isinstance(chat_template, dict):
+        name = getattr(tokenizer, "name_or_path", "unknown")
+        fixed = {}
+        for key, tmpl in chat_template.items():
+            if not isinstance(tmpl, str):
+                fixed[key] = tmpl
+                continue
+            if _has_add_generation_prompt_block(tmpl):
+                fixed[key] = tmpl
+                continue
+            new_tmpl = _fix_chat_template(tmpl)
+            if _has_add_generation_prompt_block(new_tmpl):
                 logger.warning_once(
-                    "Unsloth: We successfully patched the tokenizer to add a {% if add_generation_prompt %} to the chat_template.\n"
-                    f"This is not a bug, but please notify the maintainers of `{tokenizer.name_or_path}` - thanks!"
+                    _format_chat_template_message(name, repaired = True)
+                    + " (variant='{key}')".format(key = key)
                 )
-                chat_template = new_chat_template
-        else:
-            raise RuntimeError(
-                f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"
-                "has a {% if add_generation_prompt %} for generation purposes, but wasn't provided correctly.\n"
-                "Please file a bug report immediately - thanks!"
-            )
-    return chat_template
+                fixed[key] = new_tmpl
+            else:
+                fixed[key] = tmpl
+        return fixed
+
+    # List-of-dicts form (older HF multi-template style).
+    if isinstance(chat_template, list):
+        name = getattr(tokenizer, "name_or_path", "unknown")
+        fixed = []
+        for item in chat_template:
+            if not isinstance(item, dict) or "template" not in item:
+                fixed.append(item)
+                continue
+            tmpl = item["template"]
+            if not isinstance(tmpl, str) or _has_add_generation_prompt_block(tmpl):
+                fixed.append(item)
+                continue
+            new_tmpl = _fix_chat_template(tmpl)
+            if _has_add_generation_prompt_block(new_tmpl):
+                logger.warning_once(
+                    _format_chat_template_message(name, repaired = True)
+                    + " (variant='{key}')".format(key = item.get("name", "?"))
+                )
+                fixed.append({**item, "template": new_tmpl})
+            else:
+                fixed.append(item)
+        return fixed
+
+    return _fix_chat_template_for_tokenizer(tokenizer, chat_template)
 
 
 def check_tokenizer(
