@@ -13,17 +13,19 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-import re as _re
+
 import structlog
 from loggers import get_logger
 
-_VALID_REPO_ID = _re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$"
-)
-
-
 def _is_valid_repo_id(repo_id: str) -> bool:
-    return bool(_VALID_REPO_ID.fullmatch(repo_id))
+    from huggingface_hub.utils import validate_repo_id
+    from huggingface_hub.utils._validators import HFValidationError
+
+    try:
+        validate_repo_id(repo_id)
+        return True
+    except HFValidationError:
+        return False
 
 
 def _remap_hf_status(hf_status: int) -> int:
