@@ -54,9 +54,9 @@ class Job:
     status: JobStatus = "created"
     stage: str | None = None
     current_column: str | None = None
-    progress: Progress = field(default_factory = Progress)
-    column_progress: Progress = field(default_factory = Progress)
-    batch: BatchProgress = field(default_factory = BatchProgress)
+    progress: Progress = field(default_factory=Progress)
+    column_progress: Progress = field(default_factory=Progress)
+    batch: BatchProgress = field(default_factory=BatchProgress)
     rows: int | None = None
     cols: int | None = None
     error: str | None = None
@@ -68,10 +68,10 @@ class Job:
     execution_type: str | None = None
     dataset: list[dict[str, Any]] | None = None
     processor_artifacts: dict[str, Any] | None = None
-    model_usage: dict[str, ModelUsage] = field(default_factory = dict)
+    model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     progress_columns_total: int | None = None
-    completed_columns: list[str] = field(default_factory = list)
+    completed_columns: list[str] = field(default_factory=list)
     _current_usage_model: str | None = None
     _in_usage_summary: bool = False
-    _seen_generation_columns: list[str] = field(default_factory = list)
-    _column_done: dict[str, int] = field(default_factory = dict)
+    _seen_generation_columns: list[str] = field(default_factory=list)
+    _column_done: dict[str, int] = field(default_factory=dict)

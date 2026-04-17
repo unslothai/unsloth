@@ -116,7 +116,7 @@ def _backend_from_gguf(arch: str, fields: dict) -> LlamaCppBackend:
     import tempfile, os
 
     data = _make_gguf_bytes(arch, kv)
-    fd, path = tempfile.mkstemp(suffix = ".gguf")
+    fd, path = tempfile.mkstemp(suffix=".gguf")
     try:
         os.write(fd, data)
         os.close(fd)
@@ -221,7 +221,7 @@ class TestGGUFParserReset:
         import tempfile, os
 
         data = _make_gguf_bytes("arch2", kv)
-        fd, path = tempfile.mkstemp(suffix = ".gguf")
+        fd, path = tempfile.mkstemp(suffix=".gguf")
         os.write(fd, data)
         os.close(fd)
         try:
@@ -335,7 +335,7 @@ class TestMLAEstimation:
 
     def test_mla_fallback_when_no_key_length(self):
         """If key_length is missing, fallback to kv_lora_rank + key_length_mla."""
-        b = self._mla_backend(_kv_key_length = None)
+        b = self._mla_backend(_kv_key_length=None)
         # _key_length_mla=192 in default, so rope_dim=192
         result = b._estimate_kv_cache_bytes(1000, "f16")
         expected = 61 * 1000 * 1 * (512 + 192) * 2  # 704
@@ -343,14 +343,14 @@ class TestMLAEstimation:
 
     def test_mla_fallback_no_key_length_mla(self):
         """If both key_length and key_length_mla are missing, fallback to +64."""
-        b = self._mla_backend(_kv_key_length = None, _key_length_mla = None)
+        b = self._mla_backend(_kv_key_length=None, _key_length_mla=None)
         result = b._estimate_kv_cache_bytes(1000, "f16")
         expected = 61 * 1000 * 1 * (512 + 64) * 2  # 576
         assert result == expected
 
     def test_mla_defaults_n_kv_to_1_when_heads_absent(self):
         """MLA should use n_kv=1 even if n_kv_heads is None (not n_heads)."""
-        b = self._mla_backend(_n_kv_heads = None)  # n_heads=128 still set
+        b = self._mla_backend(_n_kv_heads=None)  # n_heads=128 still set
         result = b._estimate_kv_cache_bytes(1000, "f16")
         # Should use n_kv_mla=1, NOT n_heads=128
         expected = 61 * 1000 * 1 * 576 * 2
@@ -399,11 +399,11 @@ class TestHybridMambaEstimation:
 
     def test_qwen35_35b_a3b(self):
         b = self._hybrid_backend(
-            _n_layers = 40,
-            _n_kv_heads = 2,
-            _n_heads = 16,
-            _embedding_length = 2048,
-            _ssm_inner_size = 4096,
+            _n_layers=40,
+            _n_kv_heads=2,
+            _n_heads=16,
+            _embedding_length=2048,
+            _ssm_inner_size=4096,
         )
         # n_attn = 40 // 4 = 10
         expected = 10 * 262144 * 2 * (256 + 256) * 2
@@ -411,14 +411,14 @@ class TestHybridMambaEstimation:
 
     def test_hybrid_without_explicit_dims(self):
         """Fallback to head_dim when key_length/value_length are missing."""
-        b = self._hybrid_backend(_kv_key_length = None, _kv_value_length = None)
+        b = self._hybrid_backend(_kv_key_length=None, _kv_value_length=None)
         head_dim = 5120 // 24  # 213
         expected = 16 * 4096 * 4 * 2 * head_dim * 2
         assert b._estimate_kv_cache_bytes(4096, "f16") == expected
 
     def test_fai_zero_safety(self):
         """full_attention_interval=0 should not cause ZeroDivisionError."""
-        b = self._hybrid_backend(_full_attention_interval = 0)
+        b = self._hybrid_backend(_full_attention_interval=0)
         result = b._estimate_kv_cache_bytes(4096, "f16")
         # fai=0 -> n_attn = n_layers (all layers)
         expected = 64 * 4096 * 4 * (256 + 256) * 2
@@ -460,13 +460,13 @@ class TestSlidingWindowEstimation:
 
     def test_gpt_oss(self):
         b = self._swa_backend(
-            _n_layers = 24,
-            _n_kv_heads = 8,
-            _n_heads = 64,
-            _embedding_length = 2880,
-            _kv_key_length = 64,
-            _kv_value_length = 64,
-            _sliding_window = 128,
+            _n_layers=24,
+            _n_kv_heads=8,
+            _n_heads=64,
+            _embedding_length=2880,
+            _kv_key_length=64,
+            _kv_value_length=64,
+            _sliding_window=128,
         )
         # 1/4 heuristic: 24 // 4 = 6 global, 18 SWA
         n_global = max(1, 24 // 4)  # 6
@@ -477,7 +477,7 @@ class TestSlidingWindowEstimation:
 
     def test_ctx_smaller_than_window(self):
         """When context < sliding_window, SWA layers use full context anyway."""
-        b = self._swa_backend(_sliding_window = 8192)
+        b = self._swa_backend(_sliding_window=8192)
         n_global = max(1, 62 // 4)  # 15
         n_swa = 62 - n_global  # 47
         kv_per = 16 * (128 + 128) * 2
@@ -488,7 +488,7 @@ class TestSlidingWindowEstimation:
 
     def test_odd_layer_count(self):
         """Odd layer count: n_global = max(1, n//4), n_swa = n - n_global."""
-        b = self._swa_backend(_n_layers = 63)
+        b = self._swa_backend(_n_layers=63)
         n_global = max(1, 63 // 4)  # 15
         n_swa = 63 - n_global  # 48
         kv_per = 16 * (128 + 128) * 2
@@ -526,7 +526,7 @@ class TestStandardGQAEstimation:
 
     def test_asymmetric_kv_dims(self):
         """key_length != value_length (some architectures have this)."""
-        b = self._gqa_backend(_kv_key_length = 192, _kv_value_length = 64)
+        b = self._gqa_backend(_kv_key_length=192, _kv_value_length=64)
         expected = 28 * 4096 * 8 * (192 + 64) * 2
         assert b._estimate_kv_cache_bytes(4096, "f16") == expected
 
@@ -571,7 +571,7 @@ class TestLegacyEstimation:
 
     def test_legacy_with_only_n_heads(self):
         """n_kv_heads is None, falls back to n_heads."""
-        b = self._legacy_backend(_n_kv_heads = None)
+        b = self._legacy_backend(_n_kv_heads=None)
         head_dim = 4096 // 32
         expected = int(2 * 32 * head_dim * 32 * 4096 * 2)
         assert b._estimate_kv_cache_bytes(4096, "f16") == expected

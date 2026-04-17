@@ -249,9 +249,9 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
 
     return dataset.map(
         _convert,
-        batched = True,
-        batch_size = batch_size,
-        remove_columns = dataset.column_names,
+        batched=True,
+        batch_size=batch_size,
+        remove_columns=dataset.column_names,
     )
 
 
@@ -264,7 +264,7 @@ def _extract_column_value(val, col: str, label_mapping: dict) -> str:
             inner = val["text"]
             str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
         else:
-            str_val = json.dumps(val, ensure_ascii = False)
+            str_val = json.dumps(val, ensure_ascii=False)
     elif isinstance(val, list):
         str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
     else:
@@ -344,9 +344,9 @@ def _apply_template_mapping(
 
     return dataset.map(
         _convert,
-        batched = True,
-        batch_size = batch_size,
-        remove_columns = dataset.column_names,
+        batched=True,
+        batch_size=batch_size,
+        remove_columns=dataset.column_names,
     )
 
 
@@ -391,33 +391,33 @@ def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
 
     return dataset.map(
         _convert,
-        batched = True,
-        batch_size = batch_size,
-        remove_columns = dataset.column_names,
+        batched=True,
+        batch_size=batch_size,
+        remove_columns=dataset.column_names,
     )
 
 
 def format_dataset(
     dataset,
-    format_type = "auto",
-    tokenizer = None,
-    aliases_for_system = [
+    format_type="auto",
+    tokenizer=None,
+    aliases_for_system=[
         "system",
     ],
-    aliases_for_user = [
+    aliases_for_user=[
         "user",
         "human",
         "input",
     ],
-    aliases_for_assistant = [
+    aliases_for_assistant=[
         "gpt",
         "assistant",
         "output",
     ],
-    batch_size = 1000,
-    num_proc = None,
-    auto_detect_custom = True,
-    custom_format_mapping = None,
+    batch_size=1000,
+    num_proc=None,
+    auto_detect_custom=True,
+    custom_format_mapping=None,
 ):
     """
     Formats dataset and returns metadata.
@@ -600,7 +600,7 @@ def format_dataset(
 
                     try:
                         dataset = dataset.map(
-                            _apply_auto_mapping, batched = True, batch_size = batch_size
+                            _apply_auto_mapping, batched=True, batch_size=batch_size
                         )
                         return {
                             "dataset": dataset,
@@ -812,35 +812,35 @@ def format_and_template_dataset(
     dataset,
     model_name,
     tokenizer,
-    is_vlm = False,
-    format_type = "auto",
+    is_vlm=False,
+    format_type="auto",
     # VLM-specific parameters
-    vlm_instruction = None,  # Now optional - will auto-generate
-    vlm_text_column = None,
-    vlm_image_column = None,
-    dataset_name = None,
-    custom_prompt_template = None,
-    add_eos_token = False,
-    remove_bos_prefix = False,
-    custom_format_mapping = None,
-    auto_detect_custom = True,
-    auto_detect_mapping = True,
-    aliases_for_system = [
+    vlm_instruction=None,  # Now optional - will auto-generate
+    vlm_text_column=None,
+    vlm_image_column=None,
+    dataset_name=None,
+    custom_prompt_template=None,
+    add_eos_token=False,
+    remove_bos_prefix=False,
+    custom_format_mapping=None,
+    auto_detect_custom=True,
+    auto_detect_mapping=True,
+    aliases_for_system=[
         "system",
     ],
-    aliases_for_user = [
+    aliases_for_user=[
         "user",
         "human",
         "input",
     ],
-    aliases_for_assistant = [
+    aliases_for_assistant=[
         "gpt",
         "assistant",
         "output",
     ],
-    batch_size = 1000,
-    num_proc = None,
-    progress_callback = None,
+    batch_size=1000,
+    num_proc=None,
+    progress_callback=None,
 ):
     """
     Convenience function that combines format_dataset and apply_chat_template_to_dataset.
@@ -882,11 +882,11 @@ def format_and_template_dataset(
                 try:
                     dataset = convert_to_vlm_format(
                         dataset,
-                        instruction = vlm_instruction,
-                        text_column = user_vlm_text_column,
-                        image_column = user_vlm_image_column,
-                        dataset_name = dataset_name,
-                        progress_callback = progress_callback,
+                        instruction=vlm_instruction,
+                        text_column=user_vlm_text_column,
+                        image_column=user_vlm_image_column,
+                        dataset_name=dataset_name,
+                        progress_callback=progress_callback,
                     )
                     warnings.append(
                         f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'"
@@ -964,10 +964,10 @@ def format_and_template_dataset(
             try:
                 dataset = convert_sharegpt_with_images_to_vlm_format(
                     dataset,
-                    image_column = vlm_structure["image_column"],
-                    messages_column = vlm_structure["messages_column"],
-                    dataset_name = dataset_name,
-                    progress_callback = progress_callback,
+                    image_column=vlm_structure["image_column"],
+                    messages_column=vlm_structure["messages_column"],
+                    dataset_name=dataset_name,
+                    progress_callback=progress_callback,
                 )
                 warnings.append(
                     "Converted from ShareGPT+image format to standard VLM format"
@@ -1008,9 +1008,9 @@ def format_and_template_dataset(
 
                     friendly = llm_generate_dataset_warning(
                         issues,
-                        dataset_name = dataset_name,
-                        modality = "vision",
-                        column_names = columns,
+                        dataset_name=dataset_name,
+                        modality="vision",
+                        column_names=columns,
                     )
                 except Exception:
                     pass
@@ -1032,11 +1032,11 @@ def format_and_template_dataset(
             try:
                 dataset = convert_to_vlm_format(
                     dataset,
-                    instruction = vlm_instruction,
-                    text_column = vlm_text_column,
-                    image_column = vlm_image_column,
-                    dataset_name = dataset_name,
-                    progress_callback = progress_callback,
+                    instruction=vlm_instruction,
+                    text_column=vlm_text_column,
+                    image_column=vlm_image_column,
+                    dataset_name=dataset_name,
+                    progress_callback=progress_callback,
                 )
 
                 if vlm_instruction:
@@ -1091,25 +1091,25 @@ def format_and_template_dataset(
         # Step 1: Format the dataset
         n_rows = len(dataset) if hasattr(dataset, "__len__") else None
         if progress_callback and n_rows:
-            progress_callback(status_message = f"Formatting dataset ({n_rows:,} rows)...")
+            progress_callback(status_message=f"Formatting dataset ({n_rows:,} rows)...")
         dataset_info = format_dataset(
             dataset,
-            format_type = format_type,
-            tokenizer = tokenizer,
-            auto_detect_custom = auto_detect_custom,
-            custom_format_mapping = custom_format_mapping,
-            aliases_for_system = aliases_for_system,
-            aliases_for_user = aliases_for_user,
-            aliases_for_assistant = aliases_for_assistant,
-            batch_size = batch_size,
-            num_proc = num_proc,
+            format_type=format_type,
+            tokenizer=tokenizer,
+            auto_detect_custom=auto_detect_custom,
+            custom_format_mapping=custom_format_mapping,
+            aliases_for_system=aliases_for_system,
+            aliases_for_user=aliases_for_user,
+            aliases_for_assistant=aliases_for_assistant,
+            batch_size=batch_size,
+            num_proc=num_proc,
         )
 
         # Step 2: Apply chat template
         detected = dataset_info.get("detected_format", "unknown")
         if progress_callback and n_rows:
             progress_callback(
-                status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
+                status_message=f"Applying chat template to {detected} ({n_rows:,} rows)..."
             )
         # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
         is_alpaca = format_type == "alpaca" or (
@@ -1119,17 +1119,17 @@ def format_and_template_dataset(
         if is_gemma and not dataset_info["is_image"] and not is_alpaca:
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
-            dataset_info = dataset_info,
-            tokenizer = tokenizer,
-            model_name = model_name,
-            custom_prompt_template = custom_prompt_template,
-            add_eos_token = add_eos_token,
-            remove_bos_prefix = remove_bos_prefix,
-            custom_format_mapping = custom_format_mapping,
-            auto_detect_mapping = auto_detect_mapping,
-            batch_size = batch_size,
-            num_proc = num_proc,
-            progress_callback = progress_callback,
+            dataset_info=dataset_info,
+            tokenizer=tokenizer,
+            model_name=model_name,
+            custom_prompt_template=custom_prompt_template,
+            add_eos_token=add_eos_token,
+            remove_bos_prefix=remove_bos_prefix,
+            custom_format_mapping=custom_format_mapping,
+            auto_detect_mapping=auto_detect_mapping,
+            batch_size=batch_size,
+            num_proc=num_proc,
+            progress_callback=progress_callback,
         )
 
         # Step 3: Generate summary

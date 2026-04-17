@@ -72,12 +72,12 @@ def test_trunc_normal_patch_accepts_positional_generator():
         assert "generator" in sig.parameters
         assert sig.parameters["generator"].kind is not inspect.Parameter.KEYWORD_ONLY
 
-        tensor = torch.empty(1024, dtype = torch.float32)
+        tensor = torch.empty(1024, dtype=torch.float32)
         gen = torch.Generator()
         gen.manual_seed(3407)
 
         init_mod.trunc_normal_(tensor, 0.0, 1.0, -2.0, 2.0, gen)
-        init_mod.trunc_normal_(tensor, mean = 0.0, std = 1.0, a = -2.0, b = 2.0, generator = gen)
+        init_mod.trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0, generator=gen)
     finally:
         init_mod.trunc_normal_ = old_fn
         _restore_attr(init_mod, "_unsloth_trunc_normal_patched", old_patched)
@@ -105,9 +105,9 @@ def test_trunc_normal_patch_rejects_invalid_generator():
         if "generator" not in sig.parameters:
             pytest.skip("torch.nn.init.trunc_normal_ lacks a generator parameter")
 
-        tensor = torch.empty(16, dtype = torch.float32)
+        tensor = torch.empty(16, dtype=torch.float32)
         with pytest.raises(TypeError):
-            init_mod.trunc_normal_(tensor, generator = 123)
+            init_mod.trunc_normal_(tensor, generator=123)
     finally:
         init_mod.trunc_normal_ = old_fn
         _restore_attr(init_mod, "_unsloth_trunc_normal_patched", old_patched)

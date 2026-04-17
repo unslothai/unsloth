@@ -88,8 +88,8 @@ def run_job_process(
         warnings.filterwarnings("ignore")
 
     LogConfig.setup_logging(
-        service_name = "unsloth-studio-data-worker",
-        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        service_name="unsloth-studio-data-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
     event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
@@ -104,16 +104,16 @@ def run_job_process(
         run_name_raw = run.get("run_name")
         run_name = run_name_raw if isinstance(run_name_raw, str) else None
         dataset_name = _build_dataset_name(
-            run_name = run_name,
-            job_id = job_id,
-            artifact_root = _ARTIFACT_ROOT,
+            run_name=run_name,
+            job_id=job_id,
+            artifact_root=_ARTIFACT_ROOT,
         )
         merge_batches = bool(run.get("merge_batches"))
         ensure_dir(_ARTIFACT_ROOT)
         run_config_raw = run.get("run_config") or {}
 
         builder = build_config_builder(recipe)
-        designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
+        designer = create_data_designer(recipe, artifact_path=str(_ARTIFACT_ROOT))
 
         # DataDesigner configures root logging in DataDesigner.__init__.
         # Attach queue logger directly to `data_designer` so parser events survive root resets.
@@ -129,16 +129,16 @@ def run_job_process(
 
         execution_type = str(run.get("execution_type") or "full").strip().lower()
         if execution_type == "preview":
-            results = designer.preview(builder, num_records = rows)
+            results = designer.preview(builder, num_records=rows)
             analysis = (
                 None
                 if results.analysis is None
-                else to_jsonable(results.analysis.model_dump(mode = "json"))
+                else to_jsonable(results.analysis.model_dump(mode="json"))
             )
             dataset = (
                 []
                 if results.dataset is None
-                else to_preview_jsonable(results.dataset.to_dict(orient = "records"))
+                else to_preview_jsonable(results.dataset.to_dict(orient="records"))
             )
             processor_artifacts = (
                 None
@@ -158,9 +158,9 @@ def run_job_process(
             )
         else:
             results = designer.create(
-                builder, num_records = rows, dataset_name = dataset_name
+                builder, num_records=rows, dataset_name=dataset_name
             )
-            analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
+            analysis = to_jsonable(results.load_analysis().model_dump(mode="json"))
             if merge_batches:
                 _merge_batches_to_single_parquet(
                     results.artifact_storage.base_dataset_path
@@ -181,7 +181,7 @@ def run_job_process(
                 "type": EVENT_JOB_ERROR,
                 "ts": time.time(),
                 "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             }
         )
 
@@ -199,12 +199,12 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
 
     dataframe = read_parquet_dataset(parquet_dir)
     shutil.rmtree(parquet_dir)
-    parquet_dir.mkdir(parents = True, exist_ok = True)
+    parquet_dir.mkdir(parents=True, exist_ok=True)
     merged_file = parquet_dir / "batch_00000.parquet"
-    dataframe.to_parquet(merged_file, index = False)
+    dataframe.to_parquet(merged_file, index=False)
     _rewrite_merged_metadata(
-        base_dataset_path = base_dataset_path,
-        parquet_file = merged_file,
+        base_dataset_path=base_dataset_path,
+        parquet_file=merged_file,
     )
 
 
@@ -214,7 +214,7 @@ def _rewrite_merged_metadata(*, base_dataset_path: Path, parquet_file: Path) -> 
         return
 
     try:
-        metadata = json.loads(metadata_path.read_text(encoding = "utf-8"))
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
         return
 
@@ -232,8 +232,8 @@ def _rewrite_merged_metadata(*, base_dataset_path: Path, parquet_file: Path) -> 
 
     try:
         metadata_path.write_text(
-            json.dumps(metadata, indent = 2, sort_keys = True),
-            encoding = "utf-8",
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
         )
     except OSError:
         return

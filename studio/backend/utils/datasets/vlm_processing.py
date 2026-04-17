@@ -14,9 +14,9 @@ from itertools import islice
 
 def generate_smart_vlm_instruction(
     dataset,
-    text_column = "text",
-    image_column = "image",
-    dataset_name = None,
+    text_column="text",
+    image_column="image",
+    dataset_name=None,
 ):
     """
     Generate smart, context-aware instruction for VLM datasets using heuristics.
@@ -201,15 +201,15 @@ def generate_smart_vlm_instruction(
             sample_rows.append(row)
 
         llm_result = llm_generate_vlm_instruction(
-            column_names = list(column_names),
-            samples = sample_rows,
-            dataset_name = dataset_name,
+            column_names=list(column_names),
+            samples=sample_rows,
+            dataset_name=dataset_name,
         )
         if llm_result and llm_result.get("instruction"):
             print(
                 f"\n[DEBUG] LLM-assisted VLM instruction generated: "
                 f"'{llm_result['instruction']}' (confidence={llm_result.get('confidence', 'N/A')})\n",
-                flush = True,
+                flush=True,
             )
             return {
                 "instruction": llm_result["instruction"],

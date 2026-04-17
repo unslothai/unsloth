@@ -15,9 +15,9 @@ from .chunking import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, resolve_chunkin
 
 class UnstructuredSeedSource(SeedSource):
     seed_type: Literal["unstructured"] = "unstructured"
-    paths: list[str] = Field(min_length = 1)
+    paths: list[str] = Field(min_length=1)
 
-    @model_validator(mode = "before")
+    @model_validator(mode="before")
     @classmethod
     def _normalize_legacy_path(cls, data):
         if isinstance(data, dict) and "paths" not in data and data.get("path"):

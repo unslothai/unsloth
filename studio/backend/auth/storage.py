@@ -47,7 +47,7 @@ def generate_bootstrap_password() -> str:
     import diceware
 
     _bootstrap_password = diceware.get_passphrase(
-        options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
+        options=diceware.handle_options(args=["-n", "4", "-d", "", "-c"])
     )
 
     # Persist so the *same* passphrase is used if the server restarts
@@ -68,7 +68,7 @@ def clear_bootstrap_password() -> None:
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
+        _BOOTSTRAP_PW_PATH.unlink(missing_ok=True)
 
 
 def _hash_token(token: str) -> str:
@@ -377,10 +377,10 @@ def ensure_default_admin() -> bool:
     bootstrap_pw = generate_bootstrap_password()
     try:
         create_initial_user(
-            username = DEFAULT_ADMIN_USERNAME,
-            password = bootstrap_pw,
-            jwt_secret = secrets.token_urlsafe(64),
-            must_change_password = True,
+            username=DEFAULT_ADMIN_USERNAME,
+            password=bootstrap_pw,
+            jwt_secret=secrets.token_urlsafe(64),
+            must_change_password=True,
         )
         return True
     except sqlite3.IntegrityError:

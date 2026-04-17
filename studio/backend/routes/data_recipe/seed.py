@@ -86,7 +86,7 @@ def _list_hf_data_files(*, dataset_name: str, token: str | None) -> list[str]:
         return []
     try:
         api = HfApi()
-        repo_files = api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
+        repo_files = api.list_repo_files(dataset_name, repo_type="dataset", token=token)
         return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
     except (HfHubHTTPError, OSError, ValueError):
         return []
@@ -111,7 +111,7 @@ def _select_best_file(data_files: list[str], split: str = DEFAULT_SPLIT) -> str 
             return (1, len(path))
         return (2, len(path))
 
-    return sorted(data_files, key = score)[0]
+    return sorted(data_files, key=score)[0]
 
 
 def _resolve_seed_hf_path(
@@ -184,9 +184,9 @@ def _decode_base64_payload(content_base64: str) -> bytes:
     if "," in raw and raw.lower().startswith("data:"):
         raw = raw.split(",", 1)[1]
     try:
-        return base64.b64decode(raw, validate = True)
+        return base64.b64decode(raw, validate=True)
     except binascii.Error as exc:
-        raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
+        raise HTTPException(status_code=400, detail="invalid base64 payload") from exc
 
 
 def _read_preview_rows_from_local_file(
@@ -196,40 +196,40 @@ def _read_preview_rows_from_local_file(
         import pandas as pd
     except ImportError as exc:
         raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+            status_code=500, detail=f"seed inspect dependencies unavailable: {exc}"
         ) from exc
 
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            df = pd.read_csv(path, nrows = preview_size, encoding = "utf-8-sig")
+            df = pd.read_csv(path, nrows=preview_size, encoding="utf-8-sig")
             df.columns = df.columns.str.strip()
             unnamed = [c for c in df.columns if c == "" or c.startswith("Unnamed:")]
             if unnamed:
-                df = df.drop(columns = unnamed)
-                full_df = pd.read_csv(path, encoding = "utf-8-sig")
+                df = df.drop(columns=unnamed)
+                full_df = pd.read_csv(path, encoding="utf-8-sig")
                 full_df.columns = full_df.columns.str.strip()
-                full_df = full_df.drop(columns = unnamed)
+                full_df = full_df.drop(columns=unnamed)
                 tmp_csv = path.with_suffix(".tmp.csv")
-                full_df.to_csv(tmp_csv, index = False, encoding = "utf-8")
+                full_df.to_csv(tmp_csv, index=False, encoding="utf-8")
                 tmp_csv.replace(path)
         elif ext == ".jsonl":
-            df = pd.read_json(path, lines = True).head(preview_size)
+            df = pd.read_json(path, lines=True).head(preview_size)
         elif ext == ".json":
             try:
                 df = pd.read_json(path).head(preview_size)
             except ValueError:
-                df = pd.read_json(path, lines = True).head(preview_size)
+                df = pd.read_json(path, lines=True).head(preview_size)
         else:
-            raise HTTPException(status_code = 422, detail = f"unsupported file type: {ext}")
+            raise HTTPException(status_code=422, detail=f"unsupported file type: {ext}")
     except HTTPException:
         raise
     except (ValueError, OSError) as exc:
         raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+            status_code=422, detail=f"seed inspect failed: {exc}"
         ) from exc
 
-    rows = df.to_dict(orient = "records")
+    rows = df.to_dict(orient="records")
     return _serialize_preview_rows(rows)
 
 
@@ -248,14 +248,14 @@ def _read_preview_rows_from_unstructured_file(
     size, overlap = resolve_chunking(chunk_size, chunk_overlap)
     try:
         rows = build_unstructured_preview_rows(
-            source_path = path,
-            preview_size = preview_size,
-            chunk_size = size,
-            chunk_overlap = overlap,
+            source_path=path,
+            preview_size=preview_size,
+            chunk_size=size,
+            chunk_overlap=overlap,
         )
     except (FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
         raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+            status_code=422, detail=f"seed inspect failed: {exc}"
         ) from exc
     return _serialize_preview_rows(rows)
 
@@ -287,27 +287,27 @@ def _read_preview_rows_from_multi_files(
         file_entries.append((extracted, fname))
 
     return build_multi_file_preview_rows(
-        file_entries = file_entries,
-        preview_size = preview_size,
-        chunk_size = chunk_size,
-        chunk_overlap = chunk_overlap,
+        file_entries=file_entries,
+        preview_size=preview_size,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     )
 
 
-@router.post("/seed/inspect", response_model = SeedInspectResponse)
+@router.post("/seed/inspect", response_model=SeedInspectResponse)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
     if not dataset_name or dataset_name.count("/") < 1:
         raise HTTPException(
-            status_code = 400,
-            detail = "dataset_name must be a Hugging Face repo id like org/repo",
+            status_code=400,
+            detail="dataset_name must be a Hugging Face repo id like org/repo",
         )
 
     try:
         from datasets import load_dataset
     except ImportError as exc:
         raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+            status_code=500, detail=f"seed inspect dependencies unavailable: {exc}"
         ) from exc
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
@@ -316,22 +316,22 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     preview_size = int(payload.preview_size)
 
     preview_rows: list[dict[str, Any]] = []
-    data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
+    data_files = _list_hf_data_files(dataset_name=dataset_name, token=token)
 
     selected_file = _select_best_file(data_files, split)
     if selected_file:
         try:
             single_file_kwargs = _build_stream_load_kwargs(
-                dataset_name = dataset_name,
-                split = split,
-                subset = subset,
-                token = token,
-                data_file = selected_file,
+                dataset_name=dataset_name,
+                split=split,
+                subset=subset,
+                token=token,
+                data_file=selected_file,
             )
             preview_rows = _load_preview_rows(
-                load_dataset_fn = load_dataset,
-                load_kwargs = single_file_kwargs,
-                preview_size = preview_size,
+                load_dataset_fn=load_dataset,
+                load_kwargs=single_file_kwargs,
+                preview_size=preview_size,
             )
         except (ValueError, OSError, RuntimeError):
             preview_rows = []
@@ -339,24 +339,24 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     if not preview_rows:
         try:
             split_kwargs = _build_stream_load_kwargs(
-                dataset_name = dataset_name,
-                split = split,
-                subset = subset,
-                token = token,
+                dataset_name=dataset_name,
+                split=split,
+                subset=subset,
+                token=token,
             )
             preview_rows = _load_preview_rows(
-                load_dataset_fn = load_dataset,
-                load_kwargs = split_kwargs,
-                preview_size = preview_size,
+                load_dataset_fn=load_dataset,
+                load_kwargs=split_kwargs,
+                preview_size=preview_size,
             )
         except (ValueError, OSError, RuntimeError) as exc:
             raise HTTPException(
-                status_code = 422, detail = f"seed inspect failed: {exc}"
+                status_code=422, detail=f"seed inspect failed: {exc}"
             ) from exc
 
     if not preview_rows:
         raise HTTPException(
-            status_code = 422, detail = "dataset appears empty or unreadable"
+            status_code=422, detail="dataset appears empty or unreadable"
         )
     preview_rows = _serialize_preview_rows(preview_rows)
     columns = _extract_columns(preview_rows)
@@ -367,28 +367,28 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
         resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
         if not resolved_path:
             raise HTTPException(
-                status_code = 422, detail = "unable to resolve seed dataset path"
+                status_code=422, detail="unable to resolve seed dataset path"
             )
 
     return SeedInspectResponse(
-        dataset_name = dataset_name,
-        resolved_path = resolved_path,
-        columns = columns,
-        preview_rows = preview_rows,
-        split = split,
-        subset = subset,
+        dataset_name=dataset_name,
+        resolved_path=resolved_path,
+        columns=columns,
+        preview_rows=preview_rows,
+        split=split,
+        subset=subset,
     )
 
 
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from uploaded file based on extension, converting to markdown where possible."""
     if ext in {".txt", ".md"}:
-        raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
+        raw = file_path.read_text(encoding="utf-8", errors="ignore")
     elif ext == ".pdf":
         import pymupdf4llm
 
         raw = pymupdf4llm.to_markdown(
-            str(file_path), write_images = False, show_progress = False, use_ocr = False
+            str(file_path), write_images=False, show_progress=False, use_ocr=False
         )
     elif ext == ".docx":
         import mammoth
@@ -452,7 +452,7 @@ async def upload_unstructured_file(
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
+    current_total = _get_block_total_size(block_dir, file_ids=tracked_ids)
     if current_total + size_bytes > MAX_TOTAL_SIZE:
         raise HTTPException(
             413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
@@ -466,24 +466,24 @@ async def upload_unstructured_file(
     try:
         extracted_text = _extract_text_from_file(raw_path, ext)
         if not extracted_text or not extracted_text.strip():
-            raw_path.unlink(missing_ok = True)
+            raw_path.unlink(missing_ok=True)
             return UnstructuredFileUploadResponse(
-                file_id = file_id,
-                filename = original_filename,
-                size_bytes = size_bytes,
-                status = "error",
-                error = "No extractable text found in file",
+                file_id=file_id,
+                filename=original_filename,
+                size_bytes=size_bytes,
+                status="error",
+                error="No extractable text found in file",
             )
-        extracted_path.write_text(extracted_text, encoding = "utf-8")
+        extracted_path.write_text(extracted_text, encoding="utf-8")
     except Exception as e:
-        raw_path.unlink(missing_ok = True)
-        extracted_path.unlink(missing_ok = True)
+        raw_path.unlink(missing_ok=True)
+        extracted_path.unlink(missing_ok=True)
         return UnstructuredFileUploadResponse(
-            file_id = file_id,
-            filename = original_filename,
-            size_bytes = size_bytes,
-            status = "error",
-            error = f"Text extraction failed: {type(e).__name__}: {e}",
+            file_id=file_id,
+            filename=original_filename,
+            size_bytes=size_bytes,
+            status="error",
+            error=f"Text extraction failed: {type(e).__name__}: {e}",
         )
 
     try:
@@ -492,24 +492,24 @@ async def upload_unstructured_file(
             json.dumps(
                 {"original_filename": original_filename, "size_bytes": size_bytes}
             ),
-            encoding = "utf-8",
+            encoding="utf-8",
         )
     except OSError:
-        raw_path.unlink(missing_ok = True)
-        extracted_path.unlink(missing_ok = True)
+        raw_path.unlink(missing_ok=True)
+        extracted_path.unlink(missing_ok=True)
         return UnstructuredFileUploadResponse(
-            file_id = file_id,
-            filename = original_filename,
-            size_bytes = size_bytes,
-            status = "error",
-            error = "Failed to save file metadata",
+            file_id=file_id,
+            filename=original_filename,
+            size_bytes=size_bytes,
+            status="error",
+            error="Failed to save file metadata",
         )
 
     return UnstructuredFileUploadResponse(
-        file_id = file_id,
-        filename = original_filename,
-        size_bytes = size_bytes,
-        status = "ok",
+        file_id=file_id,
+        filename=original_filename,
+        size_bytes=size_bytes,
+        status="ok",
     )
 
 
@@ -526,7 +526,7 @@ async def remove_unstructured_file(block_id: str, file_id: str):
     for f in block_dir.iterdir():
         stem = f.name.split(".")[0]
         if stem == file_id:
-            f.unlink(missing_ok = True)
+            f.unlink(missing_ok=True)
             deleted = True
 
     if not deleted:
@@ -540,7 +540,7 @@ async def remove_unstructured_file(block_id: str, file_id: str):
     return {"status": "ok"}
 
 
-@router.post("/seed/inspect-upload", response_model = SeedInspectResponse)
+@router.post("/seed/inspect-upload", response_model=SeedInspectResponse)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
     if payload.file_ids is not None:
         if len(payload.file_ids) == 0:
@@ -549,12 +549,12 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         for fid in payload.file_ids:
             _validate_safe_id(fid, "file_id")
         preview_rows = _read_preview_rows_from_multi_files(
-            block_id = payload.block_id,
-            file_ids = payload.file_ids,
-            file_names = payload.file_names,
-            preview_size = payload.preview_size,
-            chunk_size = payload.unstructured_chunk_size,
-            chunk_overlap = payload.unstructured_chunk_overlap,
+            block_id=payload.block_id,
+            file_ids=payload.file_ids,
+            file_names=payload.file_names,
+            preview_size=payload.preview_size,
+            chunk_size=payload.unstructured_chunk_size,
+            chunk_overlap=payload.unstructured_chunk_overlap,
         )
         columns = ["chunk_text", "source_file"] if preview_rows else []
         resolved_paths = [
@@ -562,11 +562,11 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             for fid in payload.file_ids
         ]
         return SeedInspectResponse(
-            dataset_name = "unstructured_seed",
-            resolved_path = resolved_paths[0] if resolved_paths else "",
-            resolved_paths = resolved_paths,
-            columns = columns,
-            preview_rows = _serialize_preview_rows(preview_rows),
+            dataset_name="unstructured_seed",
+            resolved_path=resolved_paths[0] if resolved_paths else "",
+            resolved_paths=resolved_paths,
+            columns=columns,
+            preview_rows=_serialize_preview_rows(preview_rows),
         )
 
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
@@ -579,22 +579,22 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         if ext not in _LEGACY_UNSTRUCTURED_EXTS:
             allowed = ", ".join(sorted(_LEGACY_UNSTRUCTURED_EXTS))
             raise HTTPException(
-                status_code = 400,
-                detail = f"unsupported file type: {ext}. allowed: {allowed}",
+                status_code=400,
+                detail=f"unsupported file type: {ext}. allowed: {allowed}",
             )
     else:
         if ext not in LOCAL_UPLOAD_EXTS:
             allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
             raise HTTPException(
-                status_code = 400,
-                detail = f"unsupported file type: {ext}. allowed: {allowed}",
+                status_code=400,
+                detail=f"unsupported file type: {ext}. allowed: {allowed}",
             )
 
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
-        raise HTTPException(status_code = 400, detail = "empty upload payload")
+        raise HTTPException(status_code=400, detail="empty upload payload")
     if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code = 413, detail = "file too large (max 50MB)")
+        raise HTTPException(status_code=413, detail="file too large (max 50MB)")
 
     ensure_dir(SEED_UPLOAD_DIR)
     stored_name = f"{uuid4().hex}_{filename}"
@@ -603,10 +603,10 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
 
     if seed_source_type == "unstructured":
         preview_rows = _read_preview_rows_from_unstructured_file(
-            path = stored_path,
-            preview_size = int(payload.preview_size),
-            chunk_size = payload.unstructured_chunk_size,
-            chunk_overlap = payload.unstructured_chunk_overlap,
+            path=stored_path,
+            preview_size=int(payload.preview_size),
+            chunk_size=payload.unstructured_chunk_size,
+            chunk_overlap=payload.unstructured_chunk_overlap,
         )
     else:
         preview_rows = _read_preview_rows_from_local_file(
@@ -615,15 +615,15 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         )
     if not preview_rows:
         raise HTTPException(
-            status_code = 422, detail = "dataset appears empty or unreadable"
+            status_code=422, detail="dataset appears empty or unreadable"
         )
     columns = _extract_columns(preview_rows)
 
     return SeedInspectResponse(
-        dataset_name = filename,
-        resolved_path = str(stored_path),
-        columns = columns,
-        preview_rows = preview_rows,
-        split = None,
-        subset = None,
+        dataset_name=filename,
+        resolved_path=str(stored_path),
+        columns=columns,
+        preview_rows=preview_rows,
+        split=None,
+        subset=None,
     )

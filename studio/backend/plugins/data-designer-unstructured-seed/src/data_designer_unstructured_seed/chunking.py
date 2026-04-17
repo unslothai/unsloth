@@ -38,9 +38,9 @@ def build_unstructured_preview_rows(
     chunk_overlap: Any,
 ) -> list[dict[str, str]]:
     parquet_path, rows = materialize_unstructured_seed_dataset(
-        source_path = source_path,
-        chunk_size = chunk_size,
-        chunk_overlap = chunk_overlap,
+        source_path=source_path,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     )
     count = max(0, int(preview_size))
     if rows:
@@ -56,7 +56,7 @@ def build_unstructured_preview_rows(
     dataframe = pd.read_parquet(parquet_path).head(count)
     return [
         {"chunk_text": str(value.get("chunk_text", "")).strip()}
-        for value in dataframe.to_dict(orient = "records")
+        for value in dataframe.to_dict(orient="records")
         if str(value.get("chunk_text", "")).strip()
     ]
 
@@ -71,9 +71,9 @@ def build_multi_file_preview_rows(
     cs = _to_int(chunk_size, DEFAULT_CHUNK_SIZE)
     co = _to_int(chunk_overlap, DEFAULT_CHUNK_OVERLAP)
     _, rows = materialize_multi_file_unstructured_seed(
-        file_entries = file_entries,
-        chunk_size = cs,
-        chunk_overlap = co,
+        file_entries=file_entries,
+        chunk_size=cs,
+        chunk_overlap=co,
     )
     return _round_robin_preview(rows, preview_size)
 
@@ -126,9 +126,9 @@ def materialize_unstructured_seed_dataset(
 
     size, overlap = resolve_chunking(chunk_size, chunk_overlap)
     key = _compute_cache_key(
-        source_path = resolved,
-        chunk_size = size,
-        chunk_overlap = overlap,
+        source_path=resolved,
+        chunk_size=size,
+        chunk_overlap=overlap,
     )
     parquet_path = _CACHE_DIR / f"{key}.parquet"
     if parquet_path.exists():
@@ -136,9 +136,9 @@ def materialize_unstructured_seed_dataset(
 
     text = load_unstructured_text_file(resolved)
     chunks = split_text_into_chunks(
-        text = text,
-        chunk_size = size,
-        chunk_overlap = overlap,
+        text=text,
+        chunk_size=size,
+        chunk_overlap=overlap,
     )
     if not chunks:
         raise ValueError("No text found in unstructured seed source.")
@@ -153,7 +153,7 @@ def materialize_unstructured_seed_dataset(
         ) from exc
 
     tmp_path = _CACHE_DIR / f"{key}.tmp.parquet"
-    pd.DataFrame(rows).to_parquet(tmp_path, index = False)
+    pd.DataFrame(rows).to_parquet(tmp_path, index=False)
     tmp_path.replace(parquet_path)
     return parquet_path, rows
 
@@ -170,16 +170,16 @@ def materialize_multi_file_unstructured_seed(
     cached = _CACHE_DIR / f"{cache_key}.parquet"
     if cached.exists():
         df = pd.read_parquet(cached)
-        rows = df.to_dict(orient = "records")
+        rows = df.to_dict(orient="records")
         return cached, rows
 
     all_rows: list[dict[str, str]] = []
     for txt_path, orig_name in file_entries:
         text = load_unstructured_text_file(txt_path)
         chunks = split_text_into_chunks(
-            text = text,
-            chunk_size = chunk_size,
-            chunk_overlap = chunk_overlap,
+            text=text,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
         for chunk in chunks:
             all_rows.append({"chunk_text": chunk, "source_file": orig_name})
@@ -190,7 +190,7 @@ def materialize_multi_file_unstructured_seed(
     df = pd.DataFrame(all_rows)
     ensure_dir(_CACHE_DIR)
     tmp = _CACHE_DIR / f"{cache_key}.tmp.parquet"
-    df.to_parquet(tmp, index = False)
+    df.to_parquet(tmp, index=False)
     tmp.replace(cached)
     return cached, all_rows
 
@@ -200,7 +200,7 @@ def load_unstructured_text_file(path: Path) -> str:
     if ext not in {".txt", ".md"}:
         raise ValueError(f"Unsupported unstructured seed file type: {ext}")
 
-    raw = path.read_text(encoding = "utf-8", errors = "ignore")
+    raw = path.read_text(encoding="utf-8", errors="ignore")
     return normalize_unstructured_text(raw)
 
 
@@ -293,7 +293,7 @@ def _compute_multi_file_cache_key(
     chunk_overlap: int,
 ) -> str:
     parts: list[str] = []
-    for path, name in sorted(file_entries, key = lambda e: e[1]):
+    for path, name in sorted(file_entries, key=lambda e: e[1]):
         st = path.stat()
         parts.append(f"{path}|{st.st_size}|{st.st_mtime_ns}|{name}")
     parts.append(f"cs={chunk_size}|co={chunk_overlap}")

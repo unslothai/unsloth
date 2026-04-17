@@ -19,16 +19,16 @@ from models.data_recipe import (
 router = APIRouter()
 
 
-@router.post("/mcp/tools", response_model = McpToolsListResponse)
+@router.post("/mcp/tools", response_model=McpToolsListResponse)
 def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
     try:
         from data_designer.engine.mcp import io as mcp_io
     except ImportError as exc:
         return McpToolsListResponse(
-            providers = [
+            providers=[
                 McpToolsProviderResult(
-                    name = "",
-                    error = f"MCP dependencies unavailable: {exc}",
+                    name="",
+                    error=f"MCP dependencies unavailable: {exc}",
                 )
             ]
         )
@@ -42,15 +42,15 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
         if len(built) != 1:
             providers.append(
                 McpToolsProviderResult(
-                    name = provider_name,
-                    error = "Unsupported MCP provider config.",
+                    name=provider_name,
+                    error="Unsupported MCP provider config.",
                 )
             )
             continue
 
         provider = built[0]
         try:
-            tools = mcp_io.list_tools(provider, timeout_sec = payload.timeout_sec)
+            tools = mcp_io.list_tools(provider, timeout_sec=payload.timeout_sec)
             tool_names = sorted(
                 {tool.name for tool in tools if getattr(tool, "name", "")}
             )
@@ -58,15 +58,15 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
                 tool_to_providers[tool_name].append(provider.name)
             providers.append(
                 McpToolsProviderResult(
-                    name = provider.name,
-                    tools = tool_names,
+                    name=provider.name,
+                    tools=tool_names,
                 )
             )
         except Exception as exc:
             providers.append(
                 McpToolsProviderResult(
-                    name = provider.name or provider_name,
-                    error = str(exc).strip() or "Failed to load tools.",
+                    name=provider.name or provider_name,
+                    error=str(exc).strip() or "Failed to load tools.",
                 )
             )
 
@@ -77,6 +77,6 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
     }
 
     return McpToolsListResponse(
-        providers = providers,
-        duplicate_tools = duplicate_tools,
+        providers=providers,
+        duplicate_tools=duplicate_tools,
     )

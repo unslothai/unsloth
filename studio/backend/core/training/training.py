@@ -123,7 +123,7 @@ class TrainingBackend:
 
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
-            self._pump_thread.join(timeout = 5.0)
+            self._pump_thread.join(timeout=5.0)
             if self._pump_thread.is_alive():
                 logger.warning(
                     "Previous pump thread did not exit within 5s — refusing to start"
@@ -196,16 +196,16 @@ class TrainingBackend:
         # Spawn subprocess — use locals so state is untouched on failure
         resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
             kwargs.get("gpu_ids"),
-            model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
-            training_type = config["training_type"],
-            load_in_4bit = config["load_in_4bit"],
-            batch_size = config.get("batch_size", 4),
-            max_seq_length = config.get("max_seq_length", 2048),
-            lora_rank = config.get("lora_r", 16),
-            target_modules = config.get("target_modules"),
-            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
+            model_name=config["model_name"],
+            hf_token=config["hf_token"] or None,
+            training_type=config["training_type"],
+            load_in_4bit=config["load_in_4bit"],
+            batch_size=config.get("batch_size", 4),
+            max_seq_length=config.get("max_seq_length", 2048),
+            lora_rank=config.get("lora_r", 16),
+            target_modules=config.get("target_modules"),
+            gradient_checkpointing=config.get("gradient_checkpointing", "unsloth"),
+            optimizer=config.get("optim", "adamw_8bit"),
         )
         config["resolved_gpu_ids"] = resolved_gpu_ids
         config["gpu_selection"] = gpu_selection
@@ -216,18 +216,18 @@ class TrainingBackend:
         stop_queue = _CTX.Queue()
 
         proc = _CTX.Process(
-            target = run_training_process,
-            kwargs = {
+            target=run_training_process,
+            kwargs={
                 "event_queue": event_queue,
                 "stop_queue": stop_queue,
                 "config": config,
             },
-            daemon = True,
+            daemon=True,
         )
         try:
             proc.start()
         except Exception:
-            logger.error("Failed to start training subprocess", exc_info = True)
+            logger.error("Failed to start training subprocess", exc_info=True)
             return False
 
         logger.info("Training subprocess started (pid=%s)", proc.pid)
@@ -238,7 +238,7 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False
         self._progress = TrainingProgress(
-            is_training = True, status_message = "Initializing training..."
+            is_training=True, status_message="Initializing training..."
         )
         self.loss_history.clear()
         self.lr_history.clear()
@@ -267,7 +267,7 @@ class TrainingBackend:
         self._ensure_db_run_created()
 
         # Start event pump thread
-        self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+        self._pump_thread = threading.Thread(target=self._pump_loop, daemon=True)
         self._pump_thread.start()
 
         return True
@@ -302,15 +302,15 @@ class TrainingBackend:
             proc = self._proc
 
         if proc is not None:
-            proc.join(timeout = 5.0)
+            proc.join(timeout=5.0)
             if proc.is_alive():
                 proc.kill()
-                proc.join(timeout = 2.0)
+                proc.join(timeout=2.0)
 
         # Wait for pump thread to finish DB finalization before returning
         # (8s covers SQLite's default 5s lock timeout plus execution overhead)
         if self._pump_thread is not None and self._pump_thread.is_alive():
-            self._pump_thread.join(timeout = 8.0)
+            self._pump_thread.join(timeout=8.0)
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
@@ -424,7 +424,7 @@ class TrainingBackend:
                 return
 
             # Try to read an event
-            event = self._read_queue(self._event_queue, timeout_sec = 0.25)
+            event = self._read_queue(self._event_queue, timeout_sec=0.25)
             if event is not None:
                 self._handle_event(event)
                 continue
@@ -452,8 +452,8 @@ class TrainingBackend:
 
             self._ensure_db_run_created()
             self._finalize_run_in_db(
-                status = "stopped" if self._should_stop else "error",
-                error_message = None
+                status="stopped" if self._should_stop else "error",
+                error_message=None
                 if self._should_stop
                 else "Training process terminated unexpectedly",
             )
@@ -634,18 +634,18 @@ class TrainingBackend:
                 from storage.studio_db import create_run
 
                 create_run(
-                    id = db_action_kwargs["job_id"],
-                    model_name = db_action_kwargs["model_name"],
-                    dataset_name = db_action_kwargs["dataset_name"],
-                    config_json = db_action_kwargs["config_json"],
-                    started_at = db_action_kwargs["started_at"],
-                    total_steps = db_action_kwargs["total_steps"],
+                    id=db_action_kwargs["job_id"],
+                    model_name=db_action_kwargs["model_name"],
+                    dataset_name=db_action_kwargs["dataset_name"],
+                    config_json=db_action_kwargs["config_json"],
+                    started_at=db_action_kwargs["started_at"],
+                    total_steps=db_action_kwargs["total_steps"],
                 )
                 self._db_run_created = True
                 if db_action_kwargs["total_steps"]:
                     self._db_total_steps_set = True
             except Exception:
-                logger.warning("Failed to create DB run record", exc_info = True)
+                logger.warning("Failed to create DB run record", exc_info=True)
         elif db_action == "create_and_finalize":
             self._ensure_db_run_created()
             self._finalize_run_in_db(**db_action_kwargs)
@@ -658,7 +658,7 @@ class TrainingBackend:
                 )
                 self._db_total_steps_set = True
             except Exception:
-                logger.warning("Failed to update total_steps in DB", exc_info = True)
+                logger.warning("Failed to update total_steps in DB", exc_info=True)
         elif db_action == "flush":
             self._flush_metrics_to_db()
         elif db_action == "finalize":
@@ -675,18 +675,18 @@ class TrainingBackend:
                 iter(self._db_config.get("local_datasets") or []), "unknown"
             )
             create_run(
-                id = self.current_job_id,
-                model_name = self._db_config["model_name"],
-                dataset_name = dataset_name,
-                config_json = _json.dumps(self._db_config),
-                started_at = self._db_started_at
+                id=self.current_job_id,
+                model_name=self._db_config["model_name"],
+                dataset_name=dataset_name,
+                config_json=_json.dumps(self._db_config),
+                started_at=self._db_started_at
                 or datetime.now(timezone.utc).isoformat(),
-                total_steps = self._progress.total_steps or None,
+                total_steps=self._progress.total_steps or None,
             )
             self._db_run_created = True
         except Exception:
             logger.warning(
-                "Failed to create DB run record for early failure", exc_info = True
+                "Failed to create DB run record for early failure", exc_info=True
             )
 
     def _finalize_run_in_db(
@@ -705,25 +705,25 @@ class TrainingBackend:
 
             sparkline = downsample(self.loss_history, 50)
             finish_run(
-                id = self.current_job_id,
-                status = status,
-                ended_at = datetime.now(timezone.utc).isoformat(),
-                final_step = self._progress.step,
-                final_loss = self._progress.loss
+                id=self.current_job_id,
+                status=status,
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                final_step=self._progress.step,
+                final_loss=self._progress.loss
                 if (
                     self._progress.loss is not None
                     and math.isfinite(self._progress.loss)
                 )
                 else None,
-                duration_seconds = self._progress.elapsed_seconds,
-                loss_sparkline = _json.dumps(sparkline),
-                output_dir = output_dir,
-                error_message = error_message,
+                duration_seconds=self._progress.elapsed_seconds,
+                loss_sparkline=_json.dumps(sparkline),
+                output_dir=output_dir,
+                error_message=error_message,
             )
             self._run_finalized = True
         except Exception:
             logger.warning(
-                "Failed to finalize run in DB (status=%s)", status, exc_info = True
+                "Failed to finalize run in DB (status=%s)", status, exc_info=True
             )
 
     def _flush_metrics_to_db(self) -> None:
@@ -749,24 +749,24 @@ class TrainingBackend:
             insert_metrics_batch(self.current_job_id, batch)
             del self._metric_buffer[: len(batch)]
             update_run_progress(
-                id = self.current_job_id,
-                step = self._progress.step,
-                loss = self._progress.loss
+                id=self.current_job_id,
+                step=self._progress.step,
+                loss=self._progress.loss
                 if (
                     self._progress.loss is not None
                     and math.isfinite(self._progress.loss)
                 )
                 else None,
-                duration_seconds = self._progress.elapsed_seconds,
+                duration_seconds=self._progress.elapsed_seconds,
             )
         except Exception:
             # Leave buffer intact for retry on next flush
-            logger.warning("Failed to flush metrics to DB", exc_info = True)
+            logger.warning("Failed to flush metrics to DB", exc_info=True)
 
     @staticmethod
     def _read_queue(q: Any, timeout_sec: float) -> Optional[dict]:
         try:
-            return q.get(timeout = timeout_sec)
+            return q.get(timeout=timeout_sec)
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -810,7 +810,7 @@ class TrainingBackend:
 
         style = LIGHT_STYLE if theme == "light" else DARK_STYLE
 
-        fig, ax = plt.subplots(figsize = (PLOT_WIDTH, PLOT_HEIGHT))
+        fig, ax = plt.subplots(figsize=(PLOT_WIDTH, PLOT_HEIGHT))
         fig.patch.set_facecolor(style["facecolor"])
         ax.set_facecolor(style["facecolor"])
 
@@ -821,11 +821,11 @@ class TrainingBackend:
             ax.scatter(
                 steps,
                 losses,
-                s = 16,
-                alpha = 0.6,
-                color = scatter_color,
-                linewidths = 0,
-                label = "Training Loss (raw)",
+                s=16,
+                alpha=0.6,
+                color=scatter_color,
+                linewidths=0,
+                label="Training Loss (raw)",
             )
 
             MA_WINDOW = 20
@@ -845,18 +845,18 @@ class TrainingBackend:
                 ax.plot(
                     steps,
                     ma,
-                    color = style["line"],
-                    linewidth = 2.5,
-                    alpha = 0.95,
-                    label = f"Moving Avg ({ma[-1]:.4f})",
+                    color=style["line"],
+                    linewidth=2.5,
+                    alpha=0.95,
+                    label=f"Moving Avg ({ma[-1]:.4f})",
                 )
 
-                leg = ax.legend(frameon = False, fontsize = 9)
+                leg = ax.legend(frameon=False, fontsize=9)
                 for t in leg.get_texts():
                     t.set_color(style["text"])
 
-            ax.set_xlabel("Steps", fontsize = 10, color = style["text"])
-            ax.set_ylabel("Loss", fontsize = 10, color = style["text"])
+            ax.set_xlabel("Steps", fontsize=10, color=style["text"])
+            ax.set_ylabel("Loss", fontsize=10, color=style["text"])
 
             if progress.error:
                 title = f"Error: {progress.error}"
@@ -872,10 +872,10 @@ class TrainingBackend:
                 title = "Training Loss"
 
             ax.set_title(
-                title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"]
+                title, fontsize=11, fontweight="bold", pad=10, color=style["text"]
             )
-            ax.grid(True, alpha = 0.4, linestyle = "--", color = style["grid_color"])
-            ax.tick_params(colors = style["text"], which = "both")
+            ax.grid(True, alpha=0.4, linestyle="--", color=style["grid_color"])
+            ax.tick_params(colors=style["text"], which="both")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
             ax.spines["bottom"].set_color(style["text"])
@@ -890,11 +890,11 @@ class TrainingBackend:
                 0.5,
                 0.5,
                 display_msg,
-                ha = "center",
-                va = "center",
-                fontsize = 16,
-                color = style["empty_text"],
-                transform = ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=16,
+                color=style["empty_text"],
+                transform=ax.transAxes,
             )
             ax.set_xticks([])
             ax.set_yticks([])

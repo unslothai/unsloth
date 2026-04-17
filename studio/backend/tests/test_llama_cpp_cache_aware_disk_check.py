@@ -96,8 +96,8 @@ def _preflight(
     repo_files,
     cached_files,
     free_bytes,
-    hf_repo = "unsloth/Example-GGUF",
-    hf_token = None,
+    hf_repo="unsloth/Example-GGUF",
+    hf_token=None,
 ):
     """Run the preflight arithmetic as written in llama_cpp.py and return
     the decision outcome as a dict.
@@ -164,9 +164,9 @@ class TestCacheAwarePreflight:
         shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {name: size for name, size in shards}
         out = _preflight(
-            repo_files = shards,
-            cached_files = cached,
-            free_bytes = 36 * GIB,
+            repo_files=shards,
+            cached_files=cached,
+            free_bytes=36 * GIB,
         )
         assert out["total_download_bytes"] == 0
         assert out["already_cached_bytes"] == 140 * GIB
@@ -180,9 +180,9 @@ class TestCacheAwarePreflight:
             shards[1][0]: shards[1][1],
         }
         out = _preflight(
-            repo_files = shards,
-            cached_files = cached,
-            free_bytes = 80 * GIB,
+            repo_files=shards,
+            cached_files=cached,
+            free_bytes=80 * GIB,
         )
         assert out["already_cached_bytes"] == 70 * GIB
         assert out["total_download_bytes"] == 70 * GIB
@@ -197,9 +197,9 @@ class TestCacheAwarePreflight:
             shards[1][0]: shards[1][1],
         }
         out = _preflight(
-            repo_files = shards,
-            cached_files = cached,
-            free_bytes = 50 * GIB,
+            repo_files=shards,
+            cached_files=cached,
+            free_bytes=50 * GIB,
         )
         assert out["total_download_bytes"] == 70 * GIB
         assert out["would_raise_disk_error"] is True
@@ -208,9 +208,9 @@ class TestCacheAwarePreflight:
         """Cold-cache path still compares full download vs free disk."""
         shards = [("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         out = _preflight(
-            repo_files = shards,
-            cached_files = {},
-            free_bytes = 50 * GIB,
+            repo_files=shards,
+            cached_files={},
+            free_bytes=50 * GIB,
         )
         assert out["already_cached_bytes"] == 0
         assert out["total_download_bytes"] == 40 * GIB
@@ -222,9 +222,9 @@ class TestCacheAwarePreflight:
         shards = [("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         partial = {"UD-Q4_K_XL/shard-0.gguf": 10 * GIB}
         out = _preflight(
-            repo_files = shards,
-            cached_files = partial,
-            free_bytes = 50 * GIB,
+            repo_files=shards,
+            cached_files=partial,
+            free_bytes=50 * GIB,
         )
         assert out["already_cached_bytes"] == 0
         assert out["total_download_bytes"] == 40 * GIB
@@ -235,9 +235,9 @@ class TestCacheAwarePreflight:
         arithmetic."""
         shards = [("mmproj.gguf", 0), ("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         out = _preflight(
-            repo_files = shards,
-            cached_files = {},
-            free_bytes = 50 * GIB,
+            repo_files=shards,
+            cached_files={},
+            free_bytes=50 * GIB,
         )
         assert out["already_cached_bytes"] == 0
         assert out["total_bytes"] == 40 * GIB

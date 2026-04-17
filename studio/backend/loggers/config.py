@@ -45,9 +45,9 @@ class LogConfig:
         log_level = getattr(logging, log_level_name, logging.INFO)
 
         structlog.configure(
-            processors = [
+            processors=[
                 # Reorder processors to control field order
-                structlog.processors.TimeStamper(fmt = "iso"),  # timestamp first
+                structlog.processors.TimeStamper(fmt="iso"),  # timestamp first
                 structlog.processors.add_log_level,  # level second
                 structlog.contextvars.merge_contextvars,
                 # Custom processor to flatten the extra field
@@ -63,14 +63,14 @@ class LogConfig:
                     },
                 },
                 (
-                    structlog.processors.JSONRenderer(sort_keys = False)  # Preserve order
+                    structlog.processors.JSONRenderer(sort_keys=False)  # Preserve order
                     if env == "production"
                     else structlog.dev.ConsoleRenderer()
                 ),
             ],
-            wrapper_class = structlog.make_filtering_bound_logger(log_level),
-            logger_factory = structlog.PrintLoggerFactory(file = sys.stdout),
-            cache_logger_on_first_use = True,
+            wrapper_class=structlog.make_filtering_bound_logger(log_level),
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+            cache_logger_on_first_use=True,
         )
 
         return structlog.get_logger(service_name)

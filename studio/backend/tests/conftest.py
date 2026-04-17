@@ -49,9 +49,9 @@ def pytest_addoption(parser):
     )
     group.addoption(
         "--unsloth-model",
-        action = "store",
-        default = None,
-        help = (
+        action="store",
+        default=None,
+        help=(
             "GGUF model id used when starting a server for e2e tests. "
             "Ignored if UNSLOTH_E2E_BASE_URL is set. Overrides "
             "UNSLOTH_E2E_MODEL env var. Defaults to test_studio_api.py's "
@@ -60,9 +60,9 @@ def pytest_addoption(parser):
     )
     group.addoption(
         "--unsloth-gguf-variant",
-        action = "store",
-        default = None,
-        help = (
+        action="store",
+        default=None,
+        help=(
             "GGUF variant used when starting a server for e2e tests. "
             "Ignored if UNSLOTH_E2E_BASE_URL is set. Overrides "
             "UNSLOTH_E2E_VARIANT env var. Defaults to test_studio_api.py's "
@@ -74,7 +74,7 @@ def pytest_addoption(parser):
 # ── E2E server fixtures ──────────────────────────────────────────────
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def studio_server(request):
     """Yield ``(base_url, api_key)`` for e2e tests.
 

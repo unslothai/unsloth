@@ -51,23 +51,23 @@ class _GpuCacheResetMixin:
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
     def test_parent_visibility_defaults_to_physical_enumeration(self):
         with (
-            patch.dict(os.environ, {}, clear = True),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 4),
+            patch.dict(os.environ, {}, clear=True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value=4),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [0, 1, 2, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [0, 1, 2, 3])
 
     def test_parent_visibility_uses_cuda_visible_devices(self):
-        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True):
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear=True):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
 
     def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
         with (
             patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear=True
             ),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value=8),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [])
 
@@ -79,27 +79,27 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             ([0], "outside the parent-visible set [1, 3]"),
         ]
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear=True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value=8),
         ):
             for gpu_ids, message in cases:
-                with self.subTest(gpu_ids = gpu_ids):
+                with self.subTest(gpu_ids=gpu_ids):
                     with self.assertRaisesRegex(ValueError, re.escape(message)):
                         resolve_requested_gpu_ids(gpu_ids)
 
     def test_explicit_ids_must_be_physical_not_relative(self):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear=True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value=8),
         ):
             self.assertEqual(resolve_requested_gpu_ids([1, 3]), [1, 3])
 
     def test_explicit_ids_are_rejected_for_uuid_parent_visibility(self):
         with (
             patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear=True
             ),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value=8),
         ):
             with self.assertRaisesRegex(
                 ValueError, "unsupported when CUDA_VISIBLE_DEVICES uses UUID/MIG"
@@ -108,8 +108,8 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_empty_list_is_treated_as_auto(self):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear=True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value=8),
         ):
             self.assertEqual(resolve_requested_gpu_ids([]), [1, 3])
 
@@ -117,7 +117,7 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
         with patch.dict(
             os.environ,
             {"CUDA_VISIBLE_DEVICES": "1,3", "TEST_PARENT_ENV": "keep-me"},
-            clear = True,
+            clear=True,
         ):
             apply_gpu_ids([5, 6])
 
@@ -136,13 +136,13 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         )
 
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear=True),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
             mock_run.return_value = SimpleNamespace(
-                returncode = 0,
-                stdout = smi_output,
+                returncode=0,
+                stdout=smi_output,
             )
             result = get_visible_gpu_utilization()
 
@@ -165,13 +165,13 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         )
 
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear=True),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
             mock_run.return_value = SimpleNamespace(
-                returncode = 0,
-                stdout = smi_output,
+                returncode=0,
+                stdout=smi_output,
             )
             result = get_backend_visible_gpu_info()
 
@@ -182,7 +182,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
         self.assertEqual(result["devices"][1]["visible_ordinal"], 1)
         self.assertEqual(result["devices"][0]["name"], "GPU One")
-        self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places = 1)
+        self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places=1)
 
     def test_uuid_parent_visibility_falls_back_to_torch(self):
         """UUID/MIG masks should fall through nvidia to torch fallback and
@@ -205,15 +205,15 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         ]
         with (
             patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear=True
             ),
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
-                "utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2
+                "utils.hardware.hardware._torch_get_physical_gpu_count", return_value=2
             ),
             patch(
                 "utils.hardware.hardware._torch_get_per_device_info",
-                return_value = fake_torch_devices,
+                return_value=fake_torch_devices,
             ),
         ):
             result = get_backend_visible_gpu_info()
@@ -225,10 +225,10 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX),
             patch(
                 "utils.hardware.hardware.get_gpu_memory_info",
-                return_value = {
+                return_value={
                     "available": True,
                     "device_name": "Apple Silicon",
                     "total_gb": 64.0,
@@ -247,7 +247,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
 class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_get_device_map_uses_explicit_gpu_selection(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA):
             self.assertEqual(get_device_map(None), "sequential")
             self.assertEqual(get_device_map([0]), "sequential")
             self.assertEqual(get_device_map([0, 1]), "balanced")
@@ -255,15 +255,15 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
         with (
             patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear=True
             ),
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
         ):
             self.assertEqual(get_device_map(None), "balanced")
 
     def test_get_offloaded_device_map_entries_returns_only_cpu_and_disk(self):
         model = SimpleNamespace(
-            hf_device_map = {
+            hf_device_map={
                 "model.embed_tokens": 0,
                 "model.layers.0": 1,
                 "model.layers.1": "cpu",
@@ -287,27 +287,27 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value = (eight_gb, "config"),
+            return_value=(eight_gb, "config"),
         ):
             # FP16 inference: 8GB * 1.3 = 10.4GB
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
-                load_in_4bit = False,
+                load_in_4bit=False,
             )
-            self.assertAlmostEqual(required_gb, 10.4, places = 3)
+            self.assertAlmostEqual(required_gb, 10.4, places=3)
             self.assertEqual(metadata["model_size_source"], "config")
 
             # 4bit inference: base_4bit = 8/3.2 = 2.5GB
             # required = 2.5 + max(2.5*0.3, 2.0) = 2.5 + 2.0 = 4.5GB
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test",
-                load_in_4bit = True,
+                load_in_4bit=True,
             )
-            self.assertAlmostEqual(required_gb, 4.5, places = 2)
+            self.assertAlmostEqual(required_gb, 4.5, places=2)
 
             # Full FT fallback: model_size * 3.5 + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
-                "unsloth/test", training_type = "Full Finetuning"
+                "unsloth/test", training_type="Full Finetuning"
             )
             self.assertEqual(metadata.get("estimation_mode"), "fallback")
             self.assertGreater(required_gb, 25.0)
@@ -316,8 +316,8 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             # LoRA fp16 fallback: model_size + lora_overhead + activations + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                load_in_4bit = False,
+                training_type="LoRA/QLoRA",
+                load_in_4bit=False,
             )
             self.assertEqual(metadata.get("estimation_mode"), "fallback")
             self.assertGreater(required_gb, 8.0)
@@ -326,8 +326,8 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             # QLoRA 4-bit fallback: compressed weights + lora overhead + activations + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                load_in_4bit = True,
+                training_type="LoRA/QLoRA",
+                load_in_4bit=True,
             )
             self.assertEqual(metadata.get("estimation_mode"), "fallback")
             self.assertGreater(required_gb, 3.0)
@@ -337,12 +337,12 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         sixteen_gb = 16 * (1024**3)
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value = (sixteen_gb, "config"),
+            return_value=(sixteen_gb, "config"),
         ):
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                load_in_4bit = True,
+                training_type="LoRA/QLoRA",
+                load_in_4bit=True,
             )
             # QLoRA for 16GB model should be < 12 GB
             self.assertGreater(required_gb, 5.0)
@@ -353,27 +353,27 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         with (
             patch(
                 "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
-                return_value = "unsloth/test",
+                return_value="unsloth/test",
             ),
             patch(
                 "utils.hardware.hardware._get_hf_safetensors_total_params",
-                return_value = None,
+                return_value=None,
             ),
             patch(
                 "utils.hardware.hardware._load_config_for_gpu_estimate",
-                return_value = config,
+                return_value=config,
             ),
             patch(
                 "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_config",
-                return_value = None,
+                return_value=None,
             ),
             patch(
                 "utils.hardware.hardware._get_local_weight_size_bytes",
-                return_value = None,
+                return_value=None,
             ),
             patch(
                 "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_vllm_utils",
-                return_value = 1234,
+                return_value=1234,
             ),
         ):
             model_size_bytes, source = _hw_module.estimate_fp16_model_size_bytes(
@@ -393,17 +393,17 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         }
 
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
-                return_value = (
+                return_value=(
                     14.0,
                     {"required_gb": 14.0, "model_size_source": "config"},
                 ),
             ),
             patch(
                 "utils.hardware.hardware.get_visible_gpu_utilization",
-                return_value = fake_devices,
+                return_value=fake_devices,
             ),
         ):
             selected, metadata = auto_select_gpu_ids("unsloth/test")
@@ -411,7 +411,7 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(selected, [0, 1])
         self.assertEqual(metadata["selection_mode"], "auto")
         # First GPU full (12GB) + second GPU with overhead (10*0.85=8.5) = 20.5GB
-        self.assertAlmostEqual(metadata["usable_gb"], 20.5, places = 3)
+        self.assertAlmostEqual(metadata["usable_gb"], 20.5, places=3)
 
     def test_auto_select_gpu_ids_falls_back_to_all_visible(self):
         fake_devices = {
@@ -422,17 +422,17 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         }
 
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
-                return_value = (
+                return_value=(
                     30.0,
                     {"required_gb": 30.0, "model_size_source": "config"},
                 ),
             ),
             patch(
                 "utils.hardware.hardware.get_visible_gpu_utilization",
-                return_value = fake_devices,
+                return_value=fake_devices,
             ),
         ):
             selected, metadata = auto_select_gpu_ids("unsloth/test")
@@ -440,19 +440,19 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(selected, [0, 1])
         self.assertEqual(metadata["selection_mode"], "fallback_all")
         # First GPU full (10GB) + second GPU with overhead (10*0.85=8.5) = 18.5GB
-        self.assertAlmostEqual(metadata["usable_gb"], 18.5, places = 3)
+        self.assertAlmostEqual(metadata["usable_gb"], 18.5, places=3)
 
     def test_prepare_gpu_selection_preserves_explicit_ids_without_auto_selection(self):
         with (
             patch(
                 "utils.hardware.hardware.resolve_requested_gpu_ids",
-                return_value = [2, 3],
+                return_value=[2, 3],
             ),
             patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
         ):
             selected, metadata = prepare_gpu_selection(
                 [2, 3],
-                model_name = "unsloth/test",
+                model_name="unsloth/test",
             )
 
         self.assertEqual(selected, [2, 3])
@@ -462,11 +462,11 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_prepare_gpu_selection_treats_empty_list_as_auto(self):
         with patch(
             "utils.hardware.hardware.auto_select_gpu_ids",
-            return_value = ([0, 1], {"selection_mode": "auto"}),
+            return_value=([0, 1], {"selection_mode": "auto"}),
         ) as mock_auto_select:
             selected, metadata = prepare_gpu_selection(
                 [],
-                model_name = "unsloth/test",
+                model_name="unsloth/test",
             )
 
         self.assertEqual(selected, [0, 1])
@@ -476,11 +476,11 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_prepare_gpu_selection_preserves_uuid_parent_visibility_in_auto_mode(self):
         with (
             patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear=True
             ),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
-                return_value = (
+                return_value=(
                     14.0,
                     {"required_gb": 14.0, "model_size_source": "config"},
                 ),
@@ -488,7 +488,7 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         ):
             selected, metadata = prepare_gpu_selection(
                 None,
-                model_name = "unsloth/test",
+                model_name="unsloth/test",
             )
 
         self.assertIsNone(selected)
@@ -515,24 +515,24 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([1, 2], {"selection_mode": "explicit"}),
+                return_value=([1, 2], {"selection_mode": "explicit"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
-                "core.training.training.threading.Thread", return_value = DummyThread()
+                "core.training.training.threading.Thread", return_value=DummyThread()
             ),
         ):
             backend.start_training(
-                job_id = "test-job-1",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                gpu_ids = [1, 2],
+                job_id="test-job-1",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                gpu_ids=[1, 2],
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -558,24 +558,24 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0, 1], {"selection_mode": "auto"}),
+                return_value=([0, 1], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
-                "core.training.training.threading.Thread", return_value = DummyThread()
+                "core.training.training.threading.Thread", return_value=DummyThread()
             ),
         ):
             backend.start_training(
-                job_id = "test-job-2",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                gpu_ids = None,
+                job_id="test-job-2",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                gpu_ids=None,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -600,31 +600,31 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
         with (
             patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear=True
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
-                "core.training.training.threading.Thread", return_value = DummyThread()
+                "core.training.training.threading.Thread", return_value=DummyThread()
             ),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
-                return_value = (
+                return_value=(
                     14.0,
                     {"required_gb": 14.0, "model_size_source": "config"},
                 ),
             ),
         ):
             backend.start_training(
-                job_id = "test-job-uuid-auto",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                gpu_ids = None,
+                job_id="test-job-uuid-auto",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                gpu_ids=None,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -646,25 +646,25 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
             orchestrator = InferenceOrchestrator()
 
-        config = SimpleNamespace(identifier = "unsloth/test", gguf_variant = None)
+        config = SimpleNamespace(identifier="unsloth/test", gguf_variant=None)
 
         with (
             patch(
                 "core.inference.orchestrator.prepare_gpu_selection",
-                return_value = ([1], {"selection_mode": "explicit"}),
+                return_value=([1], {"selection_mode": "explicit"}),
             ),
-            patch.object(orchestrator, "_ensure_subprocess_alive", return_value = False),
+            patch.object(orchestrator, "_ensure_subprocess_alive", return_value=False),
             patch.object(orchestrator, "_spawn_subprocess") as mock_spawn,
             patch.object(
                 orchestrator,
                 "_wait_response",
-                return_value = {"success": True, "model_info": {}},
+                return_value={"success": True, "model_info": {}},
             ),
             patch(
-                "utils.transformers_version.needs_transformers_5", return_value = False
+                "utils.transformers_version.needs_transformers_5", return_value=False
             ),
         ):
-            self.assertTrue(orchestrator.load_model(config = config, gpu_ids = [1]))
+            self.assertTrue(orchestrator.load_model(config=config, gpu_ids=[1]))
 
         sub_config = mock_spawn.call_args.args[0]
         self.assertEqual(sub_config["gpu_ids"], [1])
@@ -684,25 +684,25 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
             orchestrator = InferenceOrchestrator()
 
-        config = SimpleNamespace(identifier = "unsloth/test", gguf_variant = None)
+        config = SimpleNamespace(identifier="unsloth/test", gguf_variant=None)
 
         with (
             patch(
                 "core.inference.orchestrator.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
-            patch.object(orchestrator, "_ensure_subprocess_alive", return_value = False),
+            patch.object(orchestrator, "_ensure_subprocess_alive", return_value=False),
             patch.object(orchestrator, "_spawn_subprocess") as mock_spawn,
             patch.object(
                 orchestrator,
                 "_wait_response",
-                return_value = {"success": True, "model_info": {}},
+                return_value={"success": True, "model_info": {}},
             ),
             patch(
-                "utils.transformers_version.needs_transformers_5", return_value = False
+                "utils.transformers_version.needs_transformers_5", return_value=False
             ),
         ):
-            self.assertTrue(orchestrator.load_model(config = config, gpu_ids = None))
+            self.assertTrue(orchestrator.load_model(config=config, gpu_ids=None))
 
         sub_config = mock_spawn.call_args.args[0]
         self.assertIsNone(sub_config["gpu_ids"])
@@ -712,9 +712,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
 class TestRouteErrors(unittest.TestCase):
     def test_prepare_gpu_selection_rejects_gpu_ids_on_non_cuda_backend(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             with self.assertRaises(ValueError) as exc_info:
-                prepare_gpu_selection([0], model_name = "unsloth/test")
+                prepare_gpu_selection([0], model_name="unsloth/test")
 
         self.assertIn("only supported on CUDA devices", str(exc_info.exception))
 
@@ -723,30 +723,30 @@ class TestRouteErrors(unittest.TestCase):
             "inference_route_module_for_gguf_gpu_ids_test",
             "routes/inference.py",
         )
-        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
+        request = LoadRequest(model_path="unsloth/test.gguf", gpu_ids=[0, 1])
         model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
+            is_gguf=True,
+            is_lora=False,
+            gguf_hf_repo=None,
+            gguf_file="/tmp/test.gguf",
+            gguf_mmproj_file=None,
+            gguf_variant=None,
+            identifier="unsloth/test.gguf",
+            display_name="unsloth/test.gguf",
+            is_vision=False,
+            is_audio=False,
+            audio_type=None,
+            has_audio_input=False,
         )
 
         with patch.object(
             inference_route.ModelConfig,
             "from_identifier",
-            return_value = model_config,
+            return_value=model_config,
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
+                    inference_route.load_model(request, current_subject="test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -758,10 +758,10 @@ class TestRouteErrors(unittest.TestCase):
             "routes/training.py",
         )
         request = TrainingStartRequest(
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
-            gpu_ids = [99],
+            model_name="unsloth/test",
+            training_type="LoRA/QLoRA",
+            format_type="alpaca",
+            gpu_ids=[99],
         )
 
         class DummyBackend:
@@ -775,20 +775,20 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(
-                training_route, "get_training_backend", return_value = DummyBackend()
+                training_route, "get_training_backend", return_value=DummyBackend()
             ),
             patch(
                 "core.inference.get_inference_backend",
-                return_value = SimpleNamespace(active_model_name = None),
+                return_value=SimpleNamespace(active_model_name=None),
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value = SimpleNamespace(current_checkpoint = None),
+                return_value=SimpleNamespace(current_checkpoint=None),
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    training_route.start_training(request, current_subject = "test-user")
+                    training_route.start_training(request, current_subject="test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -800,10 +800,10 @@ class TestRouteErrors(unittest.TestCase):
             "routes/training.py",
         )
         request = TrainingStartRequest(
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
-            gpu_ids = [1],
+            model_name="unsloth/test",
+            training_type="LoRA/QLoRA",
+            format_type="alpaca",
+            gpu_ids=[1],
         )
 
         class DummyBackend:
@@ -819,20 +819,20 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(
-                training_route, "get_training_backend", return_value = DummyBackend()
+                training_route, "get_training_backend", return_value=DummyBackend()
             ),
             patch(
                 "core.inference.get_inference_backend",
-                return_value = SimpleNamespace(active_model_name = None),
+                return_value=SimpleNamespace(active_model_name=None),
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value = SimpleNamespace(current_checkpoint = None),
+                return_value=SimpleNamespace(current_checkpoint=None),
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    training_route.start_training(request, current_subject = "test-user")
+                    training_route.start_training(request, current_subject="test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -843,17 +843,17 @@ class TestRouteErrors(unittest.TestCase):
             "inference_route_module_for_test",
             "routes/inference.py",
         )
-        request = LoadRequest(model_path = "unsloth/test", gpu_ids = [99])
+        request = LoadRequest(model_path="unsloth/test", gpu_ids=[99])
         model_config = SimpleNamespace(
-            is_gguf = False,
-            is_lora = False,
-            path = None,
-            identifier = "unsloth/test",
-            display_name = "unsloth/test",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
+            is_gguf=False,
+            is_lora=False,
+            path=None,
+            identifier="unsloth/test",
+            display_name="unsloth/test",
+            is_vision=False,
+            is_audio=False,
+            audio_type=None,
+            has_audio_input=False,
         )
 
         class DummyInferenceBackend:
@@ -867,26 +867,26 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(
                 inference_route.ModelConfig,
                 "from_identifier",
-                return_value = model_config,
+                return_value=model_config,
             ),
             patch.object(
                 inference_route,
                 "get_inference_backend",
-                return_value = DummyInferenceBackend(),
+                return_value=DummyInferenceBackend(),
             ),
             patch.object(
                 inference_route,
                 "get_llama_cpp_backend",
-                return_value = SimpleNamespace(is_loaded = False),
+                return_value=SimpleNamespace(is_loaded=False),
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value = SimpleNamespace(current_checkpoint = None),
+                return_value=SimpleNamespace(current_checkpoint=None),
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
+                    inference_route.load_model(request, current_subject="test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -897,17 +897,17 @@ class TestRouteErrors(unittest.TestCase):
             "inference_route_module_for_uuid_parent_visibility_test",
             "routes/inference.py",
         )
-        request = LoadRequest(model_path = "unsloth/test", gpu_ids = [1])
+        request = LoadRequest(model_path="unsloth/test", gpu_ids=[1])
         model_config = SimpleNamespace(
-            is_gguf = False,
-            is_lora = False,
-            path = None,
-            identifier = "unsloth/test",
-            display_name = "unsloth/test",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
+            is_gguf=False,
+            is_lora=False,
+            path=None,
+            identifier="unsloth/test",
+            display_name="unsloth/test",
+            is_vision=False,
+            is_audio=False,
+            audio_type=None,
+            has_audio_input=False,
         )
 
         class DummyInferenceBackend:
@@ -923,26 +923,26 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(
                 inference_route.ModelConfig,
                 "from_identifier",
-                return_value = model_config,
+                return_value=model_config,
             ),
             patch.object(
                 inference_route,
                 "get_inference_backend",
-                return_value = DummyInferenceBackend(),
+                return_value=DummyInferenceBackend(),
             ),
             patch.object(
                 inference_route,
                 "get_llama_cpp_backend",
-                return_value = SimpleNamespace(is_loaded = False),
+                return_value=SimpleNamespace(is_loaded=False),
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value = SimpleNamespace(current_checkpoint = None),
+                return_value=SimpleNamespace(current_checkpoint=None),
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
+                    inference_route.load_model(request, current_subject="test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -953,14 +953,14 @@ class TestRaiseIfOffloaded(unittest.TestCase):
     def test_no_offload_is_noop(self):
         from utils.hardware import raise_if_offloaded
 
-        model = SimpleNamespace(hf_device_map = {"model.embed_tokens": 0, "lm_head": 1})
+        model = SimpleNamespace(hf_device_map={"model.embed_tokens": 0, "lm_head": 1})
         raise_if_offloaded(model, "balanced", "Test")
 
     def test_cpu_offload_raises(self):
         from utils.hardware import raise_if_offloaded
 
         model = SimpleNamespace(
-            hf_device_map = {"model.layers.0": 0, "model.layers.1": "cpu"}
+            hf_device_map={"model.layers.0": 0, "model.layers.1": "cpu"}
         )
         with self.assertRaisesRegex(ValueError, "offloaded"):
             raise_if_offloaded(model, "balanced", "Test")
@@ -980,17 +980,17 @@ class TestMinGpuVram(unittest.TestCase):
         )
 
         arch = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 128256,
-            tie_word_embeddings = False,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=128256,
+            tie_word_embeddings=False,
         )
         config = TrainingVramConfig(
-            training_method = "qlora",
-            load_in_4bit = True,
+            training_method="qlora",
+            load_in_4bit=True,
         )
         breakdown = estimate_training_vram(arch, config)
         v1 = breakdown.min_gpu_vram(1)
@@ -1008,17 +1008,17 @@ class TestMinGpuVram(unittest.TestCase):
         )
 
         arch = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 128256,
-            tie_word_embeddings = False,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=128256,
+            tie_word_embeddings=False,
         )
         config = TrainingVramConfig(
-            training_method = "qlora",
-            load_in_4bit = True,
+            training_method="qlora",
+            load_in_4bit=True,
         )
         breakdown = estimate_training_vram(arch, config)
         self.assertEqual(breakdown.total, breakdown.min_gpu_vram(1))
@@ -1027,33 +1027,33 @@ class TestMinGpuVram(unittest.TestCase):
 class TestPerGpuFitGuardAllCounts(unittest.TestCase):
     def test_min_per_gpu_generated_for_all_visible_counts(self):
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-                return_value = (8 * (1024**3), "config"),
+                return_value=(8 * (1024**3), "config"),
             ),
             patch(
                 "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
-                return_value = "unsloth/test",
+                return_value="unsloth/test",
             ),
             patch(
                 "utils.hardware.hardware._load_config_for_gpu_estimate",
-                return_value = SimpleNamespace(
-                    hidden_size = 4096,
-                    num_hidden_layers = 32,
-                    num_attention_heads = 32,
-                    num_key_value_heads = 8,
-                    intermediate_size = 14336,
-                    vocab_size = 128256,
-                    tie_word_embeddings = False,
+                return_value=SimpleNamespace(
+                    hidden_size=4096,
+                    num_hidden_layers=32,
+                    num_attention_heads=32,
+                    num_key_value_heads=8,
+                    intermediate_size=14336,
+                    vocab_size=128256,
+                    tie_word_embeddings=False,
                 ),
             ),
-            patch("utils.hardware.hardware.get_visible_gpu_count", return_value = 6),
+            patch("utils.hardware.hardware.get_visible_gpu_count", return_value=6),
         ):
             _, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                load_in_4bit = True,
+                training_type="LoRA/QLoRA",
+                load_in_4bit=True,
             )
 
         self.assertEqual(metadata.get("estimation_mode"), "detailed")
@@ -1065,14 +1065,14 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
 class TestAutoSelectWithNoneRequired(_GpuCacheResetMixin, unittest.TestCase):
     def test_auto_select_falls_back_when_estimate_unavailable(self):
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
-                return_value = (None, {"model_size_source": "unavailable"}),
+                return_value=(None, {"model_size_source": "unavailable"}),
             ),
             patch(
                 "utils.hardware.hardware._get_parent_visible_gpu_spec",
-                return_value = {
+                return_value={
                     "raw": "0,1",
                     "numeric_ids": [0, 1],
                     "supports_explicit_gpu_ids": True,
@@ -1080,7 +1080,7 @@ class TestAutoSelectWithNoneRequired(_GpuCacheResetMixin, unittest.TestCase):
             ),
             patch(
                 "utils.hardware.hardware.get_parent_visible_gpu_ids",
-                return_value = [0, 1],
+                return_value=[0, 1],
             ),
         ):
             selected, metadata = auto_select_gpu_ids("unsloth/test")
@@ -1091,13 +1091,13 @@ class TestAutoSelectWithNoneRequired(_GpuCacheResetMixin, unittest.TestCase):
 
 class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
     def test_auto_select_returns_non_cuda_for_xpu(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.XPU):
             selected, metadata = auto_select_gpu_ids("unsloth/test")
 
         self.assertIsNone(selected)
         self.assertEqual(metadata["selection_mode"], "non_cuda")
 
     def test_prepare_gpu_selection_rejects_explicit_ids_on_xpu(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.XPU):
             with self.assertRaisesRegex(ValueError, "only supported on CUDA"):
-                prepare_gpu_selection([0], model_name = "unsloth/test")
+                prepare_gpu_selection([0], model_name="unsloth/test")

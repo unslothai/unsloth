@@ -17,7 +17,7 @@ import routes.datasets as rd  # noqa: E402
 def test_empty_configs_skips_fetch_calls(monkeypatch, fake_datasets, fake_structlog):
     import datasets as ds
 
-    monkeypatch.setattr(ds, "get_dataset_config_names", lambda n, token = None: [])
+    monkeypatch.setattr(ds, "get_dataset_config_names", lambda n, token=None: [])
     calls = {"n": 0}
 
     def _splits(*a, **k):
@@ -26,18 +26,20 @@ def test_empty_configs_skips_fetch_calls(monkeypatch, fake_datasets, fake_struct
 
     monkeypatch.setattr(ds, "get_dataset_split_names", _splits)
 
-    req = DatasetSplitsRequest(dataset_name = "owner/empty")
+    req = DatasetSplitsRequest(dataset_name="owner/empty")
     with pytest.raises(HTTPException) as ei:
-        rd.get_dataset_splits(req, current_subject = "t")
+        rd.get_dataset_splits(req, current_subject="t")
     assert ei.value.status_code == 404
     assert calls["n"] == 0
 
 
-def test_empty_configs_skips_thread_pool_executor(monkeypatch, fake_datasets, fake_structlog):
+def test_empty_configs_skips_thread_pool_executor(
+    monkeypatch, fake_datasets, fake_structlog
+):
     import datasets as ds
     import concurrent.futures as cf
 
-    monkeypatch.setattr(ds, "get_dataset_config_names", lambda n, token = None: [])
+    monkeypatch.setattr(ds, "get_dataset_config_names", lambda n, token=None: [])
     spawns = {"n": 0}
 
     original = cf.ThreadPoolExecutor
@@ -49,8 +51,8 @@ def test_empty_configs_skips_thread_pool_executor(monkeypatch, fake_datasets, fa
 
     monkeypatch.setattr(cf, "ThreadPoolExecutor", _Tracker)
 
-    req = DatasetSplitsRequest(dataset_name = "owner/empty")
+    req = DatasetSplitsRequest(dataset_name="owner/empty")
     with pytest.raises(HTTPException) as ei:
-        rd.get_dataset_splits(req, current_subject = "t")
+        rd.get_dataset_splits(req, current_subject="t")
     assert ei.value.status_code == 404
     assert spawns["n"] == 0

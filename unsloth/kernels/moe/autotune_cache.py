@@ -53,14 +53,14 @@ def _get_cache_key(
         "device_capability": device_capability,
         "seq_len": seq_len,
     }
-    key_str = json.dumps(key_data, sort_keys = True)
+    key_str = json.dumps(key_data, sort_keys=True)
     return hashlib.md5(key_str.encode()).hexdigest()
 
 
 def _get_cache_file_path(cache_key: str) -> str:
     """Get the file path for the cache file."""
     cache_dir = os.path.expanduser("~/.cache/unsloth/moe_autotune")
-    os.makedirs(cache_dir, exist_ok = True)
+    os.makedirs(cache_dir, exist_ok=True)
     return os.path.join(cache_dir, f"{cache_key}.json")
 
 
@@ -119,7 +119,7 @@ def save_cached_config(
 
     try:
         with open(cache_file, "w") as f:
-            json.dump(cache_data, f, indent = 2)
+            json.dump(cache_data, f, indent=2)
         logger.info(f"Saved MoE kernel config cache: {cache_key}")
     except Exception as e:
         logger.warning(f"Failed to save cache file {cache_file}: {e}")
@@ -259,19 +259,19 @@ def _run_moe_autotuning(
     total_tokens = num_tokens * top_k
 
     # Create dummy tensors
-    hidden_states = torch.randn(num_tokens, hidden_dim, device = device, dtype = dtype)
+    hidden_states = torch.randn(num_tokens, hidden_dim, device=device, dtype=dtype)
 
     # Create dummy weights
     gate_up_weights = torch.randn(
-        num_experts, 2 * intermediate_dim, hidden_dim, device = device, dtype = dtype
+        num_experts, 2 * intermediate_dim, hidden_dim, device=device, dtype=dtype
     )
     down_weights = torch.randn(
-        num_experts, hidden_dim, intermediate_dim, device = device, dtype = dtype
+        num_experts, hidden_dim, intermediate_dim, device=device, dtype=dtype
     )
 
     # Create dummy routing data
     m_sizes = torch.randint(
-        1, total_tokens // num_experts + 1, (num_experts,), device = device
+        1, total_tokens // num_experts + 1, (num_experts,), device=device
     )
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
     # Adjust to ensure exact total
@@ -279,8 +279,8 @@ def _run_moe_autotuning(
     if diff != 0:
         m_sizes[0] += diff
 
-    gather_indices = torch.arange(total_tokens, device = device)
-    torch.randperm(total_tokens, out = gather_indices)
+    gather_indices = torch.arange(total_tokens, device=device)
+    torch.randperm(total_tokens, out=gather_indices)
 
     # Autotune forward kernel - use the interface function with autotune=True
     # This properly invokes the kernel and lets triton handle the autotuning
@@ -303,82 +303,82 @@ def _run_moe_autotuning(
     logger.info("Autotuning forward kernel (first GEMM)...")
     # Run with autotune=True to trigger autotuning
     _ = grouped_gemm_forward(
-        X = hidden_states,
-        W = gate_up_weights,
-        topk = top_k,
-        m_sizes = m_sizes,
-        gather_indices = gather_indices,
-        permute_x = True,
-        permute_y = False,
-        autotune = True,
+        X=hidden_states,
+        W=gate_up_weights,
+        topk=top_k,
+        m_sizes=m_sizes,
+        gather_indices=gather_indices,
+        permute_x=True,
+        permute_y=False,
+        autotune=True,
     )
     triton_config_fwd = _autotuned_grouped_gemm_forward_kernel.best_config
 
     # Convert triton.Config to KernelConfigForward
     config_fwd = KernelConfigForward(
-        BLOCK_SIZE_M = triton_config_fwd.kwargs["BLOCK_SIZE_M"],
-        BLOCK_SIZE_N = triton_config_fwd.kwargs["BLOCK_SIZE_N"],
-        BLOCK_SIZE_K = triton_config_fwd.kwargs["BLOCK_SIZE_K"],
-        num_warps = triton_config_fwd.num_warps,
-        num_stages = triton_config_fwd.num_stages,
-        use_tma_load_x = triton_config_fwd.kwargs.get("USE_TMA_LOAD_X", False),
-        use_tma_load_w = triton_config_fwd.kwargs.get("USE_TMA_LOAD_W", False),
-        use_tma_store = triton_config_fwd.kwargs.get("USE_TMA_STORE", False),
+        BLOCK_SIZE_M=triton_config_fwd.kwargs["BLOCK_SIZE_M"],
+        BLOCK_SIZE_N=triton_config_fwd.kwargs["BLOCK_SIZE_N"],
+        BLOCK_SIZE_K=triton_config_fwd.kwargs["BLOCK_SIZE_K"],
+        num_warps=triton_config_fwd.num_warps,
+        num_stages=triton_config_fwd.num_stages,
+        use_tma_load_x=triton_config_fwd.kwargs.get("USE_TMA_LOAD_X", False),
+        use_tma_load_w=triton_config_fwd.kwargs.get("USE_TMA_LOAD_W", False),
+        use_tma_store=triton_config_fwd.kwargs.get("USE_TMA_STORE", False),
     )
 
     # Autotune backward dX kernel
     logger.info("Autotuning backward dX kernel...")
     dummy_grad = torch.randn(
-        total_tokens, 2 * intermediate_dim, device = device, dtype = dtype
+        total_tokens, 2 * intermediate_dim, device=device, dtype=dtype
     )
     _ = grouped_gemm_dX(
-        dY = dummy_grad,
-        W = gate_up_weights,
-        gather_indices = gather_indices,
-        m_sizes = m_sizes,
-        topk = top_k,
-        permute_x = True,
-        permute_y = False,
-        autotune = True,
+        dY=dummy_grad,
+        W=gate_up_weights,
+        gather_indices=gather_indices,
+        m_sizes=m_sizes,
+        topk=top_k,
+        permute_x=True,
+        permute_y=False,
+        autotune=True,
     )
     triton_config_bwd_dx = _autotuned_grouped_gemm_dX_kernel.best_config
 
     # Convert triton.Config to KernelConfigBackward_dX
     config_bwd_dx = KernelConfigBackward_dX(
-        BLOCK_SIZE_M = triton_config_bwd_dx.kwargs["BLOCK_SIZE_M"],
-        BLOCK_SIZE_N = triton_config_bwd_dx.kwargs["BLOCK_SIZE_N"],
-        BLOCK_SIZE_K = triton_config_bwd_dx.kwargs["BLOCK_SIZE_K"],
-        num_warps = triton_config_bwd_dx.num_warps,
-        num_stages = triton_config_bwd_dx.num_stages,
-        use_tma_load_dy = triton_config_bwd_dx.kwargs.get("USE_TMA_LOAD_dY", False),
-        use_tma_load_w = triton_config_bwd_dx.kwargs.get("USE_TMA_LOAD_W", False),
-        use_tma_store = triton_config_bwd_dx.kwargs.get("USE_TMA_STORE", False),
+        BLOCK_SIZE_M=triton_config_bwd_dx.kwargs["BLOCK_SIZE_M"],
+        BLOCK_SIZE_N=triton_config_bwd_dx.kwargs["BLOCK_SIZE_N"],
+        BLOCK_SIZE_K=triton_config_bwd_dx.kwargs["BLOCK_SIZE_K"],
+        num_warps=triton_config_bwd_dx.num_warps,
+        num_stages=triton_config_bwd_dx.num_stages,
+        use_tma_load_dy=triton_config_bwd_dx.kwargs.get("USE_TMA_LOAD_dY", False),
+        use_tma_load_w=triton_config_bwd_dx.kwargs.get("USE_TMA_LOAD_W", False),
+        use_tma_store=triton_config_bwd_dx.kwargs.get("USE_TMA_STORE", False),
     )
 
     # Autotune backward dW kernel
     logger.info("Autotuning backward dW kernel...")
     _ = grouped_gemm_dW(
-        X = hidden_states,
-        dY = dummy_grad,
-        m_sizes = m_sizes,
-        gather_indices = gather_indices,
-        topk = top_k,
-        permute_x = True,
-        permute_y = False,
-        autotune = True,
+        X=hidden_states,
+        dY=dummy_grad,
+        m_sizes=m_sizes,
+        gather_indices=gather_indices,
+        topk=top_k,
+        permute_x=True,
+        permute_y=False,
+        autotune=True,
     )
     triton_config_bwd_dw = _autotuned_grouped_gemm_dW_kernel.best_config
 
     # Convert triton.Config to KernelConfigBackward_dW
     config_bwd_dw = KernelConfigBackward_dW(
-        BLOCK_SIZE_M = triton_config_bwd_dw.kwargs["BLOCK_SIZE_M"],
-        BLOCK_SIZE_N = triton_config_bwd_dw.kwargs["BLOCK_SIZE_N"],
-        BLOCK_SIZE_K = triton_config_bwd_dw.kwargs["BLOCK_SIZE_K"],
-        num_warps = triton_config_bwd_dw.num_warps,
-        num_stages = triton_config_bwd_dw.num_stages,
-        use_tma_load_dy = triton_config_bwd_dw.kwargs.get("USE_TMA_LOAD_dY", False),
-        use_tma_load_x = triton_config_bwd_dw.kwargs.get("USE_TMA_LOAD_X", False),
-        use_tma_store = triton_config_bwd_dw.kwargs.get("USE_TMA_STORE", False),
+        BLOCK_SIZE_M=triton_config_bwd_dw.kwargs["BLOCK_SIZE_M"],
+        BLOCK_SIZE_N=triton_config_bwd_dw.kwargs["BLOCK_SIZE_N"],
+        BLOCK_SIZE_K=triton_config_bwd_dw.kwargs["BLOCK_SIZE_K"],
+        num_warps=triton_config_bwd_dw.num_warps,
+        num_stages=triton_config_bwd_dw.num_stages,
+        use_tma_load_dy=triton_config_bwd_dw.kwargs.get("USE_TMA_LOAD_dY", False),
+        use_tma_load_x=triton_config_bwd_dw.kwargs.get("USE_TMA_LOAD_X", False),
+        use_tma_store=triton_config_bwd_dw.kwargs.get("USE_TMA_STORE", False),
     )
 
     return config_fwd, config_bwd_dx, config_bwd_dw
@@ -399,43 +399,43 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
 
     # Safe Forward Config: 64x128x128 (Fits A100 SMEM)
     config_fwd = KernelConfigForward(
-        BLOCK_SIZE_M = 64,
-        BLOCK_SIZE_N = 128,
-        BLOCK_SIZE_K = 128,
-        num_warps = 8,
-        num_stages = 3,
-        permute_x = True,
-        permute_y = True,
-        use_tma_load_x = False,
-        use_tma_load_w = False,  # TMA loads might need alignment checks, safer to disable for heuristic
-        use_tma_store = False,
+        BLOCK_SIZE_M=64,
+        BLOCK_SIZE_N=128,
+        BLOCK_SIZE_K=128,
+        num_warps=8,
+        num_stages=3,
+        permute_x=True,
+        permute_y=True,
+        use_tma_load_x=False,
+        use_tma_load_w=False,  # TMA loads might need alignment checks, safer to disable for heuristic
+        use_tma_store=False,
     )
 
     # Safe Backward Configs: 64x64x256
     config_bwd_dx = KernelConfigBackward_dX(
-        BLOCK_SIZE_M = 64,
-        BLOCK_SIZE_N = 64,
-        BLOCK_SIZE_K = 256,
-        num_warps = 8,
-        num_stages = 4,
-        permute_x = True,
-        permute_y = True,
-        use_tma_load_dy = False,
-        use_tma_load_w = False,
-        use_tma_store = False,
+        BLOCK_SIZE_M=64,
+        BLOCK_SIZE_N=64,
+        BLOCK_SIZE_K=256,
+        num_warps=8,
+        num_stages=4,
+        permute_x=True,
+        permute_y=True,
+        use_tma_load_dy=False,
+        use_tma_load_w=False,
+        use_tma_store=False,
     )
 
     config_bwd_dw = KernelConfigBackward_dW(
-        BLOCK_SIZE_M = 64,
-        BLOCK_SIZE_N = 64,
-        BLOCK_SIZE_K = 256,
-        num_warps = 8,
-        num_stages = 4,
-        permute_x = True,
-        permute_y = True,
-        use_tma_load_dy = False,
-        use_tma_load_x = False,
-        use_tma_store = False,
+        BLOCK_SIZE_M=64,
+        BLOCK_SIZE_N=64,
+        BLOCK_SIZE_K=256,
+        num_warps=8,
+        num_stages=4,
+        permute_x=True,
+        permute_y=True,
+        use_tma_load_dy=False,
+        use_tma_load_x=False,
+        use_tma_store=False,
     )
 
     return config_fwd, config_bwd_dx, config_bwd_dw
@@ -452,36 +452,36 @@ def _get_default_configs() -> Tuple[Any, Any, Any]:
     logger.warning("Using default MoE kernel configurations (not optimal)")
 
     config_fwd = KernelConfigForward(
-        BLOCK_SIZE_M = 128,
-        BLOCK_SIZE_N = 128,
-        BLOCK_SIZE_K = 64,
-        num_warps = 8,
-        num_stages = 3,
-        use_tma_load_x = False,
-        use_tma_load_w = False,
-        use_tma_store = False,
+        BLOCK_SIZE_M=128,
+        BLOCK_SIZE_N=128,
+        BLOCK_SIZE_K=64,
+        num_warps=8,
+        num_stages=3,
+        use_tma_load_x=False,
+        use_tma_load_w=False,
+        use_tma_store=False,
     )
 
     config_bwd_dx = KernelConfigBackward_dX(
-        BLOCK_SIZE_M = 128,
-        BLOCK_SIZE_N = 128,
-        BLOCK_SIZE_K = 64,
-        num_warps = 8,
-        num_stages = 3,
-        use_tma_load_dy = False,
-        use_tma_load_w = False,
-        use_tma_store = False,
+        BLOCK_SIZE_M=128,
+        BLOCK_SIZE_N=128,
+        BLOCK_SIZE_K=64,
+        num_warps=8,
+        num_stages=3,
+        use_tma_load_dy=False,
+        use_tma_load_w=False,
+        use_tma_store=False,
     )
 
     config_bwd_dw = KernelConfigBackward_dW(
-        BLOCK_SIZE_M = 128,
-        BLOCK_SIZE_N = 128,
-        BLOCK_SIZE_K = 64,
-        num_warps = 8,
-        num_stages = 3,
-        use_tma_load_dy = False,
-        use_tma_load_x = False,
-        use_tma_store = False,
+        BLOCK_SIZE_M=128,
+        BLOCK_SIZE_N=128,
+        BLOCK_SIZE_K=64,
+        num_warps=8,
+        num_stages=3,
+        use_tma_load_dy=False,
+        use_tma_load_x=False,
+        use_tma_store=False,
     )
 
     return config_fwd, config_bwd_dx, config_bwd_dw

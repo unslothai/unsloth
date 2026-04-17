@@ -24,7 +24,7 @@ class RecipeDatasetPublishError(ValueError):
 def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     root = recipe_datasets_root().expanduser().resolve()
     candidate = resolve_dataset_path(artifact_path).expanduser()
-    resolved = candidate.resolve(strict = False)
+    resolved = candidate.resolve(strict=False)
 
     try:
         resolved.relative_to(root)
@@ -73,50 +73,50 @@ def publish_recipe_dataset(
         ) from exc
 
     try:
-        client = HuggingFaceHubClient(token = hf_token)
-        client._validate_repo_id(repo_id = repo_id)
-        client._validate_dataset_path(base_dataset_path = dataset_path)
-        client._create_or_get_repo(repo_id = repo_id, private = private)
+        client = HuggingFaceHubClient(token=hf_token)
+        client._validate_repo_id(repo_id=repo_id)
+        client._validate_dataset_path(base_dataset_path=dataset_path)
+        client._create_or_get_repo(repo_id=repo_id, private=private)
 
         metadata_path = dataset_path / METADATA_FILENAME
         builder_config_path = dataset_path / SDG_CONFIG_FILENAME
 
-        with metadata_path.open(encoding = "utf-8") as fh:
+        with metadata_path.open(encoding="utf-8") as fh:
             metadata = json.load(fh)
 
         builder_config = None
         if builder_config_path.exists():
-            with builder_config_path.open(encoding = "utf-8") as fh:
+            with builder_config_path.open(encoding="utf-8") as fh:
                 builder_config = json.load(fh)
 
         card = DataDesignerDatasetCard.from_metadata(
-            metadata = metadata,
-            builder_config = builder_config,
-            repo_id = repo_id,
-            description = description,
-            tags = None,
+            metadata=metadata,
+            builder_config=builder_config,
+            repo_id=repo_id,
+            description=description,
+            tags=None,
         )
         card.text = card.text.replace(_DATA_DESIGNER_FOOTER, _UNSLOTH_STUDIO_FOOTER)
         # Data Designer currently drops the explicit token when pushing the
         # dataset card. Push it ourselves so auth stays request-local.
-        card.push_to_hub(repo_id, token = hf_token, repo_type = "dataset")
+        card.push_to_hub(repo_id, token=hf_token, repo_type="dataset")
 
         client._upload_main_dataset_files(
-            repo_id = repo_id,
-            parquet_folder = dataset_path / FINAL_DATASET_FOLDER_NAME,
+            repo_id=repo_id,
+            parquet_folder=dataset_path / FINAL_DATASET_FOLDER_NAME,
         )
         client._upload_images_folder(
-            repo_id = repo_id,
-            images_folder = dataset_path / "images",
+            repo_id=repo_id,
+            images_folder=dataset_path / "images",
         )
         client._upload_processor_files(
-            repo_id = repo_id,
-            processors_folder = dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME,
+            repo_id=repo_id,
+            processors_folder=dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME,
         )
         client._upload_config_files(
-            repo_id = repo_id,
-            metadata_path = metadata_path,
-            builder_config_path = builder_config_path,
+            repo_id=repo_id,
+            metadata_path=metadata_path,
+            builder_config_path=builder_config_path,
         )
 
         return f"https://huggingface.co/datasets/{repo_id}"

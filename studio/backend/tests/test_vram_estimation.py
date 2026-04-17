@@ -25,108 +25,108 @@ def _gb(b: int) -> float:
 
 
 LLAMA_8B = ModelArchConfig(
-    hidden_size = 4096,
-    num_hidden_layers = 32,
-    num_attention_heads = 32,
-    num_key_value_heads = 8,
-    intermediate_size = 14336,
-    vocab_size = 128256,
-    tie_word_embeddings = False,
+    hidden_size=4096,
+    num_hidden_layers=32,
+    num_attention_heads=32,
+    num_key_value_heads=8,
+    intermediate_size=14336,
+    vocab_size=128256,
+    tie_word_embeddings=False,
 )
 
 QWEN_05B = ModelArchConfig(
-    hidden_size = 896,
-    num_hidden_layers = 24,
-    num_attention_heads = 14,
-    num_key_value_heads = 2,
-    intermediate_size = 4864,
-    vocab_size = 151936,
-    tie_word_embeddings = True,
+    hidden_size=896,
+    num_hidden_layers=24,
+    num_attention_heads=14,
+    num_key_value_heads=2,
+    intermediate_size=4864,
+    vocab_size=151936,
+    tie_word_embeddings=True,
 )
 
 MOE_CONFIG = ModelArchConfig(
-    hidden_size = 4096,
-    num_hidden_layers = 32,
-    num_attention_heads = 32,
-    num_key_value_heads = 8,
-    intermediate_size = 14336,
-    vocab_size = 32000,
-    tie_word_embeddings = False,
-    num_experts = 8,
+    hidden_size=4096,
+    num_hidden_layers=32,
+    num_attention_heads=32,
+    num_key_value_heads=8,
+    intermediate_size=14336,
+    vocab_size=32000,
+    tie_word_embeddings=False,
+    num_experts=8,
 )
 
 DEEPSEEK_V3 = ModelArchConfig(
-    hidden_size = 7168,
-    num_hidden_layers = 61,
-    num_attention_heads = 128,
-    num_key_value_heads = 128,
-    intermediate_size = 18432,
-    vocab_size = 129280,
-    tie_word_embeddings = False,
-    num_experts = 256,
-    moe_intermediate_size = 2048,
-    n_shared_experts = 1,
-    num_dense_layers = 3,
-    q_lora_rank = 1536,
-    kv_lora_rank = 512,
-    qk_nope_head_dim = 128,
-    qk_rope_head_dim = 64,
-    v_head_dim = 128,
+    hidden_size=7168,
+    num_hidden_layers=61,
+    num_attention_heads=128,
+    num_key_value_heads=128,
+    intermediate_size=18432,
+    vocab_size=129280,
+    tie_word_embeddings=False,
+    num_experts=256,
+    moe_intermediate_size=2048,
+    n_shared_experts=1,
+    num_dense_layers=3,
+    q_lora_rank=1536,
+    kv_lora_rank=512,
+    qk_nope_head_dim=128,
+    qk_rope_head_dim=64,
+    v_head_dim=128,
 )
 
 QWEN3_MOE_30B = ModelArchConfig(
-    hidden_size = 2048,
-    num_hidden_layers = 48,
-    num_attention_heads = 32,
-    num_key_value_heads = 4,
-    intermediate_size = 8192,
-    vocab_size = 151936,
-    tie_word_embeddings = True,
-    num_experts = 128,
-    moe_intermediate_size = 768,
-    n_shared_experts = 0,
-    num_dense_layers = 0,
+    hidden_size=2048,
+    num_hidden_layers=48,
+    num_attention_heads=32,
+    num_key_value_heads=4,
+    intermediate_size=8192,
+    vocab_size=151936,
+    tie_word_embeddings=True,
+    num_experts=128,
+    moe_intermediate_size=768,
+    n_shared_experts=0,
+    num_dense_layers=0,
 )
 
 GLM4_MOE = ModelArchConfig(
-    hidden_size = 4096,
-    num_hidden_layers = 46,
-    num_attention_heads = 96,
-    num_key_value_heads = 8,
-    intermediate_size = 10944,
-    vocab_size = 151552,
-    tie_word_embeddings = False,
-    num_experts = 128,
-    moe_intermediate_size = 1408,
-    n_shared_experts = 1,
-    num_dense_layers = 1,
+    hidden_size=4096,
+    num_hidden_layers=46,
+    num_attention_heads=96,
+    num_key_value_heads=8,
+    intermediate_size=10944,
+    vocab_size=151552,
+    tie_word_embeddings=False,
+    num_experts=128,
+    moe_intermediate_size=1408,
+    n_shared_experts=1,
+    num_dense_layers=1,
 )
 
 GPT_OSS = ModelArchConfig(
-    hidden_size = 6144,
-    num_hidden_layers = 64,
-    num_attention_heads = 64,
-    num_key_value_heads = 8,
-    intermediate_size = 2880,
-    vocab_size = 200064,
-    tie_word_embeddings = False,
-    num_experts = 128,
-    moe_intermediate_size = None,
-    n_shared_experts = 0,
-    num_dense_layers = 0,
+    hidden_size=6144,
+    num_hidden_layers=64,
+    num_attention_heads=64,
+    num_key_value_heads=8,
+    intermediate_size=2880,
+    vocab_size=200064,
+    tie_word_embeddings=False,
+    num_experts=128,
+    moe_intermediate_size=None,
+    n_shared_experts=0,
+    num_dense_layers=0,
 )
 
 
 class TestExtractArchConfig(unittest.TestCase):
     def test_basic_config(self):
         hf_config = SimpleNamespace(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 128256,
-            tie_word_embeddings = False,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=128256,
+            tie_word_embeddings=False,
         )
         arch = extract_arch_config(hf_config)
         self.assertIsNotNone(arch)
@@ -137,47 +137,47 @@ class TestExtractArchConfig(unittest.TestCase):
 
     def test_vlm_text_config(self):
         text_cfg = SimpleNamespace(
-            hidden_size = 2048,
-            num_hidden_layers = 24,
-            num_attention_heads = 16,
-            num_key_value_heads = 4,
-            intermediate_size = 8192,
-            vocab_size = 32000,
-            tie_word_embeddings = True,
+            hidden_size=2048,
+            num_hidden_layers=24,
+            num_attention_heads=16,
+            num_key_value_heads=4,
+            intermediate_size=8192,
+            vocab_size=32000,
+            tie_word_embeddings=True,
         )
-        hf_config = SimpleNamespace(text_config = text_cfg)
+        hf_config = SimpleNamespace(text_config=text_cfg)
         arch = extract_arch_config(hf_config)
         self.assertIsNotNone(arch)
         self.assertEqual(arch.hidden_size, 2048)
 
     def test_moe_detection(self):
         hf_config = SimpleNamespace(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 32000,
-            tie_word_embeddings = False,
-            num_local_experts = 8,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=32000,
+            tie_word_embeddings=False,
+            num_local_experts=8,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_experts, 8)
 
     def test_missing_fields_returns_none(self):
-        hf_config = SimpleNamespace(hidden_size = 4096)
+        hf_config = SimpleNamespace(hidden_size=4096)
         arch = extract_arch_config(hf_config)
         self.assertIsNone(arch)
 
     def test_intermediate_size_list(self):
         hf_config = SimpleNamespace(
-            hidden_size = 2048,
-            num_hidden_layers = 24,
-            num_attention_heads = 16,
-            num_key_value_heads = 4,
-            intermediate_size = [8192, 8192],
-            vocab_size = 32000,
-            tie_word_embeddings = True,
+            hidden_size=2048,
+            num_hidden_layers=24,
+            num_attention_heads=16,
+            num_key_value_heads=4,
+            intermediate_size=[8192, 8192],
+            vocab_size=32000,
+            tie_word_embeddings=True,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.intermediate_size, 8192)
@@ -221,7 +221,7 @@ class TestLoraParams(unittest.TestCase):
     def test_higher_rank_more_params(self):
         r16 = compute_lora_params(LLAMA_8B, 16, DEFAULT_TARGET_MODULES)
         r64 = compute_lora_params(LLAMA_8B, 64, DEFAULT_TARGET_MODULES)
-        self.assertAlmostEqual(r64 / r16, 4.0, places = 1)
+        self.assertAlmostEqual(r64 / r16, 4.0, places=1)
 
     def test_fewer_modules_fewer_params(self):
         all_mods = compute_lora_params(LLAMA_8B, 16, DEFAULT_TARGET_MODULES)
@@ -236,7 +236,7 @@ class TestLoraParams(unittest.TestCase):
             MOE_CONFIG, 16, ["gate_proj", "up_proj", "down_proj"]
         )
         ratio = moe_lora / dense_lora
-        self.assertAlmostEqual(ratio, 8.0, delta = 0.5)
+        self.assertAlmostEqual(ratio, 8.0, delta=0.5)
 
     def test_attention_modules_same_for_moe(self):
         dense_attn = compute_lora_params(
@@ -279,31 +279,31 @@ class TestActivationBytes(unittest.TestCase):
         self.assertLess(act_unsloth, act_true)
 
     def test_lora_activations_smaller_than_full_ft(self):
-        full_ft = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth", is_lora = False)
-        lora = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth", is_lora = True)
+        full_ft = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth", is_lora=False)
+        lora = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth", is_lora=True)
         self.assertLess(lora, full_ft)
 
     def test_scales_with_batch_size(self):
         act_bsz2 = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth")
         act_bsz4 = compute_activation_bytes(LLAMA_8B, 4, 2048, "unsloth")
-        self.assertAlmostEqual(act_bsz4 / act_bsz2, 2.0, delta = 0.1)
+        self.assertAlmostEqual(act_bsz4 / act_bsz2, 2.0, delta=0.1)
 
     def test_scales_with_seq_len(self):
         act_2k = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth")
         act_4k = compute_activation_bytes(LLAMA_8B, 2, 4096, "unsloth")
-        self.assertAlmostEqual(act_4k / act_2k, 2.0, delta = 0.1)
+        self.assertAlmostEqual(act_4k / act_2k, 2.0, delta=0.1)
 
 
 class TestEstimateTrainingVram(unittest.TestCase):
     def test_llama_8b_qlora_reasonable_total(self):
         config = TrainingVramConfig(
-            training_method = "qlora",
-            batch_size = 2,
-            max_seq_length = 2048,
-            lora_rank = 16,
-            gradient_checkpointing = "unsloth",
-            optimizer = "adamw_8bit",
-            load_in_4bit = True,
+            training_method="qlora",
+            batch_size=2,
+            max_seq_length=2048,
+            lora_rank=16,
+            gradient_checkpointing="unsloth",
+            optimizer="adamw_8bit",
+            load_in_4bit=True,
         )
         breakdown = estimate_training_vram(LLAMA_8B, config)
         total_gb = _gb(breakdown.total)
@@ -312,12 +312,12 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_llama_8b_full_ft_reasonable_total(self):
         config = TrainingVramConfig(
-            training_method = "full",
-            batch_size = 2,
-            max_seq_length = 2048,
-            gradient_checkpointing = "unsloth",
-            optimizer = "adamw_8bit",
-            load_in_4bit = False,
+            training_method="full",
+            batch_size=2,
+            max_seq_length=2048,
+            gradient_checkpointing="unsloth",
+            optimizer="adamw_8bit",
+            load_in_4bit=False,
         )
         breakdown = estimate_training_vram(LLAMA_8B, config)
         total_gb = _gb(breakdown.total)
@@ -326,16 +326,16 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_qlora_much_less_than_full_ft(self):
         qlora_config = TrainingVramConfig(
-            training_method = "qlora",
-            load_in_4bit = True,
-            batch_size = 2,
-            max_seq_length = 2048,
+            training_method="qlora",
+            load_in_4bit=True,
+            batch_size=2,
+            max_seq_length=2048,
         )
         full_config = TrainingVramConfig(
-            training_method = "full",
-            load_in_4bit = False,
-            batch_size = 2,
-            max_seq_length = 2048,
+            training_method="full",
+            load_in_4bit=False,
+            batch_size=2,
+            max_seq_length=2048,
         )
         qlora = estimate_training_vram(LLAMA_8B, qlora_config)
         full = estimate_training_vram(LLAMA_8B, full_config)
@@ -343,20 +343,20 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_qwen_05b_qlora_fits_in_4gb(self):
         config = TrainingVramConfig(
-            training_method = "qlora",
-            batch_size = 2,
-            max_seq_length = 2048,
-            lora_rank = 16,
-            gradient_checkpointing = "unsloth",
-            optimizer = "adamw_8bit",
-            load_in_4bit = True,
+            training_method="qlora",
+            batch_size=2,
+            max_seq_length=2048,
+            lora_rank=16,
+            gradient_checkpointing="unsloth",
+            optimizer="adamw_8bit",
+            load_in_4bit=True,
         )
         breakdown = estimate_training_vram(QWEN_05B, config)
         total_gb = _gb(breakdown.total)
         self.assertLess(total_gb, 5.0)
 
     def test_breakdown_components_positive(self):
-        config = TrainingVramConfig(training_method = "qlora", load_in_4bit = True)
+        config = TrainingVramConfig(training_method="qlora", load_in_4bit=True)
         breakdown = estimate_training_vram(LLAMA_8B, config)
         self.assertGreater(breakdown.model_weights, 0)
         self.assertGreater(breakdown.lora_adapters, 0)
@@ -366,12 +366,12 @@ class TestEstimateTrainingVram(unittest.TestCase):
         self.assertGreater(breakdown.cuda_overhead, 0)
 
     def test_full_ft_no_lora_adapters(self):
-        config = TrainingVramConfig(training_method = "full", load_in_4bit = False)
+        config = TrainingVramConfig(training_method="full", load_in_4bit=False)
         breakdown = estimate_training_vram(LLAMA_8B, config)
         self.assertEqual(breakdown.lora_adapters, 0)
 
     def test_to_gb_dict_keys(self):
-        config = TrainingVramConfig(training_method = "qlora", load_in_4bit = True)
+        config = TrainingVramConfig(training_method="qlora", load_in_4bit=True)
         breakdown = estimate_training_vram(LLAMA_8B, config)
         gb_dict = breakdown.to_gb_dict()
         expected_keys = {
@@ -386,7 +386,7 @@ class TestEstimateTrainingVram(unittest.TestCase):
         self.assertEqual(set(gb_dict.keys()), expected_keys)
 
     def test_total_equals_sum_of_parts(self):
-        config = TrainingVramConfig(training_method = "qlora", load_in_4bit = True)
+        config = TrainingVramConfig(training_method="qlora", load_in_4bit=True)
         breakdown = estimate_training_vram(LLAMA_8B, config)
         parts_sum = (
             breakdown.model_weights
@@ -400,14 +400,14 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_larger_batch_increases_total(self):
         small = TrainingVramConfig(
-            training_method = "qlora",
-            load_in_4bit = True,
-            batch_size = 1,
+            training_method="qlora",
+            load_in_4bit=True,
+            batch_size=1,
         )
         large = TrainingVramConfig(
-            training_method = "qlora",
-            load_in_4bit = True,
-            batch_size = 8,
+            training_method="qlora",
+            load_in_4bit=True,
+            batch_size=8,
         )
         small_v = estimate_training_vram(LLAMA_8B, small)
         large_v = estimate_training_vram(LLAMA_8B, large)
@@ -415,41 +415,41 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_adamw_fp32_uses_more_optimizer_memory(self):
         opt8 = TrainingVramConfig(
-            training_method = "full",
-            load_in_4bit = False,
-            optimizer = "adamw_8bit",
+            training_method="full",
+            load_in_4bit=False,
+            optimizer="adamw_8bit",
         )
         opt32 = TrainingVramConfig(
-            training_method = "full",
-            load_in_4bit = False,
-            optimizer = "adamw_torch",
+            training_method="full",
+            load_in_4bit=False,
+            optimizer="adamw_torch",
         )
         v8 = estimate_training_vram(LLAMA_8B, opt8)
         v32 = estimate_training_vram(LLAMA_8B, opt32)
         self.assertAlmostEqual(
-            v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1
+            v32.optimizer_states / v8.optimizer_states, 1.5, delta=0.1
         )
 
 
 class TestExtractArchConfigMoE(unittest.TestCase):
     def test_deepseek_v3_shared_experts(self):
         hf_config = SimpleNamespace(
-            hidden_size = 7168,
-            num_hidden_layers = 61,
-            num_attention_heads = 128,
-            num_key_value_heads = 128,
-            intermediate_size = 18432,
-            vocab_size = 129280,
-            tie_word_embeddings = False,
-            n_routed_experts = 256,
-            moe_intermediate_size = 2048,
-            n_shared_experts = 1,
-            first_k_dense_replace = 3,
-            q_lora_rank = 1536,
-            kv_lora_rank = 512,
-            qk_nope_head_dim = 128,
-            qk_rope_head_dim = 64,
-            v_head_dim = 128,
+            hidden_size=7168,
+            num_hidden_layers=61,
+            num_attention_heads=128,
+            num_key_value_heads=128,
+            intermediate_size=18432,
+            vocab_size=129280,
+            tie_word_embeddings=False,
+            n_routed_experts=256,
+            moe_intermediate_size=2048,
+            n_shared_experts=1,
+            first_k_dense_replace=3,
+            q_lora_rank=1536,
+            kv_lora_rank=512,
+            qk_nope_head_dim=128,
+            qk_rope_head_dim=64,
+            v_head_dim=128,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_experts, 256)
@@ -460,17 +460,17 @@ class TestExtractArchConfigMoE(unittest.TestCase):
 
     def test_qwen3_moe_decoder_sparse_step(self):
         hf_config = SimpleNamespace(
-            hidden_size = 2048,
-            num_hidden_layers = 48,
-            num_attention_heads = 32,
-            num_key_value_heads = 4,
-            intermediate_size = 8192,
-            vocab_size = 151936,
-            tie_word_embeddings = True,
-            num_local_experts = 128,
-            moe_intermediate_size = 768,
-            decoder_sparse_step = 1,
-            mlp_only_layers = [],
+            hidden_size=2048,
+            num_hidden_layers=48,
+            num_attention_heads=32,
+            num_key_value_heads=4,
+            intermediate_size=8192,
+            vocab_size=151936,
+            tie_word_embeddings=True,
+            num_local_experts=128,
+            moe_intermediate_size=768,
+            decoder_sparse_step=1,
+            mlp_only_layers=[],
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_experts, 128)
@@ -479,34 +479,34 @@ class TestExtractArchConfigMoE(unittest.TestCase):
 
     def test_qwen3_moe_with_mlp_only_layers(self):
         hf_config = SimpleNamespace(
-            hidden_size = 2048,
-            num_hidden_layers = 24,
-            num_attention_heads = 16,
-            num_key_value_heads = 4,
-            intermediate_size = 8192,
-            vocab_size = 151936,
-            tie_word_embeddings = True,
-            num_local_experts = 60,
-            moe_intermediate_size = 1408,
-            decoder_sparse_step = 1,
-            mlp_only_layers = [0, 1, 2, 3],
+            hidden_size=2048,
+            num_hidden_layers=24,
+            num_attention_heads=16,
+            num_key_value_heads=4,
+            intermediate_size=8192,
+            vocab_size=151936,
+            tie_word_embeddings=True,
+            num_local_experts=60,
+            moe_intermediate_size=1408,
+            decoder_sparse_step=1,
+            mlp_only_layers=[0, 1, 2, 3],
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_dense_layers, 4)
 
     def test_glm4_moe_first_k_dense(self):
         hf_config = SimpleNamespace(
-            hidden_size = 4096,
-            num_hidden_layers = 46,
-            num_attention_heads = 96,
-            num_key_value_heads = 8,
-            intermediate_size = 10944,
-            vocab_size = 151552,
-            tie_word_embeddings = False,
-            n_routed_experts = 128,
-            moe_intermediate_size = 1408,
-            n_shared_experts = 1,
-            first_k_dense_replace = 1,
+            hidden_size=4096,
+            num_hidden_layers=46,
+            num_attention_heads=96,
+            num_key_value_heads=8,
+            intermediate_size=10944,
+            vocab_size=151552,
+            tie_word_embeddings=False,
+            n_routed_experts=128,
+            moe_intermediate_size=1408,
+            n_shared_experts=1,
+            first_k_dense_replace=1,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_dense_layers, 1)
@@ -514,14 +514,14 @@ class TestExtractArchConfigMoE(unittest.TestCase):
 
     def test_gpt_oss_no_moe_intermediate(self):
         hf_config = SimpleNamespace(
-            hidden_size = 6144,
-            num_hidden_layers = 64,
-            num_attention_heads = 64,
-            num_key_value_heads = 8,
-            intermediate_size = 2880,
-            vocab_size = 200064,
-            tie_word_embeddings = False,
-            num_local_experts = 128,
+            hidden_size=6144,
+            num_hidden_layers=64,
+            num_attention_heads=64,
+            num_key_value_heads=8,
+            intermediate_size=2880,
+            vocab_size=200064,
+            tie_word_embeddings=False,
+            num_local_experts=128,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_experts, 128)
@@ -530,13 +530,13 @@ class TestExtractArchConfigMoE(unittest.TestCase):
 
     def test_backward_compat_no_new_fields(self):
         hf_config = SimpleNamespace(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 128256,
-            tie_word_embeddings = False,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=128256,
+            tie_word_embeddings=False,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.n_shared_experts, 0)
@@ -547,28 +547,28 @@ class TestExtractArchConfigMoE(unittest.TestCase):
 class TestSharedExperts(unittest.TestCase):
     def test_shared_experts_increase_weight_bytes(self):
         no_shared = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 32000,
-            tie_word_embeddings = False,
-            num_experts = 64,
-            moe_intermediate_size = 1407,
-            n_shared_experts = 0,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=32000,
+            tie_word_embeddings=False,
+            num_experts=64,
+            moe_intermediate_size=1407,
+            n_shared_experts=0,
         )
         with_shared = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 32,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 32000,
-            tie_word_embeddings = False,
-            num_experts = 64,
-            moe_intermediate_size = 1407,
-            n_shared_experts = 2,
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=32000,
+            tie_word_embeddings=False,
+            num_experts=64,
+            moe_intermediate_size=1407,
+            n_shared_experts=2,
         )
         w_no = compute_model_weights_bytes(no_shared, "full", False)
         w_yes = compute_model_weights_bytes(with_shared, "full", False)
@@ -577,7 +577,7 @@ class TestSharedExperts(unittest.TestCase):
         expected_delta = delta_per_layer * 32 * 2
         actual_delta = w_yes - w_no
         self.assertAlmostEqual(
-            actual_delta, expected_delta, delta = expected_delta * 0.01
+            actual_delta, expected_delta, delta=expected_delta * 0.01
         )
 
     def test_deepseek_v3_params_in_range(self):
@@ -593,12 +593,12 @@ class TestMLA(unittest.TestCase):
 
         mla_arch = DEEPSEEK_V3
         std_arch = ModelArchConfig(
-            hidden_size = 7168,
-            num_hidden_layers = 61,
-            num_attention_heads = 128,
-            num_key_value_heads = 128,
-            intermediate_size = 18432,
-            vocab_size = 129280,
+            hidden_size=7168,
+            num_hidden_layers=61,
+            num_attention_heads=128,
+            num_key_value_heads=128,
+            intermediate_size=18432,
+            vocab_size=129280,
         )
         mla_attn = _compute_attn_elements(mla_arch)
         std_attn = _compute_attn_elements(std_arch)
@@ -612,30 +612,30 @@ class TestMLA(unittest.TestCase):
 class TestDenseMoEMix(unittest.TestCase):
     def test_dense_layers_change_total(self):
         all_moe = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 46,
-            num_attention_heads = 96,
-            num_key_value_heads = 8,
-            intermediate_size = 10944,
-            vocab_size = 151552,
-            tie_word_embeddings = False,
-            num_experts = 128,
-            moe_intermediate_size = 1408,
-            n_shared_experts = 1,
-            num_dense_layers = 0,
+            hidden_size=4096,
+            num_hidden_layers=46,
+            num_attention_heads=96,
+            num_key_value_heads=8,
+            intermediate_size=10944,
+            vocab_size=151552,
+            tie_word_embeddings=False,
+            num_experts=128,
+            moe_intermediate_size=1408,
+            n_shared_experts=1,
+            num_dense_layers=0,
         )
         mixed = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 46,
-            num_attention_heads = 96,
-            num_key_value_heads = 8,
-            intermediate_size = 10944,
-            vocab_size = 151552,
-            tie_word_embeddings = False,
-            num_experts = 128,
-            moe_intermediate_size = 1408,
-            n_shared_experts = 1,
-            num_dense_layers = 1,
+            hidden_size=4096,
+            num_hidden_layers=46,
+            num_attention_heads=96,
+            num_key_value_heads=8,
+            intermediate_size=10944,
+            vocab_size=151552,
+            tie_word_embeddings=False,
+            num_experts=128,
+            moe_intermediate_size=1408,
+            n_shared_experts=1,
+            num_dense_layers=1,
         )
         w_all = compute_model_weights_bytes(all_moe, "full", False)
         w_mixed = compute_model_weights_bytes(mixed, "full", False)
@@ -661,28 +661,28 @@ class TestDenseMoEMix(unittest.TestCase):
 
     def test_lora_dense_vs_moe_layers_differ(self):
         all_moe = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 10,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 32000,
-            tie_word_embeddings = False,
-            num_experts = 8,
-            moe_intermediate_size = 1024,
-            num_dense_layers = 0,
+            hidden_size=4096,
+            num_hidden_layers=10,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=32000,
+            tie_word_embeddings=False,
+            num_experts=8,
+            moe_intermediate_size=1024,
+            num_dense_layers=0,
         )
         mixed = ModelArchConfig(
-            hidden_size = 4096,
-            num_hidden_layers = 10,
-            num_attention_heads = 32,
-            num_key_value_heads = 8,
-            intermediate_size = 14336,
-            vocab_size = 32000,
-            tie_word_embeddings = False,
-            num_experts = 8,
-            moe_intermediate_size = 1024,
-            num_dense_layers = 5,
+            hidden_size=4096,
+            num_hidden_layers=10,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            intermediate_size=14336,
+            vocab_size=32000,
+            tie_word_embeddings=False,
+            num_experts=8,
+            moe_intermediate_size=1024,
+            num_dense_layers=5,
         )
         lora_all = compute_lora_params(
             all_moe, 16, ["gate_proj", "up_proj", "down_proj"]
