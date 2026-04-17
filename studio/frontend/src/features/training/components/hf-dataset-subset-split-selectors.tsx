@@ -22,6 +22,7 @@ import { useHfDatasetSplits } from "@/hooks";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 
 type Props = {
   variant: "wizard" | "studio";
@@ -48,6 +49,7 @@ export function HfDatasetSubsetSplitSelectors({
   datasetEvalSplit,
   setDatasetEvalSplit,
 }: Props) {
+  const { t } = useTranslation();
   const {
     subsets: hfSubsets,
     splits: hfSplits,
@@ -94,33 +96,33 @@ export function HfDatasetSubsetSplitSelectors({
           <div className="grid min-w-0 gap-3 sm:grid-cols-2">
             <SelectorDropdown
               variant={variant}
-              label="Subset"
-              tooltip="Select which subset (config) of the dataset to use."
+              label={t("model.huggingFaceDataset")}
+              tooltip={t("dataset.subsetTooltip")}
               value={null}
               onChange={setDatasetSubset}
               options={[]}
-              placeholder="Select a subset..."
+              placeholder={t("dataset.selectPlaceholder")}
               disabled={true}
             />
             <SelectorDropdown
               variant={variant}
-              label="Train Split"
-              tooltip="Select which split to use for training."
+              label={t("dataset.trainSplit")}
+              tooltip={t("dataset.splitTooltip")}
               value={null}
               onChange={setDatasetSplit}
               options={[]}
-              placeholder="Select a split..."
+              placeholder={t("dataset.selectSplit")}
               disabled={true}
             />
           </div>
           <SelectorDropdown
             variant={variant}
-            label="Evaluation Split"
-            tooltip="Select which split to use for evaluation. None means no evaluation during training."
+            label={t("dataset.evalSplit")}
+            tooltip={t("dataset.evalSplitTooltip")}
             value={null}
             onChange={setDatasetEvalSplit}
             options={[]}
-            placeholder="None"
+            placeholder={t("common.off")}
             allowNone
             disabled={true}
           />
@@ -136,7 +138,7 @@ export function HfDatasetSubsetSplitSelectors({
           }
         >
           <Spinner className="size-3.5" />
-          Loading dataset configs and splits...
+          {t("dataset.loadingSplits")}...
         </div>
       )}
 
@@ -158,53 +160,53 @@ export function HfDatasetSubsetSplitSelectors({
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
               <SelectorDropdown
                 variant={variant}
-                label="Subset"
-                tooltip="Select which subset (config) of the dataset to use."
+                label={t("model.huggingFaceDataset")}
+                tooltip={t("dataset.subsetTooltip")}
                 value={datasetSubset}
                 onChange={setDatasetSubset}
                 options={hfSubsets}
-                placeholder="Select a subset..."
+                placeholder={t("dataset.selectPlaceholder")}
               />
               <SelectorDropdown
                 variant={variant}
-                label="Train Split"
-                tooltip="Select which split to use for training."
+                label={t("dataset.trainSplit")}
+                tooltip={t("dataset.splitTooltip")}
                 value={datasetSplit}
                 onChange={setDatasetSplit}
                 options={hfSplits}
-                placeholder="Select a split..."
+                placeholder={t("dataset.selectSplit")}
               />
             </div>
           ) : (
             <>
               <SelectorDropdown
                 variant={variant}
-                label="Subset"
-                tooltip="Select which subset (config) of the dataset to use."
+                label={t("model.huggingFaceDataset")}
+                tooltip={t("dataset.subsetTooltip")}
                 value={datasetSubset}
                 onChange={setDatasetSubset}
                 options={hfSubsets}
-                placeholder="Select a subset..."
+                placeholder={t("dataset.selectPlaceholder")}
               />
               <SelectorDropdown
                 variant={variant}
-                label="Train Split"
-                tooltip="Select which split to use for training."
+                label={t("dataset.trainSplit")}
+                tooltip={t("dataset.splitTooltip")}
                 value={datasetSplit}
                 onChange={setDatasetSplit}
                 options={hfSplits}
-                placeholder="Select a split..."
+                placeholder={t("dataset.selectSplit")}
               />
             </>
           )}
           <SelectorDropdown
             variant={variant}
-            label="Evaluation Split"
-            tooltip="Select which split to use for evaluation. None means no evaluation during training."
+            label={t("dataset.evalSplit")}
+            tooltip={t("dataset.evalSplitTooltip")}
             value={datasetEvalSplit}
             onChange={setDatasetEvalSplit}
             options={hfSplits}
-            placeholder="None"
+            placeholder={t("common.off")}
             allowNone
           />
         </>

@@ -53,13 +53,13 @@ function buildDefaultDescription(execution: RecipeExecutionRecord | null): strin
   if (!execution) {
     return "";
   }
-  const runName = execution.run_name?.trim() || "This dataset";
+  const runName = execution.run_name?.trim() || "该数据集";
   const records = getExecutionRecordCount(execution);
   const recordPart =
     typeof records === "number" && records > 0
-      ? ` It contains ${records.toLocaleString()} generated records.`
+      ? ` 共包含 ${records.toLocaleString()} 条生成记录。`
       : "";
-  return `${runName} was generated with Unsloth Recipe Studio.${recordPart}`;
+  return `${runName} 由 Unsloth Recipe Studio 生成。${recordPart}`;
 }
 
 export function PublishExecutionDialog({
@@ -80,7 +80,7 @@ export function PublishExecutionDialog({
     () => buildDefaultDescription(execution),
     [execution],
   );
-  const runLabel = execution?.run_name?.trim() || "Completed run";
+  const runLabel = execution?.run_name?.trim() || "已完成运行";
   const recordCount = getExecutionRecordCount(execution);
   const recordLabel =
     typeof recordCount === "number" ? recordCount.toLocaleString() : "--";
@@ -114,15 +114,15 @@ export function PublishExecutionDialog({
     }
     const ok = await copyTextToClipboard(publishedUrl);
     if (ok) {
-      toastSuccess("Dataset link copied");
+      toastSuccess("数据集链接已复制");
       return;
     }
-    toastError("Copy failed", "Could not copy the dataset link.");
+    toastError("复制失败", "无法复制数据集链接。");
   };
 
   const handlePublish = async (): Promise<void> => {
     if (!execution?.jobId) {
-      setPublishError("This run is missing a job id, so it cannot be published.");
+      setPublishError("该运行缺少 job id，无法发布。");
       return;
     }
     setPublishing(true);
@@ -136,12 +136,12 @@ export function PublishExecutionDialog({
         artifact_path: execution.artifact_path,
       });
       setPublishedUrl(result.url);
-      toastSuccess("Dataset published");
+      toastSuccess("数据集已发布");
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Could not publish this dataset.";
+        error instanceof Error ? error.message : "无法发布该数据集。";
       setPublishError(message);
-      toastError("Publish failed", message);
+      toastError("发布失败", message);
     } finally {
       setPublishing(false);
     }
@@ -176,61 +176,60 @@ export function PublishExecutionDialog({
                 />
               </div>
               <div className="space-y-1 text-center">
-                <DialogTitle>Published</DialogTitle>
+                <DialogTitle>发布成功</DialogTitle>
                 <DialogDescription>
-                  Your dataset is live on Hugging Face.
+                  你的数据集已发布到 Hugging Face。
                 </DialogDescription>
               </div>
             </div>
             <div className="rounded-2xl border border-border/60 bg-card/55 p-3 text-xs">
-              <p className="mb-1 text-muted-foreground">Dataset URL</p>
+              <p className="mb-1 text-muted-foreground">数据集链接</p>
               <p className="break-all font-medium text-foreground">{publishedUrl}</p>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={handleCopyUrl}>
                 <HugeiconsIcon icon={Copy01Icon} className="mr-2 size-4" />
-                Copy link
+                复制链接
               </Button>
               <Button asChild={true}>
                 <a href={publishedUrl} target="_blank" rel="noreferrer">
-                  Open repo
+                  打开仓库
                   <HugeiconsIcon icon={ArrowRight01Icon} className="ml-2 size-4" />
                 </a>
               </Button>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>
-                Done
+                完成
               </Button>
             </DialogFooter>
           </>
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Publish to Hugging Face</DialogTitle>
+              <DialogTitle>发布到 Hugging Face</DialogTitle>
               <DialogDescription>
-                Create or update a dataset repo from this completed run.
+                根据本次已完成运行创建或更新数据集仓库。
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4">
               <div className="rounded-2xl border border-border/60 bg-card/55 p-3 text-xs">
-                <p className="font-medium text-foreground">From this run</p>
+                <p className="font-medium text-foreground">来源运行</p>
                 <div className="mt-2 grid gap-1.5 text-muted-foreground sm:grid-cols-2">
                   <p>
-                    Run: <span className="text-foreground">{runLabel}</span>
+                    运行：<span className="text-foreground">{runLabel}</span>
                   </p>
                   <p>
-                    Records: <span className="text-foreground">{recordLabel}</span>
+                    记录数：<span className="text-foreground">{recordLabel}</span>
                   </p>
                 </div>
                 <p className="mt-2 text-muted-foreground">
-                  We’ll upload the generated dataset, dataset card, images, and any processor
-                  outputs from this execution.
+                  将上传本次执行生成的数据集、数据集卡片、图片和处理器产物。
                 </p>
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-foreground" htmlFor="publish-repo-id">
-                  Repository
+                  仓库
                 </label>
                 <Input
                   id="publish-repo-id"
@@ -240,13 +239,13 @@ export function PublishExecutionDialog({
                   disabled={publishing}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Use the format <span className="font-mono">username-or-org/dataset-name</span>.
+                  使用格式 <span className="font-mono">用户名或组织名/数据集名</span>。
                 </p>
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-foreground" htmlFor="publish-description">
-                  About this dataset
+                  数据集说明
                 </label>
                 <Textarea
                   id="publish-description"
@@ -255,17 +254,17 @@ export function PublishExecutionDialog({
                   onChange={(event) => setDescription(event.target.value)}
                   disabled={publishing}
                   rows={4}
-                  placeholder={defaultDescription || "What is this dataset for?"}
+                  placeholder={defaultDescription || "该数据集用于什么场景？"}
                 />
                 <p className="text-xs text-muted-foreground">
-                  This short summary is used in the dataset card on Hugging Face.
+                  该简要描述将显示在 Hugging Face 数据集卡片中。
                 </p>
               </div>
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-3">
                   <label className="text-sm font-medium text-foreground" htmlFor="publish-hf-token">
-                    HF write token
+                    HF 写入令牌
                   </label>
                   <a
                     href="https://huggingface.co/settings/tokens"
@@ -273,7 +272,7 @@ export function PublishExecutionDialog({
                     rel="noreferrer"
                     className="text-xs text-muted-foreground underline underline-offset-3 hover:text-foreground"
                   >
-                    Manage tokens
+                    管理令牌
                   </a>
                 </div>
                 <div className="relative">
@@ -293,7 +292,7 @@ export function PublishExecutionDialog({
                   />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Leave empty if you're already logged in via CLI.
+                  如果你已通过 CLI 登录，可留空。
                 </p>
               </div>
 
@@ -310,10 +309,10 @@ export function PublishExecutionDialog({
                     htmlFor="publish-private"
                     className="text-sm font-medium text-foreground"
                   >
-                    Private dataset
+                    私有数据集
                   </label>
                   <p className="text-xs text-muted-foreground">
-                    Only people with access can view or download the repo.
+                    仅有权限的用户可查看或下载该仓库。
                   </p>
                 </div>
               </div>
@@ -331,10 +330,10 @@ export function PublishExecutionDialog({
                 onClick={() => onOpenChange(false)}
                 disabled={publishing}
               >
-                Cancel
+                取消
               </Button>
               <Button onClick={() => void handlePublish()} disabled={!canSubmit}>
-                {publishing ? "Publishing..." : "Publish to Hugging Face"}
+                {publishing ? "发布中..." : "发布到 Hugging Face"}
               </Button>
             </DialogFooter>
           </>

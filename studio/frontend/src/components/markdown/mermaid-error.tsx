@@ -14,17 +14,17 @@ export function MermaidError({
 }: MermaidErrorComponentProps) {
   return (
     <div className="my-4 rounded-lg border border-red-300 bg-red-50 p-3 text-red-800">
-      <p className="text-sm font-semibold">Mermaid render failed</p>
+      <p className="text-sm font-semibold">Mermaid 渲染失败</p>
       <p className="mt-1 break-words font-mono text-xs">{error}</p>
       {hasSlashComment(chart) ? (
-        <p className="mt-1 text-xs">Hint: Mermaid comments use `%%`, not `//`.</p>
+        <p className="mt-1 text-xs">提示：Mermaid 注释使用 `%%`，而不是 `//`。</p>
       ) : null}
       <button
         type="button"
         onClick={retry}
         className="mt-2 rounded border border-red-300 px-2 py-1 text-xs hover:bg-red-100"
       >
-        Retry
+        重试
       </button>
     </div>
   );

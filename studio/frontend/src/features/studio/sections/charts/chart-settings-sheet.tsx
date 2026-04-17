@@ -76,32 +76,34 @@ function ScaleSection({
   setScale,
   outlierMode,
   setOutlierMode,
+  t,
 }: {
   title: string;
   scale: ScaleMode;
   setScale: (value: ScaleMode) => void;
   outlierMode: OutlierMode;
   setOutlierMode: (value: OutlierMode) => void;
+  t: (key: string) => string;
 }): ReactElement {
   return (
     <div className="space-y-3">
       <div>
         <p className="text-sm font-medium">{title}</p>
-        <p className="text-xs text-muted-foreground">Scale and cleanup</p>
+        <p className="text-xs text-muted-foreground">{t("studio.scaleAndCleanup")}</p>
       </div>
       <ChoiceButtons
         options={[
-          { label: "Linear", value: "linear" },
-          { label: "Log", value: "log" },
+          { label: t("studio.linear"), value: "linear" },
+          { label: t("studio.log"), value: "log" },
         ]}
         value={scale}
         onChange={setScale}
       />
       <ChoiceButtons
         options={[
-          { label: "No clip", value: "none" },
-          { label: "Clip p99", value: "p99" },
-          { label: "Clip p95", value: "p95" },
+          { label: t("studio.noClip"), value: "none" },
+          { label: t("studio.clipP99"), value: "p99" },
+          { label: t("studio.clipP95"), value: "p95" },
         ]}
         value={outlierMode}
         onChange={setOutlierMode}
@@ -111,6 +113,7 @@ function ScaleSection({
 }
 
 export function ChartSettingsSheet(): ReactElement {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const {
     availableSteps,
@@ -192,9 +195,9 @@ export function ChartSettingsSheet(): ReactElement {
           overlayClassName="bg-transparent backdrop-blur-0"
         >
           <SheetHeader className="pb-4">
-            <SheetTitle>Chart Settings</SheetTitle>
+            <SheetTitle>{t("studio.chartSettings")}</SheetTitle>
             <SheetDescription>
-              Tune chart presentation while training keeps running.
+              {t("studio.tuneChartPresentation")}
             </SheetDescription>
           </SheetHeader>
           <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-6">
@@ -253,7 +256,7 @@ export function ChartSettingsSheet(): ReactElement {
                 }
               />
               <SettingRow
-                label="Show smoothed loss"
+                label={t("studio.showSmoothedLoss")}
                 control={
                   <Switch
                     checked={showSmoothed}
@@ -262,7 +265,7 @@ export function ChartSettingsSheet(): ReactElement {
                 }
               />
               <SettingRow
-                label="Show average line"
+                label={t("studio.showAverageLine")}
                 control={
                   <Switch
                     checked={showAvgLine}
@@ -273,27 +276,30 @@ export function ChartSettingsSheet(): ReactElement {
             </div>
             <Separator />
             <ScaleSection
-              title="Loss axis"
+              title={t("studio.lossAxis")}
               scale={lossScale}
               setScale={setLossScale}
               outlierMode={lossOutlierMode}
               setOutlierMode={setLossOutlierMode}
+              t={t}
             />
             <Separator />
             <ScaleSection
-              title="Gradient norm axis"
+              title={t("studio.gradientNormAxis")}
               scale={gradScale}
               setScale={setGradScale}
               outlierMode={gradOutlierMode}
               setOutlierMode={setGradOutlierMode}
+              t={t}
             />
             <Separator />
             <ScaleSection
-              title="Learning rate axis"
+              title={t("studio.learningRateAxis")}
               scale={lrScale}
               setScale={setLrScale}
               outlierMode={lrOutlierMode}
               setOutlierMode={setLrOutlierMode}
+              t={t}
             />
           </div>
           <SheetFooter className="mt-0 border-t border-border/60 bg-background/70 sm:flex-row sm:justify-between">
@@ -303,10 +309,10 @@ export function ChartSettingsSheet(): ReactElement {
               size="sm"
               onClick={resetPreferences}
             >
-              Reset defaults
+              {t("common.resetDefaults")}
             </Button>
             <Button type="button" size="sm" onClick={() => setOpen(false)}>
-              Done
+              {t("common.done")}
             </Button>
           </SheetFooter>
         </SheetContent>

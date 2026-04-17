@@ -148,17 +148,17 @@ export function ModelSelectionStep() {
       <Field>
         <FieldLabel>
           Hugging Face Token{" "}
-          <span className="text-muted-foreground font-normal">(Optional)</span>
+          <span className="text-muted-foreground font-normal">（可选）</span>
         </FieldLabel>
         <FieldDescription>
-          Required for gated or private models.{" "}
+          访问受限或私有模型时必需。{" "}
           <a
             href="https://huggingface.co/settings/tokens"
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"
           >
-            Get token
+            获取令牌
           </a>
         </FieldDescription>
         <InputGroup>
@@ -184,18 +184,18 @@ export function ModelSelectionStep() {
               rel="noopener noreferrer"
               className="underline"
             >
-              Get or update token
+              获取或更新令牌
             </a>
           </p>
         )}
         {isCheckingToken && (
-          <p className="text-xs text-muted-foreground">Checking token…</p>
+          <p className="text-xs text-muted-foreground">检查令牌中…</p>
         )}
       </Field>
 
       <Field>
         <FieldLabel className="flex items-center gap-1.5">
-          Search models
+          搜索模型
           <Tooltip>
             <TooltipTrigger asChild={true}>
               <button
@@ -209,14 +209,14 @@ export function ModelSelectionStep() {
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              Search Hugging Face models or pick from our recommended list.{" "}
+              搜索 Hugging Face 模型，或从我们的推荐列表中选择。{" "}
               <a
                 href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary underline"
               >
-                Read more
+                了解更多
               </a>
             </TooltipContent>
           </Tooltip>
@@ -241,7 +241,7 @@ export function ModelSelectionStep() {
             itemToStringValue={(id) => id}
             autoHighlight={true}
           >
-            <ComboboxInput placeholder="Search models..." className="w-full">
+            <ComboboxInput placeholder="搜索模型..." className="w-full">
               <InputGroupAddon>
                 <HugeiconsIcon icon={Search01Icon} className="size-4" />
               </InputGroupAddon>
@@ -249,10 +249,10 @@ export function ModelSelectionStep() {
             <ComboboxContent anchor={comboboxAnchorRef}>
               {isLoading ? (
                 <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                  <Spinner className="size-4" /> Searching…
+                  <Spinner className="size-4" /> 搜索中…
                 </div>
               ) : (
-                <ComboboxEmpty>No models found</ComboboxEmpty>
+                <ComboboxEmpty>未找到模型</ComboboxEmpty>
               )}
               <div
                 ref={scrollRef}
@@ -323,7 +323,7 @@ export function ModelSelectionStep() {
           <div className="flex items-center justify-between">
             <div>
               <FieldLabel className="flex items-center gap-1.5">
-                Training method
+                训练方式
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -337,22 +337,20 @@ export function ModelSelectionStep() {
                     </button>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">
-                    QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
-                    16-bit for better quality. Full fine-tune updates all
-                    weights.{" "}
+                    QLoRA 使用 4-bit 量化以占用更少显存；LoRA 使用 16-bit，通常质量更好；全量微调会更新全部权重。{" "}
                     <a
                       href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline"
                     >
-                      Read more
+                      了解更多
                     </a>
                   </TooltipContent>
                 </Tooltip>
               </FieldLabel>
               <FieldDescription>
-                Choose how to fine-tune {selectedModel}
+                选择 {selectedModel} 的微调方式
               </FieldDescription>
             </div>
             <Select
@@ -363,9 +361,9 @@ export function ModelSelectionStep() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="qlora">QLoRA (4-bit)</SelectItem>
-                <SelectItem value="lora">LoRA (16-bit)</SelectItem>
-                <SelectItem value="full">Full Fine-tune</SelectItem>
+                <SelectItem value="qlora">QLoRA（4-bit）</SelectItem>
+                <SelectItem value="lora">LoRA（16-bit）</SelectItem>
+                <SelectItem value="full">全量微调</SelectItem>
               </SelectContent>
             </Select>
           </div>

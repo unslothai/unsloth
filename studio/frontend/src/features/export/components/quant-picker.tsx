@@ -35,7 +35,7 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
           className="size-4 text-muted-foreground"
         />
         <span className="text-xs font-medium text-muted-foreground">
-          Quantization Levels
+          量化等级
         </span>
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -47,20 +47,19 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
             </button>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
-            Lower quantization (Q2, Q3) = smaller files but reduced quality.
-            Q4–Q5 is a good balance.{" "}
+            更低量化（Q2、Q3）文件更小但质量下降，Q4-Q5 通常更均衡。{" "}
             <a
               href="https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary underline"
             >
-              Read more
+              了解更多
             </a>
           </TooltipContent>
         </Tooltip>
         <span className="text-[11px] text-muted-foreground/70">
-          — select one or more
+          - 可多选
         </span>
       </div>
       <div className="flex flex-wrap gap-2 py-1 pl-1">
@@ -88,7 +87,7 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
               <span className="text-[10px] opacity-60">{q.size}</span>
               {q.recommended && !active && (
                 <span className="rounded-full bg-emerald-100 px-1.5 py-0 text-[9px] font-semibold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">
-                  rec
+                  推荐
                 </span>
               )}
             </button>
@@ -98,14 +97,14 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
       {value.length > 0 && (
         <div className="flex items-center gap-3">
           <span className="text-[11px] text-muted-foreground">
-            {value.length} selected
+            已选择 {value.length} 项
           </span>
           <button
             type="button"
             onClick={() => onChange([])}
             className="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
           >
-            Clear all
+            清空
           </button>
         </div>
       )}

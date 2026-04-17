@@ -67,7 +67,7 @@ export function AvailableReferencesInline({
   return (
     <div className="space-y-1">
       <p className="text-[10px] font-medium text-muted-foreground">
-        Available references
+        可用引用
       </p>
       <div ref={wrapperRef} className="relative">
         {!expanded && (
@@ -113,7 +113,7 @@ export function AvailableReferencesInline({
               className="corner-squircle h-4 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
               onClick={() => setExpanded(true)}
             >
-              +{hiddenCount} more
+              还有 {hiddenCount} 项
             </button>
           )}
           {expanded && collapsedCount < entries.length && (
@@ -122,7 +122,7 @@ export function AvailableReferencesInline({
               className="corner-squircle h-4 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
               onClick={() => setExpanded(false)}
             >
-              Show less
+              收起
             </button>
           )}
         </div>

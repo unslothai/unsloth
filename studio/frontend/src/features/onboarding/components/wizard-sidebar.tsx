@@ -31,7 +31,7 @@ export function WizardSidebar() {
         <Progress value={progress} className="h-1.5" />
       </div>
       <p className="mt-2 text-xs text-muted-foreground md:hidden">
-        Step {currentStep} of {STEPS.length}
+        第 {currentStep} / {STEPS.length} 步
       </p>
       <Button
         size="sm"
@@ -41,7 +41,7 @@ export function WizardSidebar() {
           window.location.href = "/chat";
         }}
       >
-        Skip to Chat
+        跳过并进入聊天
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
@@ -57,7 +57,7 @@ export function WizardSidebar() {
           window.location.href = "/chat";
         }}
       >
-        Skip to Chat
+        跳过并进入聊天
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
     </aside>

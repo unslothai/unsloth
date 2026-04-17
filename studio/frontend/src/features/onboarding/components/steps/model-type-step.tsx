@@ -33,10 +33,10 @@ const TYPE_ICONS: Record<ModelType, typeof ImageIcon> = {
 };
 
 const TYPE_TOOLTIPS: Record<ModelType, string> = {
-  vision: "Fine-tune models that understand images and text together",
-  audio: "Fine-tune text-to-speech and audio models",
-  embeddings: "Fine-tune models for semantic search and similarity",
-  text: "Fine-tune large language models for text generation",
+  vision: "微调可同时理解图像与文本的模型",
+  audio: "微调文本转语音与音频模型",
+  embeddings: "微调用于语义检索与相似度的模型",
+  text: "微调用于文本生成的大语言模型",
 };
 
 const COMING_SOON: ModelType[] = [];
@@ -53,16 +53,16 @@ export function ModelTypeStep(): ReactElement {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-lg font-semibold">Welcome to Unsloth Studio</h2>
+        <h2 className="text-lg font-semibold">欢迎使用 Unsloth Studio</h2>
         <p className="text-sm text-muted-foreground">
-          Choose a path - fine-tune LLMs, vision, embedding, audio models or just chat.{" "}
+          选择你的路径：微调 LLM、视觉、嵌入、音频模型，或直接聊天。{" "}
           <a
             href="https://unsloth.ai/docs/new/studio/start"
             target="_blank"
             rel="noreferrer"
             className="text-primary underline"
           >
-            Get started with our guide
+            查看快速上手指南
           </a>
         </p>
       </div>
@@ -108,7 +108,7 @@ export function ModelTypeStep(): ReactElement {
                     variant="secondary"
                     className="absolute top-2 right-2 text-[10px]"
                   >
-                    Coming Soon
+                    即将推出
                   </Badge>
                 )}
                 <CardContent className="flex items-center gap-4 py-4">
@@ -214,7 +214,7 @@ export function ModelTypeStep(): ReactElement {
               </div>
               <div className="flex flex-col gap-0.5 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-medium">Chat</span>
+                  <span className="font-medium">聊天</span>
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -229,12 +229,12 @@ export function ModelTypeStep(): ReactElement {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Chat with any model. Has tool calling, web search and more.
+                      与任意模型聊天，支持工具调用、联网搜索等能力。
                     </TooltipContent>
                   </Tooltip>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  Chat with LLMs & vision models + audio generation.
+                  与 LLM、视觉模型聊天，并支持音频生成。
                 </span>
               </div>
             </CardContent>

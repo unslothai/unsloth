@@ -52,14 +52,14 @@ import { HfDatasetCombobox } from "../../components/shared/hf-dataset-combobox";
 import { FieldLabel } from "../shared/field-label";
 
 const SAMPLING_OPTIONS: Array<{ value: SeedSamplingStrategy; label: string }> = [
-  { value: "ordered", label: "Ordered" },
-  { value: "shuffle", label: "Shuffle" },
+  { value: "ordered", label: "顺序" },
+  { value: "shuffle", label: "打乱" },
 ];
 
 const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
-  { value: "none", label: "None" },
-  { value: "index_range", label: "Index range" },
-  { value: "partition_block", label: "Partition block" },
+  { value: "none", label: "无" },
+  { value: "index_range", label: "索引区间" },
+  { value: "partition_block", label: "分区块" },
 ];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
@@ -110,20 +110,20 @@ function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
 } {
   if (mode === "local") {
     return {
-      title: "No preview yet",
-      description: "Upload a CSV, JSON, or JSONL file and click Load to see a sample.",
+      title: "暂无预览",
+      description: "上传 CSV、JSON 或 JSONL 文件后，点击加载查看样例。",
     };
   }
   if (mode === "unstructured") {
     return {
-      title: "No preview yet",
+      title: "暂无预览",
       description:
-        "Upload your documents and the preview will appear once processing is done.",
+        "上传文档后，处理完成即会显示预览。",
     };
   }
   return {
-    title: "No preview yet",
-    description: "Select a Hugging Face dataset and click Load to see a sample.",
+    title: "暂无预览",
+    description: "选择 Hugging Face 数据集并点击加载查看样例。",
   };
 }
 
@@ -170,7 +170,7 @@ async function fileToBase64Payload(file: File): Promise<string> {
       const parts = value.split(",");
       resolve(parts.length > 1 ? parts[1] : value);
     };
-    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.onerror = () => reject(new Error("读取文件失败"));
     reader.readAsDataURL(file);
   });
 }
@@ -186,7 +186,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     if (config.unstructured_file_ids?.length) {
       return config.unstructured_file_ids.map((id, i) => ({
         id,
-        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        name: config.unstructured_file_names?.[i] ?? "未知",
         size: config.unstructured_file_sizes?.[i] ?? 0,
         status: "ok" as const,
       }));
@@ -211,7 +211,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         setUnstructuredFiles(
           config.unstructured_file_ids.map((id, i) => ({
             id,
-            name: config.unstructured_file_names?.[i] ?? "Unknown",
+            name: config.unstructured_file_names?.[i] ?? "未知",
             size: config.unstructured_file_sizes?.[i] ?? 0,
             status: "ok" as const,
           })),
@@ -236,7 +236,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     setUnstructuredFiles(
       config.unstructured_file_ids.map((id, i) => ({
         id,
-        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        name: config.unstructured_file_names?.[i] ?? "未知",
         size: config.unstructured_file_sizes?.[i] ?? 0,
         status: "ok" as const,
       })),
@@ -308,7 +308,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       if (mode === "hf") {
         const datasetName = config.hf_repo_id.trim();
         if (!datasetName) {
-          throw new Error("Dataset repo is required.");
+          throw new Error("数据集 repo is required.");
         }
         const response = await inspectSeedDataset({
           dataset_name: datasetName,
@@ -338,10 +338,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
       if (mode === "local") {
         if (!localFile) {
-          throw new Error("Select a local CSV/JSON/JSONL file first.");
+          throw new Error("请先选择本地 CSV/JSON/JSONL 文件。");
         }
         if (localFile.size > MAX_UPLOAD_BYTES) {
-          throw new Error("File too large (max 50MB).");
+          throw new Error("文件过大（最大 50MB）。");
         }
         const payload = await fileToBase64Payload(localFile);
         const response = await inspectSeedUpload({
@@ -378,7 +378,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           .map((f) => f.name);
 
         if (fileIds.length === 0) {
-          setInspectError("No files uploaded");
+          setInspectError("未上传文件");
           return false;
         }
 
@@ -412,7 +412,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       return false;
     } catch (error) {
       if (!opts?.silent) {
-        setInspectError(getErrorMessage(error, "Failed to load seed metadata."));
+        setInspectError(getErrorMessage(error, "加载种子元数据失败。"));
       }
       setPreviewRows([]);
       return false;
@@ -484,8 +484,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   return (
     <Tabs defaultValue="config" className="w-full min-w-0">
       <TabsList className="w-full">
-        <TabsTrigger value="config">Config</TabsTrigger>
-        <TabsTrigger value="preview">Preview</TabsTrigger>
+        <TabsTrigger value="config">配置</TabsTrigger>
+        <TabsTrigger value="preview">预览</TabsTrigger>
       </TabsList>
 
       <TabsContent value="config" className="min-w-0 pt-3">
@@ -494,9 +494,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             <>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Dataset"
+                  label="数据集"
                   htmlFor={datasetId}
-                  hint="Hugging Face dataset repo id (org/repo)."
+                  hint="Hugging Face 数据集仓库 ID（org/repo）。"
                 />
                 <div className="flex items-center gap-2">
                   <HfDatasetCombobox
@@ -524,16 +524,16 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     onClick={() => void loadSeedMetadata()}
                     disabled={isInspecting || !config.hf_repo_id.trim()}
                   >
-                    {isInspecting ? "Loading..." : "Load"}
+                    {isInspecting ? "加载中..." : "加载"}
                   </Button>
                 </div>
               </div>
 
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="HF token (optional)"
+                  label="HF 令牌（可选）"
                   htmlFor={tokenId}
-                  hint="Only needed for private/gated datasets."
+                  hint="仅私有或受限数据集需要。"
                 />
                 <Input
                   id={tokenId}
@@ -550,8 +550,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           {mode === "local" && (
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Structured file"
-                hint="Upload CSV, JSON, or JSONL seed file."
+                label="结构化文件"
+                hint="上传 CSV、JSON 或 JSONL 种子文件。"
               />
               <div className="flex items-center gap-2">
                 <Input
@@ -577,7 +577,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   onClick={() => void loadSeedMetadata()}
                   disabled={isInspecting || !localFile}
                 >
-                  {isInspecting ? "Loading..." : "Load"}
+                  {isInspecting ? "加载中..." : "加载"}
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
@@ -605,8 +605,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           {mode !== "unstructured" && (
             <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
               <FieldLabel
-                label="Drop specific seed columns"
-                hint="Dropped columns stay usable in prompts/expressions but are omitted from final dataset."
+                label="丢弃指定种子列"
+                hint="被丢弃列仍可在提示词/表达式中引用，但不会写入最终数据集。"
               />
               {previewColumns.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
@@ -646,16 +646,16 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           >
             <CollapsibleTrigger asChild={true}>
               <CollapsibleSectionTriggerButton
-                label="Advanced source options"
+                label="高级数据源选项"
                 open={advancedOpen}
               />
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 space-y-3">
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Sampling strategy"
+                  label="采样策略"
                   htmlFor={samplingId}
-                  hint="Ordered keeps row order. Shuffle randomizes sampled rows."
+                  hint="顺序会保留原行序；打乱会随机采样行。"
                 />
                 <Select
                   value={config.sampling_strategy}
@@ -664,7 +664,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   }
                 >
                   <SelectTrigger className="nodrag w-full" id={samplingId}>
-                    <SelectValue placeholder="Select sampling" />
+                    <SelectValue placeholder="选择采样策略" />
                   </SelectTrigger>
                   <SelectContent>
                     {SAMPLING_OPTIONS.map((option) => (
@@ -678,9 +678,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Selection strategy"
+                  label="选择策略"
                   htmlFor={selectionId}
-                  hint="Select all, a row range, or partition block."
+                  hint="可选择全部、行区间或分区块。"
                 />
                 <Select
                   value={config.selection_type}
@@ -689,7 +689,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   }
                 >
                   <SelectTrigger className="nodrag w-full" id={selectionId}>
-                    <SelectValue placeholder="Select selection" />
+                    <SelectValue placeholder="选择筛选方式" />
                   </SelectTrigger>
                   <SelectContent>
                     {SELECTION_OPTIONS.map((option) => (
@@ -705,9 +705,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Chunk size"
+                      label="分块大小"
                       htmlFor={chunkSizeId}
-                      hint="Characters per chunk."
+                      hint="每块字符数。"
                     />
                     <Input
                       id={chunkSizeId}
@@ -721,9 +721,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   </div>
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Chunk overlap"
+                      label="分块重叠"
                       htmlFor={chunkOverlapId}
-                      hint="Shared chars between adjacent chunks."
+                      hint="相邻分块共享字符数。"
                     />
                     <Input
                       id={chunkOverlapId}
@@ -744,7 +744,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               {config.selection_type === "index_range" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Start" hint="Inclusive start row index for index_range." />
+                    <FieldLabel label="起始" hint="index_range 的起始行索引（含）。" />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -753,7 +753,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <FieldLabel label="End" hint="Inclusive end row index for index_range." />
+                    <FieldLabel label="结束" hint="index_range 的结束行索引（含）。" />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -767,7 +767,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               {config.selection_type === "partition_block" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Index" hint="Partition index to load." />
+                    <FieldLabel label="分区索引" hint="要加载的分区索引。" />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -776,7 +776,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Partitions" hint="Total number of partitions." />
+                    <FieldLabel label="分区总数" hint="分区总数量。" />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -805,14 +805,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   </EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent className="text-xs text-muted-foreground">
-                  Preview appears here after loading source metadata.
+                  加载数据源元数据后，此处会显示预览。
                 </EmptyContent>
               </Empty>
             </div>
           ) : (
             <div className="space-y-2">
               <div className="text-xs text-muted-foreground">
-                Loaded columns: {previewColumns.join(", ") || "None"}
+                已加载列：{previewColumns.join(", ") || "无"}
               </div>
               <div className="max-h-[360px] overflow-y-auto overflow-x-hidden rounded-xl corner-squircle border border-border/60">
                 <Table className="corner-squircle min-w-max">
@@ -862,7 +862,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                                 );
                               }
                               if (imagePreview?.kind === "too_large") {
-                                return "Image too large to preview";
+                                return "图片过大，无法预览";
                               }
                               const value = stringifyCell(row[col]);
                               const rowHasExpandableCell = rowHasExpandableText(row);

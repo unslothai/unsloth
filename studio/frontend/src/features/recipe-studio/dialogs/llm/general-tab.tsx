@@ -181,7 +181,7 @@ export function LlmGeneralTab({
       {needsSetupHelp ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
-            Set up the model once, then come back here
+            先完成模型配置，再回到这里
           </p>
           <div className="mt-2 space-y-1.5">
             {!hasModelProviders && (
@@ -190,7 +190,7 @@ export function LlmGeneralTab({
                   icon={ArrowRight01Icon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
-                <span>Add a Provider connection step in AI generation → Setup.</span>
+                <span>在 AI generation → Setup 中先添加提供方连接步骤。</span>
               </p>
             )}
             {!hasModelConfigs && (
@@ -199,7 +199,7 @@ export function LlmGeneralTab({
                   icon={ArrowRight01Icon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
-                <span>Add a Model preset step, connect it, then choose it below.</span>
+                <span>先添加模型预设步骤并连接，再在下方选择。</span>
               </p>
             )}
           </div>
@@ -207,19 +207,18 @@ export function LlmGeneralTab({
       ) : needsModelChoice ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
-            Start by choosing a model preset
+            请先选择模型预设
           </p>
           <p className="mt-1">
-            Once that is in place, write the prompt and add optional tool access
-            if this step needs tools.
+            选好后可编写提示词；若本步骤需要工具，再配置工具权限。
           </p>
         </div>
       ) : null}
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Model preset"
+          label="模型预设"
           htmlFor={modelAliasId}
-          hint="Choose the reusable model setup for this step."
+          hint="选择当前步骤复用的模型配置。"
         />
         <div ref={modelAliasAnchorRef}>
           <Combobox
@@ -231,10 +230,10 @@ export function LlmGeneralTab({
             itemToStringValue={(value) => value}
             autoHighlight={true}
           >
-            <ComboboxInput
-              id={modelAliasId}
-              className="nodrag w-full"
-              placeholder="Choose a model preset"
+              <ComboboxInput
+                id={modelAliasId}
+                className="nodrag w-full"
+                placeholder="选择模型预设"
               onBlur={(event) => {
                 const inputValue = event.target.value;
                 if (inputValue !== config.model_alias) {
@@ -243,7 +242,7 @@ export function LlmGeneralTab({
               }}
             />
             <ComboboxContent anchor={modelAliasAnchorRef}>
-              <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxEmpty>未找到模型配置</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>
@@ -257,16 +256,15 @@ export function LlmGeneralTab({
       </div>
       {!hasToolProfiles && (
         <p className="text-xs text-muted-foreground">
-          Need tools for this step? Add a Tool access step in AI generation →
-          Setup.
+          如需工具，请在 AI generation → Setup 中添加 Tool access 步骤。
         </p>
       )}
       {(hasToolProfiles || Boolean(config.tool_alias?.trim())) && (
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Tool access (optional)"
+            label="工具权限（可选）"
             htmlFor={toolAliasId}
-            hint="Choose saved tool access for this step. Leave empty if this step should not use tools."
+            hint="选择该步骤可使用的工具权限；不需要工具时可留空。"
           />
           <div ref={toolAliasAnchorRef}>
             <Combobox
@@ -281,7 +279,7 @@ export function LlmGeneralTab({
               <ComboboxInput
                 id={toolAliasId}
                 className="nodrag w-full"
-                placeholder="Choose tool access"
+                placeholder="选择工具权限"
                 onBlur={(event) => {
                   const inputValue = event.target.value;
                   if (inputValue !== (config.tool_alias ?? "")) {
@@ -290,7 +288,7 @@ export function LlmGeneralTab({
                 }}
               />
               <ComboboxContent anchor={toolAliasAnchorRef}>
-                <ComboboxEmpty>No tool access found</ComboboxEmpty>
+                <ComboboxEmpty>未找到工具权限</ComboboxEmpty>
                 <ComboboxList>
                   {(alias: string) => (
                     <ComboboxItem key={alias} value={alias}>
@@ -306,16 +304,16 @@ export function LlmGeneralTab({
       {config.llm_type === "code" && (
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Code language"
+            label="代码语言"
             htmlFor={codeLangId}
-            hint="Choose the language this AI step should generate."
+            hint="选择该 AI 步骤要生成的语言。"
           />
           <Select
             value={config.code_lang ?? "python"}
             onValueChange={(value) => onUpdate({ code_lang: value })}
           >
             <SelectTrigger className="nodrag w-full" id={codeLangId}>
-              <SelectValue placeholder="Select language" />
+              <SelectValue placeholder="选择语言" />
             </SelectTrigger>
             <SelectContent>
               {CODE_LANG_OPTIONS.map((lang) => (
@@ -329,9 +327,9 @@ export function LlmGeneralTab({
       )}
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Prompt"
+          label="提示词"
           htmlFor={promptId}
-          hint="Write the prompt for this step. Insert other fields with {{ field_name }}."
+          hint="编写此步骤提示词，可用 {{ field_name }} 引用其他字段。"
         />
         <Textarea
           id={promptId}
@@ -342,9 +340,9 @@ export function LlmGeneralTab({
         />
         {invalidPromptRefs.length > 0 && (
           <p className="text-xs text-destructive">
-            Unknown field: {invalidPromptText}
+            未知字段：{invalidPromptText}
             {invalidPromptRefs.length > 3
-              ? ` +${invalidPromptRefs.length - 3} more`
+              ? ` 另有 ${invalidPromptRefs.length - 3} 个`
               : ""}
           </p>
         )}
@@ -354,9 +352,9 @@ export function LlmGeneralTab({
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-3">
             <FieldLabel
-              label="Use image context"
+              label="使用图像上下文"
               htmlFor={imageContextToggleId}
-              hint="Attach one image field from your source data to this AI step."
+              hint="为该 AI 步骤附加来源数据中的图像字段。"
             />
             <Switch
               id={imageContextToggleId}
@@ -379,9 +377,9 @@ export function LlmGeneralTab({
           {imageContext.enabled && (
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Image field"
+                label="图像字段"
                 htmlFor={imageContextColumnId}
-                hint="Choose the source-data field that contains the image."
+                hint="选择包含图像内容的来源字段。"
               />
               <Select
                 value={imageContext.column_name || undefined}
@@ -399,7 +397,7 @@ export function LlmGeneralTab({
                   className="nodrag w-full"
                   id={imageContextColumnId}
                 >
-                  <SelectValue placeholder="Select image column" />
+                  <SelectValue placeholder="选择图像列" />
                 </SelectTrigger>
                 <SelectContent>
                   {imageContextColumnOptions.map((columnName) => (
@@ -416,9 +414,9 @@ export function LlmGeneralTab({
       {config.llm_type === "structured" && (
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Response format"
+            label="响应格式"
             htmlFor={outputFormatId}
-            hint="Describe the JSON shape you want back."
+            hint="描述期望返回的 JSON 结构。"
           />
           <Textarea
             id={outputFormatId}
@@ -436,16 +434,16 @@ export function LlmGeneralTab({
       >
         <CollapsibleTrigger asChild={true}>
           <CollapsibleSectionTriggerButton
-            label="Trace and extra controls"
+            label="追踪与附加控制"
             open={advancedOpen}
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Instructions (optional)"
+              label="额外指令（可选）"
               htmlFor={systemPromptId}
-              hint="Add extra guidance that should apply before the prompt."
+              hint="在提示词前补充全局引导信息。"
             />
             <Textarea
               id={systemPromptId}
@@ -458,18 +456,18 @@ export function LlmGeneralTab({
             />
             {invalidSystemRefs.length > 0 && (
               <p className="text-xs text-destructive">
-                Unknown field: {invalidSystemText}
+                未知字段：{invalidSystemText}
                 {invalidSystemRefs.length > 3
-                  ? ` +${invalidSystemRefs.length - 3} more`
+                  ? ` 另有 ${invalidSystemRefs.length - 3} 个`
                   : ""}
               </p>
             )}
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Save trace details"
+              label="保存追踪详情"
               htmlFor={traceModeId}
-              hint="Adds a trace field you can inspect later."
+              hint="会新增可后续查看的追踪字段。"
             />
             <Select
               value={config.with_trace ?? "none"}
@@ -481,7 +479,7 @@ export function LlmGeneralTab({
               }
             >
               <SelectTrigger className="nodrag w-full" id={traceModeId}>
-                <SelectValue placeholder="Select trace mode" />
+                <SelectValue placeholder="选择追踪模式" />
               </SelectTrigger>
               <SelectContent>
                 {TRACE_MODE_OPTIONS.map((traceMode) => (
@@ -494,9 +492,9 @@ export function LlmGeneralTab({
           </div>
           <div className="flex items-center justify-between gap-3">
             <FieldLabel
-              label="Save reasoning text"
+              label="保存推理文本"
               htmlFor={reasoningToggleId}
-              hint="Adds a reasoning field when the model returns one."
+              hint="当模型返回推理内容时，保存到字段中。"
             />
             <Switch
               id={reasoningToggleId}

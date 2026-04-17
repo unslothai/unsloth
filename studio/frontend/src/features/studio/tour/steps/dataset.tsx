@@ -6,14 +6,12 @@ import { ReadMore, type TourStep } from "@/features/tour";
 export const studioDatasetStep: TourStep = {
   id: "dataset",
   target: "studio-dataset",
-  title: "Dataset",
+  title: "数据集",
   body: (
     <>
-      Search Hub or paste <span className="font-mono">user/dataset</span>. Preview
-      a few rows: formatting matters more than size. We’ll try to auto-convert
-      your dataset into a supported training format. If we can’t infer it
-      cleanly, we’ll prompt you to map the fields manually. If outputs look off
-      in Chat later, dataset formatting/template is the first thing to check.{" "}
+      可在 Hub 搜索或粘贴 <span className="font-mono">user/dataset</span>。先预览几行数据：格式通常比规模更重要。
+      我们会尝试自动转换为受支持的训练格式；若无法可靠识别，会提示你手动映射字段。
+      如果后续聊天效果异常，优先检查数据集格式与模板。{" "}
       <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide" />
     </>
   ),

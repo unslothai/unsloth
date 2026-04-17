@@ -25,7 +25,7 @@ export function BernoulliDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Probability (p)"
+          label="概率（p）"
           htmlFor={pId}
           hint="Success probability in [0, 1]."
         />

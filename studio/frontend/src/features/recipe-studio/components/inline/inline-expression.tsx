@@ -38,7 +38,7 @@ export function InlineExpression({
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-[130px_1fr]">
-        <InlineField label="Output type">
+        <InlineField label="输出类型">
           <Select
             value={config.dtype}
             onValueChange={(value) =>
@@ -46,7 +46,7 @@ export function InlineExpression({
             }
           >
             <SelectTrigger className="nodrag h-8 w-full text-xs">
-              <SelectValue placeholder="dtype" />
+              <SelectValue placeholder="类型" />
             </SelectTrigger>
             <SelectContent>
               {DTYPE_OPTIONS.map((dtype) => (
@@ -57,7 +57,7 @@ export function InlineExpression({
             </SelectContent>
           </Select>
         </InlineField>
-        <InlineField label="Expression">
+        <InlineField label="表达式">
           <Input
             className="nodrag h-8 w-full text-xs"
             aria-invalid={invalidRefs.length > 0}

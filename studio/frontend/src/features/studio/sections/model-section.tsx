@@ -61,6 +61,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 
 const METHOD_DOTS: Record<string, string> = {
@@ -84,6 +85,7 @@ function extractParamLabel(id: string): string | null {
 }
 
 export function ModelSection() {
+  const { t } = useTranslation();
   const gpu = useGpuInfo();
 
   const {
@@ -271,11 +273,11 @@ export function ModelSection() {
     <div data-tour="studio-model" className="w-full min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
-        title="Model"
-        description="Select base model and training method"
+        title={t("studio.title")}
+        description={t("studio.selectBaseMethod")}
         accent="emerald"
         featured={true}
-        badge="2x Faster Training"
+        badge={t("training.fasterTraining")}
         className="shadow-border ring-border"
       >
         <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -284,7 +286,7 @@ export function ModelSection() {
             className="flex min-w-0 flex-col gap-2"
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Local Model
+              {t("model.localModel")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -298,7 +300,7 @@ export function ModelSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Path to a locally downloaded model or a custom HF repo.
+                  {t("model.localModelDesc")}.
                 </TooltipContent>
               </Tooltip>
             </span>
@@ -317,12 +319,12 @@ export function ModelSection() {
                 itemToStringValue={(id) => id}
                 autoHighlight={true}
               >
-                <ComboboxInput
-                  placeholder={
-                    isLoadingLocalModels
-                      ? "Scanning local and cached models..."
-                      : "./models/my-model"
-                  }
+                 <ComboboxInput
+                   placeholder={
+                     isLoadingLocalModels
+                       ? t("model.scanningModels")
+                       : "./models/my-model"
+                   }
                   className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
                   onBlur={() => applyLocalModel(localModelInput)}
                   onKeyDown={(event) => {
@@ -341,14 +343,14 @@ export function ModelSection() {
                 >
                   {isLoadingLocalModels ? (
                     <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Scanning...
+                      <Spinner className="size-4" /> {t("common.loading")}
                     </div>
                   ) : localModelsError ? (
                     <div className="px-3 py-2 text-xs text-red-500">
                       {localModelsError}
                     </div>
                   ) : (
-                    <ComboboxEmpty>No local models found</ComboboxEmpty>
+                    <ComboboxEmpty>{t("model.noLocalModels")}</ComboboxEmpty>
                   )}
                   <ComboboxList className="p-1">
                     {(id: string) => {
@@ -388,15 +390,15 @@ export function ModelSection() {
             </div>
             {isLoadingLocalModels ? (
               <p className="text-[10px] text-muted-foreground">
-                Scanning local models...
+                {t("model.scanningModels")}
               </p>
             ) : localModelsError ? (
               <p className="text-[10px] text-red-500">{localModelsError}</p>
             ) : (
               <p className="text-[10px] text-muted-foreground">
                 {trainableLocalModels.length > 0
-                  ? `${trainableLocalModels.length} local/cached models found`
-                  : "No local models found. Enter path manually."}
+                  ? t("model.localModelCount", { count: trainableLocalModels.length })
+                  : t("model.noLocalModelsManual")}
               </p>
             )}
           </div>
@@ -406,7 +408,7 @@ export function ModelSection() {
             className="flex min-w-0 flex-col gap-2"
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Hugging Face Model
+              {t("model.huggingFaceModel")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -420,14 +422,14 @@ export function ModelSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Search Hugging Face models or pick from our recommended list.{" "}
+                  {t("model.hfModelDesc")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("common.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -457,22 +459,22 @@ export function ModelSection() {
                 itemToStringValue={(id) => id}
                 autoHighlight={true}
               >
-                <ComboboxInput
-                  placeholder="Search models..."
-                  className="w-full leading-5"
-                >
+                 <ComboboxInput
+                   placeholder={t("model.searchModels")}
+                   className="w-full leading-5"
+                 >
                   <InputGroupAddon>
                     <HugeiconsIcon icon={Search01Icon} className="size-4" />
                   </InputGroupAddon>
                 </ComboboxInput>
-                <ComboboxContent anchor={comboboxAnchorRef}>
-                  {isLoading ? (
-                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching…
-                    </div>
-                  ) : (
-                    <ComboboxEmpty>No models found</ComboboxEmpty>
-                  )}
+                 <ComboboxContent anchor={comboboxAnchorRef}>
+                   {isLoading ? (
+                     <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                       <Spinner className="size-4" /> {t("common.searching")}
+                     </div>
+                   ) : (
+                     <ComboboxEmpty>{t("model.noModelsFound")}</ComboboxEmpty>
+                   )}
                   <div
                     ref={scrollRef}
                     className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
@@ -509,25 +511,25 @@ export function ModelSection() {
                                   gpu.available && (
                                     <span className="block text-[10px] mt-1">
                                       {exceeds
-                                        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpu.memoryTotalGb}GB)`
+                                        ? t("model.needsVRAM", { vram: vramEst, gpu: gpu.memoryTotalGb })
                                         : fitStatus === "tight"
-                                          ? `~${vramEst}GB VRAM (tight fit on ${gpu.memoryTotalGb}GB)`
-                                          : `~${vramEst}GB VRAM`}
+                                          ? t("model.tightFitVRAM", { vram: vramEst, gpu: gpu.memoryTotalGb })
+                                          : t("model.estimatedVRAM", { vram: vramEst })}
                                     </span>
                                   )}
                               </TooltipContent>
                             </Tooltip>
-                            <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                              {fitStatus === "exceeds" && (
-                                <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
-                                  OOM
-                                </span>
-                              )}
-                              {fitStatus === "tight" && (
-                                <span className="text-[9px] font-medium !text-amber-400">
-                                  TIGHT
-                                </span>
-                              )}
+                              <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                                {fitStatus === "exceeds" && (
+                                  <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
+                                    {t("model.insufficientVRAM")}
+                                  </span>
+                                )}
+                                {fitStatus === "tight" && (
+                                  <span className="text-[9px] font-medium !text-amber-400">
+                                    {t("model.tightFit")}
+                                  </span>
+                                )}
                               {detail && (
                                 <span className="text-[10px] text-muted-foreground">
                                   {detail}
@@ -555,7 +557,7 @@ export function ModelSection() {
             className="flex min-w-0 flex-col gap-2"
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Method
+              {t("training.method")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -568,18 +570,17 @@ export function ModelSection() {
                     />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
-                  16-bit. Full updates all weights.{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    Read more
-                  </a>
-                </TooltipContent>
+                 <TooltipContent className="max-w-xs">
+{t("training.methodDesc")} 
+                   <a
+                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                     target="_blank"
+                     rel="noopener noreferrer"
+                     className="text-primary underline"
+                   >
+                     {t("common.readMore")}
+                   </a>
+                 </TooltipContent>
               </Tooltip>
             </span>
             <Select
@@ -593,37 +594,37 @@ export function ModelSection() {
                 position="popper"
                 className={`${DARK_CONTENT} w-[var(--radix-select-trigger-width)]`}
               >
-                <SelectItem value="qlora">
-                  <span className="flex items-center gap-2">
-                    <span
-                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.qlora}`}
-                    />
-                    QLoRA (4-bit)
-                  </span>
-                </SelectItem>
-                <SelectItem value="lora">
-                  <span className="flex items-center gap-2">
-                    <span
-                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.lora}`}
-                    />
-                    LoRA (16-bit)
-                  </span>
-                </SelectItem>
-                <SelectItem value="full">
-                  <span className="flex items-center gap-2">
-                    <span
-                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
-                    />
-                    Full Fine-tune
-                  </span>
-                </SelectItem>
+                 <SelectItem value="qlora">
+                   <span className="flex items-center gap-2">
+                     <span
+                       className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.qlora}`}
+                     />
+                     {t("training.methodQlora")}
+                   </span>
+                 </SelectItem>
+                 <SelectItem value="lora">
+                   <span className="flex items-center gap-2">
+                     <span
+                       className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.lora}`}
+                     />
+                     {t("training.methodLora")}
+                   </span>
+                 </SelectItem>
+                 <SelectItem value="full">
+                   <span className="flex items-center gap-2">
+                     <span
+                       className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
+                     />
+                     {t("training.methodFull")}
+                   </span>
+                 </SelectItem>
               </SelectContent>
             </Select>
           </div>
 
           <div className="flex min-w-0 flex-col gap-2">
             <span className="text-xs font-medium text-muted-foreground">
-              Hugging Face Token (Optional)
+              {t("model.hfToken")}
             </span>
             <InputGroup>
               <InputGroupAddon>

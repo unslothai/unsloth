@@ -140,7 +140,7 @@ export function ValidatorDialog({
             <SelectValue placeholder="Select code column" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE_VALUE}>None</SelectItem>
+            <SelectItem value={NONE_VALUE}>无</SelectItem>
             {codeOptions.map((item) => (
               <SelectItem key={item.name} value={item.name}>
                 {item.name}
@@ -185,7 +185,7 @@ export function ValidatorDialog({
                   readOnly={true}
                 />
                 <ComboboxContent anchor={oxcModeAnchorRef}>
-                  <ComboboxEmpty>No modes available</ComboboxEmpty>
+                  <ComboboxEmpty>无可用模式</ComboboxEmpty>
                   <ComboboxList>
                     {(mode: string) => (
                       <ComboboxItem key={mode} value={mode}>
@@ -224,7 +224,7 @@ export function ValidatorDialog({
                   readOnly={true}
                 />
                 <ComboboxContent anchor={oxcCodeShapeAnchorRef}>
-                  <ComboboxEmpty>No code-shape options</ComboboxEmpty>
+                  <ComboboxEmpty>无可用代码形态</ComboboxEmpty>
                   <ComboboxList>
                     {(shape: string) => (
                       <ComboboxItem key={shape} value={shape}>

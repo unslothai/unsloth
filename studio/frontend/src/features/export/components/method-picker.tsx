@@ -21,7 +21,7 @@ interface MethodPickerProps {
   onChange: (v: ExportMethod) => void;
   /** Methods that should be shown but disabled (greyed out, not clickable). */
   disabledMethods?: ExportMethod[];
-  /** Optional reason shown in a tooltip on disabled methods. */
+  /** 可选 reason shown in a tooltip on disabled methods. */
   disabledReason?: string;
 }
 
@@ -98,7 +98,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                         type="button"
                         className="shrink-0 text-foreground/50 hover:text-foreground cursor-help"
                         onClick={(e) => e.stopPropagation()}
-                        aria-label={`${m.title} info`}
+                        aria-label={`${m.title} 说明`}
                       >
                         <HugeiconsIcon
                           icon={InformationCircleIcon}

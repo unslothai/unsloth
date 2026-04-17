@@ -29,7 +29,7 @@ const SHIKI_THEME = ["github-light", "github-dark"] as ["github-light", "github-
 function truncate(text: string): string {
   return text.length <= MAX_DISPLAY
     ? text
-    : `${text.slice(0, MAX_DISPLAY)}\n... (truncated)`;
+    : `${text.slice(0, MAX_DISPLAY)}\n...（已截断）`;
 }
 
 function CopyBtn({ text }: { text: string }) {
@@ -59,14 +59,14 @@ function CopyBtn({ text }: { text: string }) {
       type="button"
       onClick={copy}
       className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Copy to clipboard"
+      aria-label="复制到剪贴板"
     >
       {copied ? (
         <CheckIcon className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
+      {copied ? "已复制" : "复制"}
     </button>
   );
 }
@@ -149,12 +149,12 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           {isRunning ? (
             <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
               <LoaderIcon className="size-3.5 animate-spin" />
-              <span>Running&hellip;</span>
+              <span>运行中&hellip;</span>
             </div>
           ) : output ? (
             <div className="mt-2 border-t border-dashed pt-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">output</span>
+                <span className="text-xs font-medium text-muted-foreground">输出</span>
                 <CopyBtn text={output} />
               </div>
               <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">

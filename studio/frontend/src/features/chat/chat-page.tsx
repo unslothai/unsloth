@@ -415,8 +415,8 @@ function InlineSidebar({
       <Sheet open={openMobile} onOpenChange={setOpenMobile}>
         <SheetContent side={side} className="w-[18rem] p-0">
           <SheetHeader className="sr-only">
-            <SheetTitle>Chat sidebar</SheetTitle>
-            <SheetDescription>Chat threads and actions</SheetDescription>
+            <SheetTitle>聊天侧边栏</SheetTitle>
+            <SheetDescription>聊天线程与操作</SheetDescription>
           </SheetHeader>
           <div className="h-full overflow-auto">{children}</div>
         </SheetContent>

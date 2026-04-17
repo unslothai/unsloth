@@ -7,59 +7,50 @@ export const studioTrainingTourSteps: TourStep[] = [
   {
     id: "nav",
     target: "navbar",
-    title: "Training view",
+    title: "训练视图",
     body: (
       <>
-        This view updates live as training runs. Watch loss, speed, and ETA, and
-        use Stop if you need to bail out or save.
+        训练进行时该视图会实时更新。你可以观察损失、速度与预计剩余时间，需要中止或保存时可使用停止按钮。
       </>
     ),
   },
   {
     id: "progress",
     target: "studio-training-progress",
-    title: "Progress + ETA",
+    title: "进度与预计时间",
     body: (
       <>
-        Phase shows what we’re doing (loading model/dataset, configuring,
-        training). ETA is rough early on; it stabilizes after a few steps.
+        阶段会显示当前任务（加载模型/数据集、配置、训练）。前几步的预计时间偏粗略，运行一会后会更稳定。
       </>
     ),
   },
   {
     id: "train-loss",
     target: "studio-training-loss",
-    title: "Training loss",
+    title: "训练损失",
     body: (
       <>
-        Training loss should generally trend down. Absolute values vary by
-        dataset + tokenizer, so use it for direction more than “a magic number”.
-        If loss goes very low (eg below ~0.2), that can be a sign you’re
-        overfitting. If loss plateaus high, you likely need better data
-        formatting, more data, or different hyperparams.
+        训练损失通常应整体下降。绝对值会受数据集与分词器影响，因此更应关注趋势而非某个“固定阈值”。若损失过低（如低于约 0.2）可能过拟合；若高位平台，通常需要更好的数据格式、更多数据或调整超参数。
       </>
     ),
   },
   {
     id: "eval-loss",
     target: "studio-eval-loss",
-    title: "Eval loss (validation)",
+    title: "验证损失（Eval）",
     body: (
       <>
-        Eval loss is your sanity check. If training loss keeps dropping but eval
-        loss goes up, you’re likely overfitting. To track it, set an eval dataset
-        and `eval_steps` (setting `eval_steps=1` can be very slow).
+        Eval 损失是关键校验指标。如果训练损失持续下降而验证损失上升，通常意味着过拟合。要跟踪它，请配置验证集和 `eval_steps`（`eval_steps=1` 可能很慢）。
       </>
     ),
   },
   {
     id: "stop",
     target: "studio-training-stop",
-    title: "Stop / save",
+    title: "停止 / 保存",
     body: (
       <>
-        Stop training any time. “Stop and Save” keeps the checkpoint/adapters so
-        you can export or compare later.
+        你可以随时停止训练。“停止并保存”会保留检查点/适配器，便于后续导出或对比。
       </>
     ),
   },

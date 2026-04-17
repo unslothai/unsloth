@@ -42,6 +42,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -296,6 +297,7 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
@@ -387,10 +389,10 @@ export function DataRecipesPage(): ReactElement {
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
-              Data Recipes
+              {t("recipes.dataRecipes")}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Create and manage local recipe workflows.
+              {t("recipes.createManageRecipes")}
             </p>
           </div>
           <DropdownMenu>
@@ -408,7 +410,7 @@ export function DataRecipesPage(): ReactElement {
                 }}
               >
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                Start Empty
+                {t("recipes.startEmpty")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {
@@ -416,7 +418,7 @@ export function DataRecipesPage(): ReactElement {
                 }}
               >
                 <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                Start from Learning Recipe
+                {t("recipes.startFromLearningRecipe")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -425,10 +427,10 @@ export function DataRecipesPage(): ReactElement {
         {!ready ? (
           <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
             <p className="text-sm font-medium text-foreground">
-              Loading recipes
+              {t("recipes.loadingRecipes")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Fetching your saved recipes and learning templates.
+              {t("recipes.fetchingSavedRecipes")}
             </p>
           </div>
         ) : recipes.length === 0 ? (
@@ -437,10 +439,9 @@ export function DataRecipesPage(): ReactElement {
               <EmptyMedia variant="icon">
                 <HugeiconsIcon icon={CookBookIcon} className="size-5" />
               </EmptyMedia>
-              <EmptyTitle>No recipes yet</EmptyTitle>
+              <EmptyTitle>{t("recipes.noRecipesYet")}</EmptyTitle>
               <EmptyDescription>
-                Browse Learning Recipes below to understand how recipe workflows
-                work.
+                {t("recipes.browseLearningRecipes")}
               </EmptyDescription>
             </EmptyHeader>
             <EmptyContent className="max-w-6xl items-stretch">
@@ -519,9 +520,9 @@ export function DataRecipesPage(): ReactElement {
           overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
-            <DialogTitle>Learning Recipes</DialogTitle>
+            <DialogTitle>{t("recipes.learningRecipes")}</DialogTitle>
             <DialogDescription>
-              Start from a prebuilt recipe to learn patterns, then edit and run.
+              {t("recipes.startFromPrebuiltRecipe")}
             </DialogDescription>
           </DialogHeader>
           <LearningRecipeCards

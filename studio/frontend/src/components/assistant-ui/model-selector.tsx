@@ -81,7 +81,7 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         <span className={isLoaded ? "text-foreground" : "text-muted-foreground"}>
-          {currentModel?.name ?? "Select model..."}
+          {currentModel?.name ?? "选择模型..."}
         </span>
         {currentModel?.description && (
           <span className="text-muted-foreground text-xs">{currentModel.description}</span>
@@ -131,8 +131,8 @@ function ModelSelectorContent({
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
-            <TabsTrigger value="hub">Hub models</TabsTrigger>
-            <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
+            <TabsTrigger value="hub">Hub 模型</TabsTrigger>
+            <TabsTrigger value="lora">微调模型</TabsTrigger>
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
@@ -155,10 +155,10 @@ function ModelSelectorContent({
             type="button"
             onClick={onEject}
             className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            title="Eject model"
+            title="卸载模型"
           >
             <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
-            Eject loaded model
+            卸载已加载模型
           </button>
         </div>
       ) : null}
@@ -206,7 +206,7 @@ export function ModelSelector({
       const isExported = lora.source === "exported";
       const isMerged = lora.exportType === "merged";
       const tag = isExported
-        ? isMerged ? "Merged · Exported" : "LoRA"
+        ? isMerged ? "合并 · 已导出" : "LoRA"
         : "LoRA";
       all.set(lora.id, {
         ...lora,

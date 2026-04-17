@@ -127,7 +127,7 @@ export function HyperparametersStep() {
   return (
     <FieldGroup>
       <FieldSet>
-        <FieldLegend variant="label">Choose your training parameters</FieldLegend>
+        <FieldLegend variant="label">选择训练参数</FieldLegend>
         <div className="flex flex-col gap-4">
           <div
             key={useEpochs ? "epochs" : "steps"}
@@ -135,7 +135,7 @@ export function HyperparametersStep() {
           >
             <div className="flex items-center justify-between">
               <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-                {useEpochs ? "Epochs" : "Max Steps"}
+                {useEpochs ? "轮次（Epochs）" : "最大步数（Max Steps）"}
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -150,15 +150,15 @@ export function HyperparametersStep() {
                   </TooltipTrigger>
                   <TooltipContent>
                     {useEpochs
-                      ? "Number of full passes over the dataset."
-                      : "Override total optimizer steps."}{" "}
+                      ? "完整遍历数据集的次数。"
+                      : "覆盖训练总优化步数。"}{" "}
                     <a
                       href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline"
                     >
-                      Read more
+                      了解更多
                     </a>
                   </TooltipContent>
                 </Tooltip>
@@ -169,7 +169,7 @@ export function HyperparametersStep() {
                   onClick={toggleUseEpochs}
                   className="text-xs text-primary underline cursor-pointer"
                 >
-                  {useEpochs ? "Use Max Steps" : "Use Epochs"}
+                  {useEpochs ? "切换为最大步数" : "切换为轮次"}
                 </button>
                 <Slider
                   value={[
@@ -212,7 +212,7 @@ export function HyperparametersStep() {
 
           <div className="flex items-center justify-between">
             <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-              Context Length
+              上下文长度
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -226,14 +226,14 @@ export function HyperparametersStep() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Maximum number of tokens per training sample.{" "}
+                  每条训练样本可用的最大 token 数。{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    了解更多
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -257,7 +257,7 @@ export function HyperparametersStep() {
 
           <div className="flex items-center justify-between">
             <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-              Learning Rate
+              学习率
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -271,14 +271,14 @@ export function HyperparametersStep() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Step size for weight updates. Lower = slower but more stable.{" "}
+                  权重更新步长。数值更低通常更稳定但收敛更慢。{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    了解更多
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -311,7 +311,7 @@ export function HyperparametersStep() {
         <>
           <Separator />
           <FieldSet>
-            <FieldLegend variant="label">LoRA Parameters</FieldLegend>
+            <FieldLegend variant="label">LoRA 参数</FieldLegend>
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
@@ -329,15 +329,14 @@ export function HyperparametersStep() {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Dimension of the low-rank matrices. Higher = more
-                      capacity.{" "}
+                      低秩矩阵维度。值越高，容量通常越大。{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        了解更多
                       </a>
                     </TooltipContent>
                   </Tooltip>
@@ -379,14 +378,14 @@ export function HyperparametersStep() {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Scaling factor. Typically set to 2x the rank value.{" "}
+                      缩放系数。通常设置为 rank 的 2 倍。{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        了解更多
                       </a>
                     </TooltipContent>
                   </Tooltip>
@@ -428,15 +427,14 @@ export function HyperparametersStep() {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Probability of dropping neurons during training for
-                      regularization.{" "}
+                      训练时随机丢弃神经元的概率，用于正则化。{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        了解更多
                       </a>
                     </TooltipContent>
                   </Tooltip>

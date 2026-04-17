@@ -134,11 +134,16 @@ export function HistoricalTrainingView({
     ? {
         epochs: detail.config.num_epochs as number | undefined,
         batchSize: detail.config.batch_size as number | undefined,
-        learningRate: detail.config.learning_rate as string | undefined,
+        learningRate:
+          typeof detail.config.learning_rate === "number"
+            ? detail.config.learning_rate
+            : typeof detail.config.learning_rate === "string"
+              ? Number.parseFloat(detail.config.learning_rate)
+              : undefined,
         maxSteps: detail.config.max_steps as number | undefined,
         contextLength: detail.config.max_seq_length as number | undefined,
         warmupSteps: detail.config.warmup_steps as number | undefined,
-        optimizerType: detail.config.optim as string | undefined,
+        optimizer: detail.config.optim as string | undefined,
         loraRank: detail.config.lora_r as number | undefined,
         loraAlpha: detail.config.lora_alpha as number | undefined,
         loraDropout: detail.config.lora_dropout as number | undefined,

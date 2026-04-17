@@ -6,12 +6,10 @@ import { ReadMore, type TourStep } from "@/features/tour";
 export const studioNavStep: TourStep = {
   id: "nav",
   target: "navbar",
-  title: "Quick orientation",
+  title: "快速导览",
   body: (
     <>
-      Studio: pick base model, dataset, hyperparams, then start training. After
-      you start, you’ll see a Training view with live loss/metrics. Chat is for
-      testing base vs LoRA adapters. Export packages checkpoints for deployment.{" "}
+      在 Studio 中依次选择基础模型、数据集与超参数，然后开始训练。启动后会看到实时损失与指标。Chat 可对比基础模型与 LoRA 适配器效果，Export 可打包检查点用于部署。{" "}
       <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-for-beginners" />
     </>
   ),

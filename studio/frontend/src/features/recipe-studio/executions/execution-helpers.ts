@@ -16,13 +16,13 @@ export function buildSignature(name: string, payload: RecipePayload): string {
 
 export function formatSavedLabel(savedAt: number | null): string {
   if (!savedAt) {
-    return "Not saved yet";
+    return "尚未保存";
   }
   const time = new Date(savedAt).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });
-  return `Saved ${time}`;
+  return `已保存 ${time}`;
 }
 
 export function toErrorMessage(error: unknown, fallback: string): string {
@@ -89,7 +89,7 @@ export function isExecutionInProgress(status: RecipeExecutionStatus): boolean {
 }
 
 export function executionLabel(kind: "preview" | "full"): string {
-  return kind === "preview" ? "Preview" : "Full run";
+  return kind === "preview" ? "预览" : "完整运行";
 }
 
 export function normalizeRunName(value: unknown): string | null {

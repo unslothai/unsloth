@@ -206,9 +206,9 @@ function ReasoningTrigger({
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
       >
         {active ? (
-          <AnimatedShinyText className="text-sm">Thinking...</AnimatedShinyText>
+          <AnimatedShinyText className="text-sm">思考中...</AnimatedShinyText>
         ) : (
-          <span>Thought for {duration ?? 0} seconds</span>
+          <span>已思考 {duration ?? 0} 秒</span>
         )}
       </span>
       <ChevronDownIcon

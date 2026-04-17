@@ -624,14 +624,13 @@ export function RecipeStudioPage({
               </div>
               <div className="mt-4 space-y-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">
-                  Best place to start
+                  推荐起点
                 </p>
                 <p className="text-sm font-semibold text-foreground">
-                  Start with source data
+                  从源数据开始
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Most synthetic-data recipes begin with a document, dataset, or
-                  file before adding generation and checks.
+                  大多数合成数据配方都会先接入文档、数据集或文件，再逐步添加生成与校验步骤。
                 </p>
               </div>
               <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
@@ -644,7 +643,7 @@ export function RecipeStudioPage({
                     icon={DocumentAttachmentIcon}
                     className="size-4"
                   />
-                  Start with source data
+                  从源数据开始
                 </Button>
                 <Button
                   type="button"
@@ -653,7 +652,7 @@ export function RecipeStudioPage({
                   onClick={openRootBlockSheet}
                 >
                   <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                  Browse all steps
+                  浏览全部步骤
                 </Button>
               </div>
             </div>

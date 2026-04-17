@@ -57,7 +57,7 @@ export function ExecutionsView({
 }: ExecutionsViewProps): ReactElement {
   const formatEta = (value: number | null | undefined): string =>
     typeof value === "number" && Number.isFinite(value)
-      ? `${value.toLocaleString()} s`
+      ? `${value.toLocaleString()} 秒`
       : "--";
   const [detailTab, setDetailTab] = useState("data");
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
@@ -132,9 +132,9 @@ export function ExecutionsView({
         if (imagePreview?.kind === "ready") {
           return (
             <div className="max-w-[32rem]">
-              <img
-                src={imagePreview.src}
-                alt={`${name} preview`}
+                <img
+                  src={imagePreview.src}
+                  alt={`${name} 预览`}
                 loading="lazy"
                 className="h-24 w-auto max-w-[260px] rounded-md border border-border/60 bg-muted/20 object-contain"
               />
@@ -145,7 +145,7 @@ export function ExecutionsView({
           return (
             <div className="max-w-[32rem]">
               <p className="text-xs text-muted-foreground">
-                Image too large to preview
+                图片过大，无法预览
               </p>
             </div>
           );
@@ -372,7 +372,7 @@ export function ExecutionsView({
       <section className="min-w-0 flex-1 overflow-auto p-4">
         {!selectedExecution ? (
           <div className="rounded-xl border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
-            Select an execution.
+            请选择一条执行记录。
           </div>
         ) : (
           <div className="space-y-4">
@@ -390,7 +390,7 @@ export function ExecutionsView({
                       )}
                     />
                     <p className="text-sm font-semibold text-foreground">
-                      Progress
+                      进度
                     </p>
                   </div>
                   <p className="text-xs text-muted-foreground">{formatPercent(progressPercent)}</p>
@@ -398,21 +398,21 @@ export function ExecutionsView({
                 <Progress value={progressPercent} className="h-1" />
                 <div className="grid gap-2 text-xs md:grid-cols-4">
                   <p className="text-muted-foreground">
-                    Done: <span className="text-foreground">{selectedExecution.progress?.done ?? "--"}</span>
+                    已完成: <span className="text-foreground">{selectedExecution.progress?.done ?? "--"}</span>
                   </p>
                   <p className="text-muted-foreground">
-                    Total: <span className="text-foreground">{selectedExecution.progress?.total ?? "--"}</span>
+                    总计: <span className="text-foreground">{selectedExecution.progress?.total ?? "--"}</span>
                   </p>
                   <p className="text-muted-foreground">
-                    Rate: <span className="text-foreground">{selectedExecution.progress?.rate ?? "--"} rec/s</span>
+                    速率: <span className="text-foreground">{selectedExecution.progress?.rate ?? "--"} 条/秒</span>
                   </p>
                   <p className="text-muted-foreground">
-                    ETA: <span className="text-foreground">{formatEta(selectedExecution.progress?.eta_sec)}</span>
+                    预计剩余: <span className="text-foreground">{formatEta(selectedExecution.progress?.eta_sec)}</span>
                   </p>
                 </div>
                 {selectedExecution.current_column && selectedExecution.column_progress && (
                   <p className="text-xs text-muted-foreground">
-                    Column {selectedExecution.current_column}:{" "}
+                    列 {selectedExecution.current_column}:{" "}
                     {selectedExecution.column_progress.done ?? "--"}/
                     {selectedExecution.column_progress.total ?? "--"} (
                     {formatPercent(selectedExecution.column_progress.percent)})
@@ -420,10 +420,10 @@ export function ExecutionsView({
                 )}
                 {showBatchProgress && (
                   <p className="text-xs text-muted-foreground">
-                    Processed batch: {batchIdx ?? "--"}/{batchTotal}
+                    已处理批次: {batchIdx ?? "--"}/{batchTotal}
                   </p>
                 )}
-                {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
+                {isStale && <Badge variant="outline">该运行后配方已变更</Badge>}
               </div>
             )}
 
@@ -432,11 +432,11 @@ export function ExecutionsView({
               <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
                 <p className="text-sm font-semibold text-destructive">
                   {selectedExecution.status === "cancelled"
-                    ? "Execution cancelled"
-                    : "Execution failed"}
+                    ? "执行已取消"
+                    : "执行失败"}
                 </p>
                 <p className="text-xs text-destructive">
-                  {selectedExecution.error ?? "Unknown error."}
+                  {selectedExecution.error ?? "未知错误。"}
                 </p>
               </div>
             )}
@@ -444,10 +444,10 @@ export function ExecutionsView({
             <Tabs value={detailTab} onValueChange={setDetailTab}>
               <div className="flex items-center justify-between gap-2">
                 <TabsList className="border border-border/60 bg-card/40">
-                  <TabsTrigger value="data">Data</TabsTrigger>
-                  <TabsTrigger value="overview">Overview</TabsTrigger>
-                  <TabsTrigger value="columns">Columns</TabsTrigger>
-                  <TabsTrigger value="raw">Raw</TabsTrigger>
+                  <TabsTrigger value="data">数据</TabsTrigger>
+                  <TabsTrigger value="overview">概览</TabsTrigger>
+                  <TabsTrigger value="columns">列统计</TabsTrigger>
+                  <TabsTrigger value="raw">原始数据</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2">
                   {canPublish && (
@@ -458,7 +458,7 @@ export function ExecutionsView({
                       onClick={() => setPublishDialogOpen(true)}
                     >
                       <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
-                      Publish to Hugging Face
+                      发布到 Hugging Face
                     </Button>
                   )}
                   {canCancel && (
@@ -468,7 +468,7 @@ export function ExecutionsView({
                       variant="outline"
                       onClick={() => onCancelExecution(selectedExecution.id)}
                     >
-                      Cancel
+                      取消
                     </Button>
                   )}
                 </div>
@@ -574,7 +574,7 @@ export function ExecutionsView({
         execution={canPublish ? selectedExecution : null}
         onPublish={async (payload) => {
           if (!selectedExecution?.jobId) {
-            throw new Error("This run is missing a job id.");
+            throw new Error("该运行缺少 job id。");
           }
           const response = await publishRecipeJob(selectedExecution.jobId, payload);
           return { url: response.url };

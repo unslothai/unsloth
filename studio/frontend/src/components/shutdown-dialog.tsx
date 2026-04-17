@@ -38,13 +38,13 @@ export function ShutdownDialog({
       const res = await authFetch("/api/shutdown", { method: "POST" });
       accepted = res.ok;
       if (!accepted) {
-        toastError("Failed to shut down server");
+        toastError("关闭服务失败");
         setStopping(false);
         return;
       }
     } catch {
       // Network error — shutdown request never reached the server
-      toastError("Could not reach server");
+      toastError("无法连接到服务");
       setStopping(false);
       return;
     }
@@ -52,8 +52,8 @@ export function ShutdownDialog({
     onBeforeShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
-        <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>
-        <p style="font-size:0.9rem;color:#888;margin:0">You can now close this tab.</p>
+        <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio 已停止运行。</p>
+        <p style="font-size:0.9rem;color:#888;margin:0">现在可以关闭此标签页。</p>
       </div>`;
   };
 
@@ -61,21 +61,19 @@ export function ShutdownDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Stop Unsloth Studio?</AlertDialogTitle>
+          <AlertDialogTitle>要停止 Unsloth Studio 吗？</AlertDialogTitle>
           <AlertDialogDescription>
-            This will shut down the server. Any active training or inference
-            jobs will be terminated. You can restart it any time from the
-            desktop shortcut.
+            这将关闭服务。所有正在运行的训练或推理任务都会被终止。你可以随时通过桌面快捷方式重新启动。
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>取消</AlertDialogCancel>
           <AlertDialogAction
             onClick={handleStop}
             disabled={stopping}
             variant="destructive"
           >
-            {stopping ? "Stopping…" : "Stop server"}
+            {stopping ? "停止中…" : "停止服务"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

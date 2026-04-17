@@ -79,24 +79,23 @@ export function ModelConfigDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Model preset name"
+        label="模型预设名称"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
         <p className="text-sm font-semibold text-foreground">
-          Set up one reusable model choice for your AI steps
+          为 AI 步骤配置一个可复用的模型选项
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Choose the provider connection, enter the exact model ID, then save any
-          generation defaults you want to reuse.
+          选择提供方连接，填写准确的模型 ID，并保存希望复用的生成默认参数。
         </p>
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Provider connection"
+          label="提供方连接"
           htmlFor={providerId}
-          hint="Choose where this model should run."
+          hint="选择该模型运行的位置。"
         />
         <div ref={providerAnchorRef}>
           <Combobox
@@ -111,10 +110,10 @@ export function ModelConfigDialog({
             itemToStringValue={(value) => value}
             autoHighlight={true}
           >
-            <ComboboxInput
-              id={providerId}
-              className="nodrag w-full"
-              placeholder="Choose a provider connection"
+              <ComboboxInput
+                id={providerId}
+                className="nodrag w-full"
+                placeholder="选择提供方连接"
               onBlur={() => {
                 const next = providerInputRef.current;
                 if (next !== config.provider) {
@@ -123,7 +122,7 @@ export function ModelConfigDialog({
               }}
             />
             <ComboboxContent anchor={providerAnchorRef}>
-              <ComboboxEmpty>No providers found</ComboboxEmpty>
+              <ComboboxEmpty>未找到提供方</ComboboxEmpty>
               <ComboboxList>
                 {(provider: string) => (
                   <ComboboxItem key={provider} value={provider}>
@@ -136,15 +135,15 @@ export function ModelConfigDialog({
         </div>
         <p className="text-xs text-muted-foreground">
           {providerOptions.length === 0
-            ? "Add a Provider connection step first, then come back here."
-            : "Matching blocks are linked automatically on the canvas."}
+            ? "请先添加提供方连接步骤，再回到这里。"
+            : "画布中匹配的节点会自动建立关联。"}
         </p>
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Model ID"
+          label="模型 ID"
           htmlFor={modelId}
-          hint={isLinkedToLocal ? "Uses the model loaded in Chat. Any value works here." : "The exact model name sent to the connection."}
+          hint={isLinkedToLocal ? "将使用 Chat 中已加载的模型，这里填任意值都可。" : "填写发送给该连接的精确模型名。"}
         />
         <Input
           id={modelId}
@@ -157,18 +156,18 @@ export function ModelConfigDialog({
       <div className="grid gap-3">
         <div className="space-y-1">
           <p className="text-sm font-semibold text-foreground">
-            Default generation settings
+            默认生成参数
           </p>
           <p className="text-xs text-muted-foreground">
-            These defaults are reused anywhere you choose this model preset.
+            选择此模型预设时，将复用这些默认参数。
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Temperature"
+              label="温度"
               htmlFor={tempId}
-              hint="Higher values make responses more varied."
+              hint="值越高，输出越发散。"
             />
             <Input
               id={tempId}
@@ -183,7 +182,7 @@ export function ModelConfigDialog({
             <FieldLabel
               label="Top-p"
               htmlFor={topPId}
-              hint="Use this to limit how broad token selection can be."
+              hint="用于限制 token 采样范围。"
             />
             <Input
               id={topPId}
@@ -198,7 +197,7 @@ export function ModelConfigDialog({
             <FieldLabel
               label="Max tokens"
               htmlFor={maxTokensId}
-              hint="Maximum length of the model response."
+              hint="模型回复的最大长度。"
             />
             <Input
               id={maxTokensId}
@@ -211,9 +210,9 @@ export function ModelConfigDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Timeout (seconds)"
+              label="超时时间（秒）"
               htmlFor={timeoutId}
-              hint="How long to wait before a request is treated as failed."
+              hint="请求在判定失败前的最长等待时间。"
             />
             <Input
               id={timeoutId}
@@ -229,16 +228,16 @@ export function ModelConfigDialog({
       <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
         <CollapsibleTrigger asChild={true}>
           <CollapsibleSectionTriggerButton
-            label="Advanced request fields"
+            label="高级请求字段"
             open={optionalOpen}
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Advanced request fields (JSON)"
+              label="高级请求字段（JSON）"
               htmlFor={extraBodyId}
-              hint="Extra request fields to send with every call."
+              hint="每次调用都附带的额外请求字段。"
             />
             <Textarea
               id={extraBodyId}
@@ -257,7 +256,7 @@ export function ModelConfigDialog({
                 updateField("skip_health_check", Boolean(value))
               }
             />
-            Skip connection check
+            跳过连接检查
           </label>
         </CollapsibleContent>
       </Collapsible>

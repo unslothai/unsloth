@@ -73,7 +73,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
 
   return (
     <div className="space-y-3">
-      <InlineField label="Model alias">
+      <InlineField label="模型别名">
         <div ref={anchorRef}>
           <Combobox
             items={modelConfigAliases}
@@ -94,7 +94,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           >
             <ComboboxInput
               className="nodrag h-8 w-full text-xs"
-              placeholder="Model alias"
+              placeholder="模型别名"
               onBlur={() => {
                 const next = aliasInputRef.current;
                 if (next !== config.model_alias) {
@@ -106,7 +106,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
               }}
             />
             <ComboboxContent anchor={anchorRef}>
-              <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxEmpty>未找到模型配置</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>
@@ -118,7 +118,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           </Combobox>
         </div>
       </InlineField>
-      <InlineField label="Tool profile">
+      <InlineField label="工具配置">
         <div ref={toolAnchorRef}>
           <Combobox
             items={toolProfileAliases}
@@ -136,7 +136,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           >
             <ComboboxInput
               className="nodrag h-8 w-full text-xs"
-              placeholder="Tool profile"
+              placeholder="工具配置"
               onBlur={(event) => {
                 const next = event.target.value;
                 if (next !== (config.tool_alias ?? "")) {
@@ -148,7 +148,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
               }}
             />
             <ComboboxContent anchor={toolAnchorRef}>
-              <ComboboxEmpty>No tool profiles found</ComboboxEmpty>
+              <ComboboxEmpty>未找到工具配置</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>
@@ -161,7 +161,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         </div>
       </InlineField>
       {isCode && (
-        <InlineField label="Code language">
+        <InlineField label="代码语言">
           <Select
             value={config.code_lang?.trim() || "python"}
             onValueChange={(value) =>
@@ -185,7 +185,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         </InlineField>
       )}
       <p className="text-[11px] text-muted-foreground">
-        Prompt/system edited on aux nodes.
+        提示词/系统提示词请在辅助节点编辑。
       </p>
     </div>
   );

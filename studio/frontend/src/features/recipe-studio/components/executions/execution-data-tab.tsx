@@ -56,17 +56,17 @@ export function ExecutionDataTab({
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold">Dataset sample</p>
+        <p className="text-sm font-semibold">数据集样本</p>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {datasetColumnNames.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button type="button" size="sm" variant="outline">
-                  Columns
+                  列
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
+                <DropdownMenuLabel>显示列</DropdownMenuLabel>
                 {datasetColumnNames.map((columnName) => (
                   <DropdownMenuCheckboxItem
                     key={columnName}
@@ -94,7 +94,7 @@ export function ExecutionDataTab({
               <span>
                 Page {currentDatasetPage}/{totalPages}
               </span>
-              <Button
+                <Button
                 type="button"
                 size="sm"
                 variant="outline"
@@ -103,9 +103,9 @@ export function ExecutionDataTab({
                 }
                 onClick={onPrevPage}
               >
-                Prev
+                上一页
               </Button>
-              <Button
+                <Button
                 type="button"
                 size="sm"
                 variant="outline"
@@ -115,7 +115,7 @@ export function ExecutionDataTab({
                 }
                 onClick={onNextPage}
               >
-                Next
+                下一页
               </Button>
             </>
           )}
@@ -127,19 +127,19 @@ export function ExecutionDataTab({
             <Spinner className="size-5" />
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
-                Generating data…
+                正在生成数据…
               </p>
               <p className="text-xs text-muted-foreground">
-                Check the Overview tab for live terminal logs.
+                可在“概览”页查看实时终端日志。
               </p>
             </div>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">No rows returned.</p>
+          <p className="text-xs text-muted-foreground">未返回数据行。</p>
         )
       ) : tableColumns.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          All columns hidden. Use Columns to show at least one.
+          所有列均已隐藏，请在“列”中至少显示一列。
         </p>
       ) : (
         <div className="max-h-[55vh] overflow-auto">

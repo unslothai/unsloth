@@ -7,33 +7,33 @@ import type { PipelineType } from "@huggingface/hub";
 export const STEPS: StepConfig[] = [
   {
     number: 1,
-    title: "Model Type",
-    subtitle: "Select type",
-    description: "Choose the type of model you want to fine-tune",
+    title: "模型类型",
+    subtitle: "选择类型",
+    description: "选择你要微调的模型类型",
   },
   {
     number: 2,
-    title: "Model",
-    subtitle: "Select model",
-    description: "Choose a base model and training method",
+    title: "模型",
+    subtitle: "选择模型",
+    description: "选择基础模型与训练方式",
   },
   {
     number: 3,
-    title: "Dataset",
-    subtitle: "Add dataset",
-    description: "Select or upload a training dataset",
+    title: "数据集",
+    subtitle: "添加数据集",
+    description: "选择或上传训练数据集",
   },
   {
     number: 4,
-    title: "Parameters",
-    subtitle: "Configure",
-    description: "Fine-tune your training hyperparameters",
+    title: "参数",
+    subtitle: "配置",
+    description: "调整训练超参数",
   },
   {
     number: 5,
-    title: "Summary",
-    subtitle: "Review",
-    description: "Review your configuration before starting",
+    title: "摘要",
+    subtitle: "确认",
+    description: "开始前检查你的配置",
   },
 ];
 
@@ -44,23 +44,23 @@ export const MODEL_TYPES: ReadonlyArray<{
 }> = [
   {
     value: "text",
-    label: "Text",
-    description: "Language models",
+    label: "文本",
+    description: "语言模型",
   },
     {
       value: "vision",
-      label: "Vision",
-      description: "Image understanding models",
+      label: "视觉",
+      description: "图像理解模型",
     },
     {
       value: "audio",
-      label: "Audio",
-      description: "Audio and speech models",
+      label: "音频",
+      description: "音频与语音模型",
     },
     {
       value: "embeddings",
-      label: "Embeddings",
-      description: "Text embedding models",
+      label: "向量嵌入",
+      description: "文本嵌入模型",
     },
   ];
 
@@ -77,17 +77,17 @@ export const TARGET_MODULES = [
 ];
 
 export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "adamw_8bit", label: "AdamW 8-bit" },
-  { value: "paged_adamw_8bit", label: "Paged AdamW 8-bit" },
-  { value: "adamw_bnb_8bit", label: "AdamW BNB 8-bit" },
-  { value: "paged_adamw_32bit", label: "Paged AdamW 32-bit" },
+  { value: "adamw_8bit", label: "AdamW 8 位" },
+  { value: "paged_adamw_8bit", label: "分页 AdamW 8 位" },
+  { value: "adamw_bnb_8bit", label: "AdamW BNB 8 位" },
+  { value: "paged_adamw_32bit", label: "分页 AdamW 32 位" },
   { value: "adamw_torch", label: "AdamW (PyTorch)" },
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
 export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "linear", label: "Linear" },
-  { value: "cosine", label: "Cosine" },
+  { value: "linear", label: "线性" },
+  { value: "cosine", label: "余弦" },
 ];
 
 /**

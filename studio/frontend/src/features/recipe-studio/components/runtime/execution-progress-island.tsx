@@ -33,7 +33,7 @@ function formatEta(value: number | null | undefined): string {
   if (metric === "--") {
     return "--";
   }
-  return `${metric}s`;
+  return `${metric}秒`;
 }
 
 function statusLabel(input: {
@@ -41,12 +41,12 @@ function statusLabel(input: {
   inProgress: boolean;
 }): string {
   if (input.complete) {
-    return "Run completed";
+    return "运行已完成";
   }
   if (input.inProgress) {
-    return "Run in progress";
+    return "运行中";
   }
-  return "Run status";
+  return "运行状态";
 }
 
 export function ExecutionProgressIsland({
@@ -105,8 +105,8 @@ export function ExecutionProgressIsland({
             type="button"
             onClick={() => onMinimizedChange(!minimized)}
             className="inline-flex size-8 shrink-0 items-center justify-center rounded border border-border/70 text-muted-foreground transition hover:bg-muted/50"
-            aria-label={minimized ? "Expand progress" : "Minimize progress"}
-            title={minimized ? "Expand" : "Minimize"}
+            aria-label={minimized ? "展开进度" : "收起进度"}
+            title={minimized ? "展开" : "收起"}
           >
             <HugeiconsIcon
               icon={minimized ? ArrowDown01Icon : ArrowUp01Icon}
@@ -123,17 +123,17 @@ export function ExecutionProgressIsland({
       {!minimized && (
         <>
           <div className="grid grid-cols-2 gap-2 px-3 pt-2 text-[11px] text-muted-foreground sm:grid-cols-4">
-            <p className="truncate" title={`Done: ${formatMetricValue(execution.progress?.done)}`}>
-              Done: {formatMetricValue(execution.progress?.done)}
+            <p className="truncate" title={`已完成: ${formatMetricValue(execution.progress?.done)}`}>
+              已完成: {formatMetricValue(execution.progress?.done)}
             </p>
-            <p className="truncate" title={`Total: ${formatMetricValue(execution.progress?.total)}`}>
-              Total: {formatMetricValue(execution.progress?.total)}
+            <p className="truncate" title={`总计: ${formatMetricValue(execution.progress?.total)}`}>
+              总计: {formatMetricValue(execution.progress?.total)}
             </p>
-            <p className="truncate" title={`Rate: ${formatMetricValue(execution.progress?.rate)}`}>
-              Rate: {formatMetricValue(execution.progress?.rate)}
+            <p className="truncate" title={`速率: ${formatMetricValue(execution.progress?.rate)}`}>
+              速率: {formatMetricValue(execution.progress?.rate)}
             </p>
-            <p className="truncate" title={`ETA: ${formatEta(execution.progress?.eta_sec)}`}>
-              ETA: {formatEta(execution.progress?.eta_sec)}
+            <p className="truncate" title={`预计剩余: ${formatEta(execution.progress?.eta_sec)}`}>
+              预计剩余: {formatEta(execution.progress?.eta_sec)}
             </p>
           </div>
           <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
@@ -145,15 +145,15 @@ export function ExecutionProgressIsland({
               className="truncate"
               title={execution.current_column ?? "--"}
             >
-              Column: {execution.current_column ?? "--"}
+              当前列: {execution.current_column ?? "--"}
             </p>
           </div>
           {showBatch && (
             <div
               className="mt-1 truncate px-3 text-[11px] text-muted-foreground"
-              title={`Batch: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
+              title={`批次: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
             >
-              Batch: {execution.batch?.idx ?? "--"}/{execution.batch?.total ?? "--"}
+              批次: {execution.batch?.idx ?? "--"}/{execution.batch?.total ?? "--"}
             </div>
           )}
           <div className="px-3 pb-2 pt-2">
@@ -164,7 +164,7 @@ export function ExecutionProgressIsland({
               className="h-7 w-full text-[11px]"
               onClick={onViewExecutions}
             >
-              View run details
+              查看运行详情
             </Button>
           </div>
         </>

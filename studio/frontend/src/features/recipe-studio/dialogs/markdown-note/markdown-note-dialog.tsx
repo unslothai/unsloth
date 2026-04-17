@@ -29,9 +29,9 @@ export function MarkdownNoteDialog({
       <NameField value={config.name} onChange={(value) => onUpdate({ name: value })} />
       <div className="grid gap-3">
         <FieldLabel
-          label="Note style"
+          label="笔记样式"
           htmlFor={colorId}
-          hint="Pick a color and opacity for this note block."
+          hint="为该笔记块选择颜色与不透明度。"
         />
         <div className="flex items-center gap-3">
           <input
@@ -43,7 +43,7 @@ export function MarkdownNoteDialog({
           />
           <div className="flex-1 space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Opacity</span>
+              <span className="text-xs text-muted-foreground">不透明度</span>
               <span className="text-xs tabular-nums text-muted-foreground">{opacity}%</span>
             </div>
             <Slider
@@ -62,7 +62,7 @@ export function MarkdownNoteDialog({
         <FieldLabel
           label="Markdown"
           htmlFor={markdownId}
-          hint="UI-only note. Not sent to backend payload recipe."
+          hint="仅前端笔记，不会写入后端 payload。"
         />
         <Textarea
           id={markdownId}

@@ -41,10 +41,23 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo } from "react";
-import type { ReactElement } from "react";
+import {
+  type FC,
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { useShallow } from "zustand/react/shallow";
+import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
+import { phaseColors, phaseLabel } from "./progress-section-lib";
 
-function formatDuration(durationSeconds: number) {
+function formatDuration(durationSeconds: number | null | undefined): string {
+  if (durationSeconds == null || !Number.isFinite(durationSeconds)) {
+    return "--";
+  }
   const seconds = Math.floor(durationSeconds);
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
@@ -59,31 +72,12 @@ function formatDuration(durationSeconds: number) {
   return `${secs}s`;
 }
 
-function formatNumber(n: number, d = 0): string {
+function formatNumber(n: number | null | undefined, d = 0): string {
+  if (n == null || !Number.isFinite(n)) return "--";
   return n.toLocaleString(undefined, {
     maximumFractionDigits: d,
   });
 }
-
-type Phase = "loading" | "training" | "saving" | "completed" | "error" | "canceled";
-
-const phaseLabel: Record<Phase, string> = {
-  loading: "Loading",
-  training: "Training",
-  saving: "Saving checkpoint",
-  completed: "Done",
-  error: "Error",
-  canceled: "Canceled",
-};
-
-const phaseColors: Record<Phase, string> = {
-  loading: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
-  training: "bg-orange-500/15 text-orange-700 dark:text-orange-400",
-  saving: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  completed: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
-  error: "bg-red-500/15 text-red-700 dark:text-red-400",
-  canceled: "bg-muted",
-};
 
 function configRow<T>(label: string, value: T): [string, T] {
   return [label, value];
@@ -125,7 +119,7 @@ export function ProgressSection({
       maxSteps: state.maxSteps,
       contextLength: state.contextLength,
       warmupSteps: state.warmupSteps,
-      optimizer: state.optimizer,
+      optimizerType: state.optimizerType,
     })),
   );
 
@@ -145,7 +139,7 @@ export function ProgressSection({
 
   const stoppedLr = data.isTrainingRunning
     ? data.currentLearningRate
-    : lastValue(data.learningRateHistory) ?? data.currentLearningRate;
+    : lastValue(data.lrHistory) ?? data.currentLearningRate;
 
   const stoppedGradNorm = data.isTrainingRunning
     ? data.currentGradNorm
@@ -161,15 +155,20 @@ export function ProgressSection({
   const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
   const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
   const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
+  const cfgOptimizer = isHistorical
+    ? configOverride?.optimizer
+    : config.optimizerType;
   const cfgLoraRank = isHistorical ? configOverride?.loraRank : undefined;
   const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : undefined;
   const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : undefined;
   const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : undefined;
 
-  const optimizerMap: Record<string, string> = Object.fromEntries(OPTIMIZER_OPTIONS.map(o => o.value));
+  const optimizerMap: Record<string, string> = Object.fromEntries(
+    OPTIMIZER_OPTIONS.map((o) => [o.value, o.label]),
+  );
   const optimizerLabel =
-    cfgLearningRate != null
-      ? (optimizerMap[config.optimizer] ?? config.optimizer)
+    cfgOptimizer != null
+      ? (optimizerMap[cfgOptimizer] ?? cfgOptimizer)
       : undefined;
 
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
@@ -179,12 +178,12 @@ export function ProgressSection({
   const [showCompletedHint, setShowCompletedHint] = useState(false);
   const [showHalfwayHint, setShowHalfwayHint] = useState(true);
 
-  const [setStopRequestedLocal] = useState(false);
+  const [, setStopRequestedLocal] = useState(false);
 
   const handleCompareInChat = useCallback(async () => {
-    await setTrainingCompareHandoff(data.runId, data.modelName);
+    setTrainingCompareHandoff(data.modelName || null);
     navigate({ to: "/chat" });
-  }, [data.runId, data.modelName, navigate]);
+  }, [data.modelName, navigate]);
 
   useEffect(() => {
     if (data.phase !== "training") setShowHalfwayHint(false);
@@ -289,7 +288,7 @@ export function ProgressSection({
             <MetricStat label={t("training.gradNorm")}>
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
-            <MetricStat label={t("studio.model")} className="truncate">
+            <MetricStat label={t("studio.model")} valueClassName="truncate">
               {data.modelName || "--"}
             </MetricStat>
             <MetricStat label={t("training.method")}>
@@ -303,7 +302,7 @@ export function ProgressSection({
             <span
               className="rounded-full border border-border/60 bg-background/60 px-2.5 py-1 font-medium text-foreground"
             >
-              {data.gpuInfo ?? "NVIDIA CUDA"}
+              NVIDIA CUDA
             </span>
           </div>
         </div>
@@ -421,7 +420,7 @@ function ConfigPopoverButton({
       </PopoverTrigger>
       <PopoverContent className="w-72" align="end">
         <div className="flex flex-col gap-3">
-          <p className="text-xs font-semibold">{t("training.cfg").replace(/./g, "")}</p>
+          <p className="text-xs font-semibold">{t("training.cfg")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -477,7 +476,7 @@ function TrainingHeaderActions({
           disabled={!isTrainingRunning || stopRequested}
         >
           <HugeiconsIcon icon={StopIcon} className="size-3" />
-          {stopRequested ? "Stopping..." : t("training.stopTraining")}
+          {stopRequested ? t("training.stopping") : t("training.stopTraining")}
         </Button>
         <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
           <AlertDialogHeader>

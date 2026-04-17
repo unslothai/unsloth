@@ -45,8 +45,8 @@ export function LlmDialog({
   return (
     <Tabs defaultValue="general" className="w-full">
       <TabsList className="w-full">
-        <TabsTrigger value="general">General</TabsTrigger>
-        {config.llm_type === "judge" && <TabsTrigger value="scores">Scores</TabsTrigger>}
+        <TabsTrigger value="general">通用</TabsTrigger>
+        {config.llm_type === "judge" && <TabsTrigger value="scores">评分</TabsTrigger>}
       </TabsList>
       <TabsContent value="general" className="pt-3">
         <LlmGeneralTab

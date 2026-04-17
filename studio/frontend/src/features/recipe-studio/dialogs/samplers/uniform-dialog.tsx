@@ -64,9 +64,9 @@ export function UniformDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Convert to"
+          label="转换为"
           htmlFor={convertId}
-          hint="Optionally cast sampled values before output."
+          hint="可选ly cast sampled values before output."
         />
         <Select
           value={config.convert_to ?? "none"}
@@ -81,7 +81,7 @@ export function UniformDialog({
             <SelectValue placeholder="No conversion" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="none">None</SelectItem>
+            <SelectItem value="none">无</SelectItem>
             <SelectItem value="int">int</SelectItem>
             <SelectItem value="float">float</SelectItem>
             <SelectItem value="str">str</SelectItem>

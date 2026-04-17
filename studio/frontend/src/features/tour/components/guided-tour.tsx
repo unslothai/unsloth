@@ -316,16 +316,16 @@ export function GuidedTour({
                         <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
                           {idx + 1}/{total}
                           <span className="size-1 rounded-full bg-emerald-500/70" />
-                          guided tour
+                          导览
                         </div>
                         <DialogPrimitive.Title
                           className="mt-2 text-[18px] leading-tight"
                           style={{ fontFamily: "var(--font-serif)" }}
                         >
-                          {step?.title ?? "Quick tour"}
+                          {step?.title ?? "快速导览"}
                         </DialogPrimitive.Title>
                         <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-foreground/70 dark:text-zinc-200/75">
-                          {step?.body ?? "Let’s get you oriented."}
+                          {step?.body ?? "先带你快速熟悉界面。"}
                         </DialogPrimitive.Description>
                       </div>
 
@@ -334,7 +334,7 @@ export function GuidedTour({
                         size="icon-sm"
                         className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.08]"
                         onClick={() => requestClose("skip")}
-                        aria-label="Skip tour"
+                        aria-label="跳过导览"
                       >
                         <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
                       </Button>
@@ -346,7 +346,7 @@ export function GuidedTour({
                         className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.08]"
                         onClick={() => requestClose("skip")}
                       >
-                        Skip
+                        跳过
                       </Button>
 
                       <div className="flex items-center gap-2">
@@ -357,7 +357,7 @@ export function GuidedTour({
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
                           <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
-                          Back
+                          上一步
                         </Button>
                         {isLast ? (
                           <Button
@@ -366,7 +366,7 @@ export function GuidedTour({
                             onClick={() => requestClose("complete")}
                           >
                             <HugeiconsIcon icon={CheckmarkCircle01Icon} className="size-4" />
-                            Done
+                            完成
                           </Button>
                         ) : (
                           <Button
@@ -374,7 +374,7 @@ export function GuidedTour({
                             className="bg-gradient-to-r from-emerald-500 to-cyan-400 text-white hover:from-emerald-600 hover:to-cyan-500"
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
-                            Next
+                            下一步
                             <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
                           </Button>
                         )}
@@ -384,7 +384,7 @@ export function GuidedTour({
 
                   <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
                   <div className="px-5 py-3 text-[11px] text-foreground/55 dark:text-zinc-300/65">
-                    Tip: `Esc` skips. Tour blocks clicks so you can read.
+                    提示：按 `Esc` 可跳过。导览期间会暂时屏蔽点击，方便阅读。
                   </div>
                 </motion.div>
               </DialogPrimitive.Content>

@@ -20,14 +20,14 @@ export function InlineModel(props: InlineModelProps): ReactElement {
       return (
         <div className="flex items-center gap-2 px-1 py-0.5">
           <span className="text-xs font-medium text-muted-foreground">
-            Local model (Chat)
+            本地模型（聊天）
           </span>
         </div>
       );
     }
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <InlineField label="Endpoint">
+        <InlineField label="端点">
           <Input
             className="nodrag h-8 w-full text-xs"
             placeholder="https://api.example.com/v1"
@@ -35,10 +35,10 @@ export function InlineModel(props: InlineModelProps): ReactElement {
             onChange={(event) => props.onUpdate({ endpoint: event.target.value })}
           />
         </InlineField>
-        <InlineField label="API key">
+        <InlineField label="API 密钥">
           <Input
             className="nodrag h-8 w-full text-xs"
-            placeholder="Optional"
+            placeholder="可选"
             value={props.config.api_key ?? ""}
             onChange={(event) =>
               props.onUpdate({
@@ -73,15 +73,15 @@ export function InlineModel(props: InlineModelProps): ReactElement {
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      <InlineField label="Provider">
+      <InlineField label="提供方">
         <Input
           className="nodrag h-8 w-full text-xs"
-          placeholder="provider alias"
+          placeholder="提供方别名"
           value={modelConfig.provider}
           onChange={(event) => handleProviderChange(event.target.value)}
         />
       </InlineField>
-      <InlineField label="Model">
+      <InlineField label="模型">
         <Input
           className="nodrag h-8 w-full text-xs"
           placeholder={isLinkedToLocal ? "local" : "gpt-4o-mini"}
@@ -89,7 +89,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
           onChange={(event) => props.onUpdate({ model: event.target.value })}
         />
       </InlineField>
-      <InlineField label="Temperature" className="sm:col-span-2">
+      <InlineField label="温度" className="sm:col-span-2">
         <Input
           className="nodrag h-8 w-full text-xs"
           type="number"

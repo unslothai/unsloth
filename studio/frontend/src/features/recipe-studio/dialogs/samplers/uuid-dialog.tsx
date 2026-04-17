@@ -31,9 +31,9 @@ export function UuidDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="UUID format (optional)"
+          label="UUID 格式 (optional)"
           htmlFor={uuidId}
-          hint="Optional formatter e.g. prefix:, short, uppercase."
+          hint="可选 formatter e.g. prefix:, short, uppercase."
         />
         <Input
           id={uuidId}

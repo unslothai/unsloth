@@ -35,10 +35,10 @@ function ConvertToField({
       }
     >
       <SelectTrigger className="nodrag h-8 w-full text-xs">
-        <SelectValue placeholder="Convert" />
+        <SelectValue placeholder="转换类型" />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="none">None</SelectItem>
+        <SelectItem value="none">无</SelectItem>
         <SelectItem value="int">int</SelectItem>
         <SelectItem value="float">float</SelectItem>
         <SelectItem value="str">str</SelectItem>
@@ -54,7 +54,7 @@ export function InlineSampler({
   if (config.sampler_type === "uniform") {
     return (
       <div className="grid gap-3 sm:grid-cols-3">
-        <InlineField label="Low">
+        <InlineField label="下限">
           <Input
             className="nodrag h-8 w-full text-xs"
             type="number"
@@ -63,7 +63,7 @@ export function InlineSampler({
             onChange={(event) => onUpdate({ low: event.target.value })}
           />
         </InlineField>
-        <InlineField label="High">
+        <InlineField label="上限">
           <Input
             className="nodrag h-8 w-full text-xs"
             type="number"
@@ -72,7 +72,7 @@ export function InlineSampler({
             onChange={(event) => onUpdate({ high: event.target.value })}
           />
         </InlineField>
-        <InlineField label="Convert to">
+        <InlineField label="转换为">
           <ConvertToField
             value={config.convert_to}
             onValueChange={(value) =>
@@ -90,7 +90,7 @@ export function InlineSampler({
   if (config.sampler_type === "gaussian") {
     return (
       <div className="grid gap-3 sm:grid-cols-3">
-        <InlineField label="Mean">
+        <InlineField label="均值">
           <Input
             className="nodrag h-8 w-full text-xs"
             type="number"
@@ -99,7 +99,7 @@ export function InlineSampler({
             onChange={(event) => onUpdate({ mean: event.target.value })}
           />
         </InlineField>
-        <InlineField label="Std dev">
+        <InlineField label="标准差">
           <Input
             className="nodrag h-8 w-full text-xs"
             type="number"
@@ -108,7 +108,7 @@ export function InlineSampler({
             onChange={(event) => onUpdate({ std: event.target.value })}
           />
         </InlineField>
-        <InlineField label="Convert to">
+        <InlineField label="转换为">
           <ConvertToField
             value={config.convert_to}
             onValueChange={(value) =>
@@ -125,7 +125,7 @@ export function InlineSampler({
 
   if (config.sampler_type === "bernoulli") {
     return (
-      <InlineField label="Probability (p)">
+      <InlineField label="概率（p）">
         <Input
           className="nodrag h-8 w-full text-xs"
           type="number"
@@ -142,7 +142,7 @@ export function InlineSampler({
 
   if (config.sampler_type === "uuid") {
     return (
-      <InlineField label="UUID format">
+      <InlineField label="UUID 格式">
         <Input
           className="nodrag h-8 w-full text-xs"
           placeholder="uuid4"

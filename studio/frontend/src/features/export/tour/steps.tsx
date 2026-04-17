@@ -7,45 +7,41 @@ export const exportTourSteps: TourStep[] = [
   {
     id: "training-run",
     target: "export-training-run",
-    title: "Pick training run",
+    title: "选择训练运行",
     body: (
       <>
-        Start by selecting the training run. Each run groups the checkpoints
-        produced by that specific fine-tuning job.
+        先选择训练运行。每次运行都会汇总该次微调任务生成的所有检查点。
       </>
     ),
   },
   {
     id: "checkpoint",
     target: "export-checkpoint",
-    title: "Pick checkpoint",
+    title: "选择检查点",
     body: (
       <>
-        Pick which checkpoint to export. If you trained multiple checkpoints,
-        it’s worth exporting 1-2 candidates and testing in Chat.
+        选择要导出的检查点。如果你训练了多个检查点，建议先导出 1-2 个候选并在 Chat 中测试。
       </>
     ),
   },
   {
     id: "method",
     target: "export-method",
-    title: "Export method",
+    title: "导出方式",
     body: (
       <>
-        Choose the packaging. GGUF is for llama.cpp-style runtimes (pick a
-        quant). Safetensors is for HF/Transformers-style usage. If you’re unsure,
-        start with safetensors.
+        选择打包格式。GGUF 适用于 llama.cpp 类运行时（需选择量化），Safetensors 适用于
+        HF/Transformers 场景。不确定时可先从 Safetensors 开始。
       </>
     ),
   },
   {
     id: "cta",
     target: "export-cta",
-    title: "Export",
+    title: "开始导出",
     body: (
       <>
-        Export to local or push to HF Hub. After export, test in Chat and compare
-        against base to confirm behavior is what you expect.
+        可导出到本地或推送到 HF Hub。导出后请在 Chat 中与基座模型对比，确认行为符合预期。
       </>
     ),
   },

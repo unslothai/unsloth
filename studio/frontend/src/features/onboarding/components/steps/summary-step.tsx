@@ -102,13 +102,22 @@ export function SummaryStep() {
 
   const showLoraParams = isAdapterMethod(trainingMethod);
   const datasetName = datasetSource === "upload" ? uploadedFile : dataset;
+  const datasetSourceLabel = datasetSource === "upload" ? "本地上传" : "Hugging Face";
+  const datasetFormatLabel =
+    datasetFormat === "auto"
+      ? "自动识别"
+      : datasetFormat === "alpaca"
+        ? "Alpaca"
+        : datasetFormat === "chatml"
+          ? "ChatML"
+          : "ShareGPT";
 
   return (
     <div className="grid grid-cols-2 gap-3">
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
-            System
+            系统
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
@@ -135,7 +144,7 @@ export function SummaryStep() {
 
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground">Model</CardTitle>
+          <CardTitle className="text-sm text-muted-foreground">模型</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
           <div className="flex items-start gap-3">
@@ -143,22 +152,22 @@ export function SummaryStep() {
               <HugeiconsIcon icon={ChipIcon} className="size-4 text-emerald-600" />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
-              <span className="text-xs text-muted-foreground">Model</span>
+              <span className="text-xs text-muted-foreground">模型</span>
               <span className="truncate text-sm font-medium">{selectedModel ?? "---"}</span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
-            <Row label="Type" value={modelType} capitalize />
-            <Row label="Method" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"} />
+            <Row label="类型" value={modelType} capitalize />
+            <Row label="方法" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "全量"} />
           </div>
         </CardContent>
       </Card>
 
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground">
-            Dataset
+            <CardTitle className="text-sm text-muted-foreground">
+            数据集
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
@@ -167,28 +176,28 @@ export function SummaryStep() {
               <HugeiconsIcon icon={Database02Icon} className="size-4 text-indigo-600" />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
-              <span className="text-xs text-muted-foreground">Dataset</span>
+              <span className="text-xs text-muted-foreground">数据集</span>
               <span className="truncate text-sm font-medium">{datasetName ?? "---"}</span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
-            <Row label="Source" value={datasetSource} capitalize />
+            <Row label="来源" value={datasetSourceLabel} />
             {datasetSubset && (
-              <Row label="Subset" value={datasetSubset} mono />
+              <Row label="子集" value={datasetSubset} mono />
             )}
             {datasetSplit && (
-              <Row label="Split" value={datasetSplit} mono />
+              <Row label="切分" value={datasetSplit} mono />
             )}
-            <Row label="Format" value={datasetFormat} capitalize />
+            <Row label="格式" value={datasetFormatLabel} />
           </div>
         </CardContent>
       </Card>
 
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground">
-            Hyperparameters
+            <CardTitle className="text-sm text-muted-foreground">
+            超参数
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
@@ -197,20 +206,20 @@ export function SummaryStep() {
               <HugeiconsIcon icon={Settings04Icon} className="size-4 text-orange-600" />
             </div>
             <div className="flex flex-1 flex-col">
-              <span className="text-xs text-muted-foreground">Training</span>
+              <span className="text-xs text-muted-foreground">训练</span>
               <span className="text-sm font-medium">
-                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"}
+                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "全量"}
               </span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-            <Row label="Epochs" value={epochs} mono />
-            <Row label="Context" value={contextLength.toLocaleString()} mono />
+            <Row label="轮次" value={epochs} mono />
+            <Row label="上下文" value={contextLength.toLocaleString()} mono />
             <Row label="LR" value={learningRate.toExponential()} mono />
             {showLoraParams && (
               <>
-                <Row label="Rank" value={loraRank} mono />
+                <Row label="秩（Rank）" value={loraRank} mono />
                 <Row label="Alpha" value={loraAlpha} mono />
                 <Row label="Dropout" value={loraDropout} mono />
               </>

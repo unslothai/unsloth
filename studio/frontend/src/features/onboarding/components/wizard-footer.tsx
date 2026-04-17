@@ -32,7 +32,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
           onClick={isFirst ? onBackToSplash : prevStep}
         >
           <HugeiconsIcon icon={ArrowLeft02Icon} data-icon="inline-start" />
-          Back
+          上一步
         </Button>
         <div className="flex items-center gap-2">
           {!isLast && (
@@ -44,7 +44,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
                 navigate({ to: "/studio" });
               }}
             >
-              Skip
+              跳过
             </Button>
           )}
           {isLast ? (
@@ -56,7 +56,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
               disabled={!canProceed}
               className="px-4 !pr-4"
             >
-              Go to Studio
+              进入 Studio
               <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
             </Button>
           ) : (
@@ -73,7 +73,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
               className="px-4 !pl-4"
               disabled={!canProceed}
             >
-              Continue
+              下一步
               <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
             </Button>
           )}

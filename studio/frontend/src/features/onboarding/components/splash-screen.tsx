@@ -48,7 +48,7 @@ export function SplashScreen({
           <h1 className="text-2xl font-semibold tracking-tight">
             Unsloth Studio
           </h1>
-          <p className="text-sm text-muted-foreground">Train and run LLMs locally</p>
+          <p className="text-sm text-muted-foreground">在本地训练并运行 LLM</p>
         </motion.div>
 
         {/* Buttons */}
@@ -63,10 +63,10 @@ export function SplashScreen({
           }}
         >
           <Button size="lg" onClick={onStartOnboarding}>
-            Start Onboarding
+            开始引导
           </Button>
           <Button size="lg" variant="outline" onClick={onGoToStudio}>
-            Skip Onboarding
+            跳过引导
           </Button>
         </motion.div>
       </Card>

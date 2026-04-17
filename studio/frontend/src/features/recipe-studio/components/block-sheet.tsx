@@ -100,27 +100,27 @@ export type RecipeBlockDragPayload = {
 
 function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "root") {
-    return "Add a step";
+    return "添加步骤";
   }
   if (sheetView === "sampler") {
-    return "Generated fields";
+    return "生成字段";
   }
   if (sheetView === "seed") {
-    return "Source data";
+    return "源数据";
   }
   if (sheetView === "expression") {
-    return "Formulas";
+    return "公式";
   }
   if (sheetView === "validator") {
-    return "Checks";
+    return "校验";
   }
   if (sheetView === "note") {
-    return "Notes";
+    return "笔记";
   }
   if (sheetView === "processor") {
-    return "Processor blocks";
+    return "处理器步骤";
   }
-  return "AI generation";
+  return "AI 生成";
 }
 
 const VIEW_KIND: Record<SheetView, SheetKind | null> = {
@@ -147,8 +147,8 @@ const SEARCHABLE_KINDS: SheetKind[] = [
   "expression",
   "note",
 ];
-const PROCESSOR_TITLE = "Final dataset shape";
-const PROCESSOR_DESCRIPTION = "Rename, reorder, or reshape the final dataset.";
+const PROCESSOR_TITLE = "最终数据集结构";
+const PROCESSOR_DESCRIPTION = "对最终数据集重命名、重排或重构。";
 const SHOW_PROCESSOR_IN_BLOCK_SHEET = false;
 const LLM_SETUP_TYPES = new Set<BlockType>([
   "model_provider",
@@ -406,8 +406,8 @@ export function BlockSheet({
             size="icon"
             className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
             variant="ghost"
-            aria-label="Add a step"
-            title="Add a step"
+            aria-label="添加步骤"
+            title="添加步骤"
           >
             <HugeiconsIcon
               icon={PlusSignIcon}
@@ -431,8 +431,8 @@ export function BlockSheet({
                   variant="ghost"
                   size="icon-sm"
                   onClick={() => onViewChange("root")}
-                  aria-label="Back to step groups"
-                  title="Back to step groups"
+                  aria-label="返回步骤分组"
+                  title="返回步骤分组"
                 >
                   <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
                 </Button>
@@ -447,9 +447,9 @@ export function BlockSheet({
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search steps..."
+                placeholder="搜索步骤..."
                 className="corner-squircle h-9 pl-8"
-                aria-label="Search steps"
+                aria-label="搜索步骤"
               />
             </div>
           </SheetHeader>
@@ -467,11 +467,10 @@ export function BlockSheet({
                     <div className="min-w-0 flex-1 space-y-2">
                       <div>
                         <p className="text-sm font-semibold text-foreground">
-                          Need a place to start?
+                          不知道从哪里开始？
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          Open Source data first, then add generation and checks
-                          on top of it.
+                          先打开“源数据”，再叠加生成与校验步骤。
                         </p>
                       </div>
                       <Button
@@ -481,7 +480,7 @@ export function BlockSheet({
                         className="corner-squircle justify-start px-0 text-primary hover:bg-transparent hover:text-primary/80"
                         onClick={() => onViewChange("seed")}
                       >
-                        Start with source data
+                        从源数据开始
                       </Button>
                     </div>
                   </div>
@@ -576,7 +575,7 @@ export function BlockSheet({
                         featuredSeedBlock.type,
                       )}
                       trailing={getTrailing()}
-                      badge="Start here"
+                      badge="从这里开始"
                       onClick={() =>
                         onBlockClick(
                           featuredSeedBlock.kind,
@@ -608,7 +607,7 @@ export function BlockSheet({
                       Create
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Start with the kind of output you want to generate.
+                      先从你想生成的输出类型开始。
                     </p>
                   </div>
                 )}

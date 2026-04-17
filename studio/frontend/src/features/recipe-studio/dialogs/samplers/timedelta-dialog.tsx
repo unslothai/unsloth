@@ -114,7 +114,7 @@ export function TimedeltaDialog({
             <SelectValue placeholder="Select datetime column" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE_VALUE}>None</SelectItem>
+            <SelectItem value={NONE_VALUE}>无</SelectItem>
             {datetimeOptions.map((name) => (
               <SelectItem key={name} value={name}>
                 {name}

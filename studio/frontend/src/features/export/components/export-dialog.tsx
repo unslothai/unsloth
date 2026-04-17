@@ -144,7 +144,7 @@ export function ExportDialog({
                         </label>
                         <Input
                           id="hf-username"
-                          placeholder="your-username"
+                          placeholder="例如：your-username"
                           value={hfUsername}
                           onChange={(e) => onHfUsernameChange(e.target.value)}
                           disabled={exporting}
@@ -156,7 +156,7 @@ export function ExportDialog({
                         </label>
                         <Input
                           id="model-name"
-                          placeholder="my-model-gguf"
+                          placeholder="例如：my-model-gguf"
                           value={modelName}
                           onChange={(e) => onModelNameChange(e.target.value)}
                           disabled={exporting}
@@ -243,7 +243,7 @@ export function ExportDialog({
               <div className="flex justify-between">
                 <span>导出方法</span>
                 <span className="font-medium text-foreground">
-                  {EXPORT_METHODS.find((m) => m.value === exportMethod)?.title}
+                  {EXPORT_METHODS(t).find((m) => m.value === exportMethod)?.title}
                 </span>
               </div>
               {exportMethod === "gguf" && quantLevels.length > 0 && (

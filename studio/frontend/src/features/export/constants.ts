@@ -5,7 +5,13 @@ import type { TrainingMethod } from "@/types/training";
 
 export type ExportMethod = "merged" | "lora" | "gguf";
 
-export const EXPORT_METHODS = (t: (key: string) => string) => [
+export const EXPORT_METHODS = (t: (key: string) => string): Array<{
+  value: ExportMethod;
+  title: string;
+  description: string;
+  tooltip: string;
+  badge?: string;
+}> => [
   {
     value: "merged",
     title: t("export.mergedModel"),
@@ -64,13 +70,13 @@ export function getEstimatedSize(
 export const METHOD_LABELS: Record<TrainingMethod, string> = {
   qlora: "QLoRA",
   lora: "LoRA",
-  full: "Full Fine-tune",
+  full: "全量微调",
 };
 
 export const GUIDE_STEPS = [
-  "Select a training checkpoint to export from",
-  "Choose an export method based on your use case",
-  "Pick quantization levels if using GGUF",
-  "Click Export and choose your destination",
-  "Test your model and compare outputs in Chat",
+  "选择要导出的训练检查点",
+  "根据使用场景选择导出方式",
+  "若使用 GGUF，请选择量化等级",
+  "点击导出并选择输出目标",
+  "在 Chat 中测试并对比模型效果",
 ];

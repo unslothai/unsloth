@@ -77,7 +77,7 @@ export function PersonDialog({
             <FieldLabel
               label="Sex"
               htmlFor={sexId}
-              hint="Optional demographic filter."
+              hint="可选 demographic filter."
             />
             <Select
               value={config.person_sex?.trim() ? config.person_sex : "any"}
@@ -115,7 +115,7 @@ export function PersonDialog({
             <FieldLabel
               label="City"
               htmlFor={cityId}
-              hint="Optional city bias for faker generation."
+              hint="可选 city bias for faker generation."
             />
             <Input
               id={cityId}

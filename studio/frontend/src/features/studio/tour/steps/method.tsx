@@ -6,12 +6,10 @@ import { ReadMore, type TourStep } from "@/features/tour";
 export const studioMethodStep: TourStep = {
   id: "method",
   target: "studio-method",
-  title: "Method: QLoRA vs LoRA vs Full",
+  title: "训练方式：QLoRA / LoRA / 全量",
   body: (
     <>
-      LoRA: trains small adapter weights (fast, common default). QLoRA: LoRA on
-      4-bit base weights (much lower VRAM). Full: updates all weights (highest
-      cost, usually needs more data to be worth it).{" "}
+      LoRA 只训练小规模适配器参数（速度快，常用默认）；QLoRA 在 4-bit 基座上训练 LoRA（显存占用更低）；全量微调会更新全部权重（成本最高，通常需要更多数据）。{" "}
       <ReadMore href="https://unsloth.ai/docs/basics/lora-hyperparameters-guide" />
     </>
   ),

@@ -21,20 +21,20 @@ export function ExecutionColumnsTab({
 }: ExecutionColumnsTabProps): ReactElement {
   return (
     <div className="mt-3 rounded-xl border p-3">
-      <p className="mb-2 text-sm font-semibold">Column statistics</p>
+      <p className="mb-2 text-sm font-semibold">列统计</p>
       {analysisColumns.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No column statistics yet.</p>
+        <p className="text-xs text-muted-foreground">暂无列统计。</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Column</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Data type</TableHead>
-              <TableHead>Unique</TableHead>
-              <TableHead>Nulls</TableHead>
-              <TableHead>Input tok avg</TableHead>
-              <TableHead>Output tok avg</TableHead>
+              <TableHead>列名</TableHead>
+              <TableHead>类型</TableHead>
+              <TableHead>数据类型</TableHead>
+              <TableHead>唯一值</TableHead>
+              <TableHead>空值</TableHead>
+              <TableHead>输入 token 均值</TableHead>
+              <TableHead>输出 token 均值</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

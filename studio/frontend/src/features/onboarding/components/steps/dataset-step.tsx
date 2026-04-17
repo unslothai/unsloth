@@ -59,7 +59,7 @@ import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
-  { value: "auto", label: "Auto Detect" },
+  { value: "auto", label: "自动识别" },
   { value: "alpaca", label: "Alpaca" },
   { value: "chatml", label: "ChatML" },
   { value: "sharegpt", label: "ShareGPT" },
@@ -140,7 +140,7 @@ export function DatasetStep() {
   return (
     <FieldGroup>
       <Field>
-        <FieldLabel>Source</FieldLabel>
+        <FieldLabel>来源</FieldLabel>
         <div className="flex gap-2">
           <Button
             variant={datasetSource === "huggingface" ? "dark" : "outline"}
@@ -167,7 +167,7 @@ export function DatasetStep() {
             className="flex-1"
           >
             <HugeiconsIcon icon={Upload04Icon} data-icon="inline-start" />
-            Upload
+            上传
           </Button>
         </div>
       </Field>
@@ -178,18 +178,18 @@ export function DatasetStep() {
             <FieldLabel>
               Hugging Face Token{" "}
               <span className="text-muted-foreground font-normal">
-                (Optional)
+                （可选）
               </span>
             </FieldLabel>
             <FieldDescription>
-              Required for gated or private datasets.{" "}
+              访问受限或私有数据集时必需。{" "}
               <a
                 href="https://huggingface.co/settings/tokens"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary hover:underline"
               >
-                Get token
+                获取令牌
               </a>
             </FieldDescription>
             <InputGroup>
@@ -215,17 +215,17 @@ export function DatasetStep() {
                   rel="noopener noreferrer"
                   className="underline"
                 >
-                  Get or update token
+                  获取或更新令牌
                 </a>
               </p>
             )}
             {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+              <p className="text-xs text-muted-foreground">检查令牌中…</p>
             )}
           </Field>
 
           <Field>
-            <FieldLabel>Search datasets</FieldLabel>
+            <FieldLabel>搜索数据集</FieldLabel>
             <div ref={comboboxAnchorRef}>
               <Combobox
                 items={resultIds}
@@ -247,7 +247,7 @@ export function DatasetStep() {
                 autoHighlight={true}
               >
                 <ComboboxInput
-                  placeholder="Search datasets..."
+                  placeholder="搜索数据集..."
                   className="w-full"
                 >
                   <InputGroupAddon>
@@ -257,10 +257,10 @@ export function DatasetStep() {
                 <ComboboxContent anchor={comboboxAnchorRef}>
                   {isLoading ? (
                     <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching...
+                      <Spinner className="size-4" /> 搜索中...
                     </div>
                   ) : (
-                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                    <ComboboxEmpty>未找到数据集</ComboboxEmpty>
                   )}
                   <div
                     ref={scrollRef}
@@ -315,9 +315,9 @@ export function DatasetStep() {
       ) : (
         <>
           <Field>
-            <FieldLabel>Upload Dataset</FieldLabel>
+            <FieldLabel>上传数据集</FieldLabel>
             <FieldDescription>
-              Supports JSONL, JSON, CSV formats
+              支持 JSONL、JSON、CSV 格式
             </FieldDescription>
             <button
               type="button"
@@ -333,7 +333,7 @@ export function DatasetStep() {
                     {uploadedFile}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    Click to replace
+                    点击替换
                   </span>
                 </div>
               ) : (
@@ -343,7 +343,7 @@ export function DatasetStep() {
                     className="size-8 text-muted-foreground"
                   />
                   <span className="text-sm text-muted-foreground">
-                    Click to upload or drag and drop
+                    点击上传或拖拽文件到此处
                   </span>
                 </div>
               )}
@@ -355,7 +355,7 @@ export function DatasetStep() {
       <Field>
         <div className="flex items-center justify-between">
           <FieldLabel className="flex items-center gap-1.5">
-            Format
+            格式
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
@@ -369,15 +369,14 @@ export function DatasetStep() {
                 </button>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs">
-                Auto will try to identify and convert your dataset to a
-                supported format.{" "}
+                自动模式会尝试识别并转换你的数据集到受支持格式。{" "}
                 <a
                   href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-primary underline"
                 >
-                  Read more
+                  了解更多
                 </a>
               </TooltipContent>
             </Tooltip>

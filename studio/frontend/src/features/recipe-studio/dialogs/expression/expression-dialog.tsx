@@ -60,9 +60,9 @@ export function ExpressionDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Output type"
+          label="输出类型"
           htmlFor={dtypeId}
-          hint="Choose how this formula should be stored in the final dataset."
+          hint="选择该公式在最终数据集中的保存类型。"
         />
         <Select
           value={config.dtype}
@@ -71,7 +71,7 @@ export function ExpressionDialog({
           }
         >
           <SelectTrigger className="nodrag w-full" id={dtypeId}>
-            <SelectValue placeholder="Select type" />
+            <SelectValue placeholder="选择类型" />
           </SelectTrigger>
           <SelectContent>
             {DTYPE_OPTIONS.map((dtype) => (
@@ -84,9 +84,9 @@ export function ExpressionDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Formula"
+          label="公式"
           htmlFor={exprId}
-          hint="Build this field from other fields."
+          hint="使用其他字段组合生成当前字段。"
         />
         <Textarea
           id={exprId}
@@ -98,14 +98,14 @@ export function ExpressionDialog({
         />
         {invalidExprRefs.length > 0 && (
           <p className="text-xs text-destructive">
-            Unknown field: {invalidExprText}
+            未知字段：{invalidExprText}
             {invalidExprRefs.length > 3
-              ? ` +${invalidExprRefs.length - 3} more`
+              ? ` 另有 ${invalidExprRefs.length - 3} 个`
               : ""}
           </p>
         )}
         <p className="text-xs text-muted-foreground">
-          Insert other fields like {"{{ field_name }}"}.
+          可通过 {"{{ field_name }}"} 引用其他字段。
         </p>
       </div>
     </div>

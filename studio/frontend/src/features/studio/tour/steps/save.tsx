@@ -6,11 +6,10 @@ import type { TourStep } from "@/features/tour";
 export const studioSaveStep: TourStep = {
   id: "save",
   target: "studio-save",
-  title: "Save config",
+  title: "保存配置",
   body: (
     <>
-      Save your training config as a YAML file. Re-running the same baseline
-      makes it obvious if a change helped (or if you just got lucky).
+      将训练配置保存为 YAML 文件。基于同一基线重复运行，能更清楚判断改动是否真的有效（而不是偶然结果）。
     </>
   ),
 };

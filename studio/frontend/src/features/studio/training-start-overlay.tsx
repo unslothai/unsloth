@@ -63,13 +63,13 @@ export function TrainingStartOverlay({
             </Button>
             <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
-                <AlertDialogTitle>Cancel Training</AlertDialogTitle>
+                <AlertDialogTitle>取消训练</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Do you want to cancel the current training run?
+                  你确定要取消当前训练任务吗？
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Continue Training</AlertDialogCancel>
+                <AlertDialogCancel>继续训练</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
                   onClick={() => {
@@ -85,7 +85,7 @@ export function TrainingStartOverlay({
                     });
                   }}
                 >
-                  Cancel Training
+                  取消训练
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -98,19 +98,19 @@ export function TrainingStartOverlay({
             duration={36}
             className="bg-gradient-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
           >
-            {"> unsloth training starts..."}
+            {"> Unsloth 训练启动中..."}
           </TypingAnimation>
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
           <TypingAnimation duration={44}>
-            {"> Preparing model and dataset..."}
+            {"> 正在准备模型与数据集..."}
           </TypingAnimation>
           <TypingAnimation duration={44}>
-            {"> We are getting everything ready for your run..."}
+            {"> 正在为本次训练完成所有准备..."}
           </TypingAnimation>
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
+            {`> ${message || "正在启动训练..."} | 等待首个训练步... (${currentStep})`}
           </AnimatedSpan>
           </Terminal>
         </div>

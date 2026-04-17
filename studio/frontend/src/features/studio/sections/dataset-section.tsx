@@ -59,6 +59,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
@@ -104,6 +105,7 @@ function normalizeSliceInput(value: string): string | null {
 }
 
 export function DatasetSection() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const {
     dataset,
@@ -179,7 +181,7 @@ export function DatasetSection() {
       setLocalDatasets(response.datasets ?? []);
     } catch (error) {
       setLocalError(
-        error instanceof Error ? error.message : "Failed to load local datasets.",
+        error instanceof Error ? error.message : "加载本地数据集失败。",
       );
     } finally {
       setHasLoadedLocalDatasets(true);
@@ -372,8 +374,8 @@ export function DatasetSection() {
       onSuccess(uploaded.stored_path);
       toast.success(successMessage, { description: uploaded.filename });
     } catch (error) {
-      toast.error("Upload failed", {
-        description: error instanceof Error ? error.message : "Unknown error",
+      toast.error("上传失败", {
+        description: error instanceof Error ? error.message : "未知错误",
       });
     } finally {
       setIsUploading(false);
@@ -392,7 +394,7 @@ export function DatasetSection() {
       return;
     }
 
-    await handleFileUpload(file, selectLocalDataset, "Dataset uploaded");
+    await handleFileUpload(file, selectLocalDataset, "数据集上传成功");
   };
 
   const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -400,7 +402,7 @@ export function DatasetSection() {
     event.target.value = "";
     if (!file) return;
 
-    await handleFileUpload(file, setUploadedEvalFile, "Eval dataset uploaded");
+    await handleFileUpload(file, setUploadedEvalFile, "评估数据集上传成功");
   };
 
   const handleOpenLearningRecipes = useCallback(() => {
@@ -413,8 +415,8 @@ export function DatasetSection() {
     <div data-tour="studio-dataset" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
-        title="Dataset"
-        description="Select or upload training data"
+        title="数据集"
+        description="选择或上传训练数据"
         accent="indigo"
         className={`dark:shadow-border ${
           advancedOpen || (datasetSource === "upload" && uploadedFile)
@@ -425,9 +427,9 @@ export function DatasetSection() {
         <div className="flex min-w-0 flex-col gap-4">
           <div className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Choose dataset
+              {t("dataset.chooseDataset")}
               <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
-                {datasetSource === "upload" ? "Local" : "Hugging Face"}
+                {datasetSource === "upload" ? t("dataset.localFile") : t("dataset.huggingFace")}
               </span>
               <Tooltip>
                 <TooltipTrigger asChild={true}>
@@ -442,15 +444,14 @@ export function DatasetSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Use the popup tabs to switch between Hugging Face and local
-                  recipe outputs.{" "}
+                  {t("dataset.datasetDesc")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("common.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -520,12 +521,12 @@ export function DatasetSection() {
                 }
                 autoHighlight={true}
               >
-                <ComboboxInput
-                  placeholder={
-                    pickerTab === "huggingface"
-                      ? "Search Hugging Face datasets..."
-                      : "Search local datasets..."
-                  }
+                 <ComboboxInput
+                   placeholder={
+                     pickerTab === "huggingface"
+                       ? t("dataset.searchHf")
+                       : t("dataset.searchLocal")
+                   }
                   className="w-full min-w-0 overflow-hidden leading-5"
                   showClear={true}
                 >
@@ -543,19 +544,19 @@ export function DatasetSection() {
                       }}
                       className="w-full"
                     >
-                      <TabsList className=" w-full">
-                        <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
-                        <TabsTrigger value="local">Local</TabsTrigger>
-                      </TabsList>
+                       <TabsList className=" w-full">
+                         <TabsTrigger value="huggingface">{t("dataset.huggingFace")}</TabsTrigger>
+                         <TabsTrigger value="local">{t("dataset.localFile")}</TabsTrigger>
+                       </TabsList>
 
-                      <TabsContent value="huggingface" className="m-0">
-                        {isLoading ? (
-                          <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                            <Spinner className="size-4" /> Searching...
-                          </div>
-                        ) : (
-                          <ComboboxEmpty>No datasets found</ComboboxEmpty>
-                        )}
+                       <TabsContent value="huggingface" className="m-0">
+                         {isLoading ? (
+                           <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                             <Spinner className="size-4" /> {t("common.searching")}
+                           </div>
+                         ) : (
+                           <ComboboxEmpty>{t("common.noResults")}</ComboboxEmpty>
+                         )}
                         <div
                           ref={scrollRef}
                           className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
@@ -593,27 +594,27 @@ export function DatasetSection() {
                       <TabsContent value="local" className="m-0">
                         {localLoading ? (
                           <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                            <Spinner className="size-4" /> Loading local datasets...
+                            <Spinner className="size-4" /> 正在加载本地数据集...
                           </div>
                         ) : (
                           <>
                             {localError ? (
                               <p className="px-2 py-2 text-xs text-destructive">{localError}</p>
                             ) : (
-                              <ComboboxEmpty className="px-2 py-3">
-                                <div className="flex w-full flex-col items-center gap-2 text-center">
-                                  <p className="text-xs text-muted-foreground">
-                                    {localDatasets.length === 0
-                                      ? "No local datasets yet."
-                                      : "No local datasets match search."}
-                                  </p>
-                                  {localDatasets.length === 0 ? (
-                                    <Button asChild={true} size="sm" variant="outline">
-                                      <a href="/data-recipes">Open Data Recipes</a>
-                                    </Button>
-                                  ) : null}
-                                </div>
-                              </ComboboxEmpty>
+                               <ComboboxEmpty className="px-2 py-3">
+                                 <div className="flex w-full flex-col items-center gap-2 text-center">
+                                   <p className="text-xs text-muted-foreground">
+                                     {localDatasets.length === 0
+                                       ? t("dataset.noLocalDatasets")
+                                       : t("dataset.noLocalMatch")}
+                                   </p>
+                                   {localDatasets.length === 0 ? (
+                                     <Button asChild={true} size="sm" variant="outline">
+                                       <a href="/data-recipes">{t("dataset.openDataRecipes")}</a>
+                                     </Button>
+                                   ) : null}
+                                 </div>
+                               </ComboboxEmpty>
                             )}
                             <div className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
                               <ComboboxList className="p-1 !max-h-none !overflow-visible">
@@ -662,12 +663,14 @@ export function DatasetSection() {
               </p>
             )}
             {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+              <p className="text-xs text-muted-foreground">{t("dataset.checkingToken")}…</p>
             )}
             {pickerTab !== activeSourceTab && (
               <p className="text-[11px] text-muted-foreground">
-                Browsing {pickerTab === "local" ? "Local datasets" : "Hugging Face"}.
-                Current selection stays {datasetSource === "upload" ? "Local" : "Hugging Face"}.
+                {t("dataset.browsing")}{" "}
+                {pickerTab === "local" ? t("dataset.localFile") : t("dataset.huggingFace")}.
+                {t("dataset.currentSelectionStays")}{" "}
+                {datasetSource === "upload" ? t("dataset.localFile") : t("dataset.huggingFace")}.
               </p>
             )}
           </div>
@@ -703,10 +706,10 @@ export function DatasetSection() {
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-medium text-muted-foreground">
-                    Local dataset metadata
+                    本地数据集元数据
                   </p>
                   <p className="text-[10px] text-muted-foreground/80">
-                    Data Recipe output.
+                    Data Recipe 产出。
                   </p>
                 </div>
               </div>
@@ -714,7 +717,7 @@ export function DatasetSection() {
               <div className="flex flex-col gap-3">
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                   <MetadataRow
-                    label="Rows"
+                    label="行数"
                     value={
                       typeof selectedLocalRows === "number"
                         ? selectedLocalRows.toLocaleString()
@@ -722,7 +725,7 @@ export function DatasetSection() {
                     }
                   />
                   <MetadataRow
-                    label="Columns"
+                    label="列数"
                     value={
                       selectedLocalColumns.length > 0
                         ? String(selectedLocalColumns.length)
@@ -730,7 +733,7 @@ export function DatasetSection() {
                     }
                   />
                   <MetadataRow
-                    label="Batches"
+                    label="批次"
                     value={
                       typeof selectedLocalMetadata?.num_completed_batches === "number" &&
                       typeof selectedLocalMetadata?.total_num_batches === "number"
@@ -739,7 +742,7 @@ export function DatasetSection() {
                     }
                   />
                   <MetadataRow
-                    label="Updated"
+                    label="更新时间"
                     value={formatUpdatedDate(selectedLocalUpdatedAt)}
                   />
                 </div>
@@ -750,7 +753,7 @@ export function DatasetSection() {
           {datasetSource === "upload" && uploadedFile && (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
               <p className="mb-2 text-xs font-medium text-muted-foreground">
-                Eval dataset
+                评估数据集
               </p>
               {uploadedEvalFile ? (
                 <div className="flex items-center justify-between gap-2">
@@ -783,10 +786,10 @@ export function DatasetSection() {
                     ) : (
                       <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
                     )}
-                    {isUploading ? "Uploading..." : "Upload eval file"}
+                    {isUploading ? "上传中..." : "上传评估文件"}
                   </Button>
                   <p className="text-[10px] text-muted-foreground/80">
-                    Optional. If not provided, a small portion will be split from the training data.
+                    可选。不提供时会从训练数据中自动切分一小部分。
                   </p>
                 </div>
               )}
@@ -799,39 +802,38 @@ export function DatasetSection() {
                 icon={ArrowDown01Icon}
                 className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
               />
-              Advanced
+              高级设置
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
               <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-2">
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    Target Format
-                    <Tooltip>
-                      <TooltipTrigger asChild={true}>
-                        <button
-                          type="button"
-                          className="text-foreground/70 hover:text-foreground"
-                        >
-                          <HugeiconsIcon
-                            icon={InformationCircleIcon}
-                            className="size-3"
-                          />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Format of your training data. Auto-detect works for most
-                        datasets.{" "}
-                        <a
-                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline"
-                        >
-                          Read more
-                        </a>
-                      </TooltipContent>
-                    </Tooltip>
-                  </span>
+                 <div className="flex flex-col gap-2">
+                   <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                     {t("dataset.targetFormat")}
+                     <Tooltip>
+                       <TooltipTrigger asChild={true}>
+                         <button
+                           type="button"
+                           className="text-foreground/70 hover:text-foreground"
+                         >
+                           <HugeiconsIcon
+                             icon={InformationCircleIcon}
+                             className="size-3"
+                           />
+                         </button>
+                       </TooltipTrigger>
+                       <TooltipContent>
+                         {t("dataset.formatDesc")}.{" "}
+                         <a
+                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                           target="_blank"
+                           rel="noopener noreferrer"
+                           className="text-primary underline"
+                         >
+                           {t("common.readMore")}
+                         </a>
+                       </TooltipContent>
+                     </Tooltip>
+                   </span>
                   <Select
                     value={datasetFormat}
                     onValueChange={(v) =>
@@ -842,7 +844,7 @@ export function DatasetSection() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="auto">Auto</SelectItem>
+                      <SelectItem value="auto">自动</SelectItem>
                       <SelectItem value="alpaca">Alpaca</SelectItem>
                       <SelectItem value="chatml">ChatML</SelectItem>
                       <SelectItem value="sharegpt">ShareGPT</SelectItem>
@@ -852,7 +854,7 @@ export function DatasetSection() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      Train Split Start
+                      训练集起始位置
                       <Tooltip>
                         <TooltipTrigger asChild={true}>
                           <button
@@ -866,9 +868,8 @@ export function DatasetSection() {
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          Only train on a subset of your training split by
-                          specifying a start row index (inclusive, 0-based).
-                          Leave empty to start from the first row.
+                          仅训练训练集中的一部分：设置起始行索引（包含，0 基）。
+                          留空则从第一行开始。
                         </TooltipContent>
                       </Tooltip>
                     </span>
@@ -886,7 +887,7 @@ export function DatasetSection() {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      Train Split End
+                      训练集结束位置
                       <Tooltip>
                         <TooltipTrigger asChild={true}>
                           <button
@@ -900,10 +901,8 @@ export function DatasetSection() {
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          Last row index to include from the training split
-                          (inclusive, 0-based). For example, set Start to 0 and
-                          End to 99 to train on the first 100 rows. Leave empty
-                          to use all remaining rows.
+                          训练集中包含的最后一行索引（包含，0 基）。
+                          例如 Start=0 且 End=99 表示训练前 100 行。留空表示使用其余全部行。
                         </TooltipContent>
                       </Tooltip>
                     </span>
@@ -912,7 +911,7 @@ export function DatasetSection() {
                       inputMode="numeric"
                       min={0}
                       step={1}
-                      placeholder="End"
+                      placeholder="结束"
                       value={datasetSliceEnd ?? ""}
                       onChange={(e) =>
                         setDatasetSliceEnd(normalizeSliceInput(e.target.value))
@@ -944,17 +943,17 @@ export function DatasetSection() {
                     {datasetSource === "upload" ? (
                       uploadedFile ? (
                         <>
-                          Local dataset
+                          本地数据集
                           {selectedLocalRows != null
                             ? ` / ${selectedLocalRows.toLocaleString()} rows`
                             : ""}
                         </>
                       ) : (
-                        "Local dataset"
+                        "本地数据集"
                       )
                     ) : (
                       <>
-                        Hugging Face Dataset
+                        Hugging Face 数据集
                         {datasetSubset && ` / ${datasetSubset}`}
                         {datasetSplit && ` / ${datasetSplit}`}
                       </>
@@ -967,7 +966,7 @@ export function DatasetSection() {
                   className="shrink-0 text-xs"
                   onClick={() => clearSelectionForTab(activeSourceTab)}
                 >
-                  Clear
+                  清空
                 </Button>
               </div>
             ) : (
@@ -977,7 +976,7 @@ export function DatasetSection() {
                   className="size-4 text-muted-foreground/40"
                 />
                 <span className="text-xs text-muted-foreground">
-                  No dataset selected
+                  尚未选择数据集
                 </span>
               </div>
             )}
@@ -995,7 +994,7 @@ export function DatasetSection() {
                 ) : (
                   <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
                 )}
-                {isUploading ? "Uploading..." : "Upload"}
+                {isUploading ? "上传中..." : "上传"}
               </Button>
               <Button
                 variant="outline"
@@ -1005,7 +1004,7 @@ export function DatasetSection() {
                 onClick={() => openPreview()}
               >
                 <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-                View dataset
+                查看数据集
               </Button>
             </div>
           </div>

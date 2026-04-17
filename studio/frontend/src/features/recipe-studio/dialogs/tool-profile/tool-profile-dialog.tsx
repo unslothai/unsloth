@@ -106,14 +106,14 @@ function McpServerCard({
     provider.env && provider.env.length > 0
       ? provider.env
       : [{ key: "", value: "" }];
-  const summaryTitle = provider.name.trim() || `Tool server ${index + 1}`;
+  const summaryTitle = provider.name.trim() || `工具服务 ${index + 1}`;
   const transportLabel =
-    provider.provider_type === "stdio" ? "Local command" : "HTTP";
-  const toolsLabel = typeof toolsCount === "number" ? `${toolsCount} tools` : null;
+    provider.provider_type === "stdio" ? "本地命令" : "HTTP";
+  const toolsLabel = typeof toolsCount === "number" ? `${toolsCount} 个工具` : null;
   const description =
     provider.provider_type === "stdio"
-      ? "Runs a local tool server."
-      : "Calls a remote tool server.";
+      ? "运行本地工具服务。"
+      : "调用远端工具服务。";
 
   return (
     <Collapsible open={open} onOpenChange={onOpenChange}>
@@ -166,11 +166,11 @@ function McpServerCard({
           )}
 
           <div className="grid gap-1.5">
-            <FieldLabel label="Server name" hint="Name shown in this tool access setup." />
+            <FieldLabel label="服务名称" hint="该名称会显示在此工具权限配置中。" />
             <Input
               className="nodrag"
               value={provider.name}
-              placeholder="context7"
+              placeholder="例如：context7"
               onChange={(event) =>
                 onUpdateProviderAt(index, { name: event.target.value })
               }
@@ -187,19 +187,19 @@ function McpServerCard({
             }
           >
               <TabsList className="w-full">
-                <TabsTrigger value="stdio">Local command</TabsTrigger>
-                <TabsTrigger value="streamable_http">HTTP endpoint</TabsTrigger>
+                <TabsTrigger value="stdio">本地命令</TabsTrigger>
+                <TabsTrigger value="streamable_http">HTTP 端点</TabsTrigger>
               </TabsList>
           </Tabs>
 
           {provider.provider_type === "stdio" ? (
             <div className="space-y-4">
               <div className="grid gap-1.5">
-                <FieldLabel label="Command" hint="Command used to start the tool server." />
+                <FieldLabel label="命令" hint="用于启动工具服务的命令。" />
                 <Input
                   className="nodrag"
                   value={provider.command ?? ""}
-                  placeholder="npx"
+                  placeholder="例如：npx"
                   onChange={(event) =>
                     onUpdateProviderAt(index, { command: event.target.value })
                   }
@@ -208,7 +208,7 @@ function McpServerCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <FieldLabel label="Arguments" hint="Optional command arguments." />
+                  <FieldLabel label="参数" hint="可选命令参数。" />
                   <Button
                     type="button"
                     size="xs"
@@ -216,7 +216,7 @@ function McpServerCard({
                     onClick={() => onAddProviderArg(index)}
                   >
                     <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                    Add arg
+                    添加参数
                   </Button>
                 </div>
                 {args.map((arg, argIndex) => (
@@ -224,7 +224,7 @@ function McpServerCard({
                     <Input
                       className="nodrag"
                       value={arg}
-                      placeholder={argIndex === 0 ? "-y" : "argument"}
+                      placeholder={argIndex === 0 ? "-y" : "参数值"}
                       onChange={(event) =>
                         onUpdateProviderArg(index, argIndex, event.target.value)
                       }
@@ -243,7 +243,7 @@ function McpServerCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <FieldLabel label="Environment variables" hint="Optional values passed to the tool server." />
+                  <FieldLabel label="环境变量" hint="传递给工具服务的可选环境变量。" />
                   <Button
                     type="button"
                     size="xs"
@@ -251,7 +251,7 @@ function McpServerCard({
                     onClick={() => onAddProviderEnv(index)}
                   >
                     <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                    Add env
+                    添加环境变量
                   </Button>
                 </div>
                 {envVars.map((item, envIndex) => (
@@ -262,7 +262,7 @@ function McpServerCard({
                     <Input
                       className="nodrag"
                       value={item.key}
-                      placeholder="KEY"
+                      placeholder="变量名"
                       onChange={(event) =>
                         onUpdateProviderEnv(index, envIndex, {
                           key: event.target.value,
@@ -272,7 +272,7 @@ function McpServerCard({
                     <Input
                       className="nodrag"
                       value={item.value}
-                      placeholder="value"
+                      placeholder="值"
                       onChange={(event) =>
                         onUpdateProviderEnv(index, envIndex, {
                           value: event.target.value,
@@ -294,7 +294,7 @@ function McpServerCard({
           ) : (
             <div className="space-y-4">
               <div className="grid gap-1.5">
-                <FieldLabel label="Endpoint" hint="URL for the tool server." />
+                <FieldLabel label="端点" hint="工具服务的 URL。" />
                 <Input
                   className="nodrag"
                   value={provider.endpoint ?? ""}
@@ -307,8 +307,8 @@ function McpServerCard({
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="grid gap-1.5">
                   <FieldLabel
-                    label="API key environment variable"
-                    hint="Optional environment variable that stores the API key."
+                    label="API 密钥环境变量"
+                    hint="存放 API 密钥的可选环境变量。"
                   />
                   <Input
                     className="nodrag"
@@ -324,13 +324,13 @@ function McpServerCard({
                 </div>
                 <div className="grid gap-1.5">
                   <FieldLabel
-                    label="API key"
-                    hint="Optional API key."
+                    label="API 密钥"
+                    hint="可选 API 密钥。"
                   />
                   <Input
                     className="nodrag"
                     value={provider.api_key ?? ""}
-                    placeholder="token"
+                    placeholder="例如：token"
                     onChange={(event) =>
                       onUpdateProviderAt(index, {
                         // biome-ignore lint/style/useNamingConvention: api schema
@@ -533,8 +533,8 @@ export function ToolProfileDialog({
     const readyProviders = providers.filter(isProviderReadyForToolFetch);
     if (readyProviders.length === 0) {
       toastError(
-        "No tool servers are ready",
-        "Add a server name plus a command or endpoint first.",
+        "暂无可用工具服务",
+        "请先填写服务名称，并配置命令或端点。",
       );
       return;
     }
@@ -566,14 +566,14 @@ export function ToolProfileDialog({
         Object.fromEntries(
           response.providers
             .filter((provider) => provider.name.trim() && provider.error)
-            .map((provider) => [provider.name.trim(), provider.error ?? "Failed to load tools."]),
+            .map((provider) => [provider.name.trim(), provider.error ?? "加载工具失败。"]),
         ),
       );
       setDuplicateTools(response.duplicate_tools ?? {});
     } catch (error) {
       toastError(
-        "Couldn't load tools",
-        error instanceof Error ? error.message : "We couldn't load the tools for these servers.",
+        "无法加载工具",
+        error instanceof Error ? error.message : "这些服务的工具加载失败。",
       );
     } finally {
       setLoadingTools(false);
@@ -608,13 +608,13 @@ export function ToolProfileDialog({
       className="w-full"
     >
       <TabsList className="w-full">
-        <TabsTrigger value="servers">1. Add servers</TabsTrigger>
-        <TabsTrigger value="profile">2. Choose tools</TabsTrigger>
+        <TabsTrigger value="servers">1. 添加服务</TabsTrigger>
+        <TabsTrigger value="profile">2. 选择工具</TabsTrigger>
       </TabsList>
 
       <TabsContent value="profile" className="space-y-4 pt-3">
         <NameField
-          label="Tool access name"
+          label="工具权限名称"
           value={config.name}
           onChange={(value) => onUpdate({ name: value })}
         />
@@ -622,36 +622,35 @@ export function ToolProfileDialog({
         {!hasProviders ? (
           <div className="space-y-3">
             <EmptyState
-              title="Add a server to start choosing tools"
-              description="Set up a server first, then come back here to choose which tools this step can use."
+              title="先添加服务，再选择工具"
+              description="先完成服务配置，再回到这里挑选该步骤可用工具。"
             />
             <Button
               type="button"
               variant="outline"
               onClick={() => setActiveTab("servers")}
             >
-              Add servers first
+              先添加服务
             </Button>
           </div>
         ) : (
           <>
             <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
-              <p className="text-sm font-semibold text-foreground">
-                Pick which tools this setup may use
+                <p className="text-sm font-semibold text-foreground">
+                选择该配置可使用的工具
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                1. Load tool names from your servers. 2. Leave the list empty to
-                allow all tools, or add only the ones this step should use.
+                1. 从服务加载工具名。2. 列表留空表示允许全部工具，或仅添加当前步骤需要的工具。
               </p>
             </div>
             <div className="space-y-3 rounded-2xl border border-border/60 bg-muted/10 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-foreground">
-                    Available tools
+                    可用工具
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Load tool names so you can pick from a list instead of guessing.
+                    先加载工具名，避免手动猜测输入。
                   </p>
                 </div>
                 <Button
@@ -663,14 +662,14 @@ export function ToolProfileDialog({
                     void loadTools();
                   }}
                 >
-                  {loadingTools ? "Loading..." : "Load tools"}
+                  {loadingTools ? "加载中..." : "加载工具"}
                 </Button>
               </div>
 
               {Object.keys(toolsByProvider).length === 0 &&
                 Object.keys(providerErrors).length === 0 && (
                   <p className="text-xs text-muted-foreground">
-                    Load tools to browse what's available.
+                    先加载工具以浏览可用项。
                   </p>
                 )}
 
@@ -696,7 +695,7 @@ export function ToolProfileDialog({
 
               {Object.entries(duplicateTools).length > 0 && (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                  Some tool names appear on more than one server:
+                  部分工具名称同时出现在多个服务中：
                   {" "}
                   {Object.entries(duplicateTools)
                     .map(([toolName, providerList]) => `${toolName} (${providerList.join(", ")})`)
@@ -707,8 +706,8 @@ export function ToolProfileDialog({
 
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Tools this setup may use"
-                hint="Leave this empty to allow every tool from these servers."
+                label="该配置可使用的工具"
+                hint="留空则允许这些服务的全部工具。"
               />
               <ChipInput
                 values={config.allow_tools ?? []}
@@ -727,14 +726,14 @@ export function ToolProfileDialog({
                     ),
                   })
                 }
-                placeholder="Type tool name and press Enter"
+                placeholder="输入工具名并按 Enter"
               />
             </div>
 
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
               <CollapsibleTrigger asChild={true}>
                 <CollapsibleSectionTriggerButton
-                  label="Tool-call limits"
+                  label="工具调用限制"
                   open={advancedOpen}
                 />
               </CollapsibleTrigger>
@@ -742,8 +741,8 @@ export function ToolProfileDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Max tool-use turns"
-                      hint="How many back-and-forth tool calls an AI step can make."
+                      label="最大工具调用轮次"
+                      hint="一个 AI 步骤最多可进行多少轮工具调用。"
                     />
                     <Input
                       className="nodrag"
@@ -758,8 +757,8 @@ export function ToolProfileDialog({
                   </div>
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Timeout (seconds)"
-                      hint="How long to wait when loading or calling tools."
+                      label="超时时间（秒）"
+                      hint="加载或调用工具时的最大等待时间。"
                     />
                     <Input
                       className="nodrag"
@@ -782,28 +781,27 @@ export function ToolProfileDialog({
       <TabsContent value="servers" className="space-y-4 pt-3">
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">
-            Add one or more tool servers
+            添加一个或多个工具服务
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            After your servers are ready, switch to Choose tools to load names
-            and decide which ones this setup should allow.
+            服务配置完成后，切换到“选择工具”加载名称，并决定该配置允许哪些工具。
           </p>
         </div>
         <div className="flex items-center justify-between gap-3">
           <FieldLabel
-            label="Tool servers"
-            hint="These servers belong to this tool access setup and can be reused by linked AI steps."
+            label="工具服务"
+            hint="这些服务属于当前工具权限配置，可被关联的 AI 步骤复用。"
           />
           <Button type="button" size="xs" variant="outline" onClick={addProvider}>
             <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-            Add server
+            添加服务
           </Button>
         </div>
 
         {!hasProviders ? (
           <EmptyState
-            title="No tool servers yet"
-            description="Add one or more servers here, then go back to Access to load and choose tools."
+            title="暂无工具服务"
+            description="先在这里添加服务，再返回权限页加载并选择工具。"
           />
         ) : (
           <div className="space-y-3">

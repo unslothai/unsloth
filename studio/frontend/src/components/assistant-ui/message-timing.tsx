@@ -49,7 +49,7 @@ export const MessageTiming: FC<{
         <button
           type="button"
           data-slot="message-timing-trigger"
-          aria-label="Message timing"
+          aria-label="消息耗时"
           className={cn(
             "flex items-center rounded-md p-1 font-mono text-muted-foreground text-xs tabular-nums transition-colors hover:bg-accent hover:text-accent-foreground",
             className,
@@ -70,7 +70,7 @@ export const MessageTiming: FC<{
               {/* Server-side metrics (GGUF) */}
               {st?.prompt_ms != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Prompt eval</span>
+                  <span className="text-muted-foreground">提示词预处理</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(st.prompt_ms)}
                   </span>
@@ -78,7 +78,7 @@ export const MessageTiming: FC<{
               )}
               {(st?.prompt_n ?? 0) > 1 && st?.prompt_per_second != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Prompt speed</span>
+                  <span className="text-muted-foreground">提示词速度</span>
                   <span className="font-mono tabular-nums">
                     {st.prompt_per_second.toFixed(1)} tok/s
                   </span>
@@ -86,7 +86,7 @@ export const MessageTiming: FC<{
               )}
               {st?.predicted_ms != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Generation</span>
+                  <span className="text-muted-foreground">生成耗时</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(st.predicted_ms)}
                   </span>
@@ -94,7 +94,7 @@ export const MessageTiming: FC<{
               )}
               {st?.predicted_per_second != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Speed</span>
+                  <span className="text-muted-foreground">生成速度</span>
                   <span className="font-mono tabular-nums">
                     {st.predicted_per_second.toFixed(1)} tok/s
                   </span>
@@ -102,7 +102,7 @@ export const MessageTiming: FC<{
               )}
               {timing.tokenCount !== undefined && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Tokens</span>
+                  <span className="text-muted-foreground">Token 数</span>
                   <span className="font-mono tabular-nums">
                     {formatNumber(timing.tokenCount)}
                   </span>
@@ -110,7 +110,7 @@ export const MessageTiming: FC<{
               )}
               {(st?.cache_n ?? 0) > 0 && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Cache hits</span>
+                  <span className="text-muted-foreground">缓存命中</span>
                   <span className="font-mono tabular-nums">
                     {formatNumber(st!.cache_n)}
                   </span>
@@ -118,13 +118,13 @@ export const MessageTiming: FC<{
               )}
               <div className="my-0.5 border-t border-border/40" />
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Total</span>
+                <span className="text-muted-foreground">总计</span>
                 <span className="font-mono tabular-nums">
                   {formatTimingMs(timing.totalStreamTime)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Chunks</span>
+                <span className="text-muted-foreground">分片</span>
                 <span className="font-mono tabular-nums">
                   {timing.totalChunks}
                 </span>
@@ -135,20 +135,20 @@ export const MessageTiming: FC<{
               {/* Client-side metrics (safetensors fallback) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">First token</span>
+                  <span className="text-muted-foreground">首个 Token</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(timing.firstTokenTime)}
                   </span>
                 </div>
               )}
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Total</span>
+                <span className="text-muted-foreground">总计</span>
                 <span className="font-mono tabular-nums">
                   {formatTimingMs(timing.totalStreamTime)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Chunks</span>
+                <span className="text-muted-foreground">分片</span>
                 <span className="font-mono tabular-nums">
                   {timing.totalChunks}
                 </span>

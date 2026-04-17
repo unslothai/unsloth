@@ -163,8 +163,8 @@ export function ParamsSection(): ReactElement {
     <div data-tour="studio-params" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
-        title="Parameters"
-        description="Configure training hyperparameters"
+        title="参数"
+        description="配置训练超参数"
         accent="orange"
         className={`${(isLora && loraOpen) || hyperOpen
           ? "min-h-studio-config-column"
@@ -179,7 +179,7 @@ export function ParamsSection(): ReactElement {
             >
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  {useEpochs ? "Epochs" : "Max Steps"}
+                  {useEpochs ? "轮次" : "最大步数"}
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -194,8 +194,8 @@ export function ParamsSection(): ReactElement {
                     </TooltipTrigger>
                     <TooltipContent>
                       {useEpochs
-                        ? "Number of full passes over the dataset."
-                        : "Override total optimizer steps."}{" "}
+                        ? "完整遍历数据集的次数。"
+                        : "覆盖总优化步数。"}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
@@ -213,7 +213,7 @@ export function ParamsSection(): ReactElement {
                     onClick={toggleUseEpochs}
                     className="text-xs text-primary underline cursor-pointer"
                   >
-                    {useEpochs ? "Use Max Steps" : "Use Epochs"}
+                    {useEpochs ? "使用最大步数" : "使用轮次"}
                   </button>
                   <input
                     type="number"
@@ -253,8 +253,8 @@ export function ParamsSection(): ReactElement {
               />
               <p className="text-[10px] text-muted-foreground">
                 {useEpochs
-                  ? "Each epoch is one full pass over your dataset."
-                  : "Limits training to a fixed number of optimizer steps."}
+                  ? "每个轮次代表完整遍历一次数据集。"
+                  : "将训练限制为固定优化步数。"}
               </p>
             </div>
           </div>
@@ -393,7 +393,7 @@ export function ParamsSection(): ReactElement {
               <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
                 <div className="pt-1.5 flex flex-col gap-4">
                 <SliderRow
-                  label="Rank"
+                  label="秩"
                   tooltip={
                     <>
                       Dimension of the low-rank matrices. Higher = more capacity.{" "}
@@ -464,25 +464,25 @@ export function ParamsSection(): ReactElement {
                       [
                         [
                           "finetuneVisionLayers",
-                          "Vision layers",
+                          "视觉层",
                           store.finetuneVisionLayers,
                           store.setFinetuneVisionLayers,
                         ],
                         [
                           "finetuneLanguageLayers",
-                          "Language layers",
+                          "语言层",
                           store.finetuneLanguageLayers,
                           store.setFinetuneLanguageLayers,
                         ],
                         [
                           "finetuneAttentionModules",
-                          "Attention modules",
+                          "注意力模块",
                           store.finetuneAttentionModules,
                           store.setFinetuneAttentionModules,
                         ],
                         [
                           "finetuneMLPModules",
-                          "MLP modules",
+                          "MLP 模块",
                           store.finetuneMLPModules,
                           store.setFinetuneMLPModules,
                         ],
@@ -546,14 +546,14 @@ export function ParamsSection(): ReactElement {
                     [
                       {
                         value: "lora",
-                        label: "Enable LoRA",
-                        desc: "Train with LoRA",
+                        label: "启用 LoRA",
+                        desc: "使用 LoRA 训练",
                       },
-                      { value: "rslora", label: "RS-LoRA", desc: "Stable Rank" },
+                      { value: "rslora", label: "RS-LoRA", desc: "稳定秩" },
                       {
                         value: "loftq",
                         label: "LoftQ",
-                        desc: "Memory Efficient",
+                        desc: "更省内存",
                       },
                     ] as const
                   ).map((opt) => (
@@ -615,7 +615,7 @@ export function ParamsSection(): ReactElement {
                   className="mt-3 flex flex-col gap-3"
                 >
                   <Row
-                    label="Optimizer"
+                    label="优化器"
                     tooltip={
                       <>
                         Optimization algorithm. 8-bit variants reduce memory usage.
@@ -651,7 +651,7 @@ export function ParamsSection(): ReactElement {
                     </Select>
                   </Row>
                   <Row
-                    label="LR scheduler"
+                    label="学习率调度器"
                     tooltip={
                       <>
                         How the learning rate changes over training. Linear decays
@@ -687,7 +687,7 @@ export function ParamsSection(): ReactElement {
                     </Select>
                   </Row>
                   <SliderRow
-                    label="Batch Size"
+                    label="批大小"
                     tooltip={
                       <>
                         Samples processed per step. Higher uses more VRAM.{" "}
@@ -708,7 +708,7 @@ export function ParamsSection(): ReactElement {
                     step={1}
                   />
                   <SliderRow
-                    label="Grad Accum"
+                    label="梯度累积"
                     tooltip={
                       <>
                         Simulates larger batch sizes without extra VRAM.{" "}
@@ -729,7 +729,7 @@ export function ParamsSection(): ReactElement {
                     step={1}
                   />
                   <Row
-                    label="Weight Decay"
+                    label="权重衰减"
                     tooltip={
                       <>
                         L2 regularization to prevent overfitting.{" "}
@@ -761,7 +761,7 @@ export function ParamsSection(): ReactElement {
                   className="mt-3 flex flex-col gap-3"
                 >
                   <SliderRow
-                    label="Warmup Steps"
+                    label="预热步数"
                     tooltip={
                       <>
                         Gradually increase LR at training start for stability.{" "}
@@ -783,7 +783,7 @@ export function ParamsSection(): ReactElement {
                   />
                   {!useEpochs && (
                     <SliderRow
-                      label="Epochs"
+                      label="轮次"
                       tooltip={
                         <>
                           Number of full passes over the dataset. Set 0 to run by
@@ -806,7 +806,7 @@ export function ParamsSection(): ReactElement {
                     />
                   )}
                   <Row
-                    label="Save Steps"
+                    label="保存步数"
                     tooltip={
                       <>
                         Save a checkpoint every N steps. 0 to disable.{" "}
@@ -829,8 +829,8 @@ export function ParamsSection(): ReactElement {
                     />
                   </Row>
                   <Row
-                    label="Eval Steps"
-                    tooltip="Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps."
+                    label="评估步数"
+                    tooltip="两次评估之间占总训练步数的比例（0-1）。设为 0 禁用评估。例如 0.01 表示每 1% 步数评估一次。"
                   >
                     <Input
                       type="number"
@@ -842,7 +842,7 @@ export function ParamsSection(): ReactElement {
                       className="w-28 font-mono"
                     />
                   </Row>
-                  <Row label="Seed" tooltip="Random seed for reproducibility.">
+                  <Row label="随机种子" tooltip="用于复现结果的随机种子。">
                     <Input
                       type="number"
                       value={store.randomSeed}
@@ -856,7 +856,7 @@ export function ParamsSection(): ReactElement {
 
                 <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
                   <Row
-                    label="Grad Checkpoint"
+                    label="梯度检查点"
                     tooltip={
                       <>
                         Trade compute for memory by recomputing activations.{" "}
@@ -881,8 +881,8 @@ export function ParamsSection(): ReactElement {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">None</SelectItem>
-                        <SelectItem value="true">Standard</SelectItem>
+                        <SelectItem value="none">无</SelectItem>
+                        <SelectItem value="true">标准</SelectItem>
                         <SelectItem value="unsloth">Unsloth</SelectItem>
                       </SelectContent>
                     </Select>

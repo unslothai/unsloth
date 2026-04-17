@@ -74,10 +74,12 @@ import {
 } from "./constants";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
+import { useTranslation } from "react-i18next";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
 export function ExportPage() {
+  const { t } = useTranslation();
   const { hfToken, setHfToken } = useTrainingConfigStore(
     useShallow((s) => ({
       hfToken: s.hfToken,
@@ -147,7 +149,7 @@ export function ExportPage() {
       .catch((err) => {
         if (!cancelled) {
           setCheckpointError(
-            err instanceof Error ? err.message : "Failed to load checkpoints",
+            err instanceof Error ? err.message : "加载检查点失败",
           );
         }
       })
@@ -170,7 +172,7 @@ export function ExportPage() {
       .catch((error) => {
         if (controller.signal.aborted) return;
         setLocalModelsError(
-          error instanceof Error ? error.message : "Failed to load local models",
+          error instanceof Error ? error.message : "加载本地模型失败",
         );
       })
       .finally(() => {
@@ -201,7 +203,7 @@ export function ExportPage() {
   const loraRank = selectedModelData?.lora_rank ?? null;
   const trainingMethodLabel = selectedModelData?.peft_type
     ? "LoRA / QLoRA"
-    : "Full Fine-tune";
+    : "全量微调";
   const sourceBaseModelName = sourceMode === "model"
     ? selectedSourceModel ?? "—"
     : baseModelName;
@@ -270,14 +272,14 @@ export function ExportPage() {
     () =>
       sourceMode === "model"
         ? [
-            "Select a Hugging Face or local model to export from",
-            "GGUF is used for non-finetuned model exports",
-            "Pick one or more GGUF quantization levels",
-            "Click Export and choose your destination",
-            "Test your model and compare outputs in Chat",
+            t("export.guideSelectModel"),
+            t("export.guideGgufUse"),
+            t("export.guidePickQuant"),
+            t("export.guideClickExport"),
+            t("export.guideTestModel"),
           ]
         : GUIDE_STEPS,
-    [sourceMode],
+    [sourceMode, t],
   );
 
   // Reset checkpoint when the selected model changes
@@ -476,7 +478,7 @@ export function ExportPage() {
       setExportSuccess(true);
     } catch (err) {
       setExportError(
-        err instanceof Error ? err.message : "Export failed",
+        err instanceof Error ? err.message : "导出失败",
       );
     } finally {
       try {
@@ -514,17 +516,17 @@ export function ExportPage() {
 
         <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Export Model
+            {t("export.title")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Export fine-tuned or base models for deployment
+            {t("export.exportFineTuned")}
           </p>
         </div>
 
         <SectionCard
           icon={<HugeiconsIcon icon={PackageIcon} className="size-5" />}
-          title="Export Configuration"
-          description="Select source, method, and quantization"
+          title={t("export.exportConfiguration")}
+          description={t("export.selectSourceMethodQuant")}
           accent="emerald"
           featured={true}
           className="shadow-border ring-1 ring-border"
@@ -533,7 +535,7 @@ export function ExportPage() {
           {loadingCheckpoints && (
             <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
               <Spinner className="size-4" />
-              Loading checkpoints…
+              {t("export.loadingCheckpoints")}
             </div>
           )}
 
@@ -551,7 +553,7 @@ export function ExportPage() {
                 <div className="flex flex-col gap-2">
                   <div className="flex items-end justify-between">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      {sourceMode === "checkpoint" ? "Training Run" : "Model Source"}
+                      {sourceMode === "checkpoint" ? "训练运行" : "模型来源"}
                       <Tooltip>
                         <TooltipTrigger asChild={true}>
                           <button
@@ -566,8 +568,8 @@ export function ExportPage() {
                         </TooltipTrigger>
                         <TooltipContent>
                           {sourceMode === "checkpoint"
-                            ? "Select the training run that produced the checkpoints you want to export."
-                            : "Select a Hugging Face model or local model path to export directly to GGUF."}
+                            ? "选择生成检查点的训练运行。"
+                            : "选择 Hugging Face 模型或本地模型路径，直接导出为 GGUF。"}
                         </TooltipContent>
                       </Tooltip>
                     </label>
@@ -581,8 +583,8 @@ export function ExportPage() {
                       className="text-xs text-primary underline cursor-pointer leading-none"
                     >
                       {sourceMode === "checkpoint"
-                        ? "Use Hugging Face / Local Model"
-                        : "Use Training Checkpoints"}
+                        ? "使用 Hugging Face / 本地模型"
+                        : "使用训练检查点"}
                     </button>
                   </div>
 
@@ -605,8 +607,8 @@ export function ExportPage() {
                             <SelectValue
                               placeholder={
                                 models.length === 0
-                                  ? "No training runs found"
-                                  : "Select a training run…"
+                                  ? "未找到训练运行"
+                                  : "选择训练运行…"
                               }
                             />
                           </SelectTrigger>
@@ -630,8 +632,7 @@ export function ExportPage() {
                                   <span className="flex items-center gap-2">
                                     {displayName}
                                     <span className="text-muted-foreground text-xs">
-                                      {m.checkpoints.length} checkpoint
-                                      {m.checkpoints.length !== 1 ? "s" : ""}
+                                      {m.checkpoints.length} 个检查点
                                     </span>
                                     {timeStr && (
                                       <span className="text-muted-foreground text-xs">
@@ -648,7 +649,7 @@ export function ExportPage() {
 
                       <div data-tour="export-checkpoint" className="flex flex-col gap-2">
                         <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          Checkpoint
+                          检查点
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
                               <button
@@ -662,15 +663,14 @@ export function ExportPage() {
                               </button>
                             </TooltipTrigger>
                             <TooltipContent>
-                              Choose a saved checkpoint to export. Lower loss
-                              generally means better quality.{" "}
+                              选择要导出的已保存检查点。通常损失越低，质量越好。{" "}
                               <a
                                 href="https://unsloth.ai/docs/basics/inference-and-deployment"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-primary underline"
                               >
-                                Read more
+                                了解更多
                               </a>
                             </TooltipContent>
                           </Tooltip>
@@ -684,10 +684,10 @@ export function ExportPage() {
                             <SelectValue
                               placeholder={
                                 !selectedModelIdx
-                                  ? "Select a training run first"
+                                  ? "请先选择训练运行"
                                   : checkpointsForModel.length === 0
-                                    ? "No checkpoints found"
-                                    : "Select a checkpoint…"
+                                    ? "未找到检查点"
+                                    : "选择检查点…"
                               }
                             />
                           </SelectTrigger>
@@ -698,7 +698,7 @@ export function ExportPage() {
                                   {cp.display_name}
                                   {cp.loss != null && (
                                     <span className="text-muted-foreground text-xs">
-                                      loss: {cp.loss.toFixed(4)}
+                                      损失：{cp.loss.toFixed(4)}
                                     </span>
                                   )}
                                 </span>
@@ -730,7 +730,7 @@ export function ExportPage() {
                           className="flex-1"
                           onClick={() => setModelSource("local")}
                         >
-                          Local Model
+                          本地模型
                         </Button>
                       </div>
 
@@ -738,7 +738,7 @@ export function ExportPage() {
                         <>
                           <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-muted-foreground">
-                              Hugging Face Model
+                              Hugging Face 模型
                             </label>
                             <div ref={hfComboboxAnchorRef}>
                               <Combobox
@@ -752,7 +752,7 @@ export function ExportPage() {
                                 autoHighlight={true}
                               >
                                 <ComboboxInput
-                                  placeholder="Search models..."
+                                  placeholder="搜索模型..."
                                   className="w-full"
                                   onBlur={() =>
                                     applyHfSourceModel(hfModelInputRef.current)
@@ -770,10 +770,10 @@ export function ExportPage() {
                                 <ComboboxContent anchor={hfComboboxAnchorRef}>
                                   {isLoadingHfModels ? (
                                     <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                                      <Spinner className="size-4" /> Searching…
+                                      <Spinner className="size-4" /> 搜索中…
                                     </div>
                                   ) : (
-                                    <ComboboxEmpty>No models found</ComboboxEmpty>
+                                    <ComboboxEmpty>未找到模型</ComboboxEmpty>
                                   )}
                                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                     {(id: string) => (
@@ -805,14 +805,14 @@ export function ExportPage() {
                               htmlFor="hf-export-trust-remote-code"
                               className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
                             >
-                              Trust remote code
+                              信任远程代码
                             </label>
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <button
                                   type="button"
                                   className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
+                                  aria-label="关于信任远程代码"
                                 >
                                   <HugeiconsIcon
                                     icon={InformationCircleIcon}
@@ -824,15 +824,14 @@ export function ExportPage() {
                                 side="top"
                                 className="max-w-[260px] text-xs"
                               >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
+                                当模型需要时会从仓库加载自定义 Python 代码。
+                                如果你不信任来源，请关闭此选项。
                               </TooltipContent>
                             </Tooltip>
                           </div>
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
-                              Hugging Face Token (Optional)
+                              Hugging Face Token（可选）
                             </label>
                             <InputGroup>
                               <InputGroupAddon>
@@ -848,14 +847,14 @@ export function ExportPage() {
                               />
                             </InputGroup>
                             {isCheckingToken && (
-                              <p className="text-xs text-muted-foreground">Checking token…</p>
+                              <p className="text-xs text-muted-foreground">检查令牌中…</p>
                             )}
                           </div>
                         </>
                       ) : (
                         <div className="flex flex-col gap-2">
                           <label className="text-xs font-medium text-muted-foreground">
-                            Local Model Path
+                            本地模型路径
                           </label>
                           <div ref={localComboboxAnchorRef}>
                             <Combobox
@@ -876,7 +875,7 @@ export function ExportPage() {
                               <ComboboxInput
                                 placeholder={
                                   isLoadingLocalModels
-                                    ? "Scanning local and cached models..."
+                                    ? "正在扫描本地与缓存模型..."
                                     : "./models/my-model"
                                 }
                                 className="w-full"
@@ -894,24 +893,24 @@ export function ExportPage() {
                               <ComboboxContent anchor={localComboboxAnchorRef}>
                                 {isLoadingLocalModels ? (
                                   <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                                    <Spinner className="size-4" /> Scanning...
+                                    <Spinner className="size-4" /> 扫描中...
                                   </div>
                                 ) : localModelsError ? (
                                   <div className="px-3 py-2 text-xs text-red-500">
                                     {localModelsError}
                                   </div>
                                 ) : (
-                                  <ComboboxEmpty>No local models found</ComboboxEmpty>
+                                  <ComboboxEmpty>未找到本地模型</ComboboxEmpty>
                                 )}
                                 <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
                                       model?.source === "hf_cache"
-                                        ? "HF cache"
+                                        ? "HF 缓存"
                                         : model?.source === "custom"
-                                          ? "Custom Folders"
-                                          : "Local dir";
+                                          ? "自定义目录"
+                                          : "本地目录";
                                     return (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">
@@ -929,15 +928,15 @@ export function ExportPage() {
                           </div>
                           {isLoadingLocalModels ? (
                             <p className="text-[10px] text-muted-foreground">
-                              Scanning local models...
+                              正在扫描本地模型...
                             </p>
                           ) : localModelsError ? (
                             <p className="text-[10px] text-red-500">{localModelsError}</p>
                           ) : (
                             <p className="text-[10px] text-muted-foreground">
                               {exportableLocalModels.length > 0
-                                ? `${exportableLocalModels.length} local/cached models found`
-                                : "No local models found. Enter path manually."}
+                                ? `已发现 ${exportableLocalModels.length} 个本地/缓存模型`
+                                : "未找到本地模型，请手动输入路径。"}
                             </p>
                           )}
                         </div>
@@ -945,7 +944,7 @@ export function ExportPage() {
 
                       <div className="rounded-xl bg-muted/50 p-3">
                         <p className="text-[11px] text-muted-foreground">
-                          Direct model exports currently support GGUF only.
+                          直接模型导出目前仅支持 GGUF。
                         </p>
                       </div>
                     </motion.div>
@@ -955,28 +954,28 @@ export function ExportPage() {
                   {sourceMode === "checkpoint" && (
                     <div className="rounded-xl bg-muted/50 p-3 flex flex-col gap-2">
                       <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                        Training Info
+                        训练信息
                       </span>
                       <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Base Model</span>
+                          <span className="text-muted-foreground">基础模型</span>
                           <span className="font-medium">{baseModelName}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Method</span>
+                          <span className="text-muted-foreground">方法</span>
                           <span className="font-medium">
                             {trainingMethodLabel}
                           </span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Checkpoints</span>
+                          <span className="text-muted-foreground">检查点</span>
                           <span className="font-medium">
                             {checkpointsForModel.length}
                           </span>
                         </div>
                         {isAdapter && (
                           <div className="flex justify-between">
-                            <span className="text-muted-foreground">LoRA Rank</span>
+                            <span className="text-muted-foreground">LoRA 秩</span>
                             <span className="font-medium">{loraRank}</span>
                           </div>
                         )}
@@ -987,7 +986,7 @@ export function ExportPage() {
 
                 <div className="flex flex-col gap-2.5">
                   <span className="text-xs font-medium text-muted-foreground">
-                    Quick Guide
+                    {t("export.quickGuide")}
                   </span>
                   <ol className="flex flex-col gap-3">
                     {exportGuideSteps.map((step, i) => (
@@ -1017,11 +1016,11 @@ export function ExportPage() {
                 }
                 disabledReason={
                   !isAdapter && isQuantized
-                    ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                    ? "预量化（BNB 4-bit）模型在无 LoRA 适配器时无法导出"
                     : sourceMode === "model"
-                      ? "Only GGUF export is available for direct model export"
+                      ? "直接模型导出仅支持 GGUF"
                       : !isAdapter
-                        ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
+                        ? "全量微调检查点不可用（无 LoRA 适配器）"
                         : undefined
                 }
               />
@@ -1049,7 +1048,7 @@ export function ExportPage() {
                   disabled={!canExport}
                   onClick={() => { setExportSuccess(false); setExportError(null); setDialogOpen(true); }}
                 >
-                  Export Model
+                  {t("export.exportModel")}
                 </Button>
               </div>
             </>

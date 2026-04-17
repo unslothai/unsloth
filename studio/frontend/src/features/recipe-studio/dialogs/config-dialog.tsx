@@ -63,19 +63,19 @@ export function ConfigDialog({
           description={
             blockDefinition
               ? blockDefinition.description
-              : "Choose a step to edit."
+              : "选择要编辑的步骤。"
           }
         />
         {!config && (
           <div className="text-sm text-muted-foreground">
-            Select a step to edit.
+            选择要编辑的步骤。
           </div>
         )}
         {config && (
           <div className="min-w-0 space-y-4">
             {readOnly && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                This recipe is locked while a run is in progress.
+                运行进行中，当前配方已锁定。
               </div>
             )}
             <ValidationBanner config={config} />
@@ -85,9 +85,9 @@ export function ConfigDialog({
               {showDropToggle && (
                 <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold">Keep out of final dataset</p>
+                    <p className="text-sm font-semibold">不写入最终数据集</p>
                     <p className="break-words text-xs text-muted-foreground">
-                      Use this step while generating, but leave it out of exported rows.
+                      生成时使用该步骤，但不写入最终导出的数据行。
                     </p>
                   </div>
                   <Switch
@@ -117,7 +117,7 @@ export function ConfigDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
           >
-            Done
+            完成
           </Button>
         </DialogFooter>
       </DialogContent>

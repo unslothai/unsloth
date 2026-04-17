@@ -47,7 +47,7 @@ export function InlineCategoryBadges({
   }, [values]);
 
   if (values.length === 0) {
-    return <p className="text-xs text-muted-foreground">No values</p>;
+    return <p className="text-xs text-muted-foreground">暂无值</p>;
   }
 
   const overflow = values.length - visibleCount;

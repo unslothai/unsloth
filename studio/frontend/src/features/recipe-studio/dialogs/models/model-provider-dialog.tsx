@@ -40,14 +40,14 @@ export function ModelProviderDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Connection name"
+        label="连接名称"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
 
-      {/* Model source toggle */}
+      {/* 模型来源切换 */}
       <div className="grid gap-1.5">
-        <p className="text-sm font-semibold text-foreground">Model source</p>
+        <p className="text-sm font-semibold text-foreground">模型来源</p>
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -68,10 +68,10 @@ export function ModelProviderDialog({
             }
           >
             <p className="text-sm font-semibold text-foreground">
-              Local model
+              本地模型
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Use the model loaded in the Chat tab
+              使用 Chat 页已加载的模型
             </p>
           </button>
           <button
@@ -84,10 +84,10 @@ export function ModelProviderDialog({
             onClick={() => onUpdate({ is_local: false })}
           >
             <p className="text-sm font-semibold text-foreground">
-              External endpoint
+              外部端点
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Connect to an API like OpenAI, Together, or a custom server
+              连接 OpenAI、Together 或自定义服务等 API
             </p>
           </button>
         </div>
@@ -96,29 +96,27 @@ export function ModelProviderDialog({
       {isLocal ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">
-            Ready to go
+            可以直接使用
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Recipes will use whatever model is loaded in the Chat tab when you
-            hit run. No endpoint or API key needed.
+            点击运行时，配方会使用 Chat 页当前加载的模型，无需端点或 API 密钥。
           </p>
         </div>
       ) : (
         <>
           <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
             <p className="text-sm font-semibold text-foreground">
-              Start with the endpoint you want this model to use
+              先配置该模型使用的端点
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Most connections only need an endpoint. Add an API key if that
-              service requires one.
+              大多数连接只需端点；若服务要求鉴权，再补充 API 密钥。
             </p>
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Endpoint"
+              label="端点"
               htmlFor={endpointId}
-              hint="Base URL for the model service or gateway."
+              hint="模型服务或网关的基础 URL。"
             />
             <Input
               id={endpointId}
@@ -130,9 +128,9 @@ export function ModelProviderDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="API key (optional)"
+              label="API 密钥（可选）"
               htmlFor={apiKeyId}
-              hint="Paste a key here, or use an environment variable below."
+              hint="可直接粘贴密钥，或在下方填写环境变量名。"
             />
             <Input
               id={apiKeyId}
@@ -144,16 +142,16 @@ export function ModelProviderDialog({
           <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
             <CollapsibleTrigger asChild={true}>
               <CollapsibleSectionTriggerButton
-                label="Advanced request overrides"
+                label="高级请求覆写"
                 open={optionalOpen}
               />
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 space-y-4">
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="API key environment variable"
+                  label="API 密钥环境变量"
                   htmlFor={apiKeyEnvId}
-                  hint="Name of the environment variable that stores the key."
+                  hint="用于存放密钥的环境变量名。"
                 />
                 <Input
                   id={apiKeyEnvId}
@@ -167,9 +165,9 @@ export function ModelProviderDialog({
               </div>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Extra headers (JSON)"
+                  label="附加请求头（JSON）"
                   htmlFor={extraHeadersId}
-                  hint="Optional headers to send with every request."
+                  hint="每次请求附带的可选请求头。"
                 />
                 <Textarea
                   id={extraHeadersId}
@@ -183,9 +181,9 @@ export function ModelProviderDialog({
               </div>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Extra body (JSON)"
+                  label="附加请求体字段（JSON）"
                   htmlFor={extraBodyId}
-                  hint="Optional request fields to send every time."
+                  hint="每次请求附带的可选字段。"
                 />
                 <Textarea
                   id={extraBodyId}

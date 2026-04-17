@@ -56,13 +56,13 @@ export function ImportDialog({
         className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
         <DialogHeader>
-          <DialogTitle>Import recipe</DialogTitle>
+          <DialogTitle>导入配方</DialogTitle>
         </DialogHeader>
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Recipe JSON"
+            label="配方 JSON"
             htmlFor={payloadId}
-            hint="Paste JSON exported from Recipe Studio."
+            hint="粘贴从 Recipe Studio 导出的 JSON。"
           />
           <Textarea
             id={payloadId}
@@ -79,7 +79,7 @@ export function ImportDialog({
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={handleImport}>
-            Import recipe
+            导入配方
           </Button>
         </DialogFooter>
       </DialogContent>

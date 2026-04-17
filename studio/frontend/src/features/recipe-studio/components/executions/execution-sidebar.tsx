@@ -32,13 +32,13 @@ export function ExecutionSidebar({
     <aside className="w-72 shrink-0 border-r border-border/60 bg-card/20">
       <div className="flex items-center justify-between  border-border/60 px-3 py-2">
         <p className="text-xs font-semibold uppercase text-muted-foreground">
-          Runs
+          运行记录
         </p>
       </div>
       <div className="h-[calc(100%-45px)] space-y-2 overflow-auto p-2">
         {executions.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border/60 p-3 text-xs text-muted-foreground">
-            No runs yet.
+            暂无运行记录。
           </div>
         ) : (
           executions.map((execution) => {
@@ -71,12 +71,12 @@ export function ExecutionSidebar({
                     {formatStatus(execution.status)}
                   </Badge>
                 </div>
-                <p className="text-xs text-muted-foreground">{execution.rows} rows</p>
+                <p className="text-xs text-muted-foreground">{execution.rows} 行</p>
                 {isExecutionInProgress(execution.status) &&
                   typeof execution.batch?.total === "number" &&
                   execution.batch.total > 1 && (
                     <p className="text-xs text-muted-foreground">
-                      Batch {execution.batch.idx ?? "--"}/{execution.batch.total}
+                      批次 {execution.batch.idx ?? "--"}/{execution.batch.total}
                     </p>
                   )}
                 <p className="text-xs text-muted-foreground">

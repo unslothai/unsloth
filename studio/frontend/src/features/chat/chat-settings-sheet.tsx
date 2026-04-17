@@ -563,15 +563,15 @@ export function ChatSettingsPanel({
                     typeof ctxDisplayValue === "number" &&
                     ctxDisplayValue > ggufMaxContextLength && (
                       <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity ({ggufMaxContextLength.toLocaleString()} tokens). The model may use system RAM.
+                        超出预估显存容量（{ggufMaxContextLength.toLocaleString()} tokens），模型可能会使用系统内存。
                       </p>
                     )}
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium">KV Cache Dtype</div>
+                    <div className="text-xs font-medium">KV 缓存精度</div>
                     <div className="text-[11px] text-muted-foreground">
-                      Quantize KV cache to reduce VRAM.
+                      量化 KV 缓存以减少显存占用。
                     </div>
                   </div>
                   <Select
@@ -596,10 +596,10 @@ export function ChatSettingsPanel({
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium">
-                        Speculative Decoding
+                        推测解码
                       </div>
                       <div className="text-[11px] text-muted-foreground">
-                        Speed up generation with no VRAM cost.
+                        在不增加显存占用的情况下加速生成。
                       </div>
                     </div>
                     <Select
@@ -612,8 +612,8 @@ export function ChatSettingsPanel({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="ngram-mod">On</SelectItem>
-                        <SelectItem value="off">Off</SelectItem>
+                        <SelectItem value="ngram-mod">开启</SelectItem>
+                        <SelectItem value="off">关闭</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -625,7 +625,7 @@ export function ChatSettingsPanel({
                       onClick={() => onReloadModel?.()}
                       className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
                     >
-                      Apply
+                      应用
                     </button>
                     <button
                       type="button"
@@ -636,7 +636,7 @@ export function ChatSettingsPanel({
                       }}
                       className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
                     >
-                      Reset
+                      重置
                     </button>
                   </div>
                 )}
@@ -645,10 +645,9 @@ export function ChatSettingsPanel({
             {!isGguf && params.checkpoint && (
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium">Enable custom code</div>
+                  <div className="text-xs font-medium">启用自定义代码</div>
                   <div className="text-[11px] text-muted-foreground">
-                    Allow models with custom code (e.g. Nemotron). Only enable
-                    if sure.
+                    允许加载含自定义代码的模型（例如 Nemotron）。仅在确认安全时开启。
                   </div>
                 </div>
                 <Switch
@@ -909,9 +908,9 @@ function AutoHealToolCallsToggle() {
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
-        <div className="text-xs font-medium">Auto Heal Tool Calls 🦥</div>
+        <div className="text-xs font-medium">自动修复工具调用 🦥</div>
         <div className="text-[11px] text-muted-foreground">
-          Fix malformed tool calls from the model automatically.
+          自动修复模型生成的格式错误工具调用。
         </div>
       </div>
       <Switch
@@ -931,7 +930,7 @@ function HfTokenField() {
       <div className="min-w-0">
         <div className="text-xs font-medium">Hugging Face Token</div>
         <div className="text-[11px] text-muted-foreground">
-          For downloading gated or private models.
+          用于下载受限或私有模型。
         </div>
       </div>
       <Input

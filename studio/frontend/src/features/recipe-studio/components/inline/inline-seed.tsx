@@ -19,7 +19,7 @@ export function InlineSeed({ config, onUpdate }: InlineSeedProps): ReactElement 
   if (mode === "hf") {
     return (
       <div className="space-y-2">
-        <InlineField label="Dataset">
+        <InlineField label="数据集">
           <HfDatasetCombobox
             value={config.hf_repo_id}
             accessToken={config.hf_token?.trim() || undefined}
@@ -36,7 +36,7 @@ export function InlineSeed({ config, onUpdate }: InlineSeedProps): ReactElement 
           />
         </InlineField>
         <p className="text-[11px] text-muted-foreground">
-          Load columns in dialog.
+          请在弹窗中加载列。
         </p>
       </div>
     );
@@ -46,7 +46,7 @@ export function InlineSeed({ config, onUpdate }: InlineSeedProps): ReactElement 
   const fileName = isLocal
     ? config.local_file_name?.trim()
     : config.unstructured_file_names?.length
-      ? `${config.unstructured_file_names.length} file${config.unstructured_file_names.length !== 1 ? "s" : ""}`
+      ? `${config.unstructured_file_names.length} 个文件`
       : undefined;
 
   return (
@@ -59,10 +59,10 @@ export function InlineSeed({ config, onUpdate }: InlineSeedProps): ReactElement 
       </div>
       <div className="min-w-0">
         <p className="truncate text-xs font-medium">
-          {fileName || "No file selected"}
+          {fileName || "未选择文件"}
         </p>
         <p className="text-[11px] text-muted-foreground">
-          {isLocal ? "Structured file" : "Unstructured document"} · configure in dialog
+          {isLocal ? "结构化文件" : "非结构化文档"} · 请在弹窗中配置
         </p>
       </div>
       <HugeiconsIcon icon={Plant01Icon} className="ml-auto size-3.5 text-muted-foreground/60" />

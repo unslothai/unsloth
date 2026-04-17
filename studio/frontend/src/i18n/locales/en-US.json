@@ -79,7 +79,16 @@
     "loraModel": "LoRA Model",
     "save": "Save",
     "off": "Off",
-    "max": "Max"
+    "max": "Max",
+    "scrollToBottom": "Scroll to bottom",
+    "chatWithModel": "Chat with your model",
+    "runGgufAndSft": "Run GGUF, safetensors, vision and audio models!",
+    "messageInput": "Message input",
+    "sendMessage": "Send message",
+    "stopGenerating": "Stop generating",
+    "exportMarkdown": "Export as Markdown",
+    "contextUsage": "Context usage",
+    "promptTokens": "Prompt tokens"
   },
   "studio": {
     "title": "Fine-tuning Studio",
@@ -92,7 +101,20 @@
     "configure": "Configure",
     "history": "History",
     "backToHistory": "Back to history",
-    "startTour": "Start tour"
+    "startTour": "Start tour",
+    "chartSettings": "Chart Settings",
+    "tuneChartPresentation": "Tune chart presentation while training keeps running.",
+    "scaleAndCleanup": "Scale and cleanup",
+    "linear": "Linear",
+    "log": "Log",
+    "noClip": "No clip",
+    "clipP99": "Clip p99",
+    "clipP95": "Clip p95",
+    "showSmoothedLoss": "Show smoothed loss",
+    "showAverageLine": "Show average line",
+    "lossAxis": "Loss axis",
+    "gradientNormAxis": "Gradient norm axis",
+    "learningRateAxis": "Learning rate axis"
   },
   "training": {
     "modelSelection": "Model Selection",
@@ -101,7 +123,8 @@
     "training": "Training",
     "trainingProgress": "Training Progress",
     "startTraining": "Start Training",
-    "stopTraining": "Stop Training"
+    "stopTraining": "Stop Training",
+    "stopping": "Stopping..."
   },
   "export": {
     "title": "Export Model",
@@ -208,7 +231,14 @@
     "viewDocs": "View documentation",
     "visitDocs": "Visit docs",
     "off": "Off",
-    "max": "Max"
+    "max": "Max",
+    "done": "Done",
+    "resetDefaults": "Reset defaults",
+    "more": "More",
+    "update": "Update",
+    "secondsShort": "s",
+    "loadingMore": "Load more",
+    "total": "Total"
   },
   "errors": {
     "internalError": "Internal server error",

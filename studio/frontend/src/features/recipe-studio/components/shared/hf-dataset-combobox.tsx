@@ -27,7 +27,7 @@ export function HfDatasetCombobox({
   onValueChange,
   accessToken,
   inputId,
-  placeholder = "Search datasets...",
+  placeholder = "搜索数据集...",
   className,
 }: HfDatasetComboboxProps): ReactElement {
   const [inputValue, setInputValue] = useState(value);
@@ -95,10 +95,10 @@ export function HfDatasetCombobox({
           {isLoading ? (
             <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
-              Searching...
+              搜索中...
             </div>
           ) : (
-            <ComboboxEmpty>No datasets found</ComboboxEmpty>
+            <ComboboxEmpty>未找到数据集</ComboboxEmpty>
           )}
           <ComboboxList>
             {(id: string) => (

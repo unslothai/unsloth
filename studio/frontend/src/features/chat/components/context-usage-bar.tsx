@@ -46,7 +46,7 @@ export const ContextUsageBar: FC<{
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label={`Context usage: ${formatTokenCount(used)} of ${formatTokenCount(total)} tokens`}
+          aria-label={`${t("chat.contextUsage")}: ${formatTokenCount(used)} / ${formatTokenCount(total)} tokens`}
           className={cn(
             "flex items-center gap-2 rounded-md px-2 py-1 text-xs font-mono tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
             className,
@@ -70,14 +70,14 @@ export const ContextUsageBar: FC<{
       >
         <div className="grid min-w-44 gap-1.5 text-xs">
           <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">Context usage</span>
+            <span className="text-muted-foreground">{t("chat.contextUsage")}</span>
             <span className={cn("font-mono tabular-nums font-medium", severity.text)}>
               {percent.toFixed(1)}%
             </span>
           </div>
           {promptTokens !== undefined && (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Prompt tokens</span>
+              <span className="text-muted-foreground">{t("chat.promptTokens")}</span>
               <span className="font-mono tabular-nums">
                 {formatTokenCountFull(promptTokens)}
               </span>

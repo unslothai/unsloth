@@ -65,16 +65,16 @@ export function TrainingSection() {
       try {
         const config = parseYamlConfig(reader.result as string);
         store.applyConfigPatch(config);
-        toast.success("Config loaded", { description: file.name });
+        toast.success("配置已加载", { description: file.name });
       } catch (err) {
-        toast.error("Failed to load config", {
+        toast.error("加载配置失败", {
           description:
-            err instanceof Error ? err.message : "Invalid YAML file",
+            err instanceof Error ? err.message : "无效的 YAML 文件",
         });
       }
     };
     reader.onerror = () => {
-      toast.error("Failed to read file");
+      toast.error("读取文件失败");
     };
     reader.readAsText(file);
   };
@@ -98,15 +98,15 @@ export function TrainingSection() {
 
   const handleResetConfig = () => {
     store.resetToModelDefaults();
-    toast.success("Parameters reset to model defaults");
+    toast.success("参数已重置为模型默认值");
   };
 
   return (
     <div data-tour="studio-training" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-        title="Training"
-        description="Monitor and control training"
+        title="训练"
+        description="监控并控制训练"
         accent="blue"
         className={hasMessage ? "min-h-studio-config-column" : "h-studio-config-column"}
       >
@@ -147,10 +147,10 @@ export function TrainingSection() {
               className="size-5 text-muted-foreground/50"
             />
             <p className="text-sm font-medium text-muted-foreground">
-              No training data yet
+              暂无训练数据
             </p>
             <p className="text-xs text-muted-foreground/60">
-              Start training to see loss progress
+              开始训练后可查看损失曲线
             </p>
           </div>
         </div>
@@ -163,7 +163,7 @@ export function TrainingSection() {
           disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
-          {isStarting ? "Starting..." : isLoadingModel ? "Loading model..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
+          {isStarting ? "启动中..." : isLoadingModel ? "加载模型中..." : store.isCheckingDataset ? "检查数据集中..." : "开始训练"}
         </Button>
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
@@ -171,16 +171,16 @@ export function TrainingSection() {
         {isIncompatible && (
           <p className="text-xs text-red-500 leading-relaxed">
             {!store.isAudioModel && store.isDatasetAudio === true
-              ? "This model does not support audio. Switch to an audio-capable model or choose a non-audio dataset."
-              : "Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset."}
-          </p>
+              ? "该模型不支持音频。请切换到支持音频的模型或选择非音频数据集。"
+              : "文本模型与多模态数据集不兼容。请切换到视觉模型或选择纯文本数据集。"}
+        </p>
         )}
         {!configValidation.ok && configValidation.message && !isIncompatible && (
           <p className="text-xs text-red-500 leading-relaxed">{configValidation.message}</p>
         )}
 
         {/* Upload / Save / Reset */}
-        <p className="text-xs text-muted-foreground">Training Config</p>
+        <p className="text-xs text-muted-foreground">训练配置</p>
         <div className="grid grid-cols-3 gap-2">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -191,10 +191,10 @@ export function TrainingSection() {
                 onClick={() => fileInputRef.current?.click()}
               >
                 <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                Upload
+                上传
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Load a saved YAML config</TooltipContent>
+            <TooltipContent>加载已保存的 YAML 配置</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -206,10 +206,10 @@ export function TrainingSection() {
                 onClick={handleSaveConfig}
               >
                 <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
-                Save
+                保存
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Download current config as YAML</TooltipContent>
+            <TooltipContent>下载当前配置为 YAML</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -221,10 +221,10 @@ export function TrainingSection() {
                 disabled={!store.selectedModel}
               >
                 <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
-                Reset
+                重置
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Reset to model defaults</TooltipContent>
+            <TooltipContent>重置为模型默认配置</TooltipContent>
           </Tooltip>
         </div>
         <input
