@@ -16,6 +16,7 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -111,13 +112,15 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
         )}
 
         {hideComposer ? (
-          <ThreadPrimitive.ViewportFooter
-            className="aui-thread-viewport-footer sticky bottom-0 z-20 flex w-full flex-col gap-2 overflow-visible bg-transparent pointer-events-none"
-          >
-            <div className="flex justify-center pointer-events-auto">
-              <ThreadScrollToBottom />
-            </div>
-          </ThreadPrimitive.ViewportFooter>
+          <AuiIf condition={({ thread }) => !thread.isEmpty}>
+            <ThreadPrimitive.ViewportFooter
+              className="aui-thread-viewport-footer sticky bottom-0 z-20 flex w-full flex-col gap-2 overflow-visible bg-transparent pointer-events-none"
+            >
+              <div className="flex justify-center pointer-events-auto">
+                <ThreadScrollToBottom />
+              </div>
+            </ThreadPrimitive.ViewportFooter>
+          </AuiIf>
         ) : (
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             <ThreadPrimitive.ViewportFooter
@@ -142,7 +145,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
                 <ComposerAnimated />
               </div>
               <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-                LLM's can make mistakes. Double-check all responses.
+                LLMs can make mistakes. Double-check all responses.
               </p>
             </div>
           </div>
@@ -156,9 +159,10 @@ const SCROLL_THRESHOLD = 350;
 
 const ThreadScrollToBottom: FC = () => {
   const [pastThreshold, setPastThreshold] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const viewport = document.querySelector(".aui-thread-viewport");
+    const viewport = containerRef.current?.closest(".aui-thread-viewport");
     if (!viewport) return;
     const check = () => {
       const dist = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
@@ -170,18 +174,20 @@ const ThreadScrollToBottom: FC = () => {
   }, []);
 
   return (
-    <ThreadPrimitive.ScrollToBottom asChild={true}>
-      <TooltipIconButton
-        tooltip="Scroll to bottom"
-        variant="outline"
-        className={cn(
-          "aui-thread-scroll-to-bottom absolute -top-14 z-10 self-center rounded-full p-4 dark:bg-background dark:hover:bg-accent",
-          pastThreshold ? "disabled:invisible" : "invisible",
-        )}
-      >
-        <ArrowDownIcon />
-      </TooltipIconButton>
-    </ThreadPrimitive.ScrollToBottom>
+    <div ref={containerRef}>
+      <ThreadPrimitive.ScrollToBottom asChild={true}>
+        <TooltipIconButton
+          tooltip="Scroll to bottom"
+          variant="outline"
+          className={cn(
+            "aui-thread-scroll-to-bottom absolute -top-14 z-10 self-center rounded-full p-4 dark:bg-background dark:hover:bg-accent",
+            pastThreshold ? "disabled:invisible" : "invisible",
+          )}
+        >
+          <ArrowDownIcon />
+        </TooltipIconButton>
+      </ThreadPrimitive.ScrollToBottom>
+    </div>
   );
 };
 
@@ -501,24 +507,6 @@ const CodeToolsToggle: FC = () => {
       <CodeToggleIcon className="size-3.5" />
       <span>Code</span>
     </button>
-  );
-};
-
-const CodeToggleIcon: FC<{ className?: string }> = ({ className }) => {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
   );
 };
 

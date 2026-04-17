@@ -243,7 +243,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             <SharedComposer handlesRef={handlesRef} />
           </div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-            LLM's can make mistakes. Double-check all responses.
+            LLMs can make mistakes. Double-check all responses.
           </p>
         </div>
       </div>
@@ -386,7 +386,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             />
           </div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-            LLM's can make mistakes. Double-check all responses.
+            LLMs can make mistakes. Double-check all responses.
           </p>
         </div>
       </div>
