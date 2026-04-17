@@ -643,7 +643,9 @@ phi4_mm_template = \
     "{% set img_idx = namespace(value=1) %}"\
     "{% set aud_idx = namespace(value=1) %}"\
     "{% if messages[0]['role'] == 'system' %}"\
-        "{{'<|system|>' + messages[0]['content']}}"\
+        "{{'<|system|>'}}"\
+        "{% if messages[0]['content'] is string %}{{ messages[0]['content'] }}"\
+        "{% else %}{{ messages[0]['content'][0]['text'] }}{% endif %}"\
         "{% if tools is defined and tools %}"\
             "{{ '\n\nYou are a helpful assistant with some tools.<|tool|>' }}"\
             "{{ tools | tojson }}"\
