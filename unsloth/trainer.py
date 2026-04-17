@@ -381,6 +381,7 @@ def _resolve_trainer_params(trainer_class, init_fn):
             continue
     return set(params.keys())
 
+
 def _fix_full_finetuning_precision_on_non_bf16_gpu(trainer_kwargs):
     """
     Fix for issue #4082.
@@ -406,7 +407,7 @@ def _fix_full_finetuning_precision_on_non_bf16_gpu(trainer_kwargs):
         return
 
     model = trainer_kwargs.get("model")
-    args  = trainer_kwargs.get("args")
+    args = trainer_kwargs.get("args")
     if model is None or args is None:
         return
 
@@ -422,6 +423,7 @@ def _fix_full_finetuning_precision_on_non_bf16_gpu(trainer_kwargs):
 
     # Only act on hardware that doesn't support BF16
     from unsloth.models._utils import is_bfloat16_supported
+
     if is_bfloat16_supported():
         return
 
@@ -444,11 +446,11 @@ def _fix_full_finetuning_precision_on_non_bf16_gpu(trainer_kwargs):
         "To suppress this warning set fp16=False and bf16=False explicitly. "
         "(fix for issue #4082)",
         UserWarning,
-        stacklevel=4,
+        stacklevel = 4,
     )
 
+
 def _backwards_compatible_trainer(trainer_class, config_class):
-    
     original_init = trainer_class.__init__
 
     @wraps(original_init)
