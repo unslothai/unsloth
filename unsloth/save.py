@@ -33,6 +33,17 @@ except ImportError:
 
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
+
+def _get_llama_cpp_dir():
+    """
+    Return the llama.cpp directory to use.
+    Checks UNSLOTH_LLAMA_CPP_PATH env var first (issue #4129),
+    then falls back to the default 'llama.cpp' relative directory.
+    """
+    env_path = os.environ.get("UNSLOTH_LLAMA_CPP_PATH", "").strip()
+    if env_path and os.path.isdir(env_path):
+        return env_path
+    return LLAMA_CPP_DEFAULT_DIR
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -517,7 +528,6 @@ def unsloth_save_model(
 
         model.save_pretrained(**save_pretrained_settings)
 
-        
 
         # Fix issue #3726: adapter_config.json may store an absolute local
         # cache path in base_model_name_or_path instead of the HF repo ID.
@@ -2546,7 +2556,8 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
-    if not os.path.exists("llama.cpp"):
+    _llama_cpp_dir = _get_llama_cpp_dir()
+    if not os.path.exists(_llama_cpp_dir):
         if IS_KAGGLE_ENVIRONMENT:
             python_install = install_python_non_blocking(["protobuf"])
             python_install.wait()
@@ -2628,7 +2639,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
-    if not os.path.exists("llama.cpp"):
+    _llama_cpp_dir = _get_llama_cpp_dir()
+    if not os.path.exists(_llama_cpp_dir):
         if IS_KAGGLE_ENVIRONMENT:
             python_install = install_python_non_blocking(["protobuf"])
             python_install.wait()
@@ -2714,7 +2726,8 @@ def save_to_gguf_generic(
     if repo_id is not None and token is None:
         raise RuntimeError("Unsloth: Please specify a token for uploading!")
 
-    if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
+    _llama_cpp_dir = _get_llama_cpp_dir()
+    if not os.path.exists(os.path.join(_llama_cpp_dir, "unsloth_convert_hf_to_gguf.py")):
         install_llama_cpp(just_clone_repo = True)
 
     # Use old style quantization_method
