@@ -78,7 +78,7 @@ export function SettingsDialog() {
           Manage your Unsloth Studio preferences.
         </DialogDescription>
         <div className="flex h-full min-h-0">
-          <aside className="flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
+          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
             <nav className="flex flex-col gap-0.5">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;
@@ -88,17 +88,17 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium transition-colors",
+                      "relative flex h-[30px] items-center gap-2.5 rounded-[8px] px-2.5 text-sm font-medium transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
-                        ? "text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
+                        ? "text-black dark:text-white"
+                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white",
                     )}
                   >
                     {active && (
                       <motion.span
                         layoutId="settings-active-pill"
-                        className="absolute inset-0 rounded-md bg-accent"
+                        className="absolute inset-0 rounded-[8px] bg-[#ececec] dark:bg-[#2e3035]"
                         transition={
                           reduced
                             ? { duration: 0 }
@@ -113,7 +113,8 @@ export function SettingsDialog() {
                     )}
                     <HugeiconsIcon
                       icon={tab.icon}
-                      className="relative z-10 size-4"
+                      strokeWidth={1.5}
+                      className="relative z-10 size-[18px]"
                     />
                     <span className="relative z-10">{tab.label}</span>
                   </button>
@@ -126,7 +127,7 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Close settings"
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

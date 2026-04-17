@@ -68,9 +68,9 @@ function ModelSelectorTrigger({
         className={cn(
           "flex items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-full border border-border/60 hover:bg-accent",
-          variant === "ghost" && "rounded-md hover:bg-accent",
-          variant === "muted" && "rounded-md bg-muted hover:bg-muted/80",
+          "rounded-[8px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+          variant === "ghost" && "rounded-[8px] hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+          variant === "muted" && "rounded-[8px] bg-muted hover:bg-muted/80",
           size === "sm" && "h-8 px-3 text-xs",
           size === "default" && "h-9 px-3.5 text-sm",
           size === "lg" && "h-10 px-4 text-sm",
@@ -80,15 +80,16 @@ function ModelSelectorTrigger({
         {isLoaded && (
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
-        <span className={cn("font-semibold", isLoaded ? "text-foreground" : "text-muted-foreground")}>
-          {currentModel?.name ?? "Select model..."}
+        <span className="font-heading font-medium text-[16px] text-black dark:text-white">
+          {currentModel?.name ?? "Select model"}
         </span>
         {currentModel?.description && (
           <span className="text-muted-foreground text-xs">{currentModel.description}</span>
         )}
         <HugeiconsIcon
           icon={ArrowDown01Icon}
-          className="size-3 shrink-0 text-muted-foreground"
+          strokeWidth={1.75}
+          className="size-3.5 shrink-0 text-muted-foreground"
         />
       </button>
     </PopoverTrigger>

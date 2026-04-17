@@ -16,6 +16,22 @@
 
 @font-face {
 	font-family: "Hellix";
+	src: url("/fonts/Hellix-Regular.woff") format("woff");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-Medium.woff") format("woff");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
 	src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
 		url("/fonts/Hellix-SemiBold.woff") format("woff");
 	font-weight: 600;
@@ -494,11 +510,19 @@
 }
 
 [data-sidebar="content"] {
-	scrollbar-color: oklch(0.5 0 0 / 0.7) transparent;
+	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
 }
 
 .dark [data-sidebar="content"] {
-	scrollbar-color: oklch(0.72 0 0 / 0.65) transparent;
+	scrollbar-color: oklch(0.72 0 0 / 0.25) transparent;
+}
+
+[data-sidebar="content"]::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.22);
+}
+
+.dark [data-sidebar="content"]::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.25);
 }
 
 /*---break---*/

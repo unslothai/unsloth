@@ -243,7 +243,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             <SharedComposer handlesRef={handlesRef} />
           </div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-            LLM's can make mistakes. Double-check all responses.
+            LLMs can make mistakes. Double-check all responses.
           </p>
         </div>
       </div>
@@ -310,8 +310,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           data-tour="chat-compare-view"
           className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
         >
-          <div className="relative flex min-h-0 flex-col [&_.aui-thread-viewport]:pt-14 [&_.aui-thread-viewport]:px-10">
-            <div className="absolute top-0 left-0 right-3 z-20 flex h-11 items-center gap-2 bg-background px-3">
+          <div className="relative flex min-h-0 flex-col [&_.aui-thread-viewport]:pt-[48px] [&_.aui-thread-viewport]:px-10">
+            <div className="absolute top-0 left-0 right-3 z-20 flex h-[48px] items-start pt-[11px] gap-2 bg-background px-3">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -342,8 +342,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               </ChatRuntimeProvider>
             </div>
           </div>
-          <div className="relative flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l [&_.aui-thread-viewport]:pt-14 [&_.aui-thread-viewport]:px-10">
-            <div className="absolute top-0 left-0 right-3 z-20 flex h-11 items-center gap-2 bg-background px-3">
+          <div className="relative flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l [&_.aui-thread-viewport]:pt-[48px] [&_.aui-thread-viewport]:px-10">
+            <div className="absolute top-0 left-0 right-3 z-20 flex h-[48px] items-start pt-[11px] gap-2 bg-background px-3">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -384,7 +384,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             />
           </div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-            LLM's can make mistakes. Double-check all responses.
+            LLMs can make mistakes. Double-check all responses.
           </p>
         </div>
       </div>
@@ -742,7 +742,7 @@ export function ChatPage(): ReactElement {
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <div
           className={cn(
-            "absolute top-0 left-0 right-2 z-30 flex h-11 shrink-0 items-center pr-2 bg-background",
+            "absolute top-0 left-0 right-2 z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
             view.mode === "compare" && "right-2 left-auto w-auto bg-transparent pl-0 pr-2",
           )}

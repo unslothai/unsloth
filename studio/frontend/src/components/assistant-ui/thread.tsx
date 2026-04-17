@@ -86,7 +86,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           "aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
           hideComposer
             ? "pt-4"
-            : "h-0 min-h-0 basis-0 pt-[56px]",
+            : "h-0 min-h-0 basis-0 pt-[48px]",
         )}
       >
         {!hideWelcome && (
@@ -142,7 +142,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
                 <ComposerAnimated />
               </div>
               <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-                LLM's can make mistakes. Double-check all responses.
+                LLMs can make mistakes. Double-check all responses.
               </p>
             </div>
           </div>
@@ -248,7 +248,7 @@ const SuggestionItem: FC = () => {
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img
@@ -256,10 +256,10 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               alt="Sloth mascot"
               className="size-20"
             />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-bold text-2xl tracking-[-0.02em] duration-200">
+            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
               Chat with your model
             </h1>
-            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-sm delay-75 duration-200">
+            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
@@ -659,7 +659,7 @@ const GeneratingIndicator: FC = () => {
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] duration-150"
+      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] font-[450] duration-150"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
@@ -812,14 +812,14 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] font-[450] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-2xl rounded-tr-md bg-muted px-4 py-2.5 text-foreground dark:bg-card dark:border dark:border-border">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[16px] rounded-tr-[4px] bg-[#f0f0f0] px-4 py-2.5 text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
         <div className="mt-1 flex min-h-6">
