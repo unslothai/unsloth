@@ -8,8 +8,8 @@ import { getAuthToken } from "@/features/auth";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { Camera } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import { decodeJwtSubject } from "../lib/jwt-subject";
-import { resizeImageFileToDataUrl } from "../lib/resize-image-file";
+import { decodeJwtSubject } from "../utils/jwt-subject";
+import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
 import { useUserProfileStore } from "../stores/user-profile-store";
 import { UserAvatar } from "./user-avatar";
 
@@ -99,7 +99,7 @@ export function ProfilePersonalizationPanel() {
           name={previewName}
           imageUrl={avatarDataUrl}
           size="lg"
-          className="size-[124px] text-[1.9rem]"
+          className="size-[124px] text-[3.15rem]"
         />
         <input
           ref={fileInputRef}

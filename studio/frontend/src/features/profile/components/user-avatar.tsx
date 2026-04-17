@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { avatarBgStyle, initialsFromName } from "../lib/avatar-initials";
+import { avatarBgStyle, initialsFromName } from "../utils/avatar-initials";
 
 type UserAvatarProps = {
   name: string;
