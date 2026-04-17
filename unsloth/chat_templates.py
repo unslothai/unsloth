@@ -641,13 +641,13 @@ DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
 # =========================================== Phi-4 Multimodal
 phi4_mm_template = \
     "{% if tools is defined and tools %}"\
-        "{{ '<|system|>\nYou are a helpful assistant with some tools.<|tool|>' }}"\
+        "{{ '<|system|>You are a helpful assistant with some tools.<|tool|>' }}"\
         "{{ tools | tojson }}"\
-        "{{ '<|/tool|><|end|>\n' }}"\
+        "{{ '<|/tool|><|end|>' }}"\
     "{% endif %}"\
     "{% for message in messages %}"\
         "{% if message['role'] != 'system' or not (tools is defined and tools) %}"\
-            "{{'<|' + message['role'] + '|>\n'}}" \
+            "{{'<|' + message['role'] + '|>'}}"\
             "{% if message['content'] is string %}"\
                 "{{ message['content'] }}"\
             "{% else %}"\
@@ -658,11 +658,11 @@ phi4_mm_template = \
                     "{% endif %}"\
                 "{% endfor %}"\
             "{% endif %}"\
-            "{{'<|end|>\n'}}" \
+            "{{'<|end|>'}}"\
         "{% endif %}"\
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
-        "{{ '<|assistant|>\n' }}"\
+        "{{ '<|assistant|>' }}"\
     "{% endif %}"
 
 phi4_mm_template_eos_token = "<|end|>"
