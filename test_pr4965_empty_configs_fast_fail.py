@@ -9,17 +9,13 @@ _BACKEND = Path(__file__).resolve().parent / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-if "structlog" not in sys.modules:
 
-    class _L:
-        def __getattr__(self, n):
-            return lambda *a, **k: None
-
-    sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _L,
-        get_logger = lambda *a, **k: _L(),
-    )
-if "datasets" not in sys.modules:
+@pytest.fixture(autouse = True)
+def _fake_datasets(monkeypatch):
+    """Inject a fake datasets module scoped to each test with auto-teardown."""
+    if "datasets" in sys.modules:
+        yield
+        return
 
     class _NF(Exception):
         pass
@@ -30,10 +26,34 @@ if "datasets" not in sys.modules:
     m.IterableDataset = type("IterableDataset", (), {})
     m.Dataset = type("Dataset", (), {})
     m.load_dataset = lambda *a, **k: None
-    sys.modules["datasets"] = m
+    monkeypatch.setitem(sys.modules, "datasets", m)
     e = types.ModuleType("datasets.exceptions")
     e.DatasetNotFoundError = _NF
-    sys.modules["datasets.exceptions"] = e
+    monkeypatch.setitem(sys.modules, "datasets.exceptions", e)
+    yield
+
+
+@pytest.fixture(autouse = True)
+def _fake_structlog(monkeypatch):
+    """Inject a fake structlog module scoped to each test with auto-teardown."""
+    if "structlog" in sys.modules:
+        yield
+        return
+
+    class _L:
+        def __getattr__(self, n):
+            return lambda *a, **k: None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "structlog",
+        types.SimpleNamespace(
+            BoundLogger = _L,
+            get_logger = lambda *a, **k: _L(),
+        ),
+    )
+    yield
+
 
 from fastapi import HTTPException  # noqa: E402
 
