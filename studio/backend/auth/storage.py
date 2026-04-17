@@ -6,6 +6,7 @@ SQLite storage for authentication data (user credentials + JWT secret).
 """
 
 import hashlib
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -13,10 +14,80 @@ from typing import Optional, Tuple
 from utils.paths import auth_db_path, ensure_dir
 
 DB_PATH = auth_db_path()
+DEFAULT_ADMIN_USERNAME = "unsloth"
+
+# Plaintext bootstrap password file — lives beside auth.db, deleted on
+# first password change so the credential never lingers on disk.
+_BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
+
+# In-process cache so we don't re-read the file on every HTML serve.
+_bootstrap_password: Optional[str] = None
+
+
+def generate_bootstrap_password() -> str:
+    """Generate a 4-word diceware passphrase and persist it to disk.
+
+    The passphrase is written to ``_BOOTSTRAP_PW_PATH`` so that it
+    survives server restarts (the DB only stores the *hash*).  On
+    subsequent calls / restarts, the persisted value is returned.
+    """
+    global _bootstrap_password
+
+    # 1. Already cached in this process?
+    if _bootstrap_password is not None:
+        return _bootstrap_password
+
+    # 2. Already persisted from a previous run?
+    if _BOOTSTRAP_PW_PATH.is_file():
+        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        if _bootstrap_password:
+            return _bootstrap_password
+
+    # 3. First-ever startup — generate a fresh passphrase.
+    import diceware
+
+    _bootstrap_password = diceware.get_passphrase(
+        options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
+    )
+
+    # Persist so the *same* passphrase is used if the server restarts
+    # before the user changes the password.
+    ensure_dir(_BOOTSTRAP_PW_PATH.parent)
+    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
+
+    return _bootstrap_password
+
+
+def get_bootstrap_password() -> Optional[str]:
+    """Return the cached bootstrap password, or None if not yet generated."""
+    return _bootstrap_password
+
+
+def clear_bootstrap_password() -> None:
+    """Delete the persisted bootstrap password file (called after password change)."""
+    global _bootstrap_password
+    _bootstrap_password = None
+    if _BOOTSTRAP_PW_PATH.is_file():
+        _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
 
 
 def _hash_token(token: str) -> str:
-    """SHA-256 hash a setup token for safe storage."""
+    """SHA-256 hash helper used for refresh token storage.
+
+    Plain SHA-256 is intentional here: refresh tokens are high-entropy
+    random strings from ``secrets.token_urlsafe(48)`` (384 bits of
+    entropy), so a slow KDF (Argon2 / bcrypt / PBKDF2) provides zero
+    additional security — no attacker can brute-force 2^384 regardless
+    of hash speed — while adding tens of ms of CPU to every refresh.
+    See the OWASP Password Storage Cheat Sheet on fast-vs-slow hashing
+    of high-entropy inputs.
+
+    API keys use the separate ``_pbkdf2_api_key`` helper below, which
+    runs PBKDF2-HMAC-SHA256 with a persistent server-side salt — not
+    for cryptographic reasons (128-bit random tokens don't need slow
+    hashing), but because CodeQL's ``py/weak-sensitive-data-hashing``
+    query mislabels API keys as passwords and demands a KDF.
+    """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -32,15 +103,8 @@ def get_connection() -> sqlite3.Connection:
             username TEXT UNIQUE NOT NULL,
             password_salt TEXT NOT NULL,
             password_hash TEXT NOT NULL,
-            jwt_secret TEXT NOT NULL
-        );
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS setup_tokens (
-            id INTEGER PRIMARY KEY,
-            token_hash TEXT NOT NULL
+            jwt_secret TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -54,12 +118,123 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash   TEXT NOT NULL UNIQUE,
+            name       TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            expires_at TEXT,
+            is_active  INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_secrets (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    if "must_change_password" not in columns:
+        conn.execute(
+            "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
     return conn
 
 
+# ── API-key PBKDF2 salt ────────────────────────────────────────────────
+#
+# Module-level cache for the persistent API-key PBKDF2 salt. Populated
+# lazily on first use via ``_get_or_create_api_key_pbkdf2_salt``. Not
+# protected by a lock because (a) the ``INSERT OR IGNORE`` provides
+# atomicity at the SQLite layer and (b) concurrent populations converge
+# on the same value, so the worst case is a harmless duplicate read on
+# startup.
+_api_key_pbkdf2_salt_cache: Optional[bytes] = None
+
+
+def _get_or_create_api_key_pbkdf2_salt() -> bytes:
+    """Return the persistent API-key PBKDF2 salt, generating it once if missing.
+
+    Stored as a hex-encoded 32-byte random value in the ``app_secrets``
+    table under key ``"api_key_pbkdf2_salt"``. Regenerated only if the row
+    is missing (i.e. fresh install, or operator manually deleted the row
+    and accepts invalidating existing API keys).
+    """
+    global _api_key_pbkdf2_salt_cache
+    if _api_key_pbkdf2_salt_cache is not None:
+        return _api_key_pbkdf2_salt_cache
+
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            ("api_key_pbkdf2_salt",),
+        )
+        row = cur.fetchone()
+        if row is None:
+            new_value = secrets.token_hex(32)  # 32 bytes -> 64 hex chars
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                ("api_key_pbkdf2_salt", new_value),
+            )
+            conn.commit()
+            cur = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                ("api_key_pbkdf2_salt",),
+            )
+            row = cur.fetchone()
+        salt = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _api_key_pbkdf2_salt_cache = salt
+    return salt
+
+
+_API_KEY_PBKDF2_ITERATIONS = 100_000
+
+
+def _pbkdf2_api_key(raw_key: str) -> str:
+    """PBKDF2-HMAC-SHA256 an API key with a persistent server-side salt.
+
+    Used for API-key storage ONLY, not refresh tokens. Matches the
+    PBKDF2 algorithm + iteration count used by the password hasher in
+    ``auth/hashing.py`` so the codebase is consistent on which KDF it
+    uses for credential storage.
+
+    Notes on why a slow KDF here is *only* a CodeQL appeasement and
+    *not* a cryptographic requirement: API keys are cryptographically
+    random 128-bit tokens (via ``secrets.token_hex``), so brute force
+    against 2^128 is infeasible regardless of hash speed. CodeQL's
+    ``py/weak-sensitive-data-hashing`` query mislabels these tokens as
+    "password" sensitive data and then demands a KDF from its
+    allowlist (Argon2 / scrypt / bcrypt / PBKDF2). Per the query's
+    own recommendation page we use PBKDF2. The persistent salt is
+    still loaded from ``app_secrets`` so an attacker dumping the
+    ``api_keys`` table alone cannot derive hashes for candidate
+    tokens without also obtaining the salt row.
+    """
+    salt = _get_or_create_api_key_pbkdf2_salt()
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        raw_key.encode("utf-8"),
+        salt,
+        _API_KEY_PBKDF2_ITERATIONS,
+    )
+    return dk.hex()
+
+
 def is_initialized() -> bool:
-    """Check if auth has been set up (user exists in DB)."""
+    """Check if auth is ready for login (at least one user exists in DB)."""
     conn = get_connection()
     cur = conn.execute("SELECT COUNT(*) AS c FROM auth_user")
     row = cur.fetchone()
@@ -67,7 +242,13 @@ def is_initialized() -> bool:
     return bool(row["c"])
 
 
-def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
+def create_initial_user(
+    username: str,
+    password: str,
+    jwt_secret: str,
+    *,
+    must_change_password: bool = False,
+) -> None:
     """
     Create the initial admin user in the database.
 
@@ -80,10 +261,16 @@ def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
     try:
         conn.execute(
             """
-            INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO auth_user (
+                username,
+                password_salt,
+                password_hash,
+                jwt_secret,
+                must_change_password
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (username, salt, pwd_hash, jwt_secret),
+            (username, salt, pwd_hash, jwt_secret, int(must_change_password)),
         )
         conn.commit()
     finally:
@@ -94,7 +281,7 @@ def delete_user(username: str) -> None:
     """
     Delete a user from the database.
 
-    Used for rollback when setup fails after user creation.
+    Used for rollback when user creation fails partway through bootstrap.
     """
     conn = get_connection()
     try:
@@ -104,17 +291,18 @@ def delete_user(username: str) -> None:
         conn.close()
 
 
-def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
+def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:
     """
     Get user's password salt, hash, and JWT secret.
 
-    Returns (password_salt, password_hash, jwt_secret) or None if user not found.
+    Returns (password_salt, password_hash, jwt_secret, must_change_password)
+    or None if user not found.
     """
     conn = get_connection()
     try:
         cur = conn.execute(
             """
-            SELECT password_salt, password_hash, jwt_secret
+            SELECT password_salt, password_hash, jwt_secret, must_change_password
             FROM auth_user
             WHERE username = ?
             """,
@@ -123,7 +311,40 @@ def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
         row = cur.fetchone()
         if not row:
             return None
-        return row["password_salt"], row["password_hash"], row["jwt_secret"]
+        return (
+            row["password_salt"],
+            row["password_hash"],
+            row["jwt_secret"],
+            bool(row["must_change_password"]),
+        )
+    finally:
+        conn.close()
+
+
+def get_jwt_secret(username: str) -> Optional[str]:
+    """Return the current JWT signing secret for a user."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT jwt_secret FROM auth_user WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+        return row["jwt_secret"] if row else None
+    finally:
+        conn.close()
+
+
+def requires_password_change(username: str) -> bool:
+    """Return whether the user must change the seeded default password."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT must_change_password FROM auth_user WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+        return bool(row and row["must_change_password"])
     finally:
         conn.close()
 
@@ -132,7 +353,7 @@ def load_jwt_secret() -> str:
     """
     Load the JWT secret from the database.
 
-    Raises RuntimeError if auth is not initialized.
+    Raises RuntimeError if no auth user has been created yet.
     """
     conn = get_connection()
     try:
@@ -140,56 +361,52 @@ def load_jwt_secret() -> str:
         row = cur.fetchone()
         if not row:
             raise RuntimeError(
-                "Auth is not initialized. Please set up a password first."
+                "Auth is not initialized. Wait for the seeded admin bootstrap to complete."
             )
         return row["jwt_secret"]
     finally:
         conn.close()
 
 
-def save_setup_token(token: str) -> None:
+def ensure_default_admin() -> bool:
+    """Seed the default admin account on first startup.
+
+    Uses a randomly generated diceware passphrase as the bootstrap password.
+    Returns True when the default admin was created in this call.
     """
-    Store a hashed setup token, replacing any existing one.
-    """
-    token_hash = _hash_token(token)
-    conn = get_connection()
+    bootstrap_pw = generate_bootstrap_password()
     try:
-        conn.execute("DELETE FROM setup_tokens")
-        conn.execute("INSERT INTO setup_tokens (token_hash) VALUES (?)", (token_hash,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def consume_setup_token(token: str) -> bool:
-    """
-    Verify a setup token and delete it if valid.
-
-    Returns True if the token was valid (and is now consumed), False otherwise.
-    """
-    token_hash = _hash_token(token)
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            "SELECT id FROM setup_tokens WHERE token_hash = ?", (token_hash,)
+        create_initial_user(
+            username = DEFAULT_ADMIN_USERNAME,
+            password = bootstrap_pw,
+            jwt_secret = secrets.token_urlsafe(64),
+            must_change_password = True,
         )
-        row = cur.fetchone()
-        if row is None:
-            return False
-        conn.execute("DELETE FROM setup_tokens WHERE id = ?", (row["id"],))
-        conn.commit()
         return True
-    finally:
-        conn.close()
+    except sqlite3.IntegrityError:
+        return False
 
 
-def has_pending_setup_token() -> bool:
-    """Check if a setup token is waiting to be consumed."""
+def update_password(username: str, new_password: str) -> bool:
+    """Update password, clear first-login requirement, rotate JWT secret."""
+    from .hashing import hash_password
+
+    salt, pwd_hash = hash_password(new_password)
+    jwt_secret = secrets.token_urlsafe(64)
     conn = get_connection()
     try:
-        cur = conn.execute("SELECT COUNT(*) AS c FROM setup_tokens")
-        row = cur.fetchone()
-        return bool(row["c"])
+        cursor = conn.execute(
+            """
+            UPDATE auth_user
+            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            WHERE username = ?
+            """,
+            (salt, pwd_hash, jwt_secret, username),
+        )
+        conn.commit()
+        if cursor.rowcount > 0:
+            clear_bootstrap_password()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
@@ -259,5 +476,107 @@ def revoke_user_refresh_tokens(username: str) -> None:
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# API key management
+# ---------------------------------------------------------------------------
+
+API_KEY_PREFIX = "sk-unsloth-"
+
+
+def create_api_key(
+    username: str,
+    name: str,
+    expires_at: Optional[str] = None,
+) -> Tuple[str, dict]:
+    """Create a new API key for *username*.
+
+    Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
+    exactly once.  The database only stores the SHA-256 hash.
+    """
+    raw_key = API_KEY_PREFIX + secrets.token_hex(16)
+    key_hash = _pbkdf2_api_key(raw_key)
+    key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (username, key_prefix, key_hash, name, now, expires_at),
+        )
+        conn.commit()
+        cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
+        row = cur.fetchone()
+        return raw_key, dict(row)
+    finally:
+        conn.close()
+
+
+def list_api_keys(username: str) -> list:
+    """Return all API keys for *username* (never exposes ``key_hash``)."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, username, key_prefix, name, created_at, last_used_at, expires_at, is_active
+            FROM api_keys
+            WHERE username = ?
+            ORDER BY created_at DESC
+            """,
+            (username,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def revoke_api_key(username: str, key_id: int) -> bool:
+    """Soft-delete an API key.  Returns True if a matching row was found."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND username = ?",
+            (key_id, username),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def validate_api_key(raw_key: str) -> Optional[str]:
+    """Validate *raw_key* and return the owning username, or ``None``.
+
+    Also updates ``last_used_at`` on success.
+    """
+    key_hash = _pbkdf2_api_key(raw_key)
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
+            (key_hash,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        if not row["is_active"]:
+            return None
+        if row["expires_at"] is not None:
+            expires = datetime.fromisoformat(row["expires_at"])
+            if datetime.now(timezone.utc) > expires:
+                return None
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), row["id"]),
+        )
+        conn.commit()
+        return row["username"]
     finally:
         conn.close()

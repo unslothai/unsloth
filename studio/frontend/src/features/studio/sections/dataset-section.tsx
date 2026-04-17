@@ -46,8 +46,10 @@ import {
 } from "@/features/training";
 import { listLocalDatasets } from "@/features/training/api/datasets-api";
 import type { LocalDatasetInfo } from "@/features/training/types/datasets";
+import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
+  Cancel01Icon,
   CloudUploadIcon,
   Database02Icon,
   FileAttachmentIcon,
@@ -59,8 +61,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
+import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
+
+const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
+  "data-recipes:open-learning-recipes";
 
 function isLikelyLocalDatasetRef(value: string) {
   return (
@@ -97,6 +104,7 @@ function normalizeSliceInput(value: string): string | null {
 }
 
 export function DatasetSection() {
+  const navigate = useNavigate();
   const {
     dataset,
     datasetSource,
@@ -111,6 +119,8 @@ export function DatasetSection() {
     datasetEvalSplit,
     setDatasetEvalSplit,
     uploadedFile,
+    uploadedEvalFile,
+    setUploadedEvalFile,
     hfToken,
     modelType,
     datasetSliceStart,
@@ -132,6 +142,8 @@ export function DatasetSection() {
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
+      uploadedEvalFile: s.uploadedEvalFile,
+      setUploadedEvalFile: s.setUploadedEvalFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
       datasetSliceStart: s.datasetSliceStart,
@@ -298,8 +310,8 @@ export function DatasetSection() {
     if (datasetSource !== "upload") return;
     if (!uploadedFile) return;
     if (selectedLocalDataset) return;
-    // Don't clear if this is a direct file upload (not a recipe directory)
-    if (isLikelyLocalDatasetRef(uploadedFile)) return;
+    // Don't clear if this is a direct file upload (e.g. user uploaded a .jsonl/.csv)
+    if (/\.(jsonl|json|csv|parquet|arrow)$/i.test(uploadedFile)) return;
     selectLocalDataset(null);
   }, [
     datasetSource,
@@ -335,39 +347,30 @@ export function DatasetSection() {
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const evalFileInputRef = useRef<HTMLInputElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
     hfResults.length,
   );
 
   const [isUploading, setIsUploading] = useState(false);
+  const [documentRedirectOpen, setDocumentRedirectOpen] = useState(false);
+  const [redirectFileName, setRedirectFileName] = useState<string | null>(null);
 
   const handleUploadButtonClick = () => {
     fileInputRef.current?.click();
   };
 
-  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    const MAX_SIZE_BYTES = 512 * 1024 * 1024;
-    if (file.size > MAX_SIZE_BYTES) {
-      toast.error("File too large", {
-        description: "Maximum upload size is 512 MB.",
-      });
-      return;
-    }
-
+  const handleFileUpload = async (
+    file: File,
+    onSuccess: (storedPath: string) => void,
+    successMessage: string,
+  ) => {
     setIsUploading(true);
     try {
       const uploaded = await uploadTrainingDataset(file);
-
-      selectLocalDataset(uploaded.stored_path);
-
-      toast.success("Dataset uploaded", {
-        description: uploaded.filename,
-      });
+      onSuccess(uploaded.stored_path);
+      toast.success(successMessage, { description: uploaded.filename });
     } catch (error) {
       toast.error("Upload failed", {
         description: error instanceof Error ? error.message : "Unknown error",
@@ -377,17 +380,50 @@ export function DatasetSection() {
     }
   };
 
+  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+    if (DOCUMENT_REDIRECT_EXTENSIONS.has(extension)) {
+      setRedirectFileName(file.name);
+      setDocumentRedirectOpen(true);
+      return;
+    }
+
+    await handleFileUpload(file, selectLocalDataset, "Dataset uploaded");
+  };
+
+  const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    await handleFileUpload(file, setUploadedEvalFile, "Eval dataset uploaded");
+  };
+
+  const handleOpenLearningRecipes = useCallback(() => {
+    sessionStorage.setItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY, "1");
+    setDocumentRedirectOpen(false);
+    void navigate({ to: "/data-recipes" });
+  }, [navigate]);
+
   return (
-    <div data-tour="studio-dataset" className="col-span-1 xl:col-span-4">
+    <div data-tour="studio-dataset" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className="dark:shadow-border"
+        className={`dark:shadow-border ${
+          advancedOpen || (datasetSource === "upload" && uploadedFile)
+            ? "min-h-studio-config-column"
+            : "h-studio-config-column"
+        }`}
       >
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Choose dataset
               <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
@@ -421,6 +457,7 @@ export function DatasetSection() {
             </span>
             <div
               ref={comboboxAnchorRef}
+              className="min-w-0"
               onKeyDown={(event) => {
                 if (event.key !== "Enter") return;
                 if (!(event.target instanceof HTMLInputElement)) return;
@@ -489,7 +526,7 @@ export function DatasetSection() {
                       ? "Search Hugging Face datasets..."
                       : "Search local datasets..."
                   }
-                  className="w-full"
+                  className="w-full min-w-0 overflow-hidden leading-5"
                   showClear={true}
                 >
                   <InputGroupAddon>
@@ -710,6 +747,52 @@ export function DatasetSection() {
             </div>
           ) : null}
 
+          {datasetSource === "upload" && uploadedFile && (
+            <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">
+                Eval dataset
+              </p>
+              {uploadedEvalFile ? (
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 overflow-hidden">
+                    <HugeiconsIcon icon={FileAttachmentIcon} className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-xs">
+                      {deriveLocalDatasetName(uploadedEvalFile)}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 shrink-0 cursor-pointer p-0"
+                    onClick={() => setUploadedEvalFile(null)}
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full cursor-pointer gap-1.5"
+                    disabled={isUploading}
+                    onClick={() => evalFileInputRef.current?.click()}
+                  >
+                    {isUploading ? (
+                      <Spinner className="size-3.5" />
+                    ) : (
+                      <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                    )}
+                    {isUploading ? "Uploading..." : "Upload eval file"}
+                  </Button>
+                  <p className="text-[10px] text-muted-foreground/80">
+                    Optional. If not provided, a small portion will be split from the training data.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <HugeiconsIcon
@@ -929,11 +1012,26 @@ export function DatasetSection() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json,.jsonl,.csv,.parquet"
+            accept=".json,.jsonl,.csv,.parquet,.pdf,.docx,.txt"
             className="hidden"
             onChange={(event) => {
               void handleDatasetFileChange(event);
             }}
+          />
+          <input
+            ref={evalFileInputRef}
+            type="file"
+            accept=".json,.jsonl,.csv,.parquet"
+            className="hidden"
+            onChange={(event) => {
+              void handleEvalFileChange(event);
+            }}
+          />
+          <DocumentUploadRedirectDialog
+            open={documentRedirectOpen}
+            onOpenChange={setDocumentRedirectOpen}
+            fileName={redirectFileName}
+            onOpenLearningRecipes={handleOpenLearningRecipes}
           />
       </div>
       </SectionCard>

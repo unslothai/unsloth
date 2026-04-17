@@ -14,6 +14,7 @@ import structlog
 from loggers import get_logger
 import asyncio
 from datetime import datetime
+import uuid as _uuid
 
 # Add backend directory to path
 # The backend code should be in the same directory structure
@@ -56,6 +57,29 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _validate_local_dataset_paths(
+    paths: list[str], label: str = "Local dataset"
+) -> list[str]:
+    """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
+    validated = []
+    missing = []
+    for dataset_path in paths:
+        dataset_file = resolve_dataset_path(dataset_path)
+        if not dataset_file.exists():
+            missing.append(f"{dataset_path} (resolved: {dataset_file})")
+            continue
+        logger.info(f"Found {label.lower()} file: {dataset_file}")
+        validated.append(str(dataset_file))
+
+    if missing:
+        missing_detail = "; ".join(missing[:3])
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{label} not found: {missing_detail}",
+        )
+    return validated
+
+
 @router.get("/hardware")
 async def get_hardware_utilization(
     current_subject: str = Depends(get_current_subject),
@@ -64,12 +88,20 @@ async def get_hardware_utilization(
     Get a live snapshot of GPU hardware utilization.
 
     Designed to be polled by the frontend during training.
-    Returns GPU utilization %, temperature, VRAM usage, and power draw
-    via nvidia-smi for maximum accuracy.
+    Returns live GPU memory usage information for the active backend.
     """
     from utils.hardware import get_gpu_utilization
 
     return get_gpu_utilization()
+
+
+@router.get("/hardware/visible")
+async def get_visible_hardware_utilization(
+    current_subject: str = Depends(get_current_subject),
+):
+    from utils.hardware import get_visible_gpu_utilization
+
+    return get_visible_gpu_utilization()
 
 
 @router.post("/start")
@@ -92,15 +124,11 @@ async def start_training(
 
         backend = get_training_backend()
 
-        # Generate job ID and attach to backend for later status/progress calls
-        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        backend.current_job_id = job_id
-
-        # Check if training is already active
+        # Check if training is already active (before mutating any state)
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             return TrainingJobResponse(
-                job_id = existing_job_id or job_id,
+                job_id = existing_job_id or "",
                 status = "error",
                 message = (
                     "Training is already in progress. "
@@ -109,29 +137,21 @@ async def start_training(
                 error = "Training already active",
             )
 
+        # Generate job ID — passed into start_training() which sets it on the
+        # backend only after confirming the old pump thread is dead.
+        job_id = (
+            f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+        )
+
         # Validate dataset paths if provided
         if request.local_datasets:
-            validated_datasets = []
-            missing_datasets = []
-            for dataset_path in request.local_datasets:
-                dataset_file = resolve_dataset_path(dataset_path)
-
-                if not dataset_file.exists():
-                    missing_datasets.append(
-                        f"{dataset_path} (resolved: {dataset_file})"
-                    )
-                    continue
-
-                logger.info(f"Found dataset file: {dataset_file}")
-                validated_datasets.append(str(dataset_file))
-
-            if missing_datasets:
-                missing_detail = "; ".join(missing_datasets[:3])
-                raise HTTPException(
-                    status_code = 400,
-                    detail = f"Local dataset not found: {missing_detail}",
-                )
-            request.local_datasets = validated_datasets
+            request.local_datasets = _validate_local_dataset_paths(
+                request.local_datasets, "Local dataset"
+            )
+        if request.local_eval_datasets and request.eval_steps > 0:
+            request.local_eval_datasets = _validate_local_dataset_paths(
+                request.local_eval_datasets, "Local eval dataset"
+            )
 
         # Convert request to kwargs for backend
         training_kwargs = {
@@ -142,6 +162,7 @@ async def start_training(
             "max_seq_length": request.max_seq_length,
             "hf_dataset": request.hf_dataset or "",
             "local_datasets": request.local_datasets,
+            "local_eval_datasets": request.local_eval_datasets,
             "format_type": request.format_type,
             "subset": request.subset,
             "train_split": request.train_split,
@@ -189,6 +210,7 @@ async def start_training(
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
             "trust_remote_code": request.trust_remote_code,
+            "gpu_ids": request.gpu_ids,
         }
 
         # Training page has no trust_remote_code toggle — the value comes from
@@ -238,12 +260,12 @@ async def start_training(
             logger.warning("Could not shut down export subprocess: %s", e)
 
         # start_training now spawns a subprocess (non-blocking)
-        success = backend.start_training(**training_kwargs)
+        success = backend.start_training(job_id = job_id, **training_kwargs)
 
         if not success:
             progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(
-                job_id = job_id,
+                job_id = backend.current_job_id or "",
                 status = "error",
                 message = progress_error or "Failed to start training subprocess",
                 error = progress_error or "subprocess_start_failed",
@@ -256,6 +278,9 @@ async def start_training(
             error = None,
         )
 
+    except ValueError as e:
+        logger.warning("Rejected training GPU selection: %s", e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         logger.error(f"Error starting training: {e}", exc_info = True)
         raise HTTPException(
@@ -335,7 +360,7 @@ async def reset_training(
             error = None,
             status_message = "Ready to train",
             step = 0,
-            loss = 0.0,
+            loss = None,
             epoch = 0,
             total_steps = 0,
         )
@@ -409,8 +434,8 @@ async def get_training_status(
                 "epoch": getattr(progress, "epoch", 0),
                 "step": getattr(progress, "step", 0),
                 "total_steps": getattr(progress, "total_steps", 0),
-                "loss": getattr(progress, "loss", 0.0),
-                "learning_rate": getattr(progress, "learning_rate", 0.0),
+                "loss": getattr(progress, "loss", None),
+                "learning_rate": getattr(progress, "learning_rate", None),
             }
 
         # Build metric history for chart recovery after SSE reconnection
@@ -516,8 +541,8 @@ async def stream_training_progress(
         # ── Helpers ──────────────────────────────────────────────
         def build_progress(
             step: int,
-            loss: float,
-            learning_rate: float,
+            loss: Optional[float],
+            learning_rate: Optional[float],
             total_steps: int,
             epoch: Optional[float] = None,
             progress: Optional[Any] = None,
@@ -594,10 +619,10 @@ async def stream_training_progress(
                     loss_val = (
                         backend.loss_history[i]
                         if i < len(backend.loss_history)
-                        else 0.0
+                        else None
                     )
                     lr_val = (
-                        backend.lr_history[i] if i < len(backend.lr_history) else 0.0
+                        backend.lr_history[i] if i < len(backend.lr_history) else None
                     )
                     tp_replay = getattr(
                         getattr(backend, "trainer", None), "training_progress", None
@@ -635,8 +660,8 @@ async def stream_training_progress(
 
             initial_progress = build_progress(
                 step = 0,
-                loss = 0.0,
-                learning_rate = 0.0,
+                loss = None,
+                learning_rate = None,
                 total_steps = initial_total_steps,
                 epoch = initial_epoch,
                 progress = tp,
@@ -650,9 +675,9 @@ async def stream_training_progress(
                 if backend.step_history:
                     final_step = backend.step_history[-1]
                     final_loss = (
-                        backend.loss_history[-1] if backend.loss_history else 0.0
+                        backend.loss_history[-1] if backend.loss_history else None
                     )
-                    final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+                    final_lr = backend.lr_history[-1] if backend.lr_history else None
                     final_total_steps = (
                         getattr(tp, "total_steps", final_step) if tp else final_step
                     )
@@ -670,7 +695,9 @@ async def stream_training_progress(
                     )
                 else:
                     yield format_sse(
-                        build_progress(-1, 0.0, 0.0, 0, progress = tp).model_dump_json(),
+                        build_progress(
+                            -1, None, None, 0, progress = tp
+                        ).model_dump_json(),
                         event = "complete",
                         event_id = 0,
                     )
@@ -688,9 +715,9 @@ async def stream_training_progress(
                 if backend.step_history:
                     current_step = backend.step_history[-1]
                     current_loss = (
-                        backend.loss_history[-1] if backend.loss_history else 0.0
+                        backend.loss_history[-1] if backend.loss_history else None
                     )
-                    current_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+                    current_lr = backend.lr_history[-1] if backend.lr_history else None
                     tp_inner = getattr(
                         getattr(backend, "trainer", None), "training_progress", None
                     )
@@ -753,8 +780,8 @@ async def stream_training_progress(
                         )
                         preparing_payload = build_progress(
                             0,
-                            0.0,
-                            0.0,
+                            None,
+                            None,
                             prep_total,
                             progress = tp_prep,
                         )
@@ -771,7 +798,7 @@ async def stream_training_progress(
                         getattr(backend, "trainer", None), "training_progress", None
                     )
                     timeout_payload = build_progress(
-                        last_step, 0.0, 0.0, 0, progress = tp_timeout
+                        last_step, None, None, 0, progress = tp_timeout
                     )
                     yield format_sse(
                         timeout_payload.model_dump_json(),
@@ -787,7 +814,7 @@ async def stream_training_progress(
                 tp_error = getattr(
                     getattr(backend, "trainer", None), "training_progress", None
                 )
-                error_payload = build_progress(0, 0.0, 0.0, 0, progress = tp_error)
+                error_payload = build_progress(0, None, None, 0, progress = tp_error)
                 yield format_sse(
                     error_payload.model_dump_json(),
                     event = "error",
@@ -797,8 +824,8 @@ async def stream_training_progress(
 
         # ── Final "complete" event ───────────────────────────────
         final_step = backend.step_history[-1] if backend.step_history else last_step
-        final_loss = backend.loss_history[-1] if backend.loss_history else 0.0
-        final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+        final_loss = backend.loss_history[-1] if backend.loss_history else None
+        final_lr = backend.lr_history[-1] if backend.lr_history else None
         final_tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
         final_total_steps = (
             getattr(final_tp, "total_steps", final_step) if final_tp else final_step

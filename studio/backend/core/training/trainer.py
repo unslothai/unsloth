@@ -12,8 +12,35 @@ import sys
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Ensure compiled cache modules are importable by any subprocess.
+# On spawn-based platforms (Windows, macOS), spawned dataset.map() workers must
+# re-import all top-level modules. The compiled cache's trainer files import
+# torch and unsloth_zoo (which initializes CUDA), making spawn impractical.
+# Propagating UNSLOTH_COMPILE_LOCATION via PYTHONPATH ensures any subprocess
+# (not just Pool workers) can find compiled modules.
+# NOTE: Do NOT import unsloth_zoo.compiler here -- it triggers heavy torch/triton imports.
+if sys.platform in ("win32", "darwin"):
+    _compile_cache = os.environ.get(
+        "UNSLOTH_COMPILE_LOCATION", "unsloth_compiled_cache"
+    )
+    if not os.path.isabs(_compile_cache):
+        _compile_cache = os.path.abspath(_compile_cache)
+        os.environ["UNSLOTH_COMPILE_LOCATION"] = _compile_cache
+    _pp = os.environ.get("PYTHONPATH", "")
+    if _compile_cache not in _pp.split(os.pathsep):
+        os.environ["PYTHONPATH"] = _compile_cache + (os.pathsep + _pp if _pp else "")
+    if _compile_cache not in sys.path:
+        sys.path.insert(0, _compile_cache)
+
 import torch
-from utils.hardware import clear_gpu_cache, safe_num_proc
+from utils.hardware import (
+    clear_gpu_cache,
+    safe_num_proc,
+    dataset_map_num_proc,
+    get_device_map,
+    raise_if_offloaded,
+    get_visible_gpu_count,
+)
 
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
@@ -61,8 +88,8 @@ class TrainingProgress:
     epoch: float = 0
     step: int = 0
     total_steps: int = 0
-    loss: float = 0.0
-    learning_rate: float = 0.0
+    loss: Optional[float] = None
+    learning_rate: Optional[float] = None
     is_training: bool = False
     is_completed: bool = False
     error: Optional[str] = None
@@ -163,7 +190,11 @@ class UnslothTrainer:
             self._cuda_audio_used = False
 
         # --- Detect VLM ---
-        vision = is_vision_model(model_name) if not self.is_audio else False
+        vision = (
+            is_vision_model(model_name, hf_token = hf_token)
+            if not self.is_audio
+            else False
+        )
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
 
         logger.info(
@@ -224,7 +255,7 @@ class UnslothTrainer:
             def on_log(self, args, state, control, logs = None, **kwargs):
                 if not logs:
                     return
-                loss_value = logs.get("loss", logs.get("train_loss", 0.0))
+                loss_value = logs.get("loss", logs.get("train_loss", None))
                 current_step = state.global_step
                 grad_norm = logs.get("grad_norm", None)
 
@@ -248,7 +279,7 @@ class UnslothTrainer:
                     step = current_step,
                     epoch = round(state.epoch, 2) if state.epoch else 0,
                     loss = loss_value,
-                    learning_rate = logs.get("learning_rate", 0.0),
+                    learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
                     eta_seconds = eta_seconds,
                     grad_norm = grad_norm,
@@ -466,6 +497,8 @@ class UnslothTrainer:
         is_dataset_image: bool = False,
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
+        full_finetuning: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
@@ -508,7 +541,10 @@ class UnslothTrainer:
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-            clear_unsloth_compiled_cache()
+            _preserve = (
+                ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
+            )
+            clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
             self._audio_type = detect_audio_type(model_name, hf_token)
             # audio_vlm is detected as an audio_type now, handle it separately
@@ -526,7 +562,11 @@ class UnslothTrainer:
                 self._cuda_audio_used = False
 
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
-            vision = is_vision_model(model_name) if not self.is_audio else False
+            vision = (
+                is_vision_model(model_name, hf_token = hf_token)
+                if not self.is_audio
+                else False
+            )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -600,6 +640,11 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
+            device_map = get_device_map(gpu_ids)
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
+
             # Branch based on model type
             if self._audio_type == "csm":
                 # CSM: FastModel + auto_model=CsmForConditionalGeneration + load_in_4bit=False
@@ -612,6 +657,8 @@ class UnslothTrainer:
                     dtype = None,
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
@@ -626,6 +673,8 @@ class UnslothTrainer:
                     model_name = model_name,
                     dtype = None,
                     load_in_4bit = False,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     auto_model = WhisperForConditionalGeneration,
                     whisper_language = "English",
                     whisper_task = "transcribe",
@@ -646,6 +695,8 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
@@ -684,6 +735,8 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = torch.float32,  # Spark-TTS requires float32
                     load_in_4bit = False,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
@@ -697,6 +750,8 @@ class UnslothTrainer:
                     model_name,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
@@ -712,6 +767,8 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
@@ -724,6 +781,8 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,  # Auto-detect
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
@@ -755,13 +814,22 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,  # Auto-detect
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
                 logger.info("Loaded text model")
 
+            raise_if_offloaded(self.model, device_map, "Studio training")
+
             if self.should_stop:
                 return False
+
+            if full_finetuning:
+                # Enable training mode for full fine-tuning
+                # This ensures all model parameters are trainable; otherwise, they might be frozen.
+                self.model.for_training()
 
             self._update_progress(status_message = "Model loaded successfully")
             logger.info("Model loaded successfully")
@@ -779,13 +847,15 @@ class UnslothTrainer:
                 self._source_code_retried = True
                 logger.info(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(
-                    model_name,
-                    max_seq_length,
-                    load_in_4bit,
-                    hf_token,
-                    is_dataset_image,
-                    is_dataset_audio,
-                    trust_remote_code,
+                    model_name = model_name,
+                    max_seq_length = max_seq_length,
+                    load_in_4bit = load_in_4bit,
+                    hf_token = hf_token,
+                    is_dataset_image = is_dataset_image,
+                    is_dataset_audio = is_dataset_audio,
+                    trust_remote_code = trust_remote_code,
+                    full_finetuning = full_finetuning,
+                    gpu_ids = gpu_ids,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -1450,7 +1520,10 @@ class UnslothTrainer:
 
         self._update_progress(status_message = "Formatting audio VLM dataset...")
         dataset = dataset.map(
-            format_messages, batched = True, batch_size = 4, num_proc = safe_num_proc(4)
+            format_messages,
+            batched = True,
+            batch_size = 4,
+            num_proc = dataset_map_num_proc(4),
         )
         logger.info(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
         return dataset
@@ -2200,11 +2273,59 @@ class UnslothTrainer:
 
         return (train_data, eval_data)
 
+    @staticmethod
+    def _resolve_local_files(file_paths: list) -> list[str]:
+        """Resolve a list of local dataset paths to concrete file paths."""
+        all_files: list[str] = []
+        for dataset_file in file_paths:
+            if os.path.isabs(dataset_file):
+                file_path = dataset_file
+            else:
+                file_path = str(resolve_dataset_path(dataset_file))
+
+            file_path_obj = Path(file_path)
+
+            if file_path_obj.is_dir():
+                parquet_dir = (
+                    file_path_obj / "parquet-files"
+                    if (file_path_obj / "parquet-files").exists()
+                    else file_path_obj
+                )
+                parquet_files = sorted(parquet_dir.glob("*.parquet"))
+                if parquet_files:
+                    all_files.extend(str(p) for p in parquet_files)
+                    continue
+                candidates: list[Path] = []
+                for ext in (".json", ".jsonl", ".csv", ".parquet"):
+                    candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
+                if candidates:
+                    all_files.extend(str(c) for c in candidates)
+                    continue
+                raise ValueError(
+                    f"No supported data files in directory: {file_path_obj}"
+                )
+            else:
+                all_files.append(str(file_path_obj))
+        return all_files
+
+    @staticmethod
+    def _loader_for_files(files: list[str]) -> str:
+        """Determine the HF datasets loader type from file extensions."""
+        first_ext = Path(files[0]).suffix.lower()
+        if first_ext in (".json", ".jsonl"):
+            return "json"
+        elif first_ext == ".csv":
+            return "csv"
+        elif first_ext == ".parquet":
+            return "parquet"
+        raise ValueError(f"Unsupported dataset format: {files[0]}")
+
     def load_and_format_dataset(
         self,
         dataset_source: str,
         format_type: str = "auto",
         local_datasets: list = None,
+        local_eval_datasets: list = None,
         custom_format_mapping: dict = None,
         subset: str = None,
         train_split: str = "train",
@@ -2236,54 +2357,10 @@ class UnslothTrainer:
                 # Arrow-backed (has cache files).  Dataset.from_list() creates
                 # an in-memory dataset with no cache, which forces num_proc=1
                 # during tokenization/map because sharding requires Arrow files.
-                all_files: list[str] = []
-                for dataset_file in local_datasets:
-                    # dataset_file may already be an absolute path from routes/training.py
-                    if os.path.isabs(dataset_file):
-                        file_path = dataset_file
-                    else:
-                        # Fallback: try relative to assets/datasets
-                        file_path = str(resolve_dataset_path(dataset_file))
-
-                    file_path_obj = Path(file_path)
-
-                    if file_path_obj.is_dir():
-                        parquet_dir = (
-                            file_path_obj / "parquet-files"
-                            if (file_path_obj / "parquet-files").exists()
-                            else file_path_obj
-                        )
-                        parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                        if parquet_files:
-                            all_files.extend(str(p) for p in parquet_files)
-                            continue
-                        # Fall through to single-file detection for dirs with json/csv
-                        candidates: list[Path] = []
-                        for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                            candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                        if candidates:
-                            all_files.extend(str(c) for c in candidates)
-                            continue
-                        raise ValueError(
-                            f"No supported data files in directory: {file_path_obj}"
-                        )
-                    else:
-                        all_files.append(str(file_path_obj))
+                all_files = self._resolve_local_files(local_datasets)
 
                 if all_files:
-                    # Determine loader type from the first file extension
-                    first_ext = Path(all_files[0]).suffix.lower()
-                    if first_ext in (".json", ".jsonl"):
-                        loader = "json"
-                    elif first_ext == ".csv":
-                        loader = "csv"
-                    elif first_ext == ".parquet":
-                        loader = "parquet"
-                    else:
-                        raise ValueError(
-                            f"Unsupported local dataset format: {all_files[0]}"
-                        )
-
+                    loader = self._loader_for_files(all_files)
                     dataset = load_dataset(loader, data_files = all_files, split = "train")
 
                     # Check if stopped during dataset loading
@@ -2296,6 +2373,19 @@ class UnslothTrainer:
                     )
                     logger.info(f"Loaded {len(dataset)} samples from local files\n")
                     logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
+
+                # Load local eval datasets if provided
+                if local_eval_datasets and eval_enabled:
+                    eval_all_files = self._resolve_local_files(local_eval_datasets)
+                    if eval_all_files:
+                        eval_loader = self._loader_for_files(eval_all_files)
+                        eval_dataset = load_dataset(
+                            eval_loader, data_files = eval_all_files, split = "train"
+                        )
+                        has_separate_eval_source = True
+                        logger.info(
+                            f"Loaded {len(eval_dataset)} eval samples from local eval files\n"
+                        )
 
             elif dataset_source:
                 # Load from Hugging Face
@@ -2328,6 +2418,9 @@ class UnslothTrainer:
                         status_message = f"Streamed {len(dataset)} rows from HuggingFace"
                     )
                 else:
+                    self._update_progress(
+                        status_message = f"Downloading dataset: {dataset_source}..."
+                    )
                     dataset = load_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
@@ -2335,11 +2428,12 @@ class UnslothTrainer:
                     logger.info("Stopped during dataset loading\n")
                     return None
 
+                n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
                 self._update_progress(
-                    status_message = f"Loaded dataset from HuggingFace: {dataset_source}"
+                    status_message = f"Downloaded {dataset_source} ({n_rows:,} rows)"
                 )
                 logger.info(
-                    f"Loaded dataset from Hugging Face: {dataset_source} ({len(dataset)} rows)\n"
+                    f"Loaded dataset from Hugging Face: {dataset_source} ({n_rows:,} rows)\n"
                 )
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
@@ -2464,10 +2558,15 @@ class UnslothTrainer:
                 self._update_progress(error = error_msg)
                 return None
 
+            detected = dataset_info.get("detected_format", "unknown")
+            final_ds = dataset_info.get("dataset")
+            final_n = len(final_ds) if hasattr(final_ds, "__len__") else "?"
             self._update_progress(
-                status_message = f"Dataset formatted and ready for training"
+                status_message = f"Dataset ready ({final_n:,} samples, {detected} format)"
             )
-            logger.info(f"Dataset formatted successfully\n")
+            logger.info(
+                f"Dataset formatted successfully ({final_n} samples, {detected})\n"
+            )
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:
@@ -2567,14 +2666,14 @@ class UnslothTrainer:
         eval_steps: float = 0.00,
         output_dir: str | None = None,
         num_epochs: int = 3,
-        learning_rate: float = 5e-5,
+        learning_rate: float = 2e-4,
         batch_size: int = 2,
         gradient_accumulation_steps: int = 4,
         warmup_steps: int = None,
         warmup_ratio: float = None,
         max_steps: int = 0,
         save_steps: int = 0,
-        weight_decay: float = 0.01,
+        weight_decay: float = 0.001,
         random_seed: int = 3407,
         packing: bool = False,
         train_on_completions: bool = False,
@@ -2654,6 +2753,15 @@ class UnslothTrainer:
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
+            # On spawn-based platforms (Windows, macOS), register all known
+            # compiled-cache directories on sys.path and PYTHONPATH before any
+            # dataset.map() call so spawned workers can import dynamically
+            # compiled modules such as UnslothSFTTrainer.
+            if sys.platform in ("win32", "darwin"):
+                from utils.cache_cleanup import register_compiled_cache_on_path
+
+                register_compiled_cache_on_path()
+
             # Store training parameters for metrics calculation
             self.batch_size = training_args.get("batch_size", 2)
             self.max_seq_length = training_args.get("max_seq_length", 2048)
@@ -2934,14 +3042,16 @@ class UnslothTrainer:
                 "fp16": not is_bfloat16_supported(),
                 "bf16": is_bfloat16_supported(),
                 "logging_steps": 1,
-                "weight_decay": training_args.get("weight_decay", 0.01),
+                "weight_decay": training_args.get("weight_decay", 0.001),
                 "seed": training_args.get("random_seed", 3407),
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
                 "include_num_input_tokens_seen": True,  # Enable token counting
-                "dataset_num_proc": 1
-                if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
-                else safe_num_proc(max(1, os.cpu_count() // 4)),
+                "dataset_num_proc": dataset_map_num_proc(
+                    1
+                    if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
+                    else max(1, (os.cpu_count() or 1) // 4)
+                ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
             }
             if training_args.get("enable_tensorboard", False):
@@ -2952,9 +3062,10 @@ class UnslothTrainer:
                 f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})"
             )
 
-            # On Windows with transformers 5.x, disable DataLoader multiprocessing
-            # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
-            if sys.platform == "win32":
+            # On spawn-based platforms (Windows, macOS) with transformers 5.x,
+            # disable DataLoader multiprocessing to avoid issues with modified
+            # sys.path (.venv_t5) in spawned workers.
+            if sys.platform in ("win32", "darwin"):
                 import transformers as _tf
 
                 if _tf.__version__.startswith("5."):
@@ -3244,25 +3355,25 @@ class UnslothTrainer:
                     logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
 
                     # [DEBUG] Decode first sample AFTER train_on_completions applied
-                    try:
-                        _row = self.trainer.train_dataset[0]
-                        _space = self.tokenizer(
-                            " ", add_special_tokens = False
-                        ).input_ids[0]
-                        print("[DEBUG] === After train_on_completions ===", flush = True)
-                        print(
-                            f"[DEBUG] input_ids decoded:\n{self.tokenizer.decode(_row['input_ids'])}\n",
-                            flush = True,
-                        )
-                        print(
-                            f"[DEBUG] labels decoded (-100 → space):\n{self.tokenizer.decode([_space if x == -100 else x for x in _row['labels']])}\n",
-                            flush = True,
-                        )
-                    except Exception as _dbg_e:
-                        print(
-                            f"[DEBUG] Could not decode post-completions sample: {_dbg_e}",
-                            flush = True,
-                        )
+                    # try:
+                    #     _row = self.trainer.train_dataset[0]
+                    #     _space = self.tokenizer(
+                    #         " ", add_special_tokens = False
+                    #     ).input_ids[0]
+                    #     print("[DEBUG] === After train_on_completions ===", flush = True)
+                    #     print(
+                    #         f"[DEBUG] input_ids decoded:\n{self.tokenizer.decode(_row['input_ids'])}\n",
+                    #         flush = True,
+                    #     )
+                    #     print(
+                    #         f"[DEBUG] labels decoded (-100 → space):\n{self.tokenizer.decode([_space if x == -100 else x for x in _row['labels']])}\n",
+                    #         flush = True,
+                    #     )
+                    # except Exception as _dbg_e:
+                    #     print(
+                    #         f"[DEBUG] Could not decode post-completions sample: {_dbg_e}",
+                    #         flush = True,
+                    #     )
 
                 except Exception as e:
                     logger.warning(f"Failed to apply train on responses only: {e}")

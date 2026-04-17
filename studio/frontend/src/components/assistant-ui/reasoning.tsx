@@ -6,7 +6,6 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
-import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import {
   Collapsible,
   CollapsibleContent,
@@ -17,12 +16,12 @@ import {
   type ReasoningGroupComponent,
   type ReasoningMessagePartComponent,
   useAuiState,
-  useScrollLock,
 } from "@assistant-ui/react";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Idea01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon, CheckIcon } from "lucide-react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -33,6 +32,7 @@ import {
   useState,
 } from "react";
 const ANIMATION_DURATION = 200;
+const AUTO_SCROLL_THRESHOLD_PX = 24;
 
 export const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
   variants: {
@@ -67,8 +67,49 @@ function ReasoningRoot({
   ...props
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
+  const lockCleanupRef = useRef<(() => void) | null>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
+
+  useEffect(() => {
+    return () => {
+      lockCleanupRef.current?.();
+    };
+  }, []);
+
+  const lockScroll = useCallback(() => {
+    lockCleanupRef.current?.();
+
+    const animatedElement = collapsibleRef.current;
+    if (!animatedElement) return;
+
+    let scrollContainer: HTMLElement | null = animatedElement;
+    while (scrollContainer) {
+      const { overflowY } = getComputedStyle(scrollContainer);
+      if (overflowY === "scroll" || overflowY === "auto") {
+        break;
+      }
+      scrollContainer = scrollContainer.parentElement;
+    }
+    if (!scrollContainer) return;
+
+    const scrollPosition = scrollContainer.scrollTop;
+    const resetPosition = () => {
+      scrollContainer.scrollTop = scrollPosition;
+    };
+
+    scrollContainer.addEventListener("scroll", resetPosition);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      scrollContainer.removeEventListener("scroll", resetPosition);
+      lockCleanupRef.current = null;
+    };
+    timeoutId = setTimeout(cleanup, ANIMATION_DURATION);
+    lockCleanupRef.current = cleanup;
+  }, []);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
@@ -109,34 +150,6 @@ function ReasoningRoot({
   );
 }
 
-function ReasoningFade({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="reasoning-fade"
-      className={cn(
-        "aui-reasoning-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8",
-        "bg-gradient-to-t from-background to-transparent",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-function ReasoningFadeTop({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="reasoning-fade-top"
-      className={cn(
-        "aui-reasoning-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-8",
-        "bg-gradient-to-b from-background to-transparent",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
 function ReasoningTrigger({
   active,
   duration,
@@ -150,7 +163,7 @@ function ReasoningTrigger({
     <CollapsibleTrigger
       data-slot="reasoning-trigger"
       className={cn(
-        "aui-reasoning-trigger group/trigger flex max-w-[75%] items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -164,7 +177,7 @@ function ReasoningTrigger({
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
       >
         {active ? (
-          <AnimatedShinyText className="text-sm">Thinking...</AnimatedShinyText>
+          <span className="text-sm">Thinking...</span>
         ) : (
           <span>Thought for {duration ?? 0} seconds</span>
         )}
@@ -192,7 +205,7 @@ function ReasoningContent({
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-muted-foreground text-sm outline-none",
+        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-[13.5px] outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -204,9 +217,7 @@ function ReasoningContent({
       )}
       {...props}
     >
-      {streaming && <ReasoningFadeTop />}
       {children}
-      <ReasoningFade />
     </CollapsibleContent>
   );
 }
@@ -218,22 +229,56 @@ function ReasoningText({
   ...props
 }: ComponentProps<"div"> & { streaming?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const detachedFromBottomRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
 
   useEffect(() => {
     if (!(streaming && scrollRef.current)) {
       return;
     }
     const el = scrollRef.current;
+    const updateAutoScroll = () => {
+      const currentScrollTop = el.scrollTop;
+      if (currentScrollTop < lastScrollTopRef.current) {
+        detachedFromBottomRef.current = true;
+      }
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (
+        detachedFromBottomRef.current &&
+        distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
+      ) {
+        detachedFromBottomRef.current = false;
+      }
+      shouldAutoScrollRef.current = !detachedFromBottomRef.current;
+      lastScrollTopRef.current = currentScrollTop;
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        detachedFromBottomRef.current = true;
+        shouldAutoScrollRef.current = false;
+      }
+    };
     const observer = new MutationObserver(() => {
-      el.scrollTop = el.scrollHeight;
+      if (shouldAutoScrollRef.current) {
+        el.scrollTop = el.scrollHeight;
+      }
     });
+    el.addEventListener("scroll", updateAutoScroll);
+    el.addEventListener("wheel", handleWheel, { passive: true });
     observer.observe(el, {
       childList: true,
       subtree: true,
       characterData: true,
     });
-    el.scrollTop = el.scrollHeight;
-    return () => observer.disconnect();
+    lastScrollTopRef.current = el.scrollTop;
+    detachedFromBottomRef.current = false;
+    updateAutoScroll();
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", updateAutoScroll);
+      el.removeEventListener("wheel", handleWheel);
+    };
   }, [streaming]);
 
   return (
@@ -263,6 +308,45 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
 
+const COPY_RESET_MS = 2000;
+
+function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+  const [copied, setCopied] = useState(false);
+  const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const reasoningText = useAuiState(({ message }) => {
+    return message.parts
+      .slice(startIndex, endIndex + 1)
+      .filter((p) => p.type === "reasoning")
+      .map((p) => ("text" in p ? (p as { text: string }).text : ""))
+      .join("\n");
+  });
+
+  const handleCopy = useCallback(() => {
+    if (copyToClipboard(reasoningText)) {
+      setCopied(true);
+      if (resetRef.current) clearTimeout(resetRef.current);
+      resetRef.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
+    }
+  }, [reasoningText]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
+      aria-label="Copy reasoning"
+    >
+      {copied ? (
+        <CheckIcon className="size-3" />
+      ) : (
+        <CopyIcon className="size-3" />
+      )}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 const ReasoningGroupImpl: ReasoningGroupComponent = ({
   children,
   startIndex,
@@ -290,6 +374,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   const [manualOpen, setManualOpen] = useState(false);
+  const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -305,17 +390,23 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  const isOpen = isReasoningStreaming || manualOpen;
+  // Reset dismissed flag when a new stream starts
+  useEffect(() => {
+    if (isReasoningStreaming) {
+      setDismissedWhileStreaming(false);
+    }
+  }, [isReasoningStreaming]);
 
-  const variant = isReasoningStreaming
-    ? "outline"
-    : manualOpen
-      ? "outline"
-      : "ghost";
+  // Derived: open during streaming (unless dismissed), or if user manually opened after
+  const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
+  const variant = isOpen ? "outline" : "ghost";
 
+  // Allow closing during streaming (matches ChatGPT)
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (!isReasoningStreaming) {
+      if (isReasoningStreaming) {
+        setDismissedWhileStreaming(!open);
+      } else {
         setManualOpen(open);
       }
     },
@@ -328,10 +419,18 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <ReasoningTrigger
-        active={isReasoningStreaming}
-        duration={duration || persistedDuration}
-      />
+      <div className="flex items-center gap-2">
+        <ReasoningTrigger
+          className="min-w-0 flex-1"
+          active={isReasoningStreaming}
+          duration={duration || persistedDuration}
+        />
+        <div className="flex w-16 shrink-0 justify-end">
+          {isOpen && !isReasoningStreaming && (
+            <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
+          )}
+        </div>
+      </div>
       <ReasoningContent
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
@@ -351,8 +450,6 @@ const Reasoning = memo(
   Trigger: typeof ReasoningTrigger;
   Content: typeof ReasoningContent;
   Text: typeof ReasoningText;
-  Fade: typeof ReasoningFade;
-  FadeTop: typeof ReasoningFadeTop;
 };
 
 Reasoning.displayName = "Reasoning";
@@ -360,8 +457,6 @@ Reasoning.Root = ReasoningRoot;
 Reasoning.Trigger = ReasoningTrigger;
 Reasoning.Content = ReasoningContent;
 Reasoning.Text = ReasoningText;
-Reasoning.Fade = ReasoningFade;
-Reasoning.FadeTop = ReasoningFadeTop;
 
 const ReasoningGroup = memo(ReasoningGroupImpl);
 ReasoningGroup.displayName = "ReasoningGroup";
@@ -373,6 +468,4 @@ export {
   ReasoningTrigger,
   ReasoningContent,
   ReasoningText,
-  ReasoningFade,
-  ReasoningFadeTop,
 };

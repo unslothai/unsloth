@@ -187,6 +187,7 @@ class JobManager:
                 "has_analysis": job.analysis is not None,
                 "dataset_rows": None if job.dataset is None else len(job.dataset),
                 "artifact_path": job.artifact_path,
+                "execution_type": job.execution_type,
                 "started_at": job.started_at,
                 "finished_at": job.finished_at,
             }
@@ -445,6 +446,7 @@ class JobManager:
                 self._job.finished_at = time.time()
                 self._job.analysis = event.get("analysis")
                 self._job.artifact_path = event.get("artifact_path")
+                self._job.execution_type = event.get("execution_type")
                 self._job.dataset = event.get("dataset")
                 self._job.processor_artifacts = event.get("processor_artifacts")
                 if self._job.progress.total and self._job.progress.total > 0:

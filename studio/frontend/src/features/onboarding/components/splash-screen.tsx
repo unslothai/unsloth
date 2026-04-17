@@ -7,12 +7,12 @@ import { motion } from "motion/react";
 
 interface SplashScreenProps {
   onStartOnboarding: () => void;
-  onGoToStudio: () => void;
+  onSkipOnboarding: () => void;
 }
 
 export function SplashScreen({
   onStartOnboarding,
-  onGoToStudio,
+  onSkipOnboarding,
 }: SplashScreenProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-b from-background via-background to-primary/5 p-6">
@@ -48,7 +48,7 @@ export function SplashScreen({
           <h1 className="text-2xl font-semibold tracking-tight">
             Unsloth Studio
           </h1>
-          <p className="text-sm text-muted-foreground">Fine-tune LLMs faster</p>
+          <p className="text-sm text-muted-foreground">Train and run LLMs locally</p>
         </motion.div>
 
         {/* Buttons */}
@@ -65,7 +65,7 @@ export function SplashScreen({
           <Button size="lg" onClick={onStartOnboarding}>
             Start Onboarding
           </Button>
-          <Button size="lg" variant="outline" onClick={onGoToStudio}>
+          <Button size="lg" variant="outline" onClick={onSkipOnboarding}>
             Skip Onboarding
           </Button>
         </motion.div>

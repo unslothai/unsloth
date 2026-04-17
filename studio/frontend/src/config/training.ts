@@ -64,7 +64,7 @@ export const MODEL_TYPES: ReadonlyArray<{
     },
   ];
 
-export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768];
+export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
 
 export const TARGET_MODULES = [
   "q_proj",
@@ -90,10 +90,17 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string 
   { value: "cosine", label: "Cosine" },
 ];
 
+/**
+ * Method-aware learning rate defaults.
+ * Backend mirrors these in the YAML configs under studio/backend/assets/configs/.
+ */
+export const LR_DEFAULT_LORA = 2e-4;
+export const LR_DEFAULT_FULL = 2e-5;
+
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
-  learningRate: 2e-4,
+  learningRate: LR_DEFAULT_LORA,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",
   loraRank: 16,
@@ -102,9 +109,9 @@ export const DEFAULT_HYPERPARAMS = {
   loraVariant: "lora" as const,
   batchSize: 4,
   gradientAccumulation: 8,
-  weightDecay: 0.01,
+  weightDecay: 0.001,
   warmupSteps: 5,
-  maxSteps: 0,
+  maxSteps: 60,
   saveSteps: 0,
   evalSteps: 0.00,
   packing: false,
@@ -131,3 +138,30 @@ export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
   audio: "text-to-speech",
   embeddings: "feature-extraction",
 };
+
+
+export const PRIORITY_TRAINING_MODELS: readonly string[] = [
+  "unsloth/gemma-4-E2B-it",
+  "unsloth/gemma-4-E4B-it",
+  "unsloth/gemma-4-31B-it",
+  "unsloth/gemma-4-26B-A4B-it",
+  "unsloth/Qwen3.5-2B",
+  "unsloth/Qwen3.5-9B",
+  "unsloth/gpt-oss-20b",
+  "unsloth/NVIDIA-Nemotron-3-Nano-4B",
+  "unsloth/Qwen3-0.6B",
+  "unsloth/gemma-3-4b-it",
+  "unsloth/embeddinggemma-300m",
+  "unsloth/orpheus-3b-0.1-ft",
+  "unsloth/Llama-3.1-8B-Instruct",
+  "unsloth/Llama-3.2-3B-Instruct",
+];
+
+/** Pin priority models to the top of a list of model IDs, preserving their defined order. */
+export function applyPriorityOrdering(ids: string[]): string[] {
+  const idSet = new Set(ids);
+  const pinned = PRIORITY_TRAINING_MODELS.filter((id) => idSet.has(id));
+  const pinnedSet = new Set(pinned);
+  const rest = ids.filter((id) => !pinnedSet.has(id));
+  return [...pinned, ...rest];
+}

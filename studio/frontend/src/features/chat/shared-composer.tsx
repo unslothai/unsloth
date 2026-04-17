@@ -5,7 +5,10 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, HeadphonesIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react";
+import { toast } from "sonner";
+import { loadModel, validateModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -27,8 +30,14 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
+  /** Append a user message without triggering generation. */
+  appendMessage: (content: CompareMessagePart[]) => void;
+  /** Trigger generation on the current thread (after appendMessage). */
+  startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
+  /** Returns a promise that resolves when the current or next run finishes. */
+  waitForRunEnd: () => Promise<void>;
 }
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
@@ -138,8 +147,27 @@ export function RegisterCompareHandle({
       // fixes occasional reorder on reload.
       append: (content) =>
         aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
+      appendMessage: (content) =>
+        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
+      startRun: () => {
+        const msgs = aui.thread().getState().messages;
+        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+        aui.thread().startRun({ parentId: lastId });
+      },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      waitForRunEnd: () =>
+        new Promise<void>((resolve) => {
+          let wasRunning = false;
+          const unsub = useChatRuntimeStore.subscribe((state) => {
+            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
+            if (anyRunning) wasRunning = true;
+            if (wasRunning && !anyRunning) {
+              unsub();
+              resolve();
+            }
+          });
+        }),
     };
     return () => {
       delete currentHandles[name];
@@ -180,13 +208,24 @@ function PendingImageThumb({
   );
 }
 
+type CompareModelSelection = {
+  id: string;
+  isLora: boolean;
+  ggufVariant?: string;
+};
+
 export function SharedComposer({
   handlesRef,
+  model1,
+  model2,
 }: {
   handlesRef: CompareHandles;
+  model1?: CompareModelSelection;
+  model2?: CompareModelSelection;
 }): ReactElement {
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
+  const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -198,6 +237,20 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
+  const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const reasoningDisabled = !modelLoaded || !supportsReasoning;
+  const toolsDisabled = !modelLoaded || !supportsTools;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -261,14 +314,123 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
-    for (const handle of Object.values(handlesRef.current)) {
-      handle.append(content);
-    }
     setText("");
     setPendingImages([]);
     setPendingAudio(null);
     clearPendingAudioStore();
     textareaRef.current?.focus();
+
+    // Generalized compare: load each model before dispatching to its side
+    const hasCompareHandles = Boolean(handlesRef.current["model1"] || handlesRef.current["model2"]);
+    const isGeneralizedCompare = hasCompareHandles && Boolean(model1?.id || model2?.id);
+    if (isGeneralizedCompare) {
+      const store = useChatRuntimeStore.getState();
+      const maxSeqLength = store.params.maxSeqLength;
+      const trustRemoteCode = store.params.trustRemoteCode ?? false;
+      const chatTemplateOverride = store.chatTemplateOverride;
+
+      function modelDisplayName(id: string): string {
+        const parts = id.split("/");
+        return parts[parts.length - 1] || id;
+      }
+
+      // Helper: load a model and update store checkpoint
+      async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
+        const currentStore = useChatRuntimeStore.getState();
+        const isAlreadyActive =
+          currentStore.params.checkpoint === sel.id &&
+          (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
+        if (!isAlreadyActive) {
+          const validation = await validateModel({
+            model_path: sel.id,
+            hf_token: currentStore.hfToken || null,
+            max_seq_length: maxSeqLength,
+            load_in_4bit: true,
+            is_lora: sel.isLora,
+            gguf_variant: sel.ggufVariant ?? null,
+            trust_remote_code: trustRemoteCode,
+            chat_template_override: chatTemplateOverride,
+          });
+          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+            );
+          }
+        }
+        const resp = await loadModel({
+          model_path: sel.id,
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
+          max_seq_length: maxSeqLength,
+          load_in_4bit: true,
+          is_lora: sel.isLora,
+          gguf_variant: sel.ggufVariant ?? null,
+          trust_remote_code: trustRemoteCode,
+          chat_template_override: chatTemplateOverride,
+        });
+        const store = useChatRuntimeStore.getState();
+        store.setCheckpoint(
+          resp.model,
+          resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+        );
+        store.setModelRequiresTrustRemoteCode(
+          resp.requires_trust_remote_code ?? false,
+        );
+        return resp.status;
+      }
+
+      const handle1 = handlesRef.current["model1"];
+      const handle2 = handlesRef.current["model2"];
+
+      // Show user messages immediately on both sides
+      if (handle1) handle1.appendMessage(content);
+      if (handle2) handle2.appendMessage(content);
+
+      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
+      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+      const toastId = toast("Comparing models…", { duration: Infinity });
+
+      setComparing(true);
+      try {
+        // Side 1: load → generate → wait
+        if (handle1 && model1?.id) {
+          toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
+          const status1 = await ensureModelLoaded(model1);
+          toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
+          const done = handle1.waitForRunEnd();
+          handle1.startRun();
+          await done;
+        }
+
+        // Side 2: load → generate → wait
+        if (handle2 && model2?.id) {
+          const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
+            || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          if (needsLoad) {
+            toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
+          }
+          const status2 = await ensureModelLoaded(model2);
+          toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
+          const done = handle2.waitForRunEnd();
+          handle2.startRun();
+          await done;
+        }
+
+        toast.success("Compare complete", { id: toastId, duration: 2000 });
+      } catch (err) {
+        toast.error("Compare failed", {
+          id: toastId,
+          description: err instanceof Error ? err.message : "Unknown error",
+          duration: 4000,
+        });
+      } finally {
+        setComparing(false);
+      }
+    } else {
+      // Original behavior: fire all handles simultaneously
+      for (const handle of Object.values(handlesRef.current)) {
+        handle.append(content);
+      }
+    }
   }
 
   function stop() {
@@ -278,20 +440,22 @@ export function SharedComposer({
     }
   }
 
+  const busy = running || comparing;
+
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!running) {
+      if (!busy) {
         send();
       }
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !running;
+  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy;
 
   return (
     <div
-      className={`shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "ring-ring bg-accent/50" : ""}`}
+      className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -334,7 +498,7 @@ export function SharedComposer({
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="Send to both models..."
-        className="mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground"
+        className="mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground"
         rows={1}
       />
       <div className="relative mx-2 mb-2 flex items-center justify-between">
@@ -386,6 +550,75 @@ export function SharedComposer({
               </TooltipIconButton>
             </>
           )}
+          <button
+            type="button"
+            disabled={reasoningDisabled}
+            onClick={() => {
+              if (reasoningAlwaysOn) return;
+              const next = !reasoningEnabled;
+              setReasoningEnabled(next);
+              // Qwen3/3.5/3.6: adjust params for thinking on/off
+              const store = useChatRuntimeStore.getState();
+              const cp = store.params.checkpoint?.toLowerCase() ?? "";
+              if (cp.includes("qwen3")) {
+                const needsPresencePenalty = cp.includes("qwen3.5") || cp.includes("qwen3.6");
+                const p = next
+                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
+                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
+                store.setParams({ ...store.params, ...p });
+              }
+            }}
+            className={cn(
+              "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
+              reasoningDisabled
+                ? "cursor-not-allowed opacity-40"
+                : (reasoningEnabled || reasoningAlwaysOn)
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+            )}
+            aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+          >
+            {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
+              <LightbulbIcon className="size-3" />
+            ) : (
+              <LightbulbOffIcon className="size-3" />
+            )}
+            <span>Think</span>
+          </button>
+          <button
+            type="button"
+            disabled={toolsDisabled}
+            onClick={() => setToolsEnabled(!toolsEnabled)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              toolsDisabled
+                ? "cursor-not-allowed opacity-40"
+                : toolsEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+            )}
+            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+          >
+            <GlobeIcon className="size-3.5" />
+            <span>Search</span>
+          </button>
+          <button
+            type="button"
+            disabled={toolsDisabled}
+            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              toolsDisabled
+                ? "cursor-not-allowed opacity-40"
+                : codeToolsEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+            )}
+            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+          >
+            <TerminalIcon className="size-3.5" />
+            <span>Code</span>
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (
@@ -417,7 +650,7 @@ export function SharedComposer({
               )}
             </>
           )}
-          {running ? (
+          {busy ? (
             <Button
               type="button"
               variant="default"

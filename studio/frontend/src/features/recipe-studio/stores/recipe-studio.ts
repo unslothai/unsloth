@@ -67,6 +67,7 @@ type RecipeStudioState = {
   llmAuxVisibility: Record<string, boolean>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
+  sheetOpen: boolean;
   sheetView: SheetView;
   activeConfigId: string | null;
   dialogOpen: boolean;
@@ -75,6 +76,7 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
+  setSheetOpen: (open: boolean) => void;
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
@@ -122,6 +124,7 @@ const INITIAL_STATE = {
   llmAuxVisibility: {},
   configs: {},
   processors: [],
+  sheetOpen: false,
   sheetView: "root",
   activeConfigId: null,
   dialogOpen: false,
@@ -138,6 +141,7 @@ const INITIAL_STATE = {
   | "llmAuxVisibility"
   | "configs"
   | "processors"
+  | "sheetOpen"
   | "sheetView"
   | "activeConfigId"
   | "dialogOpen"
@@ -260,6 +264,7 @@ function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): b
 
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
+  setSheetOpen: (open) => set({ sheetOpen: open }),
   setSheetView: (view) => set({ sheetView: view }),
   setProcessors: (processors) =>
     set((state) => (state.executionLocked ? state : { processors })),
@@ -314,6 +319,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         direction: state.layoutDirection,
         nodesep: isTopBottom ? 120 : 80,
         ranksep: isTopBottom ? 140 : 80,
+        configs: state.configs,
       });
       const layoutedPositions = new Map(
         nodes.map((node) => [node.id, node.position] as const),
@@ -400,7 +406,10 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_token: "",
         hf_endpoint: "https://huggingface.co",
         local_file_name: "",
-        unstructured_file_name: "",
+        unstructured_file_ids: [],
+        unstructured_file_names: [],
+        unstructured_file_sizes: [],
+        resolved_paths: [],
         seed_columns: [],
         seed_drop_columns: [],
         seed_preview_rows: [],
@@ -427,7 +436,37 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (state.executionLocked) {
         return state;
       }
-      return buildAddedNodeState(state, "llm", type, position, openDialog);
+      const added = buildAddedNodeState(state, "llm", type, position, openDialog);
+      const context = getAddedNodeContext(added);
+      if (!context) {
+        return added;
+      }
+      let { nodes, configs } = context;
+      let edges = state.edges;
+      const modelConfigs = Object.values(configs).filter(
+        (config) => config.kind === "model_config",
+      );
+      if (modelConfigs.length === 1) {
+        if (!position) {
+          nodes = placeNodeNear(
+            nodes,
+            context.newNodeId,
+            modelConfigs[0].id,
+            state.layoutDirection,
+            "after",
+          );
+        }
+        const next = connectSemantic(
+          edges,
+          configs,
+          modelConfigs[0].id,
+          context.newNodeId,
+          state.layoutDirection,
+        );
+        edges = next.edges;
+        configs = next.configs;
+      }
+      return { ...added, nodes, edges, configs };
     }),
   addModelProviderNode: (position, openDialog = true) =>
     set((state) => {
@@ -695,6 +734,34 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
 
       if (nameChanged) {
         configs = applyRenameToConfigs(configs, oldName, newName);
+      }
+
+      // When a provider toggles between local and external, keep already
+      // linked model_config nodes in sync. applyRenameToConfigs above has
+      // already propagated any name change, so providerName here is the
+      // post-rename value.
+      if (current.kind === "model_provider" && next.kind === "model_provider") {
+        const prevIsLocal = current.is_local === true;
+        const nextIsLocal = next.is_local === true;
+        if (prevIsLocal !== nextIsLocal) {
+          const providerName = next.name;
+          for (const [cfgId, cfg] of Object.entries(configs)) {
+            if (cfg.kind !== "model_config" || cfg.provider !== providerName) {
+              continue;
+            }
+            if (nextIsLocal && !cfg.model.trim()) {
+              // external -> local: auto fill the placeholder model id so the
+              // config does not fail "model is required" validation.
+              configs = { ...configs, [cfgId]: { ...cfg, model: "local" } };
+              continue;
+            }
+            if (!nextIsLocal && cfg.model === "local") {
+              // local -> external: clear the placeholder so the user picks a
+              // real model id for the new external endpoint.
+              configs = { ...configs, [cfgId]: { ...cfg, model: "" } };
+            }
+          }
+        }
       }
 
       return { configs, nodes, edges };

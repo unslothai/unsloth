@@ -5,13 +5,14 @@
 Model and LoRA configuration handling
 """
 
-from transformers import AutoConfig
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import (
     normalize_path,
     is_local_path,
     is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
     outputs_root,
     exports_root,
     resolve_output_dir,
@@ -25,11 +26,44 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import List, Tuple
+import hashlib
 import json
+import threading
 import yaml
 
 
 logger = get_logger(__name__)
+
+# ── Model size extraction ────────────────────────────────────
+import re as _re
+
+_MODEL_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+# MoE active-parameter pattern: matches "A3B", "A3.5B", etc.
+_ACTIVE_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+
+
+def extract_model_size_b(model_id: str) -> float | None:
+    """Extract model size in billions from a model identifier.
+
+    Prefers MoE active-parameter notation (e.g. ``A3B`` in
+    ``Qwen3.5-35B-A3B``) over the total parameter count.
+    Handles both ``B`` (billions) and ``M`` (millions) suffixes.
+    """
+    mid = (model_id or "").lower()
+    active = _ACTIVE_SIZE_RE.search(mid)
+    if active:
+        val = float(active.group(1))
+        return val / 1000.0 if active.group(2).lower() == "m" else val
+    size = _MODEL_SIZE_RE.search(mid)
+    if not size:
+        return None
+    val = float(size.group(1))
+    return val / 1000.0 if size.group(2).lower() == "m" else val
+
 
 # Model name mapping: maps all equivalent model names to their canonical YAML config file
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
@@ -126,6 +160,38 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-3n-E4B.yaml": [
         "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
         "google/gemma-3n-E4B",
+    ],
+    "unsloth_gemma-4-31B-it.yaml": [
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ],
+    "unsloth_gemma-4-26B-A4B-it.yaml": [
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ],
+    "unsloth_gemma-4-E2B-it.yaml": [
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ],
+    "unsloth_gemma-4-E4B-it.yaml": [
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ],
+    "unsloth_gemma-4-31B.yaml": [
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ],
+    "unsloth_gemma-4-26B-A4B.yaml": [
+        "unsloth/gemma-4-26B-A4B",
+        "google/gemma-4-26B-A4B",
+    ],
+    "unsloth_gemma-4-E2B.yaml": [
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ],
+    "unsloth_gemma-4-E4B.yaml": [
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
     ],
     "unsloth_gpt-oss-20b.yaml": [
         "openai/gpt-oss-20b",
@@ -391,6 +457,7 @@ def load_model_config(
     """
     Load model config with optional authentication control.
     """
+    from transformers import AutoConfig
 
     if token:
         # Explicit token provided - use it
@@ -426,8 +493,9 @@ _VLM_MODEL_TYPES = {
     "minicpmv",
 }
 
-# Pre-computed .venv_t5 path and backend dir for subprocess version switching.
-_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
+# Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
+# Vision check uses 5.5.0 (newest, recognizes all architectures).
+_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # Inline script executed in a subprocess with transformers 5.x activated.
@@ -473,22 +541,27 @@ try:
 
     model_type = getattr(config, "model_type", "unknown")
     archs = getattr(config, "architectures", [])
-    logger.info(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
 except Exception as exc:
-    logger.info(json.dumps({"error": str(exc)}))
+    print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
 
 
 def _is_vision_model_subprocess(
     model_name: str, hf_token: Optional[str] = None
-) -> bool:
+) -> Optional[bool]:
     """Run is_vision_model check in a subprocess with transformers 5.x.
 
     Same pattern as training/inference workers: spawn a clean subprocess
     with .venv_t5/ prepended to sys.path so AutoConfig recognizes newer
     architectures (glm4_moe_lite, etc.).
+
+    Returns True/False for definitive results, or None for transient failures
+    (timeouts, subprocess errors) so callers can decide whether to cache
+    the result. Subprocess failures are treated as transient because they
+    can be caused by temporary HF/auth/network issues.
     """
     token_arg = hf_token or ""
 
@@ -515,7 +588,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 stderr or result.stdout.strip(),
             )
-            return False
+            return None
 
         data = json.loads(result.stdout.strip())
         if "error" in data:
@@ -524,7 +597,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 data["error"],
             )
-            return False
+            return None
 
         is_vlm = data["is_vision"]
         logger.info(
@@ -539,10 +612,28 @@ def _is_vision_model_subprocess(
 
     except subprocess.TimeoutExpired:
         logger.warning("Vision check subprocess timed out for '%s'", model_name)
-        return False
+        return None
     except Exception as exc:
         logger.warning("Vision check subprocess failed for '%s': %s", model_name, exc)
-        return False
+        return None
+
+
+def _token_fingerprint(token: Optional[str]) -> Optional[str]:
+    """Return a SHA256 digest of the token for use as a cache key.
+
+    Avoids storing the raw bearer token in process memory as a dict key.
+    """
+    if token is None:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Cache vision detection results per session to avoid repeated subprocess spawns.
+# Keyed by (normalized_model_name, token_fingerprint) to handle gated models correctly.
+# Only definitive results (True/False from successful detection) are cached;
+# transient failures (network errors, timeouts) are NOT cached so they can be retried.
+_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+_vision_cache_lock = threading.Lock()
 
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -551,12 +642,65 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Works for fine-tuned models since they inherit the base architecture.
 
     For models that require transformers 5.x (e.g. GLM-4.7-Flash), the check
-    runs in a subprocess with .venv_t5/ activated — same pattern as the
+    runs in a subprocess with .venv_t5/ activated -- same pattern as the
     training and inference workers.
+
+    Results are cached per (model_name, token_fingerprint) for the lifetime of
+    the process to avoid repeated subprocess spawns and HuggingFace API calls.
+    Transient failures are not cached so they can be retried on the next call.
 
     Args:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
+    """
+    # Normalize model name for cache key to avoid duplicate entries for
+    # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
+    try:
+        if is_local_path(model_name):
+            resolved_name = normalize_path(model_name)
+        else:
+            resolved_name = resolve_cached_repo_id_case(model_name)
+    except Exception as exc:
+        logger.debug(
+            "Could not normalize model name '%s' for cache key: %s",
+            model_name,
+            exc,
+        )
+        resolved_name = model_name
+    cache_key = (resolved_name, _token_fingerprint(hf_token))
+
+    # Lock-free fast path for cache hits. Uses a sentinel to distinguish
+    # "key not found" from "value is False" in a single atomic dict.get() call.
+    _MISS = object()
+    cached = _vision_detection_cache.get(cache_key, _MISS)
+    if cached is not _MISS:
+        return cached
+
+    # Compute outside the lock to avoid serializing long-running detection
+    # (subprocess spawns with 60s timeout, HF API calls) across all models.
+    # The tradeoff: two concurrent calls for the same uncached model may
+    # both run detection, but they produce the same result and the second
+    # write is a benign no-op.
+    result = _is_vision_model_uncached(resolved_name, hf_token)
+    # Only cache definitive results; None means a transient failure occurred
+    # and we should retry on the next call instead of locking in a wrong answer.
+    if result is not None:
+        with _vision_cache_lock:
+            _vision_detection_cache[cache_key] = result
+        return result
+    return False
+
+
+def _is_vision_model_uncached(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
+    """Uncached vision model detection -- called by is_vision_model().
+
+    Returns True/False for definitive results, or None when detection failed
+    due to a transient error (network, timeout, subprocess failure) so the
+    caller knows not to cache the result.
+
+    Do not call directly; use is_vision_model() instead.
     """
     # Models that need transformers 5.x must be checked in a subprocess
     # because AutoConfig in the main process (transformers 4.57.x) doesn't
@@ -565,7 +709,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     if needs_transformers_5(model_name):
         logger.info(
-            "Model '%s' needs transformers 5.x — checking vision via subprocess",
+            "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
         return _is_vision_model_subprocess(model_name, hf_token = hf_token)
@@ -616,7 +760,25 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
-        return False
+        # Permanent failures (model not found, gated, bad config) should be
+        # cached as False. Transient failures (network, timeout) should not.
+        try:
+            from huggingface_hub.errors import RepositoryNotFoundError, GatedRepoError
+        except ImportError:
+            try:
+                from huggingface_hub.utils import (
+                    RepositoryNotFoundError,
+                    GatedRepoError,
+                )
+            except ImportError:
+                RepositoryNotFoundError = GatedRepoError = None
+        if RepositoryNotFoundError is not None and isinstance(
+            e, (RepositoryNotFoundError, GatedRepoError)
+        ):
+            return False
+        if isinstance(e, (ValueError, json.JSONDecodeError)):
+            return False
+        return None
 
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
@@ -630,7 +792,10 @@ _AUDIO_TOKEN_PATTERNS = {
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: "<|audio_start|>" in tokens and "<|audio_end|>" in tokens,
+    "dac": lambda tokens: "<|audio_start|>" in tokens
+    and "<|audio_end|>" in tokens
+    and "<|text_start|>" in tokens
+    and "<|text_end|>" in tokens,
     "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_"))
     > 10000,
 }
@@ -677,12 +842,8 @@ def _detect_audio_from_tokenizer(
 
     # 1) Check local HF cache first (works for gated/offline models)
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        cache_dir = Path(HF_HUB_CACHE)
-        repo_dir_name = f"models--{model_name.replace('/', '--')}"
-        repo_dir = cache_dir / repo_dir_name
-        if repo_dir.exists():
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is not None and repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
@@ -743,24 +904,99 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-def detect_mmproj_file(path: str) -> Optional[str]:
+def _is_gguf_filename(filename: str) -> bool:
+    return filename.lower().endswith(".gguf")
+
+
+def _iter_gguf_files(directory: Path, recursive: bool = False):
+    if not directory.is_dir():
+        return
+    iterator = directory.rglob("*") if recursive else directory.iterdir()
+    for f in iterator:
+        if f.is_file() and _is_gguf_filename(f.name):
+            yield f
+
+
+def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """
-    Find the mmproj (vision projection) GGUF file in a directory.
+    Find the mmproj (vision projection) GGUF file for a given model.
 
     Args:
-        path: Directory to search — or a .gguf file (uses its parent dir).
+        path: Directory to search — or a .gguf file (uses its parent dir
+            as the starting point).
+        search_root: Optional outer directory that should also be scanned
+            (and any directory between it and ``path``). This handles
+            local layouts where the model weights live in a quant-named
+            subdir (``snapshot/BF16/foo.gguf``) but the mmproj sits at
+            the snapshot root (``snapshot/mmproj-BF16.gguf``). When
+            ``None``, only the immediate parent dir is scanned, matching
+            the historical behavior.
 
     Returns:
         Full path to the mmproj .gguf file, or None if not found.
     """
     p = Path(path)
-    search_dir = p.parent if p.is_file() else p
-    if not search_dir.is_dir():
+    start_dir = p.parent if p.is_file() else p
+    if not start_dir.is_dir():
         return None
 
-    for f in search_dir.glob("*.gguf"):
-        if _is_mmproj(f.name):
-            return str(f.resolve())
+    # Build the list of dirs to scan: immediate dir first, then walk up
+    # to (and including) ``search_root`` if it is an ancestor. We walk
+    # incrementally rather than recursing into ``search_root`` so we
+    # don't accidentally pick up an mmproj from a sibling subdir
+    # belonging to a different model variant.
+    seen: set[Path] = set()
+    scan_order: list[Path] = []
+
+    def _add(d: Path) -> None:
+        try:
+            resolved = d.resolve()
+        except OSError:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        scan_order.append(resolved)
+
+    _add(start_dir)
+
+    # When ``path`` is a symlink (e.g. Ollama's ``.studio_links/...gguf``
+    # -> ``blobs/sha256-...``), the symlink's parent directory rarely
+    # contains the mmproj sibling; the real mmproj file lives next to
+    # the symlink target. Add the target's parent to the scan so vision
+    # GGUFs that are surfaced via symlinks are still recognised as
+    # vision models.
+    try:
+        if p.is_symlink() and p.is_file():
+            target_parent = p.resolve().parent
+            if target_parent.is_dir():
+                _add(target_parent)
+    except OSError:
+        pass
+    if search_root is not None:
+        try:
+            root_resolved = Path(search_root).resolve()
+            start_resolved = start_dir.resolve()
+            # Only walk if start_dir is inside (or equal to) search_root.
+            if root_resolved == start_resolved or (
+                start_resolved.is_relative_to(root_resolved)
+                if hasattr(start_resolved, "is_relative_to")
+                else str(start_resolved).startswith(str(root_resolved) + "/")
+            ):
+                cur = start_resolved
+                # Walk up from start_dir to (and including) root_resolved.
+                while cur != root_resolved and cur.parent != cur:
+                    cur = cur.parent
+                    _add(cur)
+                    if cur == root_resolved:
+                        break
+        except OSError:
+            pass
+
+    for d in scan_order:
+        for f in _iter_gguf_files(d):
+            if _is_mmproj(f.name):
+                return str(f.resolve())
     return None
 
 
@@ -781,15 +1017,18 @@ def detect_gguf_model(path: str) -> Optional[str]:
     p = Path(path)
 
     # Case 1: direct .gguf file
-    if p.suffix == ".gguf" and p.is_file():
+    if p.suffix.lower() == ".gguf" and p.is_file():
         if _is_mmproj(p.name):
             return None
-        return str(p.resolve())
+        # Use absolute (not resolve) to preserve symlink names -- e.g.
+        # Ollama .studio_links/model.gguf -> blobs/sha256-... should
+        # keep the readable symlink name, not the opaque blob hash.
+        return str(p.absolute())
 
     # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():
         gguf_files = sorted(
-            (f for f in p.glob("*.gguf") if not _is_mmproj(f.name)),
+            (f for f in _iter_gguf_files(p) if not _is_mmproj(f.name)),
             key = lambda f: f.stat().st_size,
             reverse = True,
         )
@@ -801,7 +1040,29 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
 # Preferred GGUF quantization levels, in descending priority.
 # Q4_K_M is a good default: small, fast, acceptable quality.
+# UD (Unsloth Dynamic) variants are always preferred over standard quants
+# because they provide better quality per bit. If the repo has no UD variants
+# (e.g., bartowski repos), the standard quants are used as fallback.
+# Ordered by best size/quality tradeoff, not raw quality.
 _GGUF_QUANT_PREFERENCE = [
+    # UD variants (best quality per bit) -- Q4 is the sweet spot
+    "UD-Q4_K_XL",
+    "UD-Q4_K_L",
+    "UD-Q5_K_XL",
+    "UD-Q3_K_XL",
+    "UD-Q6_K_XL",
+    "UD-Q6_K_S",
+    "UD-Q8_K_XL",
+    "UD-Q2_K_XL",
+    "UD-IQ4_NL",
+    "UD-IQ4_XS",
+    "UD-IQ3_S",
+    "UD-IQ3_XXS",
+    "UD-IQ2_M",
+    "UD-IQ2_XXS",
+    "UD-IQ1_M",
+    "UD-IQ1_S",
+    # Standard quants (fallback for non-Unsloth repos)
     "Q4_K_M",
     "Q4_K_S",
     "Q5_K_M",
@@ -810,7 +1071,15 @@ _GGUF_QUANT_PREFERENCE = [
     "Q8_0",
     "Q3_K_M",
     "Q3_K_L",
+    "Q3_K_S",
     "Q2_K",
+    "Q2_K_L",
+    "IQ4_NL",
+    "IQ4_XS",
+    "IQ3_M",
+    "IQ3_XXS",
+    "IQ2_M",
+    "IQ1_M",
     "F16",
     "BF16",
     "F32",
@@ -824,7 +1093,7 @@ def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     Prefers quantization levels in _GGUF_QUANT_PREFERENCE order.
     Falls back to the first .gguf file found.
     """
-    gguf_files = [f for f in filenames if f.endswith(".gguf")]
+    gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
     if not gguf_files:
         return None
 
@@ -909,7 +1178,7 @@ def list_gguf_variants(
 
     for sibling in info.siblings:
         fname = sibling.rfilename
-        if not fname.endswith(".gguf"):
+        if not fname.lower().endswith(".gguf"):
             continue
         size = sibling.size or 0
 
@@ -932,7 +1201,111 @@ def list_gguf_variants(
             )
         )
 
+    # Sort by size descending (largest = best quality first).
+    # Recommended pinning and OOM demotion are handled client-side
+    # where GPU VRAM info is available.
+    variants.sort(key = lambda v: -v.size_bytes)
+
     return variants, has_vision
+
+
+def _resolve_gguf_dir(p: Path) -> Optional[Path]:
+    """Resolve a path to the directory containing GGUF variants.
+
+    If *p* is already a directory, returns it directly.  If *p* is a ``.gguf``
+    file whose parent directory has model metadata (``config.json`` or
+    ``adapter_config.json``), returns the parent -- all GGUFs in that
+    directory belong to the same model.  Returns ``None`` for loose standalone
+    GGUFs (no config) to avoid cross-wiring unrelated models.
+    """
+    if p.is_dir():
+        return p
+    if p.is_file() and p.suffix.lower() == ".gguf":
+        parent = p.parent
+        if (parent / "config.json").exists() or (
+            parent / "adapter_config.json"
+        ).exists():
+            return parent
+    return None
+
+
+def list_local_gguf_variants(
+    directory: str,
+) -> tuple[list[GgufVariantInfo], bool]:
+    """List GGUF quantization variants in a local directory.
+
+    Mirrors :func:`list_gguf_variants` but reads from the filesystem
+    instead of the HuggingFace API.  Aggregates shard sizes by quant
+    label so that split GGUFs appear as a single variant.
+
+    Returns:
+        (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
+    """
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
+        return [], False
+
+    quant_totals: dict[str, int] = {}
+    quant_first_file: dict[str, str] = {}
+    has_vision = False
+
+    # Recurse so variant-specific subdirectories (e.g. ``BF16/...gguf``
+    # used by some HF GGUF repos for the largest quants) are picked up.
+    # Filenames in the result preserve the relative subpath so that
+    # ``_find_local_gguf_by_variant`` can locate the file again.
+    for f in sorted(_iter_gguf_files(p, recursive = True)):
+        if _is_mmproj(f.name):
+            has_vision = True
+            continue
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        quant = _extract_quant_label(f.name)
+        quant_totals[quant] = quant_totals.get(quant, 0) + size
+        # Only compute the (potentially expensive) relative path when this
+        # is the first file we've seen for this quant -- after that we'd
+        # discard the result anyway. Use posix-style separators so the
+        # filename matches what ``list_gguf_variants`` (the remote HF
+        # API path) returns on every platform; otherwise Windows would
+        # emit ``BF16\foo.gguf`` here.
+        if quant not in quant_first_file:
+            quant_first_file[quant] = f.relative_to(p).as_posix()
+
+    variants = [
+        GgufVariantInfo(
+            filename = quant_first_file[q],
+            quant = q,
+            size_bytes = s,
+        )
+        for q, s in quant_totals.items()
+    ]
+    variants.sort(key = lambda v: -v.size_bytes)
+    return variants, has_vision
+
+
+def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
+    """Find the GGUF file in *directory* matching a quantization *variant*.
+
+    For sharded GGUFs (multiple files with the same quant label), returns
+    the first shard (sorted by name) which is what ``llama-server -m`` expects.
+
+    Returns the resolved absolute path, or ``None`` if no match.
+    """
+    p = _resolve_gguf_dir(Path(directory))
+    if p is None:
+        return None
+
+    # Recurse into subdirectories so variants stored under a quant-named
+    # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
+    matches = sorted(
+        f
+        for f in _iter_gguf_files(p, recursive = True)
+        if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
+    )
+    if matches:
+        return str(matches[0].resolve())
+    return None
 
 
 def detect_gguf_model_remote(
@@ -1039,46 +1412,89 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return False
 
 
-def scan_trained_loras(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str]]:
+def _has_model_weight_files(model_dir: Path) -> bool:
+    """Return True when a directory contains loadable model weights."""
+    for item in model_dir.iterdir():
+        if not item.is_file():
+            continue
+
+        suffix = item.suffix.lower()
+        if suffix == ".safetensors":
+            return True
+        if suffix == ".gguf":
+            return "mmproj" not in item.name.lower()
+        if suffix == ".bin":
+            name = item.name.lower()
+            if (
+                name.startswith("pytorch_model")
+                or name.startswith("model")
+                or name.startswith("adapter_model")
+                or name.startswith("consolidated")
+            ):
+                return True
+    return False
+
+
+def _detect_training_output_type(model_dir: Path) -> Optional[str]:
+    """Classify a Studio training output as LoRA or full finetune."""
+    adapter_config = model_dir / "adapter_config.json"
+    adapter_model = model_dir / "adapter_model.safetensors"
+    if adapter_config.exists() or adapter_model.exists():
+        return "lora"
+
+    config_file = model_dir / "config.json"
+    if config_file.exists() and _has_model_weight_files(model_dir):
+        return "merged"
+
+    return None
+
+
+def _looks_like_lora_adapter(model_dir: Path) -> bool:
+    return model_dir.is_dir() and (
+        (model_dir / "adapter_config.json").exists()
+        or any(model_dir.glob("adapter_model*.safetensors"))
+        or any(model_dir.glob("adapter_model*.bin"))
+    )
+
+
+def scan_trained_models(
+    outputs_dir: str = str(outputs_root()),
+) -> List[Tuple[str, str, str]]:
     """
-    Scan outputs folder for trained LoRA adapters.
+    Scan outputs folder for trained Studio models.
 
     Returns:
-        List of tuples: [(display_name, adapter_path), ...]
-
-    Example:
-        [
-            ("unsloth_Meta-Llama-3.1_...", "./outputs/unsloth_Meta-Llama-3.1_.../"),
-            ("my_finetuned_model", "./outputs/my_finetuned_model/"),
-        ]
+        List of tuples: [(display_name, model_path, model_type), ...]
+        model_type is "lora" for adapter runs and "merged" for full finetunes.
     """
-    trained_loras = []
+    trained_models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
         logger.warning(f"Outputs directory not found: {outputs_dir}")
-        return trained_loras
+        return trained_models
 
     try:
         for item in outputs_path.iterdir():
             if item.is_dir():
-                # Check if this directory contains a LoRA adapter
-                adapter_config = item / "adapter_config.json"
-                adapter_model = item / "adapter_model.safetensors"
+                model_type = _detect_training_output_type(item)
+                if model_type is None:
+                    continue
 
-                if adapter_config.exists() or adapter_model.exists():
-                    display_name = item.name
-                    adapter_path = str(item)
-                    trained_loras.append((display_name, adapter_path))
-                    logger.debug(f"Found trained LoRA: {display_name}")
+                display_name = item.name
+                model_path = str(item)
+                trained_models.append((display_name, model_path, model_type))
+                logger.debug("Found trained model: %s (%s)", display_name, model_type)
 
         # Sort by modification time (newest first)
-        trained_loras.sort(key = lambda x: Path(x[1]).stat().st_mtime, reverse = True)
+        trained_models.sort(key = lambda x: Path(x[1]).stat().st_mtime, reverse = True)
 
         logger.info(
-            f"Found {len(trained_loras)} trained LoRA adapters in {outputs_dir}"
+            "Found %s trained models in %s",
+            len(trained_models),
+            outputs_dir,
         )
-        return trained_loras
+        return trained_models
 
     except Exception as e:
         logger.error(f"Error scanning outputs folder: {e}")
@@ -1112,7 +1528,9 @@ def scan_exported_models(
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
             # Filter out mmproj (vision projection) files — they aren't loadable as main models
-            gguf_files = [f for f in run_dir.glob("*.gguf") if not _is_mmproj(f.name)]
+            gguf_files = [
+                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -1139,7 +1557,7 @@ def scan_exported_models(
                 has_weights = any(checkpoint_dir.glob("*.safetensors")) or any(
                     checkpoint_dir.glob("*.bin")
                 )
-                has_gguf = any(checkpoint_dir.glob("*.gguf"))
+                has_gguf = any(_iter_gguf_files(checkpoint_dir))
 
                 base_model = None
                 export_type = None
@@ -1162,7 +1580,7 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    gguf_list = list(checkpoint_dir.glob("*.gguf"))
+                    gguf_list = list(_iter_gguf_files(checkpoint_dir))
                     # Check checkpoint_dir first, then fall back to parent run_dir
                     # (export.py writes metadata to the top-level export directory)
                     for meta_dir in (checkpoint_dir, run_dir):
@@ -1211,6 +1629,68 @@ def scan_exported_models(
         return []
 
 
+def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
+    """Read the base model name from a local training or checkpoint directory."""
+    try:
+        checkpoint_path_obj = Path(checkpoint_path)
+
+        adapter_config_path = checkpoint_path_obj / "adapter_config.json"
+        if adapter_config_path.exists():
+            with open(adapter_config_path, "r") as f:
+                config = json.load(f)
+                base_model = config.get("base_model_name_or_path")
+                if base_model:
+                    logger.info(
+                        "Detected base model from adapter_config.json: %s", base_model
+                    )
+                    return base_model
+
+        config_path = checkpoint_path_obj / "config.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                for key in ("model_name", "_name_or_path"):
+                    base_model = config.get(key)
+                    if base_model and str(base_model) != str(checkpoint_path_obj):
+                        logger.info(
+                            "Detected base model from config.json (%s): %s",
+                            key,
+                            base_model,
+                        )
+                        return base_model
+
+        training_args_path = checkpoint_path_obj / "training_args.bin"
+        if training_args_path.exists():
+            try:
+                import torch
+
+                training_args = torch.load(training_args_path)
+                if hasattr(training_args, "model_name_or_path"):
+                    base_model = training_args.model_name_or_path
+                    logger.info(
+                        "Detected base model from training_args.bin: %s", base_model
+                    )
+                    return base_model
+            except Exception as e:
+                logger.warning(f"Could not load training_args.bin: {e}")
+
+        dir_name = checkpoint_path_obj.name
+        if dir_name.startswith("unsloth_"):
+            parts = dir_name.split("_")
+            if len(parts) >= 2:
+                model_parts = parts[1:-1]
+                base_model = "unsloth/" + "_".join(model_parts)
+                logger.info("Detected base model from directory name: %s", base_model)
+                return base_model
+
+        logger.warning(f"Could not detect base model for checkpoint: {checkpoint_path}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error reading base model from checkpoint config: {e}")
+        return None
+
+
 def get_base_model_from_lora(lora_path: str) -> Optional[str]:
     """
     Read the base model name from a LoRA adapter's config.
@@ -1219,15 +1699,13 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         lora_path: Path to the LoRA adapter directory
 
     Returns:
-        Base model identifier (e.g., "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit")
-        or None if not found
-
-    Example:
-        >>> get_base_model_from_lora("./outputs/unsloth_Meta-Llama-3.1_.../")
-        "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+        Base model identifier or None if not found
     """
     try:
         lora_path_obj = Path(lora_path)
+
+        if not _looks_like_lora_adapter(lora_path_obj):
+            return None
 
         # Try adapter_config.json first
         adapter_config_path = lora_path_obj / "adapter_config.json"
@@ -1315,17 +1793,20 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         return config
 
         # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
-        # adapter_config.json), try matching the last 1-2 path components against
-        # the registry (e.g. "Spark-TTS-0.5B/LLM").
-        if model_name not in _REVERSE_MODEL_MAPPING and (
-            model_name.startswith("/") or model_name.startswith(".")
-        ):
-            parts = Path(model_name).parts
+        # adapter_config.json, or C:\Users\...\model on Windows), try matching
+        # the last 1-2 path components against the registry
+        # (e.g. "Spark-TTS-0.5B/LLM").
+        _is_local_path = is_local_path(model_name)
+        # Normalize Windows backslash paths so Path().parts splits correctly
+        # on POSIX/WSL hosts (pathlib treats backslashes as literals on Linux).
+        _normalized = normalize_path(model_name) if _is_local_path else model_name
+        if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
+            parts = Path(_normalized).parts
             for depth in [2, 1]:
                 if len(parts) >= depth:
                     suffix = "/".join(parts[-depth:])
-                    if suffix in _REVERSE_MODEL_MAPPING:
-                        canonical_file = _REVERSE_MODEL_MAPPING[suffix]
+                    if suffix.lower() in _REVERSE_MODEL_MAPPING:
+                        canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
                         for config_path in defaults_dir.rglob(canonical_file):
                             if config_path.is_file():
                                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -1335,8 +1816,12 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                                     )
                                     return config
 
-        # Try exact model name match (for backward compatibility)
-        model_filename = model_name.replace("/", "_") + ".yaml"
+        # Try exact model name match (for backward compatibility).
+        # For local filesystem paths, use only the directory basename to
+        # avoid passing absolute paths (e.g. C:\...) into rglob which
+        # raises "Non-relative patterns are unsupported" on Windows.
+        _lookup_name = Path(_normalized).name if _is_local_path else model_name
+        model_filename = _lookup_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
         for config_path in defaults_dir.rglob(model_filename):
             if config_path.is_file():
@@ -1484,15 +1969,25 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
 
-        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
-        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        # Preserve requested casing, but if a case-variant already exists in local HF cache,
+        # reuse that exact repo_id spelling to avoid one-time re-downloads after #2592.
         if not is_local:
-            identifier = identifier.lower()
-            path = path.lower()
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved_identifier,
+                    identifier,
+                )
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
-            gguf_file = detect_gguf_model(path)
+            if gguf_variant:
+                gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
+            else:
+                gguf_file = detect_gguf_model(path)
             if gguf_file:
                 display_name = Path(gguf_file).stem
                 logger.info(f"Detected local GGUF model: {gguf_file}")
@@ -1515,8 +2010,16 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
 
-                # If vision (or mmproj happens to exist), find the mmproj file
-                mmproj_file = detect_mmproj_file(gguf_file)
+                # If vision (or mmproj happens to exist), find the mmproj
+                # file. The recursive variant scan in
+                # ``_find_local_gguf_by_variant`` may have returned a
+                # weight file inside a quant-named subdir (e.g.
+                # ``.../BF16/foo.gguf``) while ``mmproj-*.gguf`` lives
+                # at the snapshot root. Pass ``search_root=path`` so
+                # ``detect_mmproj_file`` walks up to the snapshot root
+                # instead of seeing only the weight file's immediate
+                # parent.
+                mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
@@ -1584,7 +2087,11 @@ class ModelConfig:
 
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
         if not is_lora and is_local:
-            detected_base = get_base_model_from_lora(path)
+            detected_base = (
+                get_base_model_from_lora(path)
+                if _looks_like_lora_adapter(Path(path))
+                else None
+            )
             if detected_base:
                 is_lora = True
                 logger.info(
@@ -1705,6 +2212,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        if not is_local:
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # --- Logic for Base Model and Vision Detection ---
         base_model = None

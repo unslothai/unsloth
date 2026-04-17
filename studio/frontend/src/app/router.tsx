@@ -11,14 +11,14 @@ import { Route as gridTestRoute } from "./routes/grid-test";
 import { Route as indexRoute } from "./routes/index";
 import { Route as loginRoute } from "./routes/login";
 import { Route as onboardingRoute } from "./routes/onboarding";
-import { Route as signupRoute } from "./routes/signup";
+import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as studioRoute } from "./routes/studio";
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
   onboardingRoute,
   loginRoute,
-  signupRoute,
+  changePasswordRoute,
   gridTestRoute,
   studioRoute,
   chatRoute,

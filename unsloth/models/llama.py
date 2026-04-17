@@ -496,6 +496,10 @@ def LlamaAttention_fast_forward_inference(
     # ensure correct shape
     if position_ids.dim() == 1:
         position_ids = position_ids[:, None]
+    # Transformers 5.x generate() accumulates position_ids as [batch, full_seq_len]
+    # across decode steps. In single-token inference we only need the last position.
+    if position_ids.shape[-1] > 1:
+        position_ids = position_ids[:, -1:]
     position_ids = position_ids.to(Qn.device)
 
     if rotary_seq_len is None:
@@ -1026,6 +1030,7 @@ def LlamaModel_fast_forward(
     if (
         getattr(self, "_has_no_labels", False) is True
         and (attention_mask is not None)
+        and attention_mask.ndim == 2
         and (past_key_values is None)
         and (not train_embed_tokens)
         and self.training
@@ -2341,8 +2346,8 @@ class FastLlamaModel:
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
-        preferred_attn_impl = (
-            prefer_flex_attn_if_supported(model_function, model_config) or "eager"
+        preferred_attn_impl = resolve_attention_implementation(
+            model_function, model_config
         )
 
         has_rope_scaling = False
@@ -2400,6 +2405,31 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype = dtype,
                 llm_int8_skip_modules = llm_int8_skip_modules,
             )
+            # For pre-quantized checkpoints (e.g. unsloth/Qwen3-4B-bnb-4bit),
+            # transformers uses the quantization_config baked into the
+            # checkpoint's config.json and ignores the runtime BitsAndBytesConfig
+            # we pass via kwargs. Merge our skip list into that bundled config
+            # so task heads like `score` (for *ForSequenceClassification) stay
+            # in the compute dtype. See unslothai/unsloth#5027.
+            _ckpt_qcfg = getattr(model_config, "quantization_config", None)
+            if _ckpt_qcfg is not None:
+                if isinstance(_ckpt_qcfg, dict):
+                    _ckpt_skip = list(_ckpt_qcfg.get("llm_int8_skip_modules") or [])
+                    for _m in llm_int8_skip_modules:
+                        if _m not in _ckpt_skip:
+                            _ckpt_skip.append(_m)
+                    _ckpt_qcfg["llm_int8_skip_modules"] = _ckpt_skip
+                else:
+                    _ckpt_skip = list(
+                        getattr(_ckpt_qcfg, "llm_int8_skip_modules", None) or []
+                    )
+                    for _m in llm_int8_skip_modules:
+                        if _m not in _ckpt_skip:
+                            _ckpt_skip.append(_m)
+                    try:
+                        _ckpt_qcfg.llm_int8_skip_modules = _ckpt_skip
+                    except Exception:
+                        pass
 
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
@@ -2414,17 +2444,49 @@ class FastLlamaModel:
 
         raise_handler = RaiseUninitialized()
         if num_labels is not None:
+            # Transformers 5.x @strict config classes reject unexpected kwargs
+            # like num_labels and max_position_embeddings. Set on the config
+            # object directly and pass config= instead.
+            model_config.num_labels = num_labels
+            if max_position_embeddings is not None:
+                model_config.max_position_embeddings = max_position_embeddings
+            # Pop config-level attrs that would be rejected by @strict model init
+            for _cfg_key in ("id2label", "label2id", "rope_scaling"):
+                _cfg_val = kwargs.pop(_cfg_key, None)
+                if _cfg_val is not None:
+                    setattr(model_config, _cfg_key, _cfg_val)
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
+                config = model_config,
                 device_map = device_map,
                 # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                num_labels = num_labels,
                 # quantization_config     = bnb_config,
                 token = token,
-                max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
+            )
+            # Defensive: make sure the task head ended up in a floating dtype.
+            # The primary protection is SKIP_QUANTIZATION_MODULES plus the skip
+            # list merge above; this guards against a downstream path accidentally
+            # leaving the head in an integer storage. See unslothai/unsloth#5027.
+            for _head_name in ("score", "classifier", "qa_outputs"):
+                _head = getattr(model, _head_name, None)
+                if (
+                    _head is not None
+                    and hasattr(_head, "weight")
+                    and not _head.weight.is_floating_point()
+                ):
+                    _head.to(dtype)
+            # Attach dispatch hooks for bnb multi-device loads.
+            from unsloth.models.vision import _attach_bnb_multidevice_hooks
+
+            _attach_bnb_multidevice_hooks(
+                model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = kwargs.get("load_in_8bit", False),
+                offload_embedding = False,
+                fast_inference = fast_inference,
             )
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
@@ -2437,6 +2499,16 @@ class FastLlamaModel:
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
+            )
+            # Attach dispatch hooks for bnb multi-device loads.
+            from unsloth.models.vision import _attach_bnb_multidevice_hooks
+
+            _attach_bnb_multidevice_hooks(
+                model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = kwargs.get("load_in_8bit", False),
+                offload_embedding = False,
+                fast_inference = False,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
@@ -2643,7 +2715,8 @@ class FastLlamaModel:
         patch_saving_functions(model)
         Trainer._inner_training_loop = _fast_inner_training_loop
 
-        # Fix gradient accumulation
+        # Fix gradient accumulation. See issue #4982.
+        apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes

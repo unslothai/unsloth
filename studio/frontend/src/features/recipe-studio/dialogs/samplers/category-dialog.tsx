@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { type ReactElement, useState } from "react";
 import type { SamplerConfig } from "../../types";
 import { ChipInput } from "../../components/chip-input";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
@@ -88,7 +89,7 @@ export function CategoryDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="space-y-3">
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Values"
             hint="Define allowed categorical values for this column."
@@ -120,16 +121,13 @@ export function CategoryDialog({
         onOpenChange={(open) => onUpdate({ advancedOpen: open })}
       >
         <CollapsibleTrigger asChild={true}>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
-          >
-            <span className="font-semibold uppercase">Advanced</span>
-            <span>{advancedOpen ? "Hide" : "Show"}</span>
-          </button>
+          <CollapsibleSectionTriggerButton
+            label="Advanced list settings"
+            open={advancedOpen}
+          />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-2 space-y-3">
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <FieldLabel
                 label="Weights (optional)"
                 hint="Set selection probability per value."
@@ -241,7 +239,7 @@ export function CategoryDialog({
                   }}
                   placeholder="Type a conditional value and press Enter"
                 />
-                <div className="grid gap-2">
+                <div className="grid gap-1.5">
                   <p className="text-xs font-semibold uppercase text-muted-foreground">
                     Rule weights (optional)
                   </p>

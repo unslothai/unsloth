@@ -2,9 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import { createContext, useCallback, useContext, useState } from "react";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
+
+type ToggleFn = () => void;
+const TooltipToggleCtx = createContext<ToggleFn | null>(null);
 
 function TooltipProvider({
   delayDuration = 400,
@@ -20,19 +24,61 @@ function TooltipProvider({
 }
 
 function Tooltip({
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  const isControlled = controlledOpen !== undefined;
+  const [clickOpen, setClickOpen] = useState(false);
+
+  const onOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) setClickOpen(false);
+      controlledOnOpenChange?.(nextOpen);
+    },
+    [controlledOnOpenChange],
+  );
+
+  const toggle = useCallback(() => {
+    setClickOpen((prev) => !prev);
+  }, []);
+
   return (
     <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+      <TooltipToggleCtx.Provider value={toggle}>
+        <TooltipPrimitive.Root
+          data-slot="tooltip"
+          open={isControlled ? controlledOpen : clickOpen || undefined}
+          onOpenChange={onOpenChange}
+          {...props}
+        />
+      </TooltipToggleCtx.Provider>
     </TooltipProvider>
   );
 }
 
 function TooltipTrigger({
+  onClick,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
+  const toggle = useContext(TooltipToggleCtx);
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      toggle?.();
+      onClick?.(e);
+    },
+    [toggle, onClick],
+  );
+
+  return (
+    <TooltipPrimitive.Trigger
+      data-slot="tooltip-trigger"
+      onClick={handleClick}
+      {...props}
+    />
+  );
 }
 
 function TooltipContent({

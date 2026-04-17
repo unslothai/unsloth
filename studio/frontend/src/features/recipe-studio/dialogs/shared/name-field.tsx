@@ -23,13 +23,13 @@ export function NameField({
   const fallbackId = useId();
   const inputId = id ?? fallbackId;
   return (
-    <div className="grid gap-2">
+    <div className="grid gap-1.5">
       <FieldLabel
-        label={label ?? "Column name"}
+        label={label ?? "Field name"}
         htmlFor={inputId}
         hint={
           hint ??
-          "Unique field name used in templates and final dataset output."
+          "This name is used in prompts and in the final dataset."
         }
       />
       <Input

@@ -53,8 +53,8 @@ export interface TrainingProgressPayload {
   job_id: string;
   step: number;
   total_steps: number;
-  loss: number;
-  learning_rate: number;
+  loss: number | null;
+  learning_rate: number | null;
   progress_percent: number;
   epoch: number | null;
   elapsed_seconds: number | null;
@@ -99,6 +99,7 @@ export interface TrainingRuntimeState {
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  selectedHistoryRunId: string | null;
 }
 
 export interface TrainingRuntimeActions {
@@ -115,6 +116,36 @@ export interface TrainingRuntimeActions {
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
+  setSelectedHistoryRunId: (id: string | null) => void;
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
+
+export interface TrainingViewData {
+  // Current metrics (for ProgressSection)
+  phase: TrainingPhase;
+  currentStep: number;
+  totalSteps: number;
+  currentLoss: number | null;
+  currentLearningRate: number | null;
+  currentGradNorm: number | null;
+  currentEpoch: number | null;
+  currentNumTokens: number | null;
+  progressPercent: number;
+  elapsedSeconds: number | null;
+  etaSeconds: number | null;
+  evalEnabled: boolean;
+  message: string;
+  error: string | null;
+  isTrainingRunning: boolean;
+
+  // Config summary
+  modelName: string;
+  trainingMethod: string;
+
+  // Time-series (for ChartsSection)
+  lossHistory: TrainingSeriesPoint[];
+  lrHistory: TrainingSeriesPoint[];
+  gradNormHistory: TrainingSeriesPoint[];
+  evalLossHistory: TrainingSeriesPoint[];
+}

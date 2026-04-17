@@ -80,9 +80,6 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     multimodal_info = detect_multimodal_dataset(dataset)
     is_audio = multimodal_info.get("is_audio", False)
 
-    if multimodal_info["is_image"]:
-        is_vlm = True  # Route to VLM detection for image datasets
-
     # Common audio fields for all return paths
     audio_fields = {
         "is_audio": is_audio,
@@ -153,8 +150,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "suggested_mapping": heuristic_mapping,
                 "detected_image_column": None,
                 "detected_text_column": None,
-                "is_image": False,
-                "multimodal_columns": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
                 **audio_fields,
             }
         else:
@@ -166,8 +163,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "suggested_mapping": None,
                 "detected_image_column": None,
                 "detected_text_column": None,
-                "is_image": False,
-                "multimodal_columns": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
                 "warning": (
                     f"Could not auto-detect column roles for columns: {columns}. "
                     "Please assign roles manually, or use AI Assist."
@@ -183,8 +180,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "suggested_mapping": None,
         "detected_image_column": None,
         "detected_text_column": None,
-        "is_image": False,
-        "multimodal_columns": None,
+        "is_image": multimodal_info["is_image"],
+        "multimodal_columns": multimodal_info.get("multimodal_columns"),
         **audio_fields,
     }
 
@@ -1092,6 +1089,9 @@ def format_and_template_dataset(
     # LLM FLOW (Existing code)
     else:
         # Step 1: Format the dataset
+        n_rows = len(dataset) if hasattr(dataset, "__len__") else None
+        if progress_callback and n_rows:
+            progress_callback(status_message = f"Formatting dataset ({n_rows:,} rows)...")
         dataset_info = format_dataset(
             dataset,
             format_type = format_type,
@@ -1106,6 +1106,11 @@ def format_and_template_dataset(
         )
 
         # Step 2: Apply chat template
+        detected = dataset_info.get("detected_format", "unknown")
+        if progress_callback and n_rows:
+            progress_callback(
+                status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
+            )
         # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
@@ -1124,6 +1129,7 @@ def format_and_template_dataset(
             auto_detect_mapping = auto_detect_mapping,
             batch_size = batch_size,
             num_proc = num_proc,
+            progress_callback = progress_callback,
         )
 
         # Step 3: Generate summary

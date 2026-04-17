@@ -91,7 +91,7 @@ export function HfDatasetSubsetSplitSelectors({
     <>
       {showPlaceholderDropdowns && (
         <>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2">
             <SelectorDropdown
               variant={variant}
               label="Subset"
@@ -115,7 +115,7 @@ export function HfDatasetSubsetSplitSelectors({
           </div>
           <SelectorDropdown
             variant={variant}
-            label="Eval Split"
+            label="Evaluation Split"
             tooltip="Select which split to use for evaluation. None means no evaluation during training."
             value={null}
             onChange={setDatasetEvalSplit}
@@ -132,7 +132,7 @@ export function HfDatasetSubsetSplitSelectors({
           className={
             variant === "wizard"
               ? "flex items-center gap-2 text-xs text-muted-foreground py-1"
-              : "flex items-center gap-2 rounded-lg border bg-muted/20 px-3.5 py-3 text-xs text-muted-foreground"
+              : "flex min-w-0 items-center gap-2 rounded-lg border bg-muted/20 px-3.5 py-3 text-xs text-muted-foreground"
           }
         >
           <Spinner className="size-3.5" />
@@ -145,7 +145,7 @@ export function HfDatasetSubsetSplitSelectors({
           className={
             variant === "wizard"
               ? "rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
-              : "rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
+              : "min-w-0 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
           }
         >
           {error}
@@ -155,7 +155,7 @@ export function HfDatasetSubsetSplitSelectors({
       {showDropdowns && (
         <>
           {variant === "studio" ? (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2">
               <SelectorDropdown
                 variant={variant}
                 label="Subset"
@@ -199,7 +199,7 @@ export function HfDatasetSubsetSplitSelectors({
           )}
           <SelectorDropdown
             variant={variant}
-            label="Eval Split"
+            label="Evaluation Split"
             tooltip="Select which split to use for evaluation. None means no evaluation during training."
             value={datasetEvalSplit}
             onChange={setDatasetEvalSplit}
@@ -283,7 +283,7 @@ function SelectorDropdown({
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex min-w-0 flex-col gap-1.5">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {label}
         <Tooltip>
@@ -308,7 +308,7 @@ function SelectorDropdown({
         onValueChange={(v) => onChange(v === "_none" ? null : v)}
         disabled={disabled}
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger className="w-full min-w-0">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>

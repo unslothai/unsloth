@@ -1,0 +1,27 @@
+---
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "bun"
+    directory: "/studio/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      bun-frontend:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/studio/backend/core/data_recipe/oxc-validator"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-oxc-validator:
+        patterns: ["*"]
+...

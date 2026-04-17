@@ -8,18 +8,20 @@ export interface ModelOption {
   name: string;
   description?: string;
   icon?: ReactNode;
+  isGguf?: boolean;
 }
 
 export interface LoraModelOption extends ModelOption {
   baseModel?: string;
   updatedAt?: number;
-  source?: "training" | "exported";
+  source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
 }
 
 export interface ModelSelectorChangeMeta {
-  source: "hub" | "lora" | "exported";
+  source: "hub" | "lora" | "exported" | "local";
   isLora: boolean;
   ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
 }
-

@@ -29,7 +29,13 @@ except:
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import (
+    __version__,
+    importlib_version,
+    _prepare_model_for_qat,
+    resolve_model_class,
+    resolve_attention_implementation,
+)
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -69,6 +75,7 @@ import functools
 import os
 import gc
 import math
+import warnings
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
@@ -90,6 +97,144 @@ from ..device_type import (
 __all__ = [
     "FastBaseModel",
 ]
+
+
+def _infer_device_map_from_loaded_model(model):
+    """Build a compact device_map by inspecting actual parameter placements."""
+    device_map = {}
+
+    def _assign(module, prefix):
+        params = list(module.named_parameters(remove_duplicate = False))
+        if not params:
+            bufs = list(module.named_buffers())
+            if bufs:
+                device_map[prefix] = bufs[0][1].device
+            return
+        devices = {p.device for _, p in params}
+        if len(devices) == 1:
+            device_map[prefix] = next(iter(devices))
+        else:
+            for child_name, child in module.named_children():
+                child_prefix = f"{prefix}.{child_name}" if prefix else child_name
+                _assign(child, child_prefix)
+            for pname, param in module.named_parameters(remove_duplicate = False):
+                if "." not in pname:
+                    full = f"{prefix}.{pname}" if prefix else pname
+                    if not any(
+                        full == k or full.startswith(k + ".") for k in device_map
+                    ):
+                        device_map[full] = param.device
+
+    _assign(model, "")
+    if "" in device_map and len(device_map) > 1:
+        device_map.pop("")
+    return device_map
+
+
+def _attach_bnb_multidevice_hooks(
+    model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
+):
+    """
+    Attach accelerate AlignDevicesHook on a bnb model loaded across multiple
+    devices (or a non-default device).  No-op for single-GPU cuda:0, non-bnb,
+    vLLM, or already-dispatched models.
+    """
+    if fast_inference:
+        return
+    is_bnb = (
+        load_in_4bit
+        or load_in_8bit
+        or getattr(model, "is_loaded_in_4bit", False)
+        or getattr(model, "is_loaded_in_8bit", False)
+        or getattr(model, "quantization_method", None) == "bitsandbytes"
+    )
+    if not is_bnb:
+        return
+    if offload_embedding:
+        return
+    if getattr(model, "hf_device_map", None) is not None:
+        return  # already dispatched
+
+    try:
+        all_devs = {p.device for p in model.parameters()}
+    except Exception as exc:
+        warnings.warn(
+            "Unsloth: Failed to determine device placement from model parameters, "
+            f"so multi-GPU hooks cannot be attached. ({type(exc).__name__}: {exc})",
+            RuntimeWarning,
+            stacklevel = 2,
+        )
+        return
+
+    cuda_devs = {d for d in all_devs if d.type == "cuda"}
+    if not cuda_devs:
+        return
+
+    default_cuda = torch.device("cuda", 0)
+    if all_devs == {default_cuda}:
+        return
+
+    try:
+        from accelerate import dispatch_model
+    except ImportError:
+        return  # accelerate not available
+
+    try:
+        inferred_map = _infer_device_map_from_loaded_model(model)
+        if not inferred_map:
+            return
+
+        # bnb constructors reject _is_hf_initialized; strip before dispatch.
+        _extra_keys = ("_is_hf_initialized",)
+        _stripped = []
+        for _, param in model.named_parameters():
+            for key in _extra_keys:
+                if key in param.__dict__:
+                    _stripped.append((param, key, param.__dict__.pop(key)))
+
+        try:
+            # CUDA -> int index, non-CUDA -> type string ("cpu", "meta").
+            device_map_int = {
+                k: (v.index if v.type == "cuda" else v.type)
+                if isinstance(v, torch.device)
+                else v
+                for k, v in inferred_map.items()
+            }
+
+            # force_hooks=True: install hooks even for single-device maps.
+            main_device = device_map_int.get("")
+            if main_device in (None, "cpu", "disk"):
+                main_device = next(
+                    (d for d in device_map_int.values() if d not in ("cpu", "disk")),
+                    None,
+                )
+            dispatch_model(
+                model,
+                device_map = device_map_int,
+                main_device = main_device,
+                skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                force_hooks = True,
+            )
+            desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
+        finally:
+            # Restore stripped keys.
+            for param, key, val in _stripped:
+                param.__dict__[key] = val
+
+        logger.info(
+            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
+            f"for bnb multi-GPU inference."
+        )
+    except Exception as exc:
+        warnings.warn(
+            f"Unsloth: Could not attach multi-device dispatch hooks automatically "
+            f"({type(exc).__name__}: {exc}). "
+            "Cross-device inference may fail. Consider using a single GPU or "
+            "calling accelerate.dispatch_model() manually.",
+            RuntimeWarning,
+            stacklevel = 2,
+        )
+
 
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
@@ -214,6 +359,10 @@ def unsloth_base_fast_generate(
     # Get pixel values for VLMs
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
+    except:
+        pass
+    try:
+        kwargs["pixel_values_videos"] = kwargs["pixel_values_videos"].to(dtype)
     except:
         pass
 
@@ -597,44 +746,24 @@ class FastBaseModel:
                 custom_datatype = None
                 correct_dtype = None
 
-        # Stop SDPA for some archs like Pixtral / Mistral3
-        flex_attn_impl = None
         if auto_config is None:
             auto_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        try:
-            model_class = auto_model._model_mapping[auto_config.__class__]
-        except Exception:
-            model_class = None
-        flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
+        model_class = resolve_model_class(auto_model, auto_config)
+        attn_impl = resolve_attention_implementation(
+            model_class,
+            auto_config,
+            requested_attn_implementation = kwargs.get("attn_implementation", None),
+            supports_sdpa = supports_sdpa,
+        )
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
         # FP8 weights. We just need to update it here for sanity.
         auto_config.model_name = model_name
-        # Re-resolve model_class after potential config change
-        try:
-            model_class = auto_model._model_mapping[auto_config.__class__]
-        except Exception:
-            model_class = None
-
-        model_type = str(getattr(auto_config, "model_type", "")).lower()
-        if model_type.startswith("gemma3n"):
-            # Gemma3N variants initialize timm-based vision towers which do
-            # not support flex_attention, so default to eager unless overridden.
-            default_attn_impl = "eager"
-        else:
-            default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
-        if not ("attn_implementation" in kwargs):
-            kwargs["attn_implementation"] = default_attn_impl
-        if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
-            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
-                print(
-                    f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
-                )
-            del kwargs["attn_implementation"]
+        kwargs["attn_implementation"] = attn_impl
 
         bnb_config = None
         user_quantization_config = kwargs.get("quantization_config", None)
@@ -777,9 +906,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        setattr(auto_config, "_attn_implementation", config_attn_impl)
-        if hasattr(auto_config, "attn_implementation"):
-            setattr(auto_config, "attn_implementation", config_attn_impl)
+        _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
 
         verify_fp8_support_if_applicable(model_config)
@@ -788,6 +915,15 @@ class FastBaseModel:
         if not fast_inference:
             # Prevent load_in_fp8 from being forwarded into HF internal model loading
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
+            # Transformers 5.x @strict config classes reject unexpected kwargs.
+            # Move config-level attributes onto the config object directly.
+            _num_labels = kwargs.pop("num_labels", None)
+            if _num_labels is not None:
+                model_config.num_labels = _num_labels
+            for _cfg_key in ("id2label", "label2id", "max_position_embeddings"):
+                _cfg_val = kwargs.pop(_cfg_key, None)
+                if _cfg_val is not None:
+                    setattr(model_config, _cfg_key, _cfg_val)
             model = auto_model.from_pretrained(
                 model_name,
                 config = model_config,
@@ -798,6 +934,14 @@ class FastBaseModel:
                 trust_remote_code = trust_remote_code,
                 # attn_implementation   = attn_implementation,
                 **kwargs,
+            )
+            # Attach dispatch hooks for bnb multi-device loads.
+            _attach_bnb_multidevice_hooks(
+                model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                offload_embedding = offload_embedding,
+                fast_inference = fast_inference,
             )
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
@@ -1021,6 +1165,15 @@ class FastBaseModel:
                     f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
                     file = sys.stderr,
                 )
+        # Backwards compat: if processor has no chat_template (e.g. old saves without
+        # chat_template.jinja) but the inner tokenizer does, copy it to the processor.
+        if (
+            hasattr(tokenizer, "tokenizer")
+            and getattr(tokenizer, "chat_template", None) is None
+            and getattr(tokenizer.tokenizer, "chat_template", None) is not None
+        ):
+            tokenizer.chat_template = tokenizer.tokenizer.chat_template
+
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
@@ -1102,9 +1255,10 @@ class FastBaseModel:
                     )
         patch_saving_functions(tokenizer, vision = True)
 
-        # Fix gradient accumulation
+        # Fix gradient accumulation. See issue #4982.
         from transformers.trainer import Trainer
 
+        apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
@@ -1277,7 +1431,59 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
+        # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA on it directly.
+        # Monkey-patch PEFT to target the inner .linear child instead.
+        _clippable_linear_cls = None
+        try:
+            from transformers.models.gemma4.modeling_gemma4 import (
+                Gemma4ClippableLinear as _clippable_linear_cls,
+            )
+        except ImportError:
+            pass
+        if _clippable_linear_cls is not None:
+            from peft.tuners.lora.model import LoraModel as _LoraModel
+
+            _original_car = _LoraModel._create_and_replace
+
+            def _patched_car(
+                self,
+                peft_config,
+                adapter_name,
+                target,
+                target_name,
+                parent,
+                current_key = None,
+                **kwargs,
+            ):
+                if isinstance(target, _clippable_linear_cls):
+                    return _original_car(
+                        self,
+                        peft_config,
+                        adapter_name,
+                        target.linear,
+                        "linear",
+                        target,
+                        current_key = current_key,
+                        **kwargs,
+                    )
+                return _original_car(
+                    self,
+                    peft_config,
+                    adapter_name,
+                    target,
+                    target_name,
+                    parent,
+                    current_key = current_key,
+                    **kwargs,
+                )
+
+            _LoraModel._create_and_replace = _patched_car
+
         model = _get_peft_model(model, lora_config)
+
+        # Restore original PEFT method
+        if _clippable_linear_cls is not None:
+            _LoraModel._create_and_replace = _original_car
         # Apply QAT + LoRA if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
@@ -1367,6 +1573,24 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+
+        # Gemma3N audio conformer processes variable-length audio tensors
+        # that cause stride mismatches in AOT autograd compiled backward
+        # when non-reentrant checkpointing is used. The notebook or TRL
+        # may override gradient_checkpointing_kwargs with use_reentrant=False
+        # after this point, so we intercept gradient_checkpointing_enable
+        # to always force use_reentrant=True for Gemma3N.
+        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
+        if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
+            _original_gc_enable = model.gradient_checkpointing_enable
+
+            def _gc_enable_reentrant(**kwargs):
+                gc_kwargs = kwargs.get("gradient_checkpointing_kwargs", {}) or {}
+                gc_kwargs["use_reentrant"] = True
+                kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
+                return _original_gc_enable(**kwargs)
+
+            model.gradient_checkpointing_enable = _gc_enable_reentrant
 
         from transformers.trainer import Trainer
 

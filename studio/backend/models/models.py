@@ -41,6 +41,10 @@ class ModelCheckpoints(BaseModel):
         None,
         description = "LoRA rank (r) if applicable",
     )
+    is_quantized: bool = Field(
+        False,
+        description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -84,6 +88,12 @@ class ModelDetails(BaseModel):
     )
     base_model: Optional[str] = Field(
         None, description = "Base model if this is a LoRA adapter"
+    )
+    max_position_embeddings: Optional[int] = Field(
+        None, description = "Maximum context length supported by the model"
+    )
+    model_size_bytes: Optional[int] = Field(
+        None, description = "Total size of model weight files in bytes"
     )
 
 
@@ -129,6 +139,9 @@ class GgufVariantDetail(BaseModel):
     )
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
+    downloaded: bool = Field(
+        False, description = "Whether this variant is already in the local HF cache"
+    )
 
 
 class GgufVariantsResponse(BaseModel):
@@ -152,7 +165,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -176,7 +189,92 @@ class LocalModelListResponse(BaseModel):
         None,
         description = "HF cache root that was scanned",
     )
+    lmstudio_dirs: List[str] = Field(
+        default_factory = list,
+        description = "LM Studio model directories that were scanned",
+    )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
         description = "Discovered local/cached models",
+    )
+
+
+class AddScanFolderRequest(BaseModel):
+    """Request body for adding a custom scan folder."""
+
+    path: str = Field(
+        ..., description = "Absolute or relative directory path to scan for models"
+    )
+
+
+class ScanFolderInfo(BaseModel):
+    """A registered custom model scan folder."""
+
+    id: int = Field(..., description = "Database row ID")
+    path: str = Field(..., description = "Normalized absolute path")
+    created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+
+
+class BrowseEntry(BaseModel):
+    """A directory entry surfaced by the folder browser."""
+
+    name: str = Field(..., description = "Entry name (basename, not full path)")
+    has_models: bool = Field(
+        False,
+        description = (
+            "Hint that the directory likely contains models "
+            "(*.gguf, *.safetensors, config.json, or HF-style "
+            "`models--*` subfolders). Used by the UI to highlight "
+            "promising candidates; the scanner itself is authoritative."
+        ),
+    )
+    hidden: bool = Field(
+        False,
+        description = "Name starts with a dot (e.g. `.cache`)",
+    )
+
+
+class BrowseFoldersResponse(BaseModel):
+    """Response schema for the folder browser endpoint."""
+
+    current: str = Field(..., description = "Absolute path of the directory just listed")
+    parent: Optional[str] = Field(
+        None,
+        description = (
+            "Parent directory of `current`, or null if `current` is the "
+            "filesystem root. The frontend uses this to render an `Up` row."
+        ),
+    )
+    entries: List[BrowseEntry] = Field(
+        default_factory = list,
+        description = (
+            "Subdirectories of `current`. Sorted with model-bearing "
+            "directories first, then alphabetically case-insensitive; "
+            "hidden entries come last within each group."
+        ),
+    )
+    suggestions: List[str] = Field(
+        default_factory = list,
+        description = (
+            "Handy starting points (home, HF cache, already-registered "
+            "scan folders). Rendered as quick-pick chips above the list."
+        ),
+    )
+    truncated: bool = Field(
+        False,
+        description = (
+            "True when the listing was capped because the directory had "
+            "more subfolders than the server is willing to enumerate in "
+            "one request. The UI should show a hint telling the user to "
+            "narrow their path."
+        ),
+    )
+    model_files_here: int = Field(
+        0,
+        description = (
+            "Count of GGUF/safetensors files immediately inside "
+            "``current``. Used by the UI to surface a hint on leaf "
+            "model directories (which otherwise look `empty` because "
+            "they contain only files, no subdirectories)."
+        ),
     )

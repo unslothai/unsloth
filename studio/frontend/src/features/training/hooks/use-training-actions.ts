@@ -78,7 +78,8 @@ export function useTrainingActions() {
           });
         }
 
-        if (check.requires_manual_mapping && !hasManualMapping(config, isVlm, isAudio)) {
+        const needsReview = check.requires_manual_mapping || check.detected_format === "custom_heuristic";
+        if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};
           if (check.suggested_mapping) {

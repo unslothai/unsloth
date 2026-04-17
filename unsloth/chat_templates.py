@@ -888,6 +888,114 @@ DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
 CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
 
+# =========================================== Gemma-4
+# Gemma-4 uses <|turn>role\n...<turn|>\n format
+gemma4_template = \
+"""{%- if messages[0]['role'] == 'system' -%}
+    {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set first_user_prefix = "" -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- if (message['role'] == 'assistant') -%}
+        {%- set role = "model" -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+    {{ '<|turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
+    {%- if message['content'] is string -%}
+        {{ message['content'] | trim }}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'audio' -%}
+                {{ '<|audio|>' }}
+            {%- elif item['type'] == 'image' -%}
+                {{ '<|image|>' }}
+            {%- elif item['type'] == 'video' -%}
+                {{ '<|video|>' }}
+            {%- elif item['type'] == 'text' -%}
+                {{ item['text'] | trim }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{ raise_exception("Invalid content type") }}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{'<|turn>model\n'}}
+{%- endif -%}
+"""
+
+try:
+    gemma4_ollama = _ollama_template("gemma-4")
+except KeyError:
+    gemma4_ollama = ""
+gemma4_template_eos_token = "<turn|>"
+CHAT_TEMPLATES["gemma-4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma-4"] = None
+
+CHAT_TEMPLATES["gemma4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
+
+# Gemma-4 with empty thought channel (required for larger models like 31B, 26B-A4B)
+# Injects <|channel>thought\n<channel|> at the start of each model response during training
+gemma4_thinking_template = \
+"""{%- if messages[0]['role'] == 'system' -%}
+    {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set first_user_prefix = "" -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- if (message['role'] == 'assistant') -%}
+        {%- set role = "model" -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+    {{ '<|turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
+    {%- if role == "model" -%}
+        {{ '<|channel>thought\n<channel|>' }}
+    {%- endif -%}
+    {%- if message['content'] is string -%}
+        {{ message['content'] | trim }}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'audio' -%}
+                {{ '<|audio|>' }}
+            {%- elif item['type'] == 'image' -%}
+                {{ '<|image|>' }}
+            {%- elif item['type'] == 'video' -%}
+                {{ '<|video|>' }}
+            {%- elif item['type'] == 'text' -%}
+                {{ item['text'] | trim }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{ raise_exception("Invalid content type") }}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{'<|turn>model\n'}}
+{%- endif -%}
+"""
+
+CHAT_TEMPLATES["gemma-4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
+
+CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
+
 # =========================================== GPT-OSS
 # Obtained via
 # print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
@@ -1633,6 +1741,8 @@ liquid_lfm2_template = \
 liquid_lfm2_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
 DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None # No system message in Phi-3
+CHAT_TEMPLATES["lfm-2.5"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
+DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
 # =========================================== Starling-LM

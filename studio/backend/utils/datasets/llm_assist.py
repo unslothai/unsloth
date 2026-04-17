@@ -22,12 +22,38 @@ import time
 from itertools import islice
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from loggers import get_logger
 
-DEFAULT_HELPER_MODEL_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
-DEFAULT_HELPER_MODEL_VARIANT = "Q8_0"
+logger = get_logger(__name__)
+
+DEFAULT_HELPER_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF"
+DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500
+
+
+def _strip_think_tags(text: str) -> str:
+    """Strip <think>...</think> reasoning blocks emitted by some models.
+
+    If the model places its actual answer OUTSIDE the think block, we
+    discard the think block and keep the rest.  If the entire response
+    is INSIDE a think block (nothing useful outside), we extract and
+    return the inner content instead of discarding everything.
+    """
+    if "<think>" not in text:
+        return text
+
+    # Try stripping think blocks — keep content outside them
+    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
+    if stripped:
+        return stripped
+
+    # Everything was inside <think> tags — extract the inner content of the last block
+    matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
+    if matches:
+        return matches[-1].strip()
+
+    return text
 
 
 def precache_helper_gguf():
@@ -117,18 +143,25 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             return None
 
         messages = [{"role": "user", "content": prompt}]
+        logger.info(
+            "Helper model request: enable_thinking=False (per-request override)"
+        )
         cumulative = ""
-        for text in backend.generate_chat_completion(
+        for chunk in backend.generate_chat_completion(
             messages = messages,
             temperature = 0.1,
             top_p = 0.9,
             top_k = 20,
             max_tokens = max_tokens,
             repetition_penalty = 1.0,
+            enable_thinking = False,  # Always disable thinking for AI Assist
         ):
-            cumulative = text  # cumulative — last value is full text
+            if isinstance(chunk, dict):
+                continue  # skip metadata events
+            cumulative = chunk  # cumulative — last value is full text
 
         result = cumulative.strip()
+        result = _strip_think_tags(result)
         logger.info(f"Helper model response ({len(result)} chars)")
         return result if result else None
 
@@ -389,17 +422,23 @@ def _parse_json_response(text: str) -> Optional[dict]:
 
 def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512) -> str:
     """Run one chat completion on an already-loaded backend. Returns raw text."""
+    logger.info("Advisor request: enable_thinking=False (per-request override)")
     cumulative = ""
-    for text in backend.generate_chat_completion(
+    for chunk in backend.generate_chat_completion(
         messages = messages,
         temperature = 0.1,
         top_p = 0.9,
         top_k = 20,
         max_tokens = max_tokens,
         repetition_penalty = 1.0,
+        enable_thinking = False,  # Always disable thinking for AI Assist
     ):
-        cumulative = text
-    return cumulative.strip()
+        if isinstance(chunk, dict):
+            continue  # skip metadata events
+        cumulative = chunk
+    result = cumulative.strip()
+    result = _strip_think_tags(result)
+    return result
 
 
 def fetch_hf_dataset_card(

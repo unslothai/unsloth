@@ -1,0 +1,50 @@
+# Runtime dependencies for no-torch (GGUF-only) mode.
+# Installed with --no-deps to prevent transitive torch resolution
+# from packages like accelerate, peft, trl, sentence-transformers.
+#
+# Includes unsloth's own direct deps (typer, pydantic, pyyaml,
+# nest-asyncio) since unsloth is also installed with --no-deps
+# (current PyPI metadata still declares torch as a hard dep).
+
+# unsloth direct deps (from pyproject.toml [project].dependencies)
+typer
+pydantic
+pyyaml
+nest-asyncio
+
+# HF ecosystem (from [huggingfacenotorch] extras in pyproject.toml)
+wheel>=0.42.0
+packaging
+numpy
+tqdm
+psutil
+tyro
+protobuf
+sentencepiece>=0.2.0
+safetensors>=0.4.3
+datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0
+accelerate>=0.34.1
+peft>=0.18.0,!=0.11.0
+huggingface_hub>=0.34.0
+hf_transfer
+diffusers
+
+# Transitive deps required because this file is installed with --no-deps.
+# Without these, `from transformers import AutoConfig` fails at import time.
+regex
+typing_extensions
+filelock
+httpx
+httpcore
+certifi
+idna
+anyio
+sniffio
+h11
+
+tokenizers
+transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0
+trl>=0.18.2,!=0.19.0,<=0.24.0
+sentence-transformers
+cut_cross_entropy
+pillow

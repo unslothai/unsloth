@@ -37,10 +37,9 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import mammoth from "mammoth";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
 import { cn } from "@/lib/utils";
+import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
 import { inspectSeedDataset, inspectSeedUpload } from "../../api";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
@@ -48,6 +47,7 @@ import type {
   SeedSamplingStrategy,
   SeedSelectionType,
 } from "../../types";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { HfDatasetCombobox } from "../../components/shared/hf-dataset-combobox";
 import { FieldLabel } from "../shared/field-label";
 
@@ -63,7 +63,6 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
 ];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
-const UNSTRUCTURED_ACCEPT = ".txt,.pdf,.docx";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
@@ -111,20 +110,20 @@ function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
 } {
   if (mode === "local") {
     return {
-      title: "No local preview yet",
-      description: "Choose a CSV/JSON/JSONL file, then click Load to fetch 10 rows.",
+      title: "No preview yet",
+      description: "Upload a CSV, JSON, or JSONL file and click Load to see a sample.",
     };
   }
   if (mode === "unstructured") {
     return {
-      title: "No chunk preview yet",
+      title: "No preview yet",
       description:
-        "Choose a TXT/PDF/DOCX file, then click Load to extract + preview chunk_text rows.",
+        "Upload your documents and the preview will appear once processing is done.",
     };
   }
   return {
-    title: "No dataset preview yet",
-    description: "Pick a Hugging Face dataset and click Load to fetch 10 sample rows.",
+    title: "No preview yet",
+    description: "Select a Hugging Face dataset and click Load to see a sample.",
   };
 }
 
@@ -176,42 +175,6 @@ async function fileToBase64Payload(file: File): Promise<string> {
   });
 }
 
-async function extractUnstructuredText(file: File): Promise<string> {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".txt")) {
-    return file.text();
-  }
-  if (lower.endsWith(".pdf")) {
-    const buffer = new Uint8Array(await file.arrayBuffer());
-    const pdf = await getDocumentProxy(buffer);
-    const { text } = await extractText(pdf, { mergePages: true });
-    return text;
-  }
-  if (lower.endsWith(".docx")) {
-    const arrayBuffer = await file.arrayBuffer();
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
-    return value;
-  }
-  throw new Error("Unsupported unstructured file type");
-}
-
-async function toUnstructuredUploadFile(file: File): Promise<File> {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".txt") || lower.endsWith(".md")) {
-    return file;
-  }
-
-  const text = (await extractUnstructuredText(file)).trim();
-  if (!text) {
-    throw new Error("No text found in file.");
-  }
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const stem = file.name.replace(/\.(pdf|docx)$/i, "") || "unstructured_seed";
-  return new File([normalized], `${stem}.txt`, {
-    type: "text/plain",
-  });
-}
-
 export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactElement {
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
@@ -219,16 +182,84 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
   const [expandedPreviewRows, setExpandedPreviewRows] = useState<Record<number, boolean>>({});
   const [localFile, setLocalFile] = useState<File | null>(null);
-  const [unstructuredFile, setUnstructuredFile] = useState<File | null>(null);
+  const [unstructuredFiles, setUnstructuredFiles] = useState<FileEntry[]>(() => {
+    if (config.unstructured_file_ids?.length) {
+      return config.unstructured_file_ids.map((id, i) => ({
+        id,
+        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        size: config.unstructured_file_sizes?.[i] ?? 0,
+        status: "ok" as const,
+      }));
+    }
+    return [];
+  });
 
   const mode = config.seed_source_type ?? "hf";
   const previewEmpty = getPreviewEmptyStateCopy(mode);
 
+  const prevModeRef = useRef(mode);
   useEffect(() => {
+    const prevMode = prevModeRef.current;
+    prevModeRef.current = mode;
     setInspectError(null);
     setLocalFile(null);
-    setUnstructuredFile(null);
-  }, [mode]);
+    if (prevMode === "unstructured" && mode !== "unstructured") {
+      setUnstructuredFiles([]);
+    }
+    if (prevMode !== "unstructured" && mode === "unstructured") {
+      if (config.unstructured_file_ids?.length) {
+        setUnstructuredFiles(
+          config.unstructured_file_ids.map((id, i) => ({
+            id,
+            name: config.unstructured_file_names?.[i] ?? "Unknown",
+            size: config.unstructured_file_sizes?.[i] ?? 0,
+            status: "ok" as const,
+          })),
+        );
+      } else {
+        setUnstructuredFiles([]);
+      }
+    }
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const didSyncFilesRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      didSyncFilesRef.current = false;
+      return;
+    }
+    if (didSyncFilesRef.current) return;
+    if (mode !== "unstructured") return;
+    if (unstructuredFiles.length > 0) return;
+    if (!config.unstructured_file_ids?.length) return;
+    didSyncFilesRef.current = true;
+    setUnstructuredFiles(
+      config.unstructured_file_ids.map((id, i) => ({
+        id,
+        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        size: config.unstructured_file_sizes?.[i] ?? 0,
+        status: "ok" as const,
+      })),
+    );
+  }, [open, mode, unstructuredFiles.length, config.unstructured_file_ids, config.unstructured_file_names, config.unstructured_file_sizes]);
+
+  const handleUnstructuredFilesChange = useCallback(
+    (updater: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => {
+      setUnstructuredFiles((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        const okFiles = next.filter((f) => f.status === "ok");
+        queueMicrotask(() => {
+          onUpdate({
+            unstructured_file_ids: okFiles.map((f) => f.id),
+            unstructured_file_names: okFiles.map((f) => f.name),
+            unstructured_file_sizes: okFiles.map((f) => f.size),
+          });
+        });
+        return next;
+      });
+    },
+    [onUpdate],
+  );
 
   useEffect(() => {
     setPreviewRows(config.seed_preview_rows ?? []);
@@ -255,14 +286,16 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       if (!localFile) return null;
       return `local:${localFile.name}|${localFile.size}|${localFile.lastModified}`;
     }
-    if (!unstructuredFile) return null;
+    const okFiles = unstructuredFiles.filter((f) => f.status === "ok");
+    if (okFiles.length === 0) return null;
     const { chunkSize, chunkOverlap } = resolveChunking(config);
-    return `unstructured:${unstructuredFile.name}|${unstructuredFile.size}|${unstructuredFile.lastModified}|${chunkSize}|${chunkOverlap}`;
+    const fileKey = okFiles.map((f) => `${f.id}|${f.name}`).join(",");
+    return `unstructured:${fileKey}|${chunkSize}|${chunkOverlap}`;
   }, [
     config,
     localFile,
     mode,
-    unstructuredFile,
+    unstructuredFiles,
   ]);
 
   const loadSeedMetadata = useCallback(async (opts?: { silent?: boolean }): Promise<boolean> => {
@@ -294,7 +327,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           hf_split: response.split ?? "",
           hf_subset: response.subset ?? "",
           local_file_name: "",
-          unstructured_file_name: "",
+          unstructured_file_ids: [],
+          unstructured_file_names: [],
+          unstructured_file_sizes: [],
         });
         setPreviewRows(response.preview_rows ?? []);
         setLastLoadedKey(loadKey);
@@ -325,50 +360,56 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           hf_subset: "",
           hf_split: "",
           local_file_name: localFile.name,
-          unstructured_file_name: "",
+          unstructured_file_ids: [],
+          unstructured_file_names: [],
+          unstructured_file_sizes: [],
         });
         setPreviewRows(response.preview_rows ?? []);
         setLastLoadedKey(loadKey);
         return true;
       }
 
-      if (!unstructuredFile) {
-        throw new Error("Select a PDF/DOCX/TXT file first.");
-      }
-      if (unstructuredFile.size > MAX_UPLOAD_BYTES) {
-        throw new Error("File too large (max 50MB).");
+      if (mode === "unstructured") {
+        const fileIds = unstructuredFiles
+          .filter((f) => f.status === "ok")
+          .map((f) => f.id);
+        const fileNames = unstructuredFiles
+          .filter((f) => f.status === "ok")
+          .map((f) => f.name);
+
+        if (fileIds.length === 0) {
+          setInspectError("No files uploaded");
+          return false;
+        }
+
+        const { chunkSize, chunkOverlap } = resolveChunking(config);
+        const response = await inspectSeedUpload({
+          block_id: config.id,
+          file_ids: fileIds,
+          file_names: fileNames,
+          preview_size: 10,
+          seed_source_type: "unstructured",
+          unstructured_chunk_size: chunkSize,
+          unstructured_chunk_overlap: chunkOverlap,
+        });
+
+        onUpdate({
+          hf_path: response.resolved_path,
+          resolved_paths: response.resolved_paths ?? [],
+          seed_columns: response.columns,
+          seed_preview_rows: response.preview_rows ?? [],
+          unstructured_file_ids: fileIds,
+          unstructured_file_names: fileNames,
+          unstructured_file_sizes: unstructuredFiles
+            .filter((f) => f.status === "ok")
+            .map((f) => f.size),
+        });
+        setPreviewRows(response.preview_rows ?? []);
+        setLastLoadedKey(loadKey);
+        return true;
       }
 
-      const { chunkSize, chunkOverlap } = resolveChunking(config);
-      const uploadFile = await toUnstructuredUploadFile(unstructuredFile);
-      if (uploadFile.size > MAX_UPLOAD_BYTES) {
-        throw new Error("Processed text is too large (max 50MB).");
-      }
-      const payload = await fileToBase64Payload(uploadFile);
-      const response = await inspectSeedUpload({
-        filename: uploadFile.name,
-        content_base64: payload,
-        preview_size: 10,
-        seed_source_type: "unstructured",
-        unstructured_chunk_size: chunkSize,
-        unstructured_chunk_overlap: chunkOverlap,
-      });
-      onUpdate({
-        hf_path: response.resolved_path,
-        seed_columns: response.columns,
-        seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
-          response.columns.includes(name),
-        ),
-        seed_preview_rows: response.preview_rows ?? [],
-        hf_repo_id: "",
-        hf_subset: "",
-        hf_split: "",
-        local_file_name: "",
-        unstructured_file_name: unstructuredFile.name,
-      });
-      setPreviewRows(response.preview_rows ?? []);
-      setLastLoadedKey(loadKey);
-      return true;
+      return false;
     } catch (error) {
       if (!opts?.silent) {
         setInspectError(getErrorMessage(error, "Failed to load seed metadata."));
@@ -384,7 +425,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     localFile,
     mode,
     onUpdate,
-    unstructuredFile,
+    unstructuredFiles,
   ]);
 
   useEffect(() => {
@@ -399,6 +440,21 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     }
     void loadSeedMetadata({ silent: true });
   }, [getCurrentLoadKey, isInspecting, lastLoadedKey, loadSeedMetadata, open]);
+
+  const wasUploadingRef = useRef(false);
+  useEffect(() => {
+    if (mode !== "unstructured") return;
+    const isUploading = unstructuredFiles.some((f) => f.status === "uploading");
+    if (isUploading) {
+      wasUploadingRef.current = true;
+    } else if (wasUploadingRef.current) {
+      wasUploadingRef.current = false;
+      const hasOk = unstructuredFiles.some((f) => f.status === "ok");
+      if (hasOk) {
+        void loadSeedMetadata({ silent: true });
+      }
+    }
+  }, [mode, unstructuredFiles, loadSeedMetadata]);
 
   const previewColumns = useMemo(() => {
     const loadedColumns = config.seed_columns ?? [];
@@ -433,10 +489,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       </TabsList>
 
       <TabsContent value="config" className="min-w-0 pt-3">
-        <div className="space-y-4">
+        <div className="space-y-3">
           {mode === "hf" && (
             <>
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Dataset"
                   htmlFor={datasetId}
@@ -473,7 +529,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 </div>
               </div>
 
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="HF token (optional)"
                   htmlFor={tokenId}
@@ -492,7 +548,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           )}
 
           {mode === "local" && (
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <FieldLabel
                 label="Structured file"
                 hint="Upload CSV, JSON, or JSONL seed file."
@@ -525,7 +581,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Upload-only. Max 50MB.
+                Max 50MB per file.
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">
@@ -536,49 +592,12 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           )}
 
           {mode === "unstructured" && (
-            <div className="grid gap-2">
-              <FieldLabel
-                label="Unstructured file"
-                hint="Upload PDF, DOCX, or TXT. We chunk text into seed rows."
-              />
-              <div className="flex items-center gap-2">
-                <Input
-                  className="nodrag flex-1"
-                  type="file"
-                  accept={UNSTRUCTURED_ACCEPT}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] ?? null;
-                    setUnstructuredFile(file);
-                    onUpdate({
-                      hf_path: "",
-                      seed_columns: [],
-                      seed_drop_columns: [],
-                      seed_preview_rows: [],
-                      unstructured_file_name: file?.name ?? "",
-                    });
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="nodrag shrink-0"
-                  onClick={() => void loadSeedMetadata()}
-                  disabled={isInspecting || !unstructuredFile}
-                >
-                  {isInspecting ? "Loading..." : "Load"}
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                File is converted to text, then chunked server-side into chunk_text rows. Max 50MB.
-              </p>
-              {(unstructuredFile?.name ||
-                config.unstructured_file_name?.trim()) && (
-                <p className="text-xs text-muted-foreground">
-                  Selected:{" "}
-                  {unstructuredFile?.name ?? config.unstructured_file_name?.trim()}
-                </p>
-              )}
-            </div>
+            <UnstructuredDropZone
+              blockId={config.id}
+              files={unstructuredFiles}
+              onFilesChange={handleUnstructuredFilesChange}
+              disabled={isInspecting}
+            />
           )}
 
           {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
@@ -626,16 +645,13 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             onOpenChange={(openState) => onUpdate({ advancedOpen: openState })}
           >
             <CollapsibleTrigger asChild={true}>
-              <button
-                type="button"
-                className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
-              >
-                <span className="font-semibold uppercase">Advanced</span>
-                <span>{advancedOpen ? "Hide" : "Show"}</span>
-              </button>
+              <CollapsibleSectionTriggerButton
+                label="Advanced source options"
+                open={advancedOpen}
+              />
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 space-y-3">
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Sampling strategy"
                   htmlFor={samplingId}
@@ -660,7 +676,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 </Select>
               </div>
 
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Selection strategy"
                   htmlFor={selectionId}
@@ -687,7 +703,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
               {mode === "unstructured" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel
                       label="Chunk size"
                       htmlFor={chunkSizeId}
@@ -703,7 +719,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       }
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel
                       label="Chunk overlap"
                       htmlFor={chunkOverlapId}
@@ -727,7 +743,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
               {config.selection_type === "index_range" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel label="Start" hint="Inclusive start row index for index_range." />
                     <Input
                       className="nodrag"
@@ -736,7 +752,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       onChange={(event) => onUpdate({ selection_start: event.target.value })}
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel label="End" hint="Inclusive end row index for index_range." />
                     <Input
                       className="nodrag"
@@ -750,7 +766,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
               {config.selection_type === "partition_block" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel label="Index" hint="Partition index to load." />
                     <Input
                       className="nodrag"
@@ -759,7 +775,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       onChange={(event) => onUpdate({ selection_index: event.target.value })}
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel label="Partitions" hint="Total number of partitions." />
                     <Input
                       className="nodrag"
