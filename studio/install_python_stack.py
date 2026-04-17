@@ -183,8 +183,14 @@ def _has_rocm_gpu() -> bool:
     import re
 
     for cmd, check_fn in (
-        # rocminfo: look for "Name: gfxNNNN" with nonzero first digit (gfx000 is the CPU agent)
-        (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
+        # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
+        # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
+        # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
+        # the dash and must not be treated as a real GPU.
+        (
+            ["rocminfo"],
+            lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
+        ),
         # amd-smi list: require "GPU: <number>" data rows, not just a header
         (
             ["amd-smi", "list"],

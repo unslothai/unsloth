@@ -130,6 +130,51 @@ def lmstudio_model_dirs() -> list[Path]:
     return dirs
 
 
+def well_known_model_dirs() -> list[Path]:
+    """Return directories commonly used by other local LLM tools.
+
+    Used by the folder browser to offer quick-pick chips. Returns only
+    paths that exist on disk, so the UI never shows dead chips. Order
+    reflects a rough "likelihood the user has models here" -- LM Studio
+    and Ollama first, then the generic fallbacks.
+    """
+    candidates: list[Path] = []
+
+    # LM Studio (reuses the logic above, including settings.json override)
+    candidates.extend(lmstudio_model_dirs())
+
+    # Ollama -- both the user-level and common system-wide install paths
+    # (https://github.com/ollama/ollama/issues/733).
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        candidates.append(Path(ollama_env).expanduser())
+    candidates.append(Path.home() / ".ollama" / "models")
+    candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+
+    # HF hub cache root (separate from the explicit HF cache chip)
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    # Generic "my models" spots users tend to drop things into
+    for name in ("models", "Models"):
+        candidates.append(Path.home() / name)
+
+    # Deduplicate while preserving order; keep only extant dirs
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        try:
+            resolved = str(p.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        if Path(resolved).is_dir():
+            seen.add(resolved)
+            out.append(Path(resolved))
+    return out
+
+
 def _setup_cache_env() -> None:
     """Set cache environment variables for HuggingFace, uv, and vLLM.
 

@@ -289,11 +289,11 @@ export function useChatModelRuntime() {
           loadedSpeculativeType: currentSpecType,
         });
 
-        // Set reasoning default for Qwen3.5 small models
+        // Set reasoning default for Qwen3.5/3.6 small models
         if (supportsReasoning) {
           let reasoningDefault = true;
           const mid = statusRes.active_model.toLowerCase();
-          if (mid.includes("qwen3.5")) {
+          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
             const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
             if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
               reasoningDefault = false;
@@ -437,9 +437,10 @@ export function useChatModelRuntime() {
             const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
             // GGUF: use custom context length, or 0 = model's native context
             // Non-GGUF: use the Max Seq Length slider value
+            const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
             const effectiveMaxSeqLength = customContextLength != null
               ? customContextLength
-              : ggufVariant != null ? (ggufContextLength ?? 0) : maxSeqLength;
+              : (ggufVariant != null || isDirectGgufFile) ? (ggufContextLength ?? 0) : maxSeqLength;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: hfToken,
@@ -461,11 +462,11 @@ export function useChatModelRuntime() {
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
-            // Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();
-              if (mid.includes("qwen3.5")) {
+              if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
                 const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
                 if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
                   reasoningDefault = false;
@@ -508,12 +509,14 @@ export function useChatModelRuntime() {
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });
-            // Qwen3/3.5: apply thinking-mode-specific params after load
+            // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
               const store = useChatRuntimeStore.getState();
+              const mid = modelId.toLowerCase();
+              const needsPresencePenalty = mid.includes("qwen3.5") || mid.includes("qwen3.6");
               const p = reasoningDefault
-                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
+                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
               store.setParams({ ...store.params, ...p });
             }
             await refresh();
