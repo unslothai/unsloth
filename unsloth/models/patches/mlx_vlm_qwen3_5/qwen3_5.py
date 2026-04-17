@@ -13,7 +13,6 @@ from .vision import VisionModel
 
 
 class Model(Qwen3VLModel):
-
     def __init__(self, config: ModelConfig):
         # only initialize nn.Module, skip the initialization of vision_tower and language_model in the parent class
         nn.Module.__init__(self)
@@ -34,7 +33,7 @@ class Model(Qwen3VLModel):
 
         if pixel_values is None:
             return InputEmbeddingsFeatures(
-                inputs_embeds=self.language_model.model.embed_tokens(input_ids)
+                inputs_embeds = self.language_model.model.embed_tokens(input_ids)
             )
 
         dtype = self.vision_tower.patch_embed.proj.weight.dtype
@@ -68,7 +67,7 @@ class Model(Qwen3VLModel):
             self.language_model._rope_deltas = rope_deltas
 
         return InputEmbeddingsFeatures(
-            inputs_embeds=inputs_embeds,
+            inputs_embeds = inputs_embeds,
         )
 
     @staticmethod

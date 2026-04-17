@@ -50,172 +50,172 @@ DEFAULT_PREFILL_STEP_SIZE = 2048
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Generate text from an image using a model."
+        description = "Generate text from an image using a model."
     )
     parser.add_argument(
         "--model",
-        type=str,
-        default=DEFAULT_MODEL_PATH,
-        help="The path to the local model directory or Hugging Face repo.",
+        type = str,
+        default = DEFAULT_MODEL_PATH,
+        help = "The path to the local model directory or Hugging Face repo.",
     )
     parser.add_argument(
         "--adapter-path",
-        type=str,
-        default=None,
-        help="The path to the adapter weights.",
+        type = str,
+        default = None,
+        help = "The path to the adapter weights.",
     )
     parser.add_argument(
         "--image",
-        type=str,
-        nargs="+",
-        default=DEFAULT_IMAGE,
-        help="URL or path of the image to process.",
+        type = str,
+        nargs = "+",
+        default = DEFAULT_IMAGE,
+        help = "URL or path of the image to process.",
     )
     parser.add_argument(
         "--audio",
-        type=str,
-        nargs="+",
-        default=DEFAULT_AUDIO,
-        help="URL or path of the audio to process.",
+        type = str,
+        nargs = "+",
+        default = DEFAULT_AUDIO,
+        help = "URL or path of the audio to process.",
     )
     parser.add_argument(
         "--resize-shape",
-        type=int,
-        nargs="+",
-        default=None,
-        help="Resize shape for the image.",
+        type = int,
+        nargs = "+",
+        default = None,
+        help = "Resize shape for the image.",
     )
     parser.add_argument(
         "--prompt",
-        type=str,
-        nargs="+",
-        default=DEFAULT_PROMPT,
-        help="Message to be processed by the model.",
+        type = str,
+        nargs = "+",
+        default = DEFAULT_PROMPT,
+        help = "Message to be processed by the model.",
     )
     parser.add_argument(
         "--system",
-        type=str,
-        default=None,
-        help="System message for the model.",
+        type = str,
+        default = None,
+        help = "System message for the model.",
     )
     parser.add_argument(
         "--max-tokens",
-        type=int,
-        default=DEFAULT_MAX_TOKENS,
-        help="Maximum number of tokens to generate.",
+        type = int,
+        default = DEFAULT_MAX_TOKENS,
+        help = "Maximum number of tokens to generate.",
     )
     parser.add_argument(
         "--temperature",
-        type=float,
-        default=DEFAULT_TEMPERATURE,
-        help="Temperature for sampling.",
+        type = float,
+        default = DEFAULT_TEMPERATURE,
+        help = "Temperature for sampling.",
     )
-    parser.add_argument("--chat", action="store_true", help="Chat in multi-turn style.")
-    parser.add_argument("--verbose", action="store_false", help="Detailed output.")
+    parser.add_argument("--chat", action = "store_true", help = "Chat in multi-turn style.")
+    parser.add_argument("--verbose", action = "store_false", help = "Detailed output.")
     parser.add_argument(
         "--eos-tokens",
-        type=str,
-        nargs="+",
-        default=None,
-        help="EOS tokens to add to the tokenizer.",
+        type = str,
+        nargs = "+",
+        default = None,
+        help = "EOS tokens to add to the tokenizer.",
     )
     parser.add_argument(
         "--max-kv-size",
-        type=int,
-        default=None,
-        help="Maximum KV size for the prompt cache.",
+        type = int,
+        default = None,
+        help = "Maximum KV size for the prompt cache.",
     )
     parser.add_argument(
         "--kv-bits",
-        type=float,
-        default=None,
-        help="Number of bits to quantize the KV cache to.",
+        type = float,
+        default = None,
+        help = "Number of bits to quantize the KV cache to.",
     )
     parser.add_argument(
         "--kv-quant-scheme",
-        type=str,
-        choices=("uniform", "turboquant"),
-        default=DEFAULT_KV_QUANT_SCHEME,
-        help="KV cache quantization backend. Fractional --kv-bits values use "
+        type = str,
+        choices = ("uniform", "turboquant"),
+        default = DEFAULT_KV_QUANT_SCHEME,
+        help = "KV cache quantization backend. Fractional --kv-bits values use "
         "TurboQuant automatically.",
     )
     parser.add_argument(
         "--kv-group-size",
-        type=int,
-        default=DEFAULT_KV_GROUP_SIZE,
-        help="Group size for uniform KV cache quantization.",
+        type = int,
+        default = DEFAULT_KV_GROUP_SIZE,
+        help = "Group size for uniform KV cache quantization.",
     )
     parser.add_argument(
         "--quantized-kv-start",
-        type=int,
-        default=DEFAULT_QUANTIZED_KV_START,
-        help="Start index for the quantized KV cache.",
+        type = int,
+        default = DEFAULT_QUANTIZED_KV_START,
+        help = "Start index for the quantized KV cache.",
     )
     parser.add_argument(
         "--skip-special-tokens",
-        action="store_true",
-        help="Skip special tokens in the detokenizer.",
+        action = "store_true",
+        help = "Skip special tokens in the detokenizer.",
     )
     parser.add_argument(
         "--force-download",
-        action="store_true",
-        help="Force download the model from Hugging Face.",
+        action = "store_true",
+        help = "Force download the model from Hugging Face.",
     )
     parser.add_argument(
         "--revision",
-        type=str,
-        default="main",
-        help="The specific model version to use (branch, tag, commit).",
+        type = str,
+        default = "main",
+        help = "The specific model version to use (branch, tag, commit).",
     )
     parser.add_argument(
         "--trust-remote-code",
-        action="store_true",
-        help="Trust remote code when loading the model.",
+        action = "store_true",
+        help = "Trust remote code when loading the model.",
     )
     parser.add_argument(
         "--quantize-activations",
         "-qa",
-        action="store_true",
-        help="Enable activation quantization for QQLinear layers. "
+        action = "store_true",
+        help = "Enable activation quantization for QQLinear layers. "
         "Only supported for models quantized with 'nvfp4' or 'mxfp8' modes.",
     )
     parser.add_argument(
         "--processor-kwargs",
-        type=json.loads,
-        default={},
-        help="Extra processor kwargs as JSON. "
+        type = json.loads,
+        default = {},
+        help = "Extra processor kwargs as JSON. "
         'Example: --processor-kwargs \'{"cropping": false, "max_patches": 3}\'',
     )
     parser.add_argument(
         "--prefill-step-size",
-        type=int,
-        default=DEFAULT_PREFILL_STEP_SIZE,
-        help="Number of tokens to process per prefill step. "
+        type = int,
+        default = DEFAULT_PREFILL_STEP_SIZE,
+        help = "Number of tokens to process per prefill step. "
         "Lower values reduce peak memory usage but may be slower. "
         "Try 512 or 256 if you hit GPU memory errors during prefill.",
     )
     parser.add_argument(
         "--enable-thinking",
-        action="store_true",
-        help="Enable thinking mode in the chat template (e.g. for Qwen3.5).",
+        action = "store_true",
+        help = "Enable thinking mode in the chat template (e.g. for Qwen3.5).",
     )
     parser.add_argument(
         "--thinking-budget",
-        type=int,
-        default=None,
-        help="Maximum number of thinking tokens before forcing the end-of-thinking token.",
+        type = int,
+        default = None,
+        help = "Maximum number of thinking tokens before forcing the end-of-thinking token.",
     )
     parser.add_argument(
         "--thinking-start-token",
-        type=str,
-        default=DEFAULT_THINKING_START_TOKEN,
-        help="Token that marks the start of a thinking block (default: %(default)s).",
+        type = str,
+        default = DEFAULT_THINKING_START_TOKEN,
+        help = "Token that marks the start of a thinking block (default: %(default)s).",
     )
     parser.add_argument(
         "--thinking-end-token",
-        type=str,
-        default=DEFAULT_THINKING_END_TOKEN,
-        help="Token that marks the end of a thinking block (default: %(default)s).",
+        type = str,
+        default = DEFAULT_THINKING_END_TOKEN,
+        help = "Token that marks the end of a thinking block (default: %(default)s).",
     )
 
     return parser.parse_args()
@@ -260,10 +260,10 @@ def maybe_quantize_kv_cache(
             if isinstance(entry, cache.KVCache):
                 if entry.offset == 0:
                     # Empty: replace so update_and_fetch quantizes on the fly
-                    return TurboQuantKVCache(bits=kv_bits)
+                    return TurboQuantKVCache(bits = kv_bits)
                 if entry.offset < quantized_kv_start:
                     return entry
-                return TurboQuantKVCache.from_cache(entry, bits=kv_bits)
+                return TurboQuantKVCache.from_cache(entry, bits = kv_bits)
             if isinstance(entry, cache.CacheList):
                 entry.caches = [quantize_entry(sub_entry) for sub_entry in entry.caches]
                 return entry
@@ -286,9 +286,9 @@ def maybe_quantize_kv_cache(
 
     mlx_maybe_quantize_kv_cache(
         prompt_cache,
-        quantized_kv_start=quantized_kv_start,
-        kv_group_size=kv_group_size,
-        kv_bits=int(kv_bits),
+        quantized_kv_start = quantized_kv_start,
+        kv_group_size = kv_group_size,
+        kv_bits = int(kv_bits),
     )
 
 
@@ -438,18 +438,18 @@ def generate_step(
 
     quantize_cache_fn = functools.partial(
         maybe_quantize_kv_cache,
-        quantized_kv_start=quantized_kv_start,
-        kv_group_size=kv_group_size,
-        kv_bits=kv_bits,
-        kv_quant_scheme=kv_quant_scheme,
+        quantized_kv_start = quantized_kv_start,
+        kv_group_size = kv_group_size,
+        kv_bits = kv_bits,
+        kv_quant_scheme = kv_quant_scheme,
     )
 
     if sampler is None:
         sampler = make_sampler(
-            temp=temperature,
-            top_p=top_p,
-            min_p=min_p,
-            top_k=top_k,
+            temp = temperature,
+            top_p = top_p,
+            min_p = min_p,
+            top_k = top_k,
         )
 
     processors = make_logits_processors(
@@ -459,7 +459,7 @@ def generate_step(
         processors.extend(logits_processors)
 
     y = input_ids
-    tokens = mx.array([], dtype=input_ids.dtype)
+    tokens = mx.array([], dtype = input_ids.dtype)
 
     thinking_budget_criteria = kwargs.pop("thinking_budget_criteria", None)
 
@@ -467,23 +467,23 @@ def generate_step(
     if prompt_cache is None:
         prompt_cache = cache.make_prompt_cache(
             model.language_model,
-            max_kv_size=max_kv_size,
+            max_kv_size = max_kv_size,
         )
 
-    def _step(y, inputs_embeds=None):
+    def _step(y, inputs_embeds = None):
         nonlocal tokens, kwargs
 
         with mx.stream(generation_stream):
             if "decoder_input_ids" in kwargs:
                 outputs = model.language_model(
-                    cache=prompt_cache,
+                    cache = prompt_cache,
                     **kwargs,
                 )
             else:
                 outputs = model.language_model(
                     y,
-                    inputs_embeds=inputs_embeds,
-                    cache=prompt_cache,
+                    inputs_embeds = inputs_embeds,
+                    cache = prompt_cache,
                     **kwargs,
                 )
 
@@ -512,7 +512,7 @@ def generate_step(
     with mx.stream(generation_stream):
         # Get input embeddings (handles both multimodal and text-only)
         embedding_output = model.get_input_embeddings(
-            input_ids, pixel_values, mask=mask, **kwargs
+            input_ids, pixel_values, mask = mask, **kwargs
         )
 
         inputs_embeds = embedding_output.inputs_embeds
@@ -529,14 +529,14 @@ def generate_step(
         if prefill_step_size is not None and inputs_embeds.shape[1] > prefill_step_size:
             # Chunked prefill with embeddings
             total_tokens = inputs_embeds.shape[1]
-            with tqdm(total=total_tokens, desc="Prefill", unit="tok") as pbar:
+            with tqdm(total = total_tokens, desc = "Prefill", unit = "tok") as pbar:
                 while inputs_embeds.shape[1] > 1:
                     n_to_process = min(prefill_step_size, inputs_embeds.shape[1] - 1)
                     model.language_model(
-                        inputs=input_ids[:, :n_to_process],
-                        inputs_embeds=inputs_embeds[:, :n_to_process],
-                        cache=prompt_cache,
-                        n_to_process=n_to_process,
+                        inputs = input_ids[:, :n_to_process],
+                        inputs_embeds = inputs_embeds[:, :n_to_process],
+                        cache = prompt_cache,
+                        n_to_process = n_to_process,
                         **kwargs,
                     )
                     quantize_cache_fn(prompt_cache)
@@ -548,7 +548,7 @@ def generate_step(
 
             input_ids = input_ids[:, -1:]
 
-        y, logprobs = _step(input_ids, inputs_embeds=inputs_embeds)
+        y, logprobs = _step(input_ids, inputs_embeds = inputs_embeds)
 
     mx.async_eval(y)
 
@@ -634,12 +634,12 @@ def stream_generate(
     else:
         inputs = prepare_inputs(
             processor,
-            images=image,
-            audio=audio,
-            prompts=prompt,
-            image_token_index=image_token_index,
-            resize_shape=resize_shape,
-            add_special_tokens=add_special_tokens,
+            images = image,
+            audio = audio,
+            prompts = prompt,
+            image_token_index = image_token_index,
+            resize_shape = resize_shape,
+            add_special_tokens = add_special_tokens,
             **kwargs,
         )
         input_ids = inputs.get("input_ids", None)
@@ -700,17 +700,17 @@ def stream_generate(
 
     if thinking_budget is not None:
         thinking_start_token_id = tokenizer.encode(
-            thinking_start_token, add_special_tokens=False
+            thinking_start_token, add_special_tokens = False
         )[-1]
         enable_thinking = enable_thinking and (
             thinking_start_token_id in input_ids.flatten().tolist()
         )
         tokenizer.thinking_budget_criteria = ThinkingBudgetCriteria(
-            tokenizer=tokenizer,
-            thinking_budget=thinking_budget,
-            thinking_end_token=thinking_end_token,
-            thinking_start_token=thinking_start_token,
-            enable_thinking=enable_thinking,
+            tokenizer = tokenizer,
+            thinking_budget = thinking_budget,
+            thinking_end_token = thinking_end_token,
+            thinking_start_token = thinking_start_token,
+            enable_thinking = enable_thinking,
         )
         kwargs["thinking_budget_criteria"] = tokenizer.thinking_budget_criteria
     else:
@@ -720,7 +720,7 @@ def stream_generate(
     if "prompt_cache" not in kwargs:
         kwargs["prompt_cache"] = cache.make_prompt_cache(
             model.language_model,
-            max_kv_size=kwargs.get("max_kv_size", None),
+            max_kv_size = kwargs.get("max_kv_size", None),
         )
     tracked_cache = kwargs["prompt_cache"]
 
@@ -750,32 +750,32 @@ def stream_generate(
             if tokenizer.stopping_criteria(token):
                 break
 
-            detokenizer.add_token(token, skip_special_token_ids=skip_special_token_ids)
+            detokenizer.add_token(token, skip_special_token_ids = skip_special_token_ids)
 
             # Yield the last segment if streaming
             yield GenerationResult(
-                text=detokenizer.last_segment,
-                token=token,
-                logprobs=logprobs,
-                prompt_tokens=total_prompt_tokens,
-                generation_tokens=n + 1,
-                total_tokens=total_prompt_tokens + n + 1,
-                prompt_tps=prompt_tps,
-                generation_tps=(n + 1) / (time.perf_counter() - tic),
-                peak_memory=mx.get_peak_memory() / 1e9,
+                text = detokenizer.last_segment,
+                token = token,
+                logprobs = logprobs,
+                prompt_tokens = total_prompt_tokens,
+                generation_tokens = n + 1,
+                total_tokens = total_prompt_tokens + n + 1,
+                prompt_tps = prompt_tps,
+                generation_tps = (n + 1) / (time.perf_counter() - tic),
+                peak_memory = mx.get_peak_memory() / 1e9,
             )
 
         detokenizer.finalize()
         yield GenerationResult(
-            text=detokenizer.last_segment,
-            token=token,
-            logprobs=logprobs,
-            prompt_tokens=total_prompt_tokens,
-            generation_tokens=n + 1,
-            total_tokens=total_prompt_tokens + n + 1,
-            prompt_tps=prompt_tps,
-            generation_tps=(n + 1) / (time.perf_counter() - tic),
-            peak_memory=mx.get_peak_memory() / 1e9,
+            text = detokenizer.last_segment,
+            token = token,
+            logprobs = logprobs,
+            prompt_tokens = total_prompt_tokens,
+            generation_tokens = n + 1,
+            total_tokens = total_prompt_tokens + n + 1,
+            prompt_tps = prompt_tps,
+            generation_tps = (n + 1) / (time.perf_counter() - tic),
+            peak_memory = mx.get_peak_memory() / 1e9,
         )
 
         # Save cache state for potential reuse on next turn
@@ -857,7 +857,7 @@ def generate(
 
     for response in stream_generate(model, processor, prompt, image, audio, **kwargs):
         if verbose:
-            print(response.text, end="", flush=True)
+            print(response.text, end = "", flush = True)
         text += response.text
         last_response = response
 
@@ -866,15 +866,15 @@ def generate(
         if len(text) == 0:
             print("No text generated for this prompt")
             return GenerationResult(
-                text=text,
-                token=None,
-                logprobs=None,
-                prompt_tokens=0,
-                generation_tokens=0,
-                total_tokens=0,
-                prompt_tps=0.0,
-                generation_tps=0.0,
-                peak_memory=mx.get_peak_memory() / 1e9,
+                text = text,
+                token = None,
+                logprobs = None,
+                prompt_tokens = 0,
+                generation_tokens = 0,
+                total_tokens = 0,
+                prompt_tps = 0.0,
+                generation_tps = 0.0,
+                peak_memory = mx.get_peak_memory() / 1e9,
             )
         print(
             f"Prompt: {last_response.prompt_tokens} tokens, "
@@ -887,15 +887,15 @@ def generate(
         print(f"Peak memory: {last_response.peak_memory:.3f} GB")
 
     return GenerationResult(
-        text=text,
-        token=last_response.token,
-        logprobs=last_response.logprobs,
-        prompt_tokens=last_response.prompt_tokens,
-        generation_tokens=last_response.generation_tokens,
-        total_tokens=last_response.total_tokens,
-        prompt_tps=last_response.prompt_tps,
-        generation_tps=last_response.generation_tps,
-        peak_memory=last_response.peak_memory,
+        text = text,
+        token = last_response.token,
+        logprobs = last_response.logprobs,
+        prompt_tokens = last_response.prompt_tokens,
+        generation_tokens = last_response.generation_tokens,
+        total_tokens = last_response.total_tokens,
+        prompt_tps = last_response.prompt_tps,
+        generation_tps = last_response.generation_tps,
+        peak_memory = last_response.peak_memory,
     )
 
 
@@ -929,7 +929,7 @@ class BatchGenerationResult:
     image_sizes: Optional[List[Tuple[int, int]]] = None
 
 
-def _left_pad_prompts(prompts, max_length=None):
+def _left_pad_prompts(prompts, max_length = None):
     if max_length is None:
         max_length = max(len(p) for p in prompts)
 
@@ -1062,7 +1062,7 @@ class BatchGenerator:
         completion_batch_size: int = DEFAULT_COMPLETION_BATCH_SIZE,
         prefill_batch_size: int = DEFAULT_PREFILL_BATCH_SIZE,
         prefill_step_size: Optional[int] = DEFAULT_PREFILL_STEP_SIZE,
-        prompt_cache=None,
+        prompt_cache = None,
     ):
         self.model = model
         self.unprocessed_prompts = []
@@ -1071,7 +1071,7 @@ class BatchGenerator:
         self.tokenizer = (
             processor.tokenizer if hasattr(processor, "tokenizer") else processor
         )
-        self.sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
+        self.sampler = sampler or (lambda x: mx.argmax(x, axis = -1))
         self.uid_count = 0
         self.prefill_step_size = prefill_step_size
         self.prefill_batch_size = prefill_batch_size
@@ -1095,7 +1095,7 @@ class BatchGenerator:
             self.uid_count += 1
         # Sort in ascending order of length
         self.unprocessed_prompts = sorted(
-            self.unprocessed_prompts, key=lambda x: len(x[1])
+            self.unprocessed_prompts, key = lambda x: len(x[1])
         )
         return uids
 
@@ -1106,7 +1106,7 @@ class BatchGenerator:
 
         self._stats.prompt_tokens += sum(lengths)
         left_padding = [max_length - l for l in lengths]
-        inputs = _left_pad_prompts(inputs, max_length=max_length)
+        inputs = _left_pad_prompts(inputs, max_length = max_length)
 
         if self.prompt_cache is not None:
             prompt_cache = self.prompt_cache
@@ -1136,9 +1136,9 @@ class BatchGenerator:
                 n_to_process = min(self.prefill_step_size, inputs_embeds.shape[1] - 1)
                 self.model(
                     inputs[:, :n_to_process],
-                    cache=prompt_cache,
-                    inputs_embeds=inputs_embeds[:, :n_to_process],
-                    n_to_process=n_to_process,
+                    cache = prompt_cache,
+                    inputs_embeds = inputs_embeds[:, :n_to_process],
+                    n_to_process = n_to_process,
                     **kwargs,
                 )
                 mx.eval([c.state for c in prompt_cache])
@@ -1147,7 +1147,7 @@ class BatchGenerator:
                 mx.clear_cache()
 
         y, logprobs = self._step(
-            inputs, prompt_cache, inputs_embeds=inputs_embeds, **kwargs
+            inputs, prompt_cache, inputs_embeds = inputs_embeds, **kwargs
         )
 
         mx.async_eval(y, logprobs)
@@ -1157,9 +1157,9 @@ class BatchGenerator:
         )
 
     def _step(self, input_tokens: mx.array, prompt_cache: List[Any], **kwargs):
-        output = self.model(input_tokens, cache=prompt_cache, **kwargs)
+        output = self.model(input_tokens, cache = prompt_cache, **kwargs)
         logits = output.logits[:, -1, :]
-        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        logprobs = logits - mx.logsumexp(logits, axis = -1, keepdims = True)
         sampled = self.sampler(logprobs)
 
         # TODO: Add KV cache quantization if specified
@@ -1432,7 +1432,6 @@ def _generate_batch(
     verbose: bool = False,
     **kwargs,
 ) -> Tuple[List[str], BatchStats]:
-
     tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     batch_size = len(prompts)
 
@@ -1445,7 +1444,7 @@ def _generate_batch(
             processor,
             model.config,
             p,
-            num_images=num_images_list[i],
+            num_images = num_images_list[i],
         )
         for i, p in enumerate(prompts)
     ]
@@ -1461,13 +1460,13 @@ def _generate_batch(
 
     inputs = prepare_inputs(
         processor,
-        images=images,
-        audio=None,
-        prompts=formatted_prompts,
-        image_token_index=image_token_index,
-        resize_shape=resize_shape,
-        add_special_tokens=add_special_tokens,
-        pad_to_uniform_size=False,  # Since images are pre-grouped by shape, they're already uniform size
+        images = images,
+        audio = None,
+        prompts = formatted_prompts,
+        image_token_index = image_token_index,
+        resize_shape = resize_shape,
+        add_special_tokens = add_special_tokens,
+        pad_to_uniform_size = False,  # Since images are pre-grouped by shape, they're already uniform size
     )
     input_ids = inputs.get("input_ids", None)
     pixel_values = inputs.get("pixel_values", None)
@@ -1487,14 +1486,14 @@ def _generate_batch(
     gen = BatchGenerator(
         model.language_model,
         processor,
-        prefill_batch_size=batch_size,
-        completion_batch_size=batch_size,
+        prefill_batch_size = batch_size,
+        completion_batch_size = batch_size,
         **kwargs,
     )
 
     with wired_limit(model, [generation_stream]):
         embedding_output = model.get_input_embeddings(
-            input_ids, pixel_values, mask=mask, **data_kwargs
+            input_ids, pixel_values, mask = mask, **data_kwargs
         )
 
         gen_kwargs = {**data_kwargs, **embedding_output.to_dict()}
@@ -1525,9 +1524,9 @@ def main():
     model, processor = load(
         args.model,
         args.adapter_path,
-        revision=args.revision,
-        trust_remote_code=args.trust_remote_code,
-        quantize_activations=args.quantize_activations,
+        revision = args.revision,
+        trust_remote_code = args.trust_remote_code,
+        quantize_activations = args.quantize_activations,
     )
     config = model.config
 
@@ -1544,8 +1543,8 @@ def main():
         processor,
         config,
         prompt,
-        num_images=num_images,
-        num_audios=num_audios,
+        num_images = num_images,
+        num_audios = num_audios,
         **chat_template_kwargs,
     )
 
@@ -1586,10 +1585,10 @@ def main():
         while user := input("User:"):
             chat.append({"role": "user", "content": user})
             prompt = apply_chat_template(
-                processor, config, chat, num_images=num_images, **chat_template_kwargs
+                processor, config, chat, num_images = num_images, **chat_template_kwargs
             )
             response = ""
-            print("Assistant:", end="")
+            print("Assistant:", end = "")
             stream_kwargs = {
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
@@ -1610,7 +1609,7 @@ def main():
                 **stream_kwargs,
             ):
                 response += chunk.text
-                print(chunk.text, end="")
+                print(chunk.text, end = "")
 
             chat.append({"role": "assistant", "content": response})
             print()
