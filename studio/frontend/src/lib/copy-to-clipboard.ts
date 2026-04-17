@@ -6,42 +6,76 @@
  * Uses a synchronous textarea + execCommand fallback so the copy runs in the
  * same user gesture as the click (required by Safari's clipboard security).
  */
+function copyWithExecCommand(text: string): boolean {
+  if (typeof document === "undefined" || !document.body) return false;
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.fontSize = "12pt";
+  textarea.style.opacity = "0";
+  textarea.setAttribute("aria-hidden", "true");
+  document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+
+  try {
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    document.body.removeChild(textarea);
+    return false;
+  }
+}
+
 export function copyToClipboard(text: string): boolean {
   if (typeof text !== "string" || text.length === 0) {
     return false;
   }
 
-  // Synchronous fallback: works in Safari/Mac when clipboard API fails
-  // because it runs entirely within the user gesture (click) stack.
-  if (document.queryCommandSupported?.("copy") !== false) {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.top = "0";
-    textarea.style.left = "0";
-    textarea.style.opacity = "0";
-    textarea.setAttribute("aria-hidden", "true");
-    document.body.appendChild(textarea);
-    textarea.focus({ preventScroll: true });
-    textarea.select();
-    try {
-      const ok = document.execCommand("copy");
-      document.body.removeChild(textarea);
-      return ok;
-    } catch {
-      document.body.removeChild(textarea);
-      return false;
-    }
+  if (typeof document !== "undefined" && document.queryCommandSupported?.("copy") !== false) {
+    if (copyWithExecCommand(text)) return true;
   }
 
-  // Modern API only when fallback not available (e.g. non-browser)
+  // Async fallback for environments where execCommand is entirely unsupported
+  // but the Clipboard API is available (rare; kept for original contract parity).
   if (typeof navigator?.clipboard?.writeText === "function") {
     navigator.clipboard.writeText(text).then(
       () => {},
-      () => {}
+      () => {},
     );
     return true;
   }
 
   return false;
+}
+
+export async function copyToClipboardAsync(text: string): Promise<boolean> {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+
+  // Prefer the async Clipboard API: avoids focus disruption in Radix
+  // focus-trapped dialogs where execCommand always fails.
+  if (typeof navigator?.clipboard?.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Clipboard API rejected (e.g. NotAllowedError, permission policy).
+      // User activation is still valid through promise chains per spec, so
+      // execCommand can succeed for callers outside focus-trapped dialogs.
+      // Inside a Radix modal the focus trap will block textarea.focus() and
+      // execCommand returns false harmlessly.
+      return copyWithExecCommand(text);
+    }
+  }
+
+  // No Clipboard API (older browser / non-secure context): still in the
+  // original user-gesture frame, so execCommand can work.
+  return copyWithExecCommand(text);
 }
