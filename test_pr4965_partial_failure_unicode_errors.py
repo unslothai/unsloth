@@ -10,7 +10,7 @@ from models.datasets import DatasetSplitsRequest  # noqa: E402
 import routes.datasets as rd  # noqa: E402
 
 
-def test_partial_failure_survives_unicode_upstream_error(monkeypatch):
+def test_partial_failure_survives_unicode_upstream_error(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
     import datasets as ds
     from huggingface_hub.utils import HfHubHTTPError
 
@@ -43,7 +43,7 @@ def test_partial_failure_survives_unicode_upstream_error(monkeypatch):
     resp.partial_failure.encode("utf-8")
 
 
-def test_partial_failure_survives_embedded_newlines(monkeypatch):
+def test_partial_failure_survives_embedded_newlines(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
     import datasets as ds
     from huggingface_hub.utils import HfHubHTTPError
 

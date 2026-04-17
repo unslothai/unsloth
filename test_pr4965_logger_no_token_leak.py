@@ -31,7 +31,7 @@ class _CapturingLogger:
 SECRET_TOKEN = "hf_SECRETTOKEN123456abcdef"
 
 
-def test_token_not_logged_on_upstream_exception(monkeypatch):
+def test_token_not_logged_on_upstream_exception(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
     import datasets as ds
 
     cap = _CapturingLogger()
@@ -54,7 +54,7 @@ def test_token_not_logged_on_upstream_exception(monkeypatch):
     assert "hf_SECRET" not in combined
 
 
-def test_token_not_logged_on_hfhub_error(monkeypatch):
+def test_token_not_logged_on_hfhub_error(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
     import datasets as ds
     from huggingface_hub.utils import HfHubHTTPError
 

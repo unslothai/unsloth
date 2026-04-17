@@ -46,7 +46,7 @@ def _deep_chain_exception():
         return top
 
 
-def test_logger_never_receives_exc_info_true(monkeypatch):
+def test_logger_never_receives_exc_info_true(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
     import datasets as ds
 
     cap = _CapturingLogger()
@@ -68,7 +68,7 @@ def test_logger_never_receives_exc_info_true(monkeypatch):
         assert kwargs.get("exc_info") is not True
 
 
-def test_logger_message_has_no_traceback_keywords(monkeypatch):
+def test_logger_message_has_no_traceback_keywords(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
     import datasets as ds
 
     cap = _CapturingLogger()
