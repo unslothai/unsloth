@@ -16,6 +16,7 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -501,24 +502,6 @@ const CodeToolsToggle: FC = () => {
       <CodeToggleIcon className="size-3.5" />
       <span>Code</span>
     </button>
-  );
-};
-
-const CodeToggleIcon: FC<{ className?: string }> = ({ className }) => {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
   );
 };
 
