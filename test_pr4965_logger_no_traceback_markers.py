@@ -1,5 +1,4 @@
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -8,32 +7,6 @@ import pytest
 _BACKEND = Path(__file__).resolve().parent / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
-
-if "structlog" not in sys.modules:
-
-    class _L:
-        def __getattr__(self, n):
-            return lambda *a, **k: None
-
-    sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _L,
-        get_logger = lambda *a, **k: _L(),
-    )
-if "datasets" not in sys.modules:
-
-    class _NF(Exception):
-        pass
-
-    m = types.ModuleType("datasets")
-    m.get_dataset_config_names = lambda *a, **k: []
-    m.get_dataset_split_names = lambda *a, **k: []
-    m.IterableDataset = type("IterableDataset", (), {})
-    m.Dataset = type("Dataset", (), {})
-    m.load_dataset = lambda *a, **k: None
-    sys.modules["datasets"] = m
-    e = types.ModuleType("datasets.exceptions")
-    e.DatasetNotFoundError = _NF
-    sys.modules["datasets.exceptions"] = e
 
 from fastapi import HTTPException  # noqa: E402
 
