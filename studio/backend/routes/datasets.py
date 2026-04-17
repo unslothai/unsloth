@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 import structlog
 from loggers import get_logger
 
+
 def _is_valid_repo_id(repo_id: str) -> bool:
     from huggingface_hub.utils import validate_repo_id
     from huggingface_hub.utils._validators import HFValidationError
