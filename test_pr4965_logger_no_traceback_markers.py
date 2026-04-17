@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("fastapi")
 
 _BACKEND = Path(__file__).resolve().parent / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
