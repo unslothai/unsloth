@@ -10,7 +10,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _fake_datasets(monkeypatch):
     """Inject a fake datasets module scoped to each test with auto-teardown."""
     if "datasets" in sys.modules:
@@ -33,7 +33,7 @@ def _fake_datasets(monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _fake_structlog(monkeypatch):
     """Inject a fake structlog module scoped to each test with auto-teardown."""
     if "structlog" in sys.modules:
@@ -44,10 +44,14 @@ def _fake_structlog(monkeypatch):
         def __getattr__(self, n):
             return lambda *a, **k: None
 
-    monkeypatch.setitem(sys.modules, "structlog", types.SimpleNamespace(
-        BoundLogger = _L,
-        get_logger = lambda *a, **k: _L(),
-    ))
+    monkeypatch.setitem(
+        sys.modules,
+        "structlog",
+        types.SimpleNamespace(
+            BoundLogger = _L,
+            get_logger = lambda *a, **k: _L(),
+        ),
+    )
     yield
 
 
