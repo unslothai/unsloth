@@ -105,10 +105,10 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [amd_smi, "version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=5,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
             )
             if result.returncode == 0:
                 import re
@@ -125,9 +125,9 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [hipconfig, "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                timeout = 5,
             )
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
@@ -159,10 +159,10 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [exe, *cmd[1:]],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=5,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
             )
         except Exception:
             continue
@@ -203,10 +203,10 @@ def _has_rocm_gpu() -> bool:
         try:
             result = subprocess.run(
                 [exe, *cmd[1:]],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=10,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
             )
         except Exception:
             continue
@@ -224,10 +224,10 @@ def _has_usable_nvidia_gpu() -> bool:
     try:
         result = subprocess.run(
             [exe, "-L"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=10,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
         )
     except Exception:
         return False
@@ -281,9 +281,9 @@ def _ensure_rocm_torch() -> None:
                 "-c",
                 "import torch; print(getattr(torch.version,'hip','') or '')",
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
         )
     except (OSError, subprocess.TimeoutExpired):
         probe = None
@@ -300,7 +300,7 @@ def _ensure_rocm_torch() -> None:
         tag = next(
             (
                 t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse=True)
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
                 if ver >= (maj, mn)
             ),
             None,
@@ -322,7 +322,7 @@ def _ensure_rocm_torch() -> None:
                 "torchaudio<2.11.0",
                 "--index-url",
                 index_url,
-                constrain=False,
+                constrain = False,
             )
             rocm_torch_ready = True
 
@@ -339,7 +339,7 @@ def _ensure_rocm_torch() -> None:
                 "--no-cache-dir",
                 "--no-deps",
                 _bnb_url,
-                constrain=False,
+                constrain = False,
             )
             if not _bnb_installed:
                 print(
@@ -355,7 +355,7 @@ def _ensure_rocm_torch() -> None:
                 "--no-cache-dir",
                 "--no-deps",
                 _BNB_ROCM_PYPI_FALLBACK,
-                constrain=False,
+                constrain = False,
             )
 
 
@@ -422,8 +422,8 @@ def _safe_print(*args: object, **kwargs: object) -> None:
             text = text.replace(uni, ascii_alt)
         # Final fallback: replace any remaining unencodable chars
         print(
-            text.encode(sys.stdout.encoding or "ascii", errors="replace").decode(
-                sys.stdout.encoding or "ascii", errors="replace"
+            text.encode(sys.stdout.encoding or "ascii", errors = "replace").decode(
+                sys.stdout.encoding or "ascii", errors = "replace"
             ),
             **kwargs,
         )
@@ -490,7 +490,7 @@ def _title(msg: str) -> str:
 _RULE = "\u2500" * 52
 
 
-def _step(label: str, value: str, color_fn=None) -> None:
+def _step(label: str, value: str, color_fn = None) -> None:
     """Print a single step line in the column format."""
     if color_fn is None:
         color_fn = _green
@@ -523,13 +523,13 @@ def run(
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE if quiet else None,
-        stderr=subprocess.STDOUT if quiet else None,
+        stdout = subprocess.PIPE if quiet else None,
+        stderr = subprocess.STDOUT if quiet else None,
     )
     if result.returncode != 0:
         _step("error", f"{label} failed (exit code {result.returncode})", _red)
         if result.stdout:
-            print(result.stdout.decode(errors="replace"))
+            print(result.stdout.decode(errors = "replace"))
         sys.exit(result.returncode)
     return result
 
@@ -579,8 +579,8 @@ def _ensure_flash_attn() -> None:
     if (
         subprocess.run(
             [sys.executable, "-c", "import flash_attn"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
         ).returncode
         == 0
     ):
@@ -591,9 +591,9 @@ def _ensure_flash_attn() -> None:
     if wheel_url and url_exists(wheel_url):
         for installer, wheel_result in install_wheel(
             wheel_url,
-            python_executable=sys.executable,
-            use_uv=USE_UV,
-            uv_needs_system=UV_NEEDS_SYSTEM,
+            python_executable = sys.executable,
+            use_uv = USE_UV,
+            uv_needs_system = UV_NEEDS_SYSTEM,
         ):
             if wheel_result.returncode == 0:
                 return
@@ -625,15 +625,15 @@ def _bootstrap_uv() -> bool:
     # Without --python, uv can ignore the activated venv on some platforms.
     probe = subprocess.run(
         ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if probe.returncode != 0:
         # Retry with --system (some envs need it when uv can't find a venv)
         probe_sys = subprocess.run(
             ["uv", "pip", "install", "--dry-run", "--system", "pip"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
         )
         if probe_sys.returncode != 0:
             return False  # uv is broken, fall back to pip
@@ -643,17 +643,17 @@ def _bootstrap_uv() -> bool:
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy of a requirements file with certain packages removed."""
-    lines = req.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
         line
         for line in lines
         if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        delete=False,
-        encoding="utf-8",
+        mode = "w",
+        suffix = ".txt",
+        delete = False,
+        encoding = "utf-8",
     )
     tmp.writelines(filtered)
     tmp.close()
@@ -731,13 +731,13 @@ def pip_install_try(
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if result.returncode == 0:
         return True
     if VERBOSE and result.stdout:
-        print(result.stdout.decode(errors="replace"))
+        print(result.stdout.decode(errors = "replace"))
     return False
 
 
@@ -771,20 +771,20 @@ def pip_install(
                 print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
             )
             if result.returncode == 0:
                 return
             print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
-                print(result.stdout.decode(errors="replace"))
+                print(result.stdout.decode(errors = "replace"))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
     finally:
         for temp_req in temp_reqs:
-            temp_req.unlink(missing_ok=True)
+            temp_req.unlink(missing_ok = True)
 
 
 def download_file(url: str, dest: Path) -> None:
@@ -796,8 +796,8 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
     """Download a file from url and overwrite a file inside an installed package."""
     result = subprocess.run(
         [sys.executable, "-m", "pip", "show", package_name],
-        capture_output=True,
-        text=True,
+        capture_output = True,
+        text = True,
     )
     if result.returncode != 0:
         _step(_LABEL, f"package {package_name} not found, skipping patch", _red)
@@ -866,8 +866,8 @@ def install_python_stack() -> int:
         _has_pip = (
             subprocess.run(
                 [sys.executable, "-m", "pip", "--version"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
             ).returncode
             == 0
         )
@@ -906,7 +906,7 @@ def install_python_stack() -> int:
             "Installing no-torch runtime deps",
             "--no-cache-dir",
             "--no-deps",
-            req=REQ_ROOT / "no-torch-runtime.txt",
+            req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
             pip_install(
@@ -915,7 +915,7 @@ def install_python_stack() -> int:
                 "--no-deps",
                 "-e",
                 local_repo,
-                constrain=False,
+                constrain = False,
             )
     elif local_repo:
         # Local dev install: update deps from base.txt, then overlay the
@@ -929,7 +929,7 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            req=REQ_ROOT / "base.txt",
+            req = REQ_ROOT / "base.txt",
         )
         pip_install(
             "Overlaying local repo (editable)",
@@ -937,7 +937,7 @@ def install_python_stack() -> int:
             "--no-deps",
             "-e",
             local_repo,
-            constrain=False,
+            constrain = False,
         )
     elif package_name != "unsloth":
         # Custom package name (e.g. roland-sloth for testing) — install directly
@@ -959,7 +959,7 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            req=REQ_ROOT / "base.txt",
+            req = REQ_ROOT / "base.txt",
         )
 
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
@@ -989,10 +989,10 @@ def install_python_stack() -> int:
             try:
                 _wr = subprocess.run(
                     [_wexe, *_wcmd[1:]],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    timeout=10,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 10,
                 )
             except Exception:
                 continue
@@ -1014,7 +1014,7 @@ def install_python_stack() -> int:
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
-        req=REQ_ROOT / "extras.txt",
+        req = REQ_ROOT / "extras.txt",
     )
 
     # 3b. Extra dependencies (no-deps) -- audio model support etc.
@@ -1023,7 +1023,7 @@ def install_python_stack() -> int:
         "Installing extras (no-deps)",
         "--no-deps",
         "--no-cache-dir",
-        req=REQ_ROOT / "extras-no-deps.txt",
+        req = REQ_ROOT / "extras-no-deps.txt",
     )
 
     # 4. Overrides (torchao, transformers) -- force-reinstall
@@ -1037,7 +1037,7 @@ def install_python_stack() -> int:
             "Installing dependency overrides",
             "--force-reinstall",
             "--no-cache-dir",
-            req=REQ_ROOT / "overrides.txt",
+            req = REQ_ROOT / "overrides.txt",
         )
 
     # 5. Triton kernels (no-deps, from source)
@@ -1048,8 +1048,8 @@ def install_python_stack() -> int:
             "Installing triton kernels",
             "--no-deps",
             "--no-cache-dir",
-            req=REQ_ROOT / "triton-kernels.txt",
-            constrain=False,
+            req = REQ_ROOT / "triton-kernels.txt",
+            constrain = False,
         )
 
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
@@ -1082,7 +1082,7 @@ def install_python_stack() -> int:
     pip_install(
         "Installing studio dependencies",
         "--no-cache-dir",
-        req=REQ_ROOT / "studio.txt",
+        req = REQ_ROOT / "studio.txt",
     )
 
     # 9. Data-designer dependencies
@@ -1090,7 +1090,7 @@ def install_python_stack() -> int:
     pip_install(
         "Installing data-designer base dependencies",
         "--no-cache-dir",
-        req=SINGLE_ENV / "data-designer-deps.txt",
+        req = SINGLE_ENV / "data-designer-deps.txt",
     )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
@@ -1099,7 +1099,7 @@ def install_python_stack() -> int:
         "Installing data-designer",
         "--no-cache-dir",
         "--no-deps",
-        req=SINGLE_ENV / "data-designer.txt",
+        req = SINGLE_ENV / "data-designer.txt",
     )
 
     # 11. Local Data Designer seed plugin
@@ -1116,7 +1116,7 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         "--no-deps",
         str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
-        constrain=False,
+        constrain = False,
     )
 
     # 12. Patch metadata for single-env compatibility
@@ -1138,8 +1138,8 @@ def install_python_stack() -> int:
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
         [sys.executable, "-m", "pip", "check"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout = subprocess.DEVNULL,
+        stderr = subprocess.DEVNULL,
     )
 
     _step(_LABEL, "installed")

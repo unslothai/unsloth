@@ -31,7 +31,9 @@ class _CapturingLogger:
 SECRET_TOKEN = "hf_SECRETTOKEN123456abcdef"
 
 
-def test_token_not_logged_on_upstream_exception(monkeypatch, fake_datasets, fake_structlog):
+def test_token_not_logged_on_upstream_exception(
+    monkeypatch, fake_datasets, fake_structlog
+):
     import datasets as ds
 
     cap = _CapturingLogger()

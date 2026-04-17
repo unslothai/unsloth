@@ -11,7 +11,7 @@ def _no_remote_mapper():
 
 class TestGetModelName(unittest.TestCase):
     def _assert_mapping(self, model_name, load_in_4bit, expected, should_change):
-        mapped = get_model_name(model_name, load_in_4bit=load_in_4bit)
+        mapped = get_model_name(model_name, load_in_4bit = load_in_4bit)
         self.assertEqual(mapped.lower(), expected.lower())
         if should_change:
             self.assertNotEqual(mapped.lower(), model_name.lower())
@@ -132,11 +132,11 @@ class TestGetModelName(unittest.TestCase):
         for case in cases:
             if isinstance(case, str):
                 model_name = case
-                with self.subTest(model_name=model_name, load_in_4bit=True):
+                with self.subTest(model_name = model_name, load_in_4bit = True):
                     self._assert_mapping(model_name, True, model_name, False)
             else:
                 model_name, load_in_4bit, expected, should_change = case
-                with self.subTest(model_name=model_name, load_in_4bit=load_in_4bit):
+                with self.subTest(model_name = model_name, load_in_4bit = load_in_4bit):
                     self._assert_mapping(
                         model_name, load_in_4bit, expected, should_change
                     )
@@ -156,7 +156,7 @@ class TestGetModelName(unittest.TestCase):
             ("unsloth/kimi-k2-instruct", "unsloth/kimi-k2-instruct-bf16"),
         ]
         for src, expected in contracts:
-            with self.subTest(src=src):
+            with self.subTest(src = src):
                 self.assertEqual(FLOAT_TO_INT_MAPPER[src], expected)
         self.assertEqual(
             MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8"

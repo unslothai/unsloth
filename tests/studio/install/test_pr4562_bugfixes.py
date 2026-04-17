@@ -55,19 +55,19 @@ SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 def make_host(*, system: str) -> HostInfo:
     """Create a HostInfo for the given OS."""
     return HostInfo(
-        system=system,
-        machine="x86_64" if system != "Darwin" else "arm64",
-        is_windows=(system == "Windows"),
-        is_linux=(system == "Linux"),
-        is_macos=(system == "Darwin"),
-        is_x86_64=(system != "Darwin"),
-        is_arm64=(system == "Darwin"),
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
+        system = system,
+        machine = "x86_64" if system != "Darwin" else "arm64",
+        is_windows = (system == "Windows"),
+        is_linux = (system == "Linux"),
+        is_macos = (system == "Darwin"),
+        is_x86_64 = (system != "Darwin"),
+        is_arm64 = (system == "Darwin"),
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
     )
 
 
@@ -81,10 +81,10 @@ def run_bash(script: str, *, timeout: int = 10, env: dict | None = None) -> str:
         run_env.update(env)
     result = subprocess.run(
         [BASH, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=run_env,
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+        env = run_env,
     )
     assert (
         result.returncode == 0
@@ -103,11 +103,11 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents=True)
+        bin_dir.mkdir(parents = True)
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system="Linux")
+        host = make_host(system = "Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -123,11 +123,11 @@ class TestBinaryEnvCrossPlatform:
         """build/bin should be searched before install_dir for .so files."""
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents=True)
+        bin_dir.mkdir(parents = True)
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system="Linux")
+        host = make_host(system = "Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -143,11 +143,11 @@ class TestBinaryEnvCrossPlatform:
     ):
         """When binary is directly in install_dir, no duplicate entries."""
         install_dir = tmp_path / "llama.cpp"
-        install_dir.mkdir(parents=True)
+        install_dir.mkdir(parents = True)
         binary_path = install_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system="Linux")
+        host = make_host(system = "Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -160,7 +160,7 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents=True)
+        bin_dir.mkdir(parents = True)
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
@@ -170,7 +170,7 @@ class TestBinaryEnvCrossPlatform:
         custom_lib.mkdir()
         other_lib.mkdir()
 
-        host = make_host(system="Linux")
+        host = make_host(system = "Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
         original = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{custom_lib}:{other_lib}"
@@ -190,11 +190,11 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin" / "Release"
-        bin_dir.mkdir(parents=True)
+        bin_dir.mkdir(parents = True)
         binary_path = bin_dir / "llama-server.exe"
         binary_path.write_bytes(b"MZ")
 
-        host = make_host(system="Windows")
+        host = make_host(system = "Windows")
         monkeypatch.setattr(
             MOD, "windows_runtime_dirs_for_runtime_line", lambda _rt: []
         )
@@ -207,14 +207,14 @@ class TestBinaryEnvCrossPlatform:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         install_dir = tmp_path / "llama.cpp"
-        install_dir.mkdir(parents=True)
+        install_dir.mkdir(parents = True)
         bin_dir = install_dir / "build" / "bin"
         binary_path = bin_dir / "llama-server"
-        binary_path.parent.mkdir(parents=True)
+        binary_path.parent.mkdir(parents = True)
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system="Darwin")
-        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising=False)
+        host = make_host(system = "Darwin")
+        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
 
         env = binary_env(binary_path, install_dir, host)
         dyld_parts = [p for p in env["DYLD_LIBRARY_PATH"].split(os.pathsep) if p]
@@ -251,44 +251,44 @@ class TestResolveRequestedLlamaTag:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         invalid = PublishedReleaseBundle(
-            repo="unslothai/llama.cpp",
-            release_tag="v2.0",
-            upstream_tag="b9000",
-            assets={},
-            manifest_asset_name="llama-prebuilt-manifest.json",
-            artifacts=[],
-            selection_log=[],
+            repo = "unslothai/llama.cpp",
+            release_tag = "v2.0",
+            upstream_tag = "b9000",
+            assets = {},
+            manifest_asset_name = "llama-prebuilt-manifest.json",
+            artifacts = [],
+            selection_log = [],
         )
         valid = PublishedReleaseBundle(
-            repo="unslothai/llama.cpp",
-            release_tag="v1.0",
-            upstream_tag="b8999",
-            assets={},
-            manifest_asset_name="llama-prebuilt-manifest.json",
-            artifacts=[],
-            selection_log=[],
+            repo = "unslothai/llama.cpp",
+            release_tag = "v1.0",
+            upstream_tag = "b8999",
+            assets = {},
+            manifest_asset_name = "llama-prebuilt-manifest.json",
+            artifacts = [],
+            selection_log = [],
         )
 
         monkeypatch.setattr(
             MOD,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag="": iter([invalid, valid]),
+            lambda repo, published_release_tag = "": iter([invalid, valid]),
         )
 
         def fake_load(repo, release_tag):
             if release_tag == "v2.0":
                 raise MOD.PrebuiltFallback("checksum asset missing")
             return ApprovedReleaseChecksums(
-                repo=repo,
-                release_tag=release_tag,
-                upstream_tag="b8999",
-                source_commit=None,
-                artifacts={
+                repo = repo,
+                release_tag = release_tag,
+                upstream_tag = "b8999",
+                source_commit = None,
+                artifacts = {
                     source_archive_logical_name("b8999"): ApprovedArtifactHash(
-                        asset_name=source_archive_logical_name("b8999"),
-                        sha256="a" * 64,
-                        repo="ggml-org/llama.cpp",
-                        kind="upstream-source",
+                        asset_name = source_archive_logical_name("b8999"),
+                        sha256 = "a" * 64,
+                        repo = "ggml-org/llama.cpp",
+                        kind = "upstream-source",
                     )
                 },
             )
@@ -303,30 +303,30 @@ class TestResolveRequestedLlamaTag:
     ):
         captured = {}
 
-        def fake_resolve(requested_tag, published_repo, published_release_tag=""):
+        def fake_resolve(requested_tag, published_repo, published_release_tag = ""):
             captured["requested_tag"] = requested_tag
             captured["published_repo"] = published_repo
             captured["published_release_tag"] = published_release_tag
             return MOD.ResolvedPublishedRelease(
-                bundle=PublishedReleaseBundle(
-                    repo=published_repo,
-                    release_tag=published_release_tag,
-                    upstream_tag="b9001",
-                    assets={},
-                    manifest_asset_name="llama-prebuilt-manifest.json",
-                    artifacts=[],
-                    selection_log=[],
+                bundle = PublishedReleaseBundle(
+                    repo = published_repo,
+                    release_tag = published_release_tag,
+                    upstream_tag = "b9001",
+                    assets = {},
+                    manifest_asset_name = "llama-prebuilt-manifest.json",
+                    artifacts = [],
+                    selection_log = [],
                 ),
-                checksums=ApprovedReleaseChecksums(
-                    repo=published_repo,
-                    release_tag=published_release_tag,
-                    upstream_tag="b9001",
-                    artifacts={
+                checksums = ApprovedReleaseChecksums(
+                    repo = published_repo,
+                    release_tag = published_release_tag,
+                    upstream_tag = "b9001",
+                    artifacts = {
                         source_archive_logical_name("b9001"): ApprovedArtifactHash(
-                            asset_name=source_archive_logical_name("b9001"),
-                            sha256="a" * 64,
-                            repo="ggml-org/llama.cpp",
-                            kind="upstream-source",
+                            asset_name = source_archive_logical_name("b9001"),
+                            sha256 = "a" * 64,
+                            repo = "ggml-org/llama.cpp",
+                            kind = "upstream-source",
                         )
                     },
                 ),
@@ -384,7 +384,7 @@ class TestFetchJsonRetries:
 
         monkeypatch.setattr(MOD, "fetch_json", fake_fetch_json)
 
-        releases = MOD.github_releases("ggml-org/llama.cpp", max_pages=2)
+        releases = MOD.github_releases("ggml-org/llama.cpp", max_pages = 2)
 
         assert seen_pages == [1, 2]
         assert len(releases) == 200
@@ -426,7 +426,7 @@ class TestSetupShLogic:
                 echo "would_clone"
             fi
         """)
-        output = run_bash(script, env={"PATH": ":".join(safe_dirs)})
+        output = run_bash(script, env = {"PATH": ":".join(safe_dirs)})
         assert "cmake_missing" in output
         assert marker.exists(), "Install dir was deleted despite cmake missing!"
 
@@ -460,7 +460,7 @@ class TestSetupShLogic:
                 echo "would_clone"
             fi
         """)
-        output = run_bash(script, env={"PATH": ":".join(safe_dirs)})
+        output = run_bash(script, env = {"PATH": ":".join(safe_dirs)})
         assert "git_missing" in output
         assert marker.exists(), "Install dir was deleted despite git missing!"
 
@@ -600,9 +600,9 @@ class TestLatestTagResolution:
         resolve_status: int,
     ) -> str:
         script = self.RESOLVE_TEMPLATE.format(
-            requested_tag=requested_tag,
-            resolved_tag=resolved_tag,
-            resolve_status=resolve_status,
+            requested_tag = requested_tag,
+            resolved_tag = resolved_tag,
+            resolve_status = resolve_status,
         )
         return run_bash(script)
 
@@ -610,8 +610,8 @@ class TestLatestTagResolution:
         output = self._run_resolve(
             tmp_path,
             "latest",
-            resolved_tag="b8508",
-            resolve_status=0,
+            resolved_tag = "b8508",
+            resolve_status = 0,
         )
         assert output == "b8508"
 
@@ -619,8 +619,8 @@ class TestLatestTagResolution:
         output = self._run_resolve(
             tmp_path,
             "latest",
-            resolved_tag="",
-            resolve_status=1,
+            resolved_tag = "",
+            resolve_status = 1,
         )
         assert output == "latest"
 
@@ -628,28 +628,28 @@ class TestLatestTagResolution:
         output = self._run_resolve(
             tmp_path,
             "b7777",
-            resolved_tag="",
-            resolve_status=1,
+            resolved_tag = "",
+            resolve_status = 1,
         )
         assert output == "b7777"
 
     def test_env_override_unsloth_llama_tag(self):
         output = run_bash(
             'echo "${UNSLOTH_LLAMA_TAG:-latest}"',
-            env={"UNSLOTH_LLAMA_TAG": "b1234"},
+            env = {"UNSLOTH_LLAMA_TAG": "b1234"},
         )
         assert output == "b1234"
 
     def test_env_unset_defaults_to_latest(self):
         env = os.environ.copy()
         env.pop("UNSLOTH_LLAMA_TAG", None)
-        output = run_bash('echo "${UNSLOTH_LLAMA_TAG:-latest}"', env=env)
+        output = run_bash('echo "${UNSLOTH_LLAMA_TAG:-latest}"', env = env)
         assert output == "latest"
 
     def test_env_empty_defaults_to_latest(self):
         output = run_bash(
             'echo "${UNSLOTH_LLAMA_TAG:-latest}"',
-            env={"UNSLOTH_LLAMA_TAG": ""},
+            env = {"UNSLOTH_LLAMA_TAG": ""},
         )
         assert output == "latest"
 

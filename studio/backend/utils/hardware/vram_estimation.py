@@ -75,7 +75,7 @@ class TrainingVramConfig:
     batch_size: int = 4
     max_seq_length: int = 2048
     lora_rank: int = 16
-    target_modules: list = field(default_factory=lambda: list(DEFAULT_TARGET_MODULES))
+    target_modules: list = field(default_factory = lambda: list(DEFAULT_TARGET_MODULES))
     gradient_checkpointing: str = "unsloth"
     optimizer: str = "adamw_8bit"
     load_in_4bit: bool = True
@@ -197,22 +197,22 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     v_head_dim = getattr(text_config, "v_head_dim", None)
 
     return ModelArchConfig(
-        hidden_size=hidden_size,
-        num_hidden_layers=num_layers,
-        num_attention_heads=num_heads,
-        num_key_value_heads=num_kv_heads,
-        intermediate_size=intermediate_size,
-        vocab_size=vocab_size,
-        tie_word_embeddings=getattr(text_config, "tie_word_embeddings", True),
-        num_experts=num_experts,
-        moe_intermediate_size=moe_intermediate,
-        n_shared_experts=n_shared_experts,
-        num_dense_layers=num_dense_layers,
-        q_lora_rank=q_lora_rank,
-        kv_lora_rank=kv_lora_rank,
-        qk_nope_head_dim=qk_nope_head_dim,
-        qk_rope_head_dim=qk_rope_head_dim,
-        v_head_dim=v_head_dim,
+        hidden_size = hidden_size,
+        num_hidden_layers = num_layers,
+        num_attention_heads = num_heads,
+        num_key_value_heads = num_kv_heads,
+        intermediate_size = intermediate_size,
+        vocab_size = vocab_size,
+        tie_word_embeddings = getattr(text_config, "tie_word_embeddings", True),
+        num_experts = num_experts,
+        moe_intermediate_size = moe_intermediate,
+        n_shared_experts = n_shared_experts,
+        num_dense_layers = num_dense_layers,
+        q_lora_rank = q_lora_rank,
+        kv_lora_rank = kv_lora_rank,
+        qk_nope_head_dim = qk_nope_head_dim,
+        qk_rope_head_dim = qk_rope_head_dim,
+        v_head_dim = v_head_dim,
     )
 
 
@@ -483,7 +483,7 @@ def estimate_training_vram(
         config.batch_size,
         config.max_seq_length,
         config.gradient_checkpointing,
-        is_lora=is_lora,
+        is_lora = is_lora,
     )
     activation_bytes = max(
         activations_computed,
@@ -491,11 +491,11 @@ def estimate_training_vram(
     )
 
     return VramBreakdown(
-        model_weights=model_weights,
-        lora_adapters=lora_adapter_bytes,
-        optimizer_states=optimizer_bytes,
-        gradients=gradient_bytes,
-        activations=activation_bytes,
-        cuda_overhead=CUDA_OVERHEAD_BYTES,
-        activations_computed=activations_computed,
+        model_weights = model_weights,
+        lora_adapters = lora_adapter_bytes,
+        optimizer_states = optimizer_bytes,
+        gradients = gradient_bytes,
+        activations = activation_bytes,
+        cuda_overhead = CUDA_OVERHEAD_BYTES,
+        activations_computed = activations_computed,
     )

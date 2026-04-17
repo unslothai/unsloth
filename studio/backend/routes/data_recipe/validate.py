@@ -44,9 +44,9 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
         _resolve_and_add_seed_columns(config, resource_provider.seed_reader)
         _add_internal_row_id_column_if_needed(config)
         violations = validate_data_designer_config(
-            columns=config.columns,
-            processor_configs=config.processors or [],
-            allowed_references=_get_allowed_references(config),
+            columns = config.columns,
+            processor_configs = config.processors or [],
+            allowed_references = _get_allowed_references(config),
         )
     except (TypeError, ValueError, AttributeError):
         return []
@@ -60,9 +60,9 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
         message = str(violation.message).strip() or "Validation failed."
         errors.append(
             ValidateError(
-                message=message,
-                path=path,
-                code=code,
+                message = message,
+                path = path,
+                code = code,
             )
         )
     return errors
@@ -82,13 +82,13 @@ def _patch_local_providers(recipe: dict[str, Any]) -> None:
             provider["endpoint"] = "http://127.0.0.1"
 
 
-@router.post("/validate", response_model=ValidateResponse)
+@router.post("/validate", response_model = ValidateResponse)
 def validate(payload: RecipePayload) -> ValidateResponse:
     recipe = payload.recipe
     if not recipe.get("columns"):
         return ValidateResponse(
-            valid=False,
-            errors=[ValidateError(message="Recipe must include columns.")],
+            valid = False,
+            errors = [ValidateError(message = "Recipe must include columns.")],
         )
 
     _patch_local_providers(recipe)
@@ -96,14 +96,14 @@ def validate(payload: RecipePayload) -> ValidateResponse:
     try:
         validate_recipe(recipe)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
     except Exception as exc:
         detail = str(exc).strip() or "Validation failed."
         parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
-            valid=False,
-            errors=parsed_errors or [ValidateError(message=detail)],
-            raw_detail=detail,
+            valid = False,
+            errors = parsed_errors or [ValidateError(message = detail)],
+            raw_detail = detail,
         )
 
-    return ValidateResponse(valid=True)
+    return ValidateResponse(valid = True)

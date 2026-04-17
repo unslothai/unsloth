@@ -95,12 +95,12 @@ FALLBACK_CTX = 4096
 
 
 def _make_backend(
-    native_ctx=131072,
-    n_layers=80,
-    n_kv_heads=8,
-    n_heads=64,
-    kv_key_length=128,
-    kv_value_length=128,
+    native_ctx = 131072,
+    n_layers = 80,
+    n_kv_heads = 8,
+    n_heads = 64,
+    kv_key_length = 128,
+    kv_value_length = 128,
 ):
     """Create a LlamaCppBackend instance with GGUF metadata fields set and
     the helpers used by the decision block stubbed out."""
@@ -124,20 +124,20 @@ def _drive(
     n_ctx,
     model_gib,
     gpus,
-    native_ctx=131072,
-    kv_per_token_bytes=325_000,
-    can_estimate_kv=True,
+    native_ctx = 131072,
+    kv_per_token_bytes = 325_000,
+    can_estimate_kv = True,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
     Mirrors the decision block at llama_cpp.py:1137-1296 so we can assert
     the command that would be built, without subprocesses or GPU probes.
     """
-    inst = _make_backend(native_ctx=native_ctx)
+    inst = _make_backend(native_ctx = native_ctx)
     model_size = int(model_gib * GIB)
     cache_type_kv = None
 
-    def fake_estimate(n_ctx_, _type=None):
+    def fake_estimate(n_ctx_, _type = None):
         return 0 if n_ctx_ <= 0 else n_ctx_ * kv_per_token_bytes
 
     inst._estimate_kv_cache_bytes = fake_estimate
@@ -162,7 +162,7 @@ def _drive(
     if gpus and inst._can_estimate_kv() and effective_ctx > 0:
         native_ctx_for_cap = context_length or effective_ctx
         if native_ctx_for_cap > 0:
-            ranked_for_cap = sorted(gpus, key=lambda g: g[1], reverse=True)
+            ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
             best_cap = 0
             for n_gpus in range(1, len(ranked_for_cap) + 1):
                 subset = ranked_for_cap[:n_gpus]
@@ -186,7 +186,7 @@ def _drive(
             )
             gpu_indices, use_fit = inst._select_gpus(requested_total, gpus)
         else:
-            ranked = sorted(gpus, key=lambda g: g[1], reverse=True)
+            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
             for n_gpus in range(1, len(ranked) + 1):
                 subset = ranked[:n_gpus]
@@ -233,10 +233,10 @@ class TestAutoModeWeightsExceedVRAM:
 
     def test_minimax_like_single_gpu(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -247,10 +247,10 @@ class TestAutoModeWeightsExceedVRAM:
 
     def test_multi_gpu_all_subsets_fail(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=400,
-            gpus=[(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
-            native_ctx=131072,
+            n_ctx = 0,
+            model_gib = 400,
+            gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
+            native_ctx = 131072,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -259,11 +259,11 @@ class TestAutoModeWeightsExceedVRAM:
     def test_no_kv_metadata_auto(self):
         """File-size-only fallback path also defaults to 4096."""
         plan = _drive(
-            n_ctx=0,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
-            can_estimate_kv=False,
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            can_estimate_kv = False,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -282,10 +282,10 @@ class TestExplicitCtxRespectsUser:
         # Budget = 21.6 GB, KV at 131k >> 13.6 GB remaining, so
         # _select_gpus flips use_fit=True.
         plan = _drive(
-            n_ctx=131072,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
+            n_ctx = 131072,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
         )
         assert plan["c_arg"] == 131072
         assert plan["use_fit"] is True
@@ -293,10 +293,10 @@ class TestExplicitCtxRespectsUser:
 
     def test_explicit_that_fits_uses_ngl(self):
         plan = _drive(
-            n_ctx=8192,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
+            n_ctx = 8192,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
         )
         assert plan["c_arg"] == 8192
         assert plan["use_fit"] is False
@@ -305,20 +305,20 @@ class TestExplicitCtxRespectsUser:
     def test_explicit_on_weights_exceed_vram(self):
         # User drags the slider to 32k on a too-big model: honored.
         plan = _drive(
-            n_ctx=32768,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
+            n_ctx = 32768,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
         )
         assert plan["c_arg"] == 32768
         assert plan["use_fit"] is True
 
     def test_explicit_at_fallback_on_too_big(self):
         plan = _drive(
-            n_ctx=FALLBACK_CTX,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
+            n_ctx = FALLBACK_CTX,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -326,9 +326,9 @@ class TestExplicitCtxRespectsUser:
     def test_explicit_below_floor_honored(self):
         # 2048 is below --fit-ctx default; still honored since user set it.
         plan = _drive(
-            n_ctx=2048,
-            model_gib=8,
-            gpus=[(0, 24_000)],
+            n_ctx = 2048,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
         )
         assert plan["c_arg"] == 2048
 
@@ -341,11 +341,11 @@ class TestExplicitCtxRespectsUser:
 class TestFittableAutoPickRegressions:
     def test_small_model_one_gpu(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
-            kv_per_token_bytes=8192,
+            n_ctx = 0,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 8192,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -353,22 +353,22 @@ class TestFittableAutoPickRegressions:
 
     def test_medium_model_needs_multi_gpu(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=60,
-            gpus=[(0, 40_000), (1, 40_000)],
-            native_ctx=131072,
-            kv_per_token_bytes=8192,
+            n_ctx = 0,
+            model_gib = 60,
+            gpus = [(0, 40_000), (1, 40_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 8192,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0, 1]
 
     def test_no_kv_metadata_fittable_auto(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
-            can_estimate_kv=False,
+            n_ctx = 0,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            can_estimate_kv = False,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -384,6 +384,6 @@ def test_identical_decision_across_platforms(platform_tag):
     """The decision function takes ``[(gpu_idx, free_mib), ...]`` regardless
     of how upstream (nvidia-smi / nvidia-smi.exe / Metal / rocm-smi) produced
     it. Identical inputs must yield identical plans."""
-    plan_a = _drive(n_ctx=0, model_gib=8, gpus=[(0, 24_000)])
-    plan_b = _drive(n_ctx=0, model_gib=8, gpus=[(0, 24_000)])
+    plan_a = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
+    plan_b = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     assert plan_a == plan_b, platform_tag

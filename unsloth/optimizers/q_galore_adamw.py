@@ -98,7 +98,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
             min_8bit_size,
             percentile_clipping,
             block_wise,
-            is_paged=is_paged,
+            is_paged = is_paged,
         )
 
     # ------------------------------------------------------------------
@@ -106,7 +106,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
     # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, closure = None):
         """Perform a single optimization step.
 
         For each parameter that has a ``rank`` key in its param group, the
@@ -155,16 +155,16 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 if "rank" in group:
                     if "projector" not in state:
                         state["projector"] = GaLoreProjector(
-                            rank=group["rank"],
-                            update_proj_gap=group.get("update_proj_gap", 200),
-                            scale=group.get("scale", 0.25),
-                            proj_type=group.get("proj_type", "std"),
-                            quant=group.get("quant", False),
-                            group_size=group.get("quant_group_size", -1),
-                            n_bit=group.get("quant_n_bit", 4),
-                            cos_threshold=group.get("cos_threshold", 0.4),
-                            gamma_proj=group.get("gamma_proj", 2.0),
-                            queue_size=group.get("queue_size", 5),
+                            rank = group["rank"],
+                            update_proj_gap = group.get("update_proj_gap", 200),
+                            scale = group.get("scale", 0.25),
+                            proj_type = group.get("proj_type", "std"),
+                            quant = group.get("quant", False),
+                            group_size = group.get("quant_group_size", -1),
+                            n_bit = group.get("quant_n_bit", 4),
+                            cos_threshold = group.get("cos_threshold", 0.4),
+                            gamma_proj = group.get("gamma_proj", 2.0),
+                            queue_size = group.get("queue_size", 5),
                         )
 
                     # Temporarily disable weight decay for GaLore params
@@ -179,7 +179,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # the 8-bit update writes the pure weight delta.
                     p._saved_data = p.data.clone()
                     p.data = torch.zeros_like(
-                        grad, dtype=p.data.dtype, device=p.data.device
+                        grad, dtype = p.data.dtype, device = p.data.device
                     )
                     p.grad = grad
 
@@ -199,7 +199,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     if "_wd_saved" in group:
                         p.data.add_(
                             p.data,
-                            alpha=-group["lr"] * group["_wd_saved"],
+                            alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
@@ -212,7 +212,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     stochastic = group.get("stochastic_round", True)
                     gsize = group.get("weight_group_size", 128)
                     quant_fn = _quantize_stochastic if stochastic else _quantize
-                    q, scales, zeros, shape = quant_fn(float_data, q_group_size=gsize)
+                    q, scales, zeros, shape = quant_fn(float_data, q_group_size = gsize)
                     p._q_data = q.to(p.data.device)
                     p._q_scales = scales
                     p._q_zeros = zeros
@@ -220,7 +220,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # Replace p.data with a scalar placeholder to free float memory.
                     # A forward pre-hook (install_weight_quant_hooks) will
                     # dequantize back to float before the next forward pass.
-                    p.data = torch.empty(1, dtype=p.data.dtype, device=p.data.device)
+                    p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
                 state["step"] += 1
 
@@ -277,7 +277,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
 def _weight_quant_pre_hook(module, args):
     """Forward pre-hook: dequantize INT8 weights to float before forward."""
-    for p in module.parameters(recurse=False):
+    for p in module.parameters(recurse = False):
         if hasattr(p, "_q_scales") and p._q_scales is not None:
             float_weight = _dequantize(
                 p._q_data,
@@ -296,7 +296,7 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     handles = []
     for module in model.modules():
         has_quant_param = any(
-            hasattr(p, "_q_scales") for p in module.parameters(recurse=False)
+            hasattr(p, "_q_scales") for p in module.parameters(recurse = False)
         )
         if has_quant_param:
             h = module.register_forward_pre_hook(_weight_quant_pre_hook)

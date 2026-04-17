@@ -316,7 +316,7 @@ def detect_custom_format_heuristic(dataset):
             assistant_candidates.append((col, score))
 
     if assistant_candidates:
-        assistant_candidates.sort(key=lambda x: x[1], reverse=True)
+        assistant_candidates.sort(key = lambda x: x[1], reverse = True)
         assistant_col = assistant_candidates[0][0]
         mapping[assistant_col] = "assistant"
     else:
@@ -332,7 +332,7 @@ def detect_custom_format_heuristic(dataset):
             user_candidates.append((col, score))
 
     if user_candidates:
-        user_candidates.sort(key=lambda x: x[1], reverse=True)
+        user_candidates.sort(key = lambda x: x[1], reverse = True)
         user_col = user_candidates[0][0]
         mapping[user_col] = "user"
     else:
@@ -826,8 +826,8 @@ def detect_vlm_dataset_structure(dataset):
         try:
             import urllib.request
 
-            req = urllib.request.Request(sample_value, method="HEAD")
-            resp = urllib.request.urlopen(req, timeout=3)
+            req = urllib.request.Request(sample_value, method = "HEAD")
+            resp = urllib.request.urlopen(req, timeout = 3)
             return resp.status < 400
         except Exception:
             return False
@@ -860,7 +860,7 @@ def detect_vlm_dataset_structure(dataset):
         if not candidates:
             return None
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
+        candidates.sort(key = lambda x: x[1], reverse = True)
 
         # Single candidate or top candidate is PIL/dict — no probing needed
         if len(candidates) == 1 or candidates[0][1] >= 75:
@@ -905,7 +905,7 @@ def detect_vlm_dataset_structure(dataset):
 
         # Return highest priority candidate
         if candidates:
-            candidates.sort(key=lambda x: x[1], reverse=True)
+            candidates.sort(key = lambda x: x[1], reverse = True)
             return candidates[0][0]
 
         return None

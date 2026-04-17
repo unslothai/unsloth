@@ -32,11 +32,11 @@ class DataCollatorSpeechSeq2SeqWithPadding:
             {"input_features": feature["input_features"]} for feature in features
         ]
         batch = self.processor.feature_extractor.pad(
-            input_features, return_tensors="pt"
+            input_features, return_tensors = "pt"
         )
 
         label_features = [{"input_ids": feature["labels"]} for feature in features]
-        labels_batch = self.processor.tokenizer.pad(label_features, return_tensors="pt")
+        labels_batch = self.processor.tokenizer.pad(label_features, return_tensors = "pt")
 
         labels = labels_batch["input_ids"].masked_fill(
             labels_batch.attention_mask.ne(1), -100
@@ -100,19 +100,19 @@ class DeepSeekOCRDataCollator:
             # Qwen2VL style processing
             texts = [
                 self.processor.apply_chat_template(
-                    msgs, tokenize=False, add_generation_prompt=False
+                    msgs, tokenize = False, add_generation_prompt = False
                 )
                 for msgs in all_messages
             ]
 
             # Process with images
             inputs = self.processor(
-                text=texts,
-                images=all_images if all_images else None,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.max_length,
+                text = texts,
+                images = all_images if all_images else None,
+                return_tensors = "pt",
+                padding = True,
+                truncation = True,
+                max_length = self.max_length,
             )
 
             # Create labels (mask input, keep output)
@@ -170,19 +170,19 @@ class VLMDataCollator:
         # Apply chat template
         texts = [
             self.processor.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=False
+                msgs, tokenize = False, add_generation_prompt = False
             )
             for msgs in all_messages
         ]
 
         # Process inputs
         inputs = self.processor(
-            text=texts,
-            images=all_images if all_images else None,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
+            text = texts,
+            images = all_images if all_images else None,
+            return_tensors = "pt",
+            padding = True,
+            truncation = True,
+            max_length = self.max_length,
         )
 
         # Create labels

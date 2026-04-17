@@ -40,7 +40,7 @@ def _load_family_defaults():
         / "inference_defaults.json"
     )
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
+        with open(json_path, "r", encoding = "utf-8") as f:
             data = json.load(f)
         _FAMILY_DEFAULTS = data.get("families", {})
         _FAMILY_PATTERNS = data.get("patterns", [])
@@ -155,7 +155,7 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
     default_inference = {}
     if default_config_path.exists():
         try:
-            with open(default_config_path, "r", encoding="utf-8") as f:
+            with open(default_config_path, "r", encoding = "utf-8") as f:
                 default_config = yaml.safe_load(f) or {}
                 default_inference = default_config.get("inference", {})
         except Exception as e:

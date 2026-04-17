@@ -25,8 +25,8 @@ def fake_structlog(monkeypatch):
         sys.modules,
         "structlog",
         types.SimpleNamespace(
-            BoundLogger=_L,
-            get_logger=lambda *a, **k: _L(),
+            BoundLogger = _L,
+            get_logger = lambda *a, **k: _L(),
         ),
     )
     yield

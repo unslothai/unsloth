@@ -44,12 +44,12 @@ def _strip_think_tags(text: str) -> str:
         return text
 
     # Try stripping think blocks — keep content outside them
-    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
+    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
     if stripped:
         return stripped
 
     # Everything was inside <think> tags — extract the inner content of the last block
-    matches = re.findall(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+    matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
     if matches:
         return matches[-1].strip()
 
@@ -81,7 +81,7 @@ def precache_helper_gguf():
 
         # Find the GGUF file matching the variant
         api = HfApi()
-        files = api.list_repo_files(repo, repo_type="model")
+        files = api.list_repo_files(repo, repo_type = "model")
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
         # Find all GGUF files matching the variant (may be split into shards)
@@ -96,7 +96,7 @@ def precache_helper_gguf():
                 + (f" (+{len(matching) - 1} shards)" if len(matching) > 1 else "")
             )
             for target in matching:
-                hf_hub_download(repo_id=repo, filename=target)
+                hf_hub_download(repo_id = repo, filename = target)
             logger.info(f"Helper GGUF cached: {len(matching)} file(s)")
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
@@ -131,12 +131,12 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         logger.info(f"Loading helper model: {repo} ({variant})")
 
         ok = backend.load_model(
-            hf_repo=repo,
-            hf_variant=variant,
-            model_identifier=f"helper:{repo}:{variant}",
-            is_vision=False,
-            n_ctx=2048,
-            n_gpu_layers=-1,
+            hf_repo = repo,
+            hf_variant = variant,
+            model_identifier = f"helper:{repo}:{variant}",
+            is_vision = False,
+            n_ctx = 2048,
+            n_gpu_layers = -1,
         )
         if not ok:
             logger.warning("Helper model failed to start")
@@ -148,13 +148,13 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         )
         cumulative = ""
         for chunk in backend.generate_chat_completion(
-            messages=messages,
-            temperature=0.1,
-            top_p=0.9,
-            top_k=20,
-            max_tokens=max_tokens,
-            repetition_penalty=1.0,
-            enable_thinking=False,  # Always disable thinking for AI Assist
+            messages = messages,
+            temperature = 0.1,
+            top_p = 0.9,
+            top_k = 20,
+            max_tokens = max_tokens,
+            repetition_penalty = 1.0,
+            enable_thinking = False,  # Always disable thinking for AI Assist
         ):
             if isinstance(chunk, dict):
                 continue  # skip metadata events
@@ -222,7 +222,7 @@ def llm_generate_vlm_instruction(
         "Respond with ONLY the instruction sentence, nothing else."
     )
 
-    result = _run_with_helper(prompt, max_tokens=100)
+    result = _run_with_helper(prompt, max_tokens = 100)
     if not result:
         return None
 
@@ -277,7 +277,7 @@ def llm_classify_columns(
         'Example: {"question": "user", "answer": "assistant", "id": "metadata"}'
     )
 
-    result = _run_with_helper(prompt, max_tokens=200)
+    result = _run_with_helper(prompt, max_tokens = 200)
     if not result:
         return None
 
@@ -370,7 +370,7 @@ def llm_generate_dataset_warning(
         "Keep it under 3 sentences. Be specific about the dataset."
     )
 
-    result = _run_with_helper(prompt, max_tokens=200)
+    result = _run_with_helper(prompt, max_tokens = 200)
     if not result:
         return None
 
@@ -425,13 +425,13 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
     logger.info("Advisor request: enable_thinking=False (per-request override)")
     cumulative = ""
     for chunk in backend.generate_chat_completion(
-        messages=messages,
-        temperature=0.1,
-        top_p=0.9,
-        top_k=20,
-        max_tokens=max_tokens,
-        repetition_penalty=1.0,
-        enable_thinking=False,  # Always disable thinking for AI Assist
+        messages = messages,
+        temperature = 0.1,
+        top_p = 0.9,
+        top_k = 20,
+        max_tokens = max_tokens,
+        repetition_penalty = 1.0,
+        enable_thinking = False,  # Always disable thinking for AI Assist
     ):
         if isinstance(chunk, dict):
             continue  # skip metadata events
@@ -453,7 +453,7 @@ def fetch_hf_dataset_card(
     try:
         from huggingface_hub import DatasetCard
 
-        card = DatasetCard.load(dataset_name, token=hf_token)
+        card = DatasetCard.load(dataset_name, token = hf_token)
         readme = card.text or ""
 
         # Truncate at sentence boundary
@@ -522,12 +522,12 @@ def _run_multi_pass_advisor(
         t0 = time.monotonic()
 
         ok = backend.load_model(
-            hf_repo=repo,
-            hf_variant=variant,
-            model_identifier=f"advisor:{repo}:{variant}",
-            is_vision=False,
-            n_ctx=2048,
-            n_gpu_layers=-1,
+            hf_repo = repo,
+            hf_variant = variant,
+            model_identifier = f"advisor:{repo}:{variant}",
+            is_vision = False,
+            n_ctx = 2048,
+            n_gpu_layers = -1,
         )
         if not ok:
             logger.warning("Advisor model failed to start")
@@ -541,7 +541,7 @@ def _run_multi_pass_advisor(
             samples_text += f"Row {i}:\n" + "\n".join(parts) + "\n"
 
         metadata_str = (
-            json.dumps(dataset_metadata, indent=2, default=str)[:500]
+            json.dumps(dataset_metadata, indent = 2, default = str)[:500]
             if dataset_metadata
             else "N/A"
         )
@@ -556,9 +556,9 @@ def _run_multi_pass_advisor(
 
                 config = load_model_config(
                     model_name,
-                    use_auth=True,
-                    token=hf_token,
-                    trust_remote_code=False,
+                    use_auth = True,
+                    token = hf_token,
+                    trust_remote_code = False,
                 )
                 archs = getattr(config, "architectures", [])
                 if archs and "Gemma3nForConditionalGeneration" in archs:
@@ -629,7 +629,7 @@ def _run_multi_pass_advisor(
                     Respond with ONLY the JSON object. No markdown, no explanation."""),
             },
         ]
-        raw1 = _generate_with_backend(backend, messages1, max_tokens=256)
+        raw1 = _generate_with_backend(backend, messages1, max_tokens = 256)
         pass1 = _parse_json_response(raw1)
         logger.info(f"Pass 1 done ({time.monotonic() - t1:.1f}s): {pass1}")
 
@@ -730,7 +730,7 @@ def _run_multi_pass_advisor(
                     Respond with ONLY the JSON object."""),
             },
         ]
-        raw2 = _generate_with_backend(backend, messages2, max_tokens=512)
+        raw2 = _generate_with_backend(backend, messages2, max_tokens = 512)
         pass2 = _parse_json_response(raw2)
         logger.info(f"Pass 2 done ({time.monotonic() - t2:.1f}s): {pass2}")
 
@@ -796,7 +796,7 @@ def _run_multi_pass_advisor(
                         Write ONLY the system prompt text. No quotes, no labels, no explanation around it."""),
                 },
             ]
-            raw3 = _generate_with_backend(backend, messages3, max_tokens=256)
+            raw3 = _generate_with_backend(backend, messages3, max_tokens = 256)
             logger.info(
                 f"Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}"
             )
@@ -877,14 +877,14 @@ def llm_conversion_advisor(
 
     # Try multi-pass advisor
     result = _run_multi_pass_advisor(
-        columns=column_names,
-        samples=samples,
-        dataset_name=dataset_name,
-        dataset_card=dataset_card,
-        dataset_metadata=dataset_metadata,
-        model_name=model_name,
-        model_type=model_type,
-        hf_token=hf_token,
+        columns = column_names,
+        samples = samples,
+        dataset_name = dataset_name,
+        dataset_card = dataset_card,
+        dataset_metadata = dataset_metadata,
+        model_name = model_name,
+        model_type = model_type,
+        hf_token = hf_token,
     )
 
     if result and result.get("success"):

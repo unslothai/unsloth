@@ -19,7 +19,7 @@ class CheckFormatRequest(BaseModel):
     subset: Optional[str] = None
     train_split: Optional[str] = "train"
 
-    @model_validator(mode="before")
+    @model_validator(mode = "before")
     @classmethod
     def _compat_split(cls, values: Any) -> Any:
         """Accept legacy 'split' field as alias for 'train_split'."""
@@ -75,8 +75,8 @@ class AiAssistMappingResponse(BaseModel):
 class UploadDatasetResponse(BaseModel):
     """Response with stored dataset path for training."""
 
-    filename: str = Field(..., description="Original filename")
-    stored_path: str = Field(..., description="Absolute path stored on backend")
+    filename: str = Field(..., description = "Original filename")
+    stored_path: str = Field(..., description = "Absolute path stored on backend")
 
 
 class LocalDatasetItem(BaseModel):
@@ -96,14 +96,14 @@ class LocalDatasetItem(BaseModel):
 
 
 class LocalDatasetsResponse(BaseModel):
-    datasets: List[LocalDatasetItem] = Field(default_factory=list)
+    datasets: List[LocalDatasetItem] = Field(default_factory = list)
 
 
 class DatasetSplitsRequest(BaseModel):
     """Request for fetching dataset splits (subsets and split names)."""
 
-    dataset_name: str = Field(..., min_length=1, max_length=256)
-    hf_token: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    dataset_name: str = Field(..., min_length = 1, max_length = 256)
+    hf_token: Optional[str] = Field(default = None, min_length = 1, max_length = 512)
 
 
 class SplitEntry(BaseModel):
@@ -113,5 +113,5 @@ class SplitEntry(BaseModel):
 
 
 class DatasetSplitsResponse(BaseModel):
-    splits: List[SplitEntry] = Field(default_factory=list)
+    splits: List[SplitEntry] = Field(default_factory = list)
     partial_failure: Optional[str] = None

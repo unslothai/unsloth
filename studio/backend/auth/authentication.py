@@ -30,8 +30,8 @@ def _get_secret_for_subject(subject: str) -> str:
     secret = get_jwt_secret(subject)
     if secret is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
         )
     return secret
 
@@ -40,7 +40,7 @@ def _decode_subject_without_verification(token: str) -> Optional[str]:
     try:
         payload = jwt.decode(
             token,
-            options={"verify_signature": False, "verify_exp": False},
+            options = {"verify_signature": False, "verify_exp": False},
         )
     except jwt.InvalidTokenError:
         return None
@@ -60,13 +60,13 @@ def create_access_token(
     """
     to_encode = {"sub": subject}
     expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta or timedelta(minutes = ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
     return jwt.encode(
         to_encode,
         _get_secret_for_subject(subject),
-        algorithm=ALGORITHM,
+        algorithm = ALGORITHM,
     )
 
 
@@ -77,7 +77,7 @@ def create_refresh_token(subject: str) -> str:
     Refresh tokens are opaque (not JWTs) and expire after REFRESH_TOKEN_EXPIRE_DAYS.
     """
     token = secrets.token_urlsafe(48)
-    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
     save_refresh_token(token, subject, expires_at.isoformat())
     return token
 
@@ -92,7 +92,7 @@ def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[st
     username = verify_refresh_token(refresh_token)
     if username is None:
         return None, None
-    return create_access_token(subject=username), username
+    return create_access_token(subject = username), username
 
 
 def reload_secret() -> None:
@@ -110,7 +110,7 @@ async def get_current_subject(
     """Validate JWT and require the password-change flow to be completed."""
     return await _get_current_subject(
         credentials,
-        allow_password_change=False,
+        allow_password_change = False,
     )
 
 
@@ -120,7 +120,7 @@ async def get_current_subject_allow_password_change(
     """Validate JWT but allow access to the password-change endpoint."""
     return await _get_current_subject(
         credentials,
-        allow_password_change=True,
+        allow_password_change = True,
     )
 
 
@@ -145,8 +145,8 @@ async def _get_current_subject(
         username = validate_api_key(token)
         if username is None:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired API key",
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid or expired API key",
             )
         return username
 
@@ -154,33 +154,33 @@ async def _get_current_subject(
     subject = _decode_subject_without_verification(token)
     if subject is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload",
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid token payload",
         )
 
     record = get_user_and_secret(subject)
     if record is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
         )
 
     _salt, _pwd_hash, jwt_secret, must_change_password = record
     try:
-        payload = jwt.decode(token, jwt_secret, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
         if payload.get("sub") != subject:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload",
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid token payload",
             )
         if must_change_password and not allow_password_change:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Password change required",
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail = "Password change required",
             )
         return subject
     except jwt.InvalidTokenError:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
         )

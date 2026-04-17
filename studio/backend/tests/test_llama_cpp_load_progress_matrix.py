@@ -152,7 +152,7 @@ class TestPlatformMatrix:
         gguf = tmp_path / "m.gguf"
         _sparse(gguf, 1 * 1024**3)
         inst = _make()
-        inst._process = _Proc(pid=12345)
+        inst._process = _Proc(pid = 12345)
         inst._gguf_path = str(gguf)
 
         def fake_open(path, *args, **kwargs):
@@ -160,7 +160,7 @@ class TestPlatformMatrix:
                 raise FileNotFoundError(f"No such file: {path}")
             return open(path, *args, **kwargs)
 
-        with patch("builtins.open", side_effect=fake_open):
+        with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
         assert out is None
 
@@ -169,7 +169,7 @@ class TestPlatformMatrix:
         gguf = tmp_path / "m.gguf"
         _sparse(gguf, 1 * 1024**3)
         inst = _make()
-        inst._process = _Proc(pid=4567)
+        inst._process = _Proc(pid = 4567)
         inst._gguf_path = str(gguf)
 
         def fake_open(path, *args, **kwargs):
@@ -177,7 +177,7 @@ class TestPlatformMatrix:
                 raise PermissionError("access denied")
             return open(path, *args, **kwargs)
 
-        with patch("builtins.open", side_effect=fake_open):
+        with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
         assert out is None
 
@@ -194,7 +194,7 @@ class TestVmRSSParsing:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(gguf)
-        with patch("builtins.open", side_effect=_fake_proc_reader(2 * 1024**2)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(2 * 1024**2)):
             out = inst.load_progress()
         assert out["bytes_loaded"] == 2 * 1024**3
 
@@ -211,7 +211,7 @@ class TestVmRSSParsing:
                 return io.StringIO("VmRSS: 4194304 kB\n")
             return open(path, *a, **kw)
 
-        with patch("builtins.open", side_effect=fake_open):
+        with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
         assert out["bytes_loaded"] == 4 * 1024**3
 
@@ -228,7 +228,7 @@ class TestVmRSSParsing:
                 return io.StringIO("Name:\ttest\nState:\tZ (zombie)\n")
             return open(path, *a, **kw)
 
-        with patch("builtins.open", side_effect=fake_open):
+        with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
         assert out is not None
         assert out["bytes_loaded"] == 0
@@ -248,7 +248,7 @@ class TestVmRSSParsing:
                 return io.StringIO("VmRSS:\tXXXX\tkB\n")
             return open(path, *a, **kw)
 
-        with patch("builtins.open", side_effect=fake_open):
+        with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
         # The implementation catches ValueError on int() and returns None.
         assert out is None
@@ -273,7 +273,7 @@ class TestFilesystemEdges:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(link)
-        with patch("builtins.open", side_effect=_fake_proc_reader(6 * 1024**2)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(6 * 1024**2)):
             out = inst.load_progress()
         assert out["bytes_total"] == 12 * 1024**3
 
@@ -285,7 +285,7 @@ class TestFilesystemEdges:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(link)
-        with patch("builtins.open", side_effect=_fake_proc_reader(1024)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(1024)):
             out = inst.load_progress()
         assert out["bytes_total"] == 0
         assert out["bytes_loaded"] == 1024 * 1024
@@ -294,7 +294,7 @@ class TestFilesystemEdges:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "ghost.gguf")
-        with patch("builtins.open", side_effect=_fake_proc_reader(1024)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(1024)):
             out = inst.load_progress()
         assert out["bytes_total"] == 0
 
@@ -308,7 +308,7 @@ class TestFilesystemEdges:
             inst = _make()
             inst._process = _Proc(os.getpid())
             inst._gguf_path = "rel.gguf"
-            with patch("builtins.open", side_effect=_fake_proc_reader(0)):
+            with patch("builtins.open", side_effect = _fake_proc_reader(0)):
                 out = inst.load_progress()
             assert out is not None
             assert out["bytes_total"] == 8 * 1024**3
@@ -332,7 +332,7 @@ class TestShardAggregation:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m-00001-of-00004.gguf")
-        with patch("builtins.open", side_effect=_fake_proc_reader(0)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
         assert out["bytes_total"] == 60 * 1024**3  # only the .gguf siblings
 
@@ -345,7 +345,7 @@ class TestShardAggregation:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m_q8-00001-of-00002.gguf")
-        with patch("builtins.open", side_effect=_fake_proc_reader(0)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
         assert out["bytes_total"] == 40 * 1024**3  # just q8 series
 
@@ -357,7 +357,7 @@ class TestShardAggregation:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m.gguf")
-        with patch("builtins.open", side_effect=_fake_proc_reader(0)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
         # Non-sharded primary: only the primary is counted.
         assert out["bytes_total"] == 8 * 1024**3
@@ -368,7 +368,7 @@ class TestShardAggregation:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "small.gguf")
-        with patch("builtins.open", side_effect=_fake_proc_reader(2 * 1024**2)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(2 * 1024**2)):
             out = inst.load_progress()
         assert out["bytes_total"] == 4 * 1024**3
         assert out["bytes_loaded"] == 2 * 1024**3
@@ -385,7 +385,7 @@ class TestLifecycleRaces:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = None
-        with patch("builtins.open", side_effect=_fake_proc_reader(1024)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(1024)):
             out = inst.load_progress()
         assert out is not None
         assert out["phase"] == "mmap"
@@ -396,7 +396,7 @@ class TestLifecycleRaces:
         """/proc/<pid> disappears -> None."""
         _sparse(tmp_path / "m.gguf", 1 * 1024**3)
         inst = _make()
-        inst._process = _Proc(pid=999_999_999)
+        inst._process = _Proc(pid = 999_999_999)
         inst._gguf_path = str(tmp_path / "m.gguf")
         assert inst.load_progress() is None
 
@@ -406,7 +406,7 @@ class TestLifecycleRaces:
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m.gguf")
         inst._healthy = True
-        with patch("builtins.open", side_effect=_fake_proc_reader(1024)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(1024)):
             out = inst.load_progress()
         assert out["phase"] == "ready"
 
@@ -440,7 +440,7 @@ class TestConcurrentSampling:
             except Exception as e:  # pragma: no cover
                 errors.append(e)
 
-        threads = [threading.Thread(target=run) for _ in range(10)]
+        threads = [threading.Thread(target = run) for _ in range(10)]
         for t in threads:
             t.start()
         for t in threads:
@@ -460,7 +460,7 @@ class TestFractionBounds:
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m.gguf")
         # RSS > total (post-paged-in + extra structures)
-        with patch("builtins.open", side_effect=_fake_proc_reader(2 * 1024**2)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(2 * 1024**2)):
             out = inst.load_progress()
         assert 0.0 <= out["fraction"] <= 1.0
 
@@ -468,6 +468,6 @@ class TestFractionBounds:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = None
-        with patch("builtins.open", side_effect=_fake_proc_reader(1024**2)):
+        with patch("builtins.open", side_effect = _fake_proc_reader(1024**2)):
             out = inst.load_progress()
         assert out["fraction"] == 0.0

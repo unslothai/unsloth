@@ -177,7 +177,7 @@ class TestNeedsTransformers5:
         # Patch network call to avoid real fetch
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5",
-            return_value=False,
+            return_value = False,
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
 
@@ -286,14 +286,14 @@ class TestGetTransformersTier:
     def test_qwen35_returns_530(self):
         with patch(
             "utils.transformers_version._check_config_needs_550",
-            return_value=False,
+            return_value = False,
         ):
             assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
 
     def test_ministral_returns_530(self):
         with patch(
             "utils.transformers_version._check_config_needs_550",
-            return_value=False,
+            return_value = False,
         ):
             assert (
                 get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
@@ -303,11 +303,11 @@ class TestGetTransformersTier:
         with (
             patch(
                 "utils.transformers_version._check_config_needs_550",
-                return_value=False,
+                return_value = False,
             ),
             patch(
                 "utils.transformers_version._check_tokenizer_config_needs_v5",
-                return_value=False,
+                return_value = False,
             ),
         ):
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
@@ -322,17 +322,17 @@ class TestGetTransformersTier:
         assert needs_transformers_5("google/gemma-4-E2B-it") is True
         with patch(
             "utils.transformers_version._check_config_needs_550",
-            return_value=False,
+            return_value = False,
         ):
             assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
         with (
             patch(
                 "utils.transformers_version._check_config_needs_550",
-                return_value=False,
+                return_value = False,
             ),
             patch(
                 "utils.transformers_version._check_tokenizer_config_needs_v5",
-                return_value=False,
+                return_value = False,
             ),
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False

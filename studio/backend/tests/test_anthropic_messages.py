@@ -42,7 +42,7 @@ from core.inference.anthropic_compat import (
 class TestAnthropicModels:
     def test_minimal_request(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens is None
         assert req.model == "default"
@@ -50,49 +50,49 @@ class TestAnthropicModels:
 
     def test_max_tokens_optional(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens == 100
 
     def test_system_as_string(self):
         req = AnthropicMessagesRequest(
-            max_tokens=50,
-            messages=[{"role": "user", "content": "Hi"}],
-            system="You are helpful.",
+            max_tokens = 50,
+            messages = [{"role": "user", "content": "Hi"}],
+            system = "You are helpful.",
         )
         assert req.system == "You are helpful."
 
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[{"name": "web_search", "input_schema": {"type": "object"}}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            tools = [{"name": "web_search", "input_schema": {"type": "object"}}],
         )
         assert len(req.tools) == 1
         assert req.tools[0].name == "web_search"
 
     def test_extra_fields_accepted(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            some_future_field="hello",
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            some_future_field = "hello",
         )
         assert req.max_tokens == 100
 
     def test_stream_defaults_false(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.stream is False
 
     def test_enable_tools_shorthand(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
-            enable_tools=True,
-            enabled_tools=["web_search", "python"],
-            session_id="my-session",
+            messages = [{"role": "user", "content": "Hi"}],
+            enable_tools = True,
+            enabled_tools = ["web_search", "python"],
+            session_id = "my-session",
         )
         assert req.enable_tools is True
         assert req.enabled_tools == ["web_search", "python"]
@@ -100,7 +100,7 @@ class TestAnthropicModels:
 
     def test_extension_fields_default_none(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.enable_tools is None
         assert req.enabled_tools is None
@@ -128,7 +128,7 @@ class TestAnthropicMessagesToOpenAI:
 
     def test_system_string_prepended(self):
         msgs = [{"role": "user", "content": "Hello"}]
-        result = anthropic_messages_to_openai(msgs, system="Be brief.")
+        result = anthropic_messages_to_openai(msgs, system = "Be brief.")
         assert result[0] == {"role": "system", "content": "Be brief."}
         assert result[1] == {"role": "user", "content": "Hello"}
 
@@ -138,7 +138,7 @@ class TestAnthropicMessagesToOpenAI:
             {"type": "text", "text": "Be accurate."},
         ]
         msgs = [{"role": "user", "content": "Hello"}]
-        result = anthropic_messages_to_openai(msgs, system=system)
+        result = anthropic_messages_to_openai(msgs, system = system)
         assert result[0]["role"] == "system"
         assert "Be brief." in result[0]["content"]
         assert "Be accurate." in result[0]["content"]
@@ -285,7 +285,7 @@ class TestAnthropicToolsToOpenAI:
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(
-            name="test", description="desc", input_schema={"type": "object"}
+            name = "test", description = "desc", input_schema = {"type": "object"}
         )
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"

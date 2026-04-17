@@ -14,8 +14,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_DummyLogger,
-        get_logger=lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.models as models_route
@@ -33,15 +33,15 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         calls["load_model_defaults"] = model_name
         return {}
 
-    def _record_vision(model_name, hf_token=None):
+    def _record_vision(model_name, hf_token = None):
         calls["is_vision_model"] = model_name
         return False
 
-    def _record_embedding(model_name, hf_token=None):
+    def _record_embedding(model_name, hf_token = None):
         calls["is_embedding_model"] = model_name
         return False
 
-    def _record_audio(model_name, hf_token=None):
+    def _record_audio(model_name, hf_token = None):
         calls["detect_audio_type"] = model_name
         return None
 
@@ -67,9 +67,9 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
 
     result = asyncio.run(
         models_route.get_model_config(
-            model_name="org/model",
-            hf_token=None,
-            current_subject="test-subject",
+            model_name = "org/model",
+            hf_token = None,
+            current_subject = "test-subject",
         )
     )
 

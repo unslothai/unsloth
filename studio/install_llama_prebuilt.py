@@ -94,7 +94,7 @@ JSON_FETCH_ATTEMPTS = 3
 DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES = env_int(
     "UNSLOTH_LLAMA_GITHUB_RELEASE_SCAN_MAX_PAGES",
     5,
-    minimum=1,
+    minimum = 1,
 )
 SERVER_PORT_BIND_ATTEMPTS = 3
 SERVER_BIND_RETRY_WINDOW_SECONDS = 5.0
@@ -102,7 +102,7 @@ TTY_PROGRESS_START_DELAY_SECONDS = 0.5
 DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     "UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS",
     2,
-    minimum=1,
+    minimum = 1,
 )
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
@@ -197,7 +197,7 @@ class AssetChoice:
     expected_sha256: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class PublishedLlamaArtifact:
     asset_name: str
     install_kind: str
@@ -223,10 +223,10 @@ class PublishedReleaseBundle:
     resolved_source_ref: str | None = None
     source_commit: str | None = None
     source_commit_short: str | None = None
-    assets: dict[str, str] = field(default_factory=dict)
+    assets: dict[str, str] = field(default_factory = dict)
     manifest_asset_name: str = DEFAULT_PUBLISHED_MANIFEST_ASSET
-    artifacts: list[PublishedLlamaArtifact] = field(default_factory=list)
-    selection_log: list[str] = field(default_factory=list)
+    artifacts: list[PublishedLlamaArtifact] = field(default_factory = list)
+    selection_log: list[str] = field(default_factory = list)
 
 
 @dataclass
@@ -247,7 +247,7 @@ class CudaRuntimePreference:
     selection_log: list[str]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ApprovedArtifactHash:
     asset_name: str
     sha256: str
@@ -267,16 +267,16 @@ class ApprovedReleaseChecksums:
     resolved_source_ref: str | None = None
     source_commit: str | None = None
     source_commit_short: str | None = None
-    artifacts: dict[str, ApprovedArtifactHash] = field(default_factory=dict)
+    artifacts: dict[str, ApprovedArtifactHash] = field(default_factory = dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ResolvedPublishedRelease:
     bundle: PublishedReleaseBundle
     checksums: ApprovedReleaseChecksums
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class SourceBuildPlan:
     source_url: str
     source_ref: str
@@ -289,7 +289,7 @@ class SourceBuildPlan:
     source_commit: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class InstallReleasePlan:
     requested_tag: str
     llama_tag: str
@@ -361,7 +361,7 @@ def is_busy_lock_error(exc: BaseException) -> bool:
 
 
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file=sys.stderr)
+    print(f"[llama-prebuilt] {message}", file = sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -427,11 +427,11 @@ def sleep_backoff(
 
 
 def atomic_write_bytes(destination: Path, data: bytes) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     with tempfile.NamedTemporaryFile(
-        prefix=destination.name + ".tmp-",
-        dir=destination.parent,
-        delete=False,
+        prefix = destination.name + ".tmp-",
+        dir = destination.parent,
+        delete = False,
     ) as handle:
         tmp_path = Path(handle.name)
         handle.write(data)
@@ -441,7 +441,7 @@ def atomic_write_bytes(destination: Path, data: bytes) -> None:
 
 
 def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     os.replace(tmp_path, destination)
 
 
@@ -754,7 +754,7 @@ class DownloadProgress:
 
     def finish(self, downloaded_bytes: int) -> None:
         self.completed = True
-        line = self._render(downloaded_bytes, final=True)
+        line = self._render(downloaded_bytes, final = True)
         if self.is_tty:
             if not self.has_rendered_tty_progress:
                 return
@@ -780,8 +780,8 @@ def download_bytes(
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            request = urllib.request.Request(url, headers=headers or auth_headers(url))
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            request = urllib.request.Request(url, headers = headers or auth_headers(url))
+            with urllib.request.urlopen(request, timeout = timeout) as response:
                 total_bytes: int | None = None
                 content_length = response.headers.get("Content-Length")
                 if content_length and content_length.isdigit():
@@ -819,8 +819,8 @@ def fetch_json(url: str) -> Any:
         try:
             data = download_bytes(
                 url,
-                timeout=30,
-                headers=github_api_headers(url)
+                timeout = 30,
+                headers = github_api_headers(url)
                 if is_github_api_url(url)
                 else auth_headers(url),
             )
@@ -858,19 +858,19 @@ def fetch_json(url: str) -> Any:
 
 
 def download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     last_exc: Exception | None = None
     for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
         tmp_path: Path | None = None
         try:
-            request = urllib.request.Request(url, headers=auth_headers(url))
+            request = urllib.request.Request(url, headers = auth_headers(url))
             with tempfile.NamedTemporaryFile(
-                prefix=destination.name + ".tmp-",
-                dir=destination.parent,
-                delete=False,
+                prefix = destination.name + ".tmp-",
+                dir = destination.parent,
+                delete = False,
             ) as handle:
                 tmp_path = Path(handle.name)
-                with urllib.request.urlopen(request, timeout=120) as response:
+                with urllib.request.urlopen(request, timeout = 120) as response:
                     total_bytes: int | None = None
                     content_length = response.headers.get("Content-Length")
                     if content_length and content_length.isdigit():
@@ -897,7 +897,7 @@ def download_file(url: str, destination: Path) -> None:
             last_exc = exc
             if tmp_path is not None:
                 try:
-                    tmp_path.unlink(missing_ok=True)
+                    tmp_path.unlink(missing_ok = True)
                 except Exception:
                     pass
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
@@ -936,7 +936,7 @@ def download_file_verified(
             f"{label} checksum mismatch on attempt {attempt}/2: "
             f"expected={normalized_expected} actual={actual_sha256}"
         )
-        destination.unlink(missing_ok=True)
+        destination.unlink(missing_ok = True)
         if attempt == 2:
             raise PrebuiltFallback(
                 f"{label} checksum mismatch after retry: expected={normalized_expected} actual={actual_sha256}"
@@ -945,7 +945,7 @@ def download_file_verified(
 
 
 def upstream_source_archive_urls(tag: str) -> list[str]:
-    encoded_tag = urllib.parse.quote(tag, safe="")
+    encoded_tag = urllib.parse.quote(tag, safe = "")
     return [
         f"https://codeload.github.com/{UPSTREAM_REPO}/tar.gz/refs/tags/{encoded_tag}",
         f"https://github.com/{UPSTREAM_REPO}/archive/refs/tags/{encoded_tag}.tar.gz",
@@ -953,7 +953,7 @@ def upstream_source_archive_urls(tag: str) -> list[str]:
 
 
 def commit_source_archive_urls(repo: str, source_commit: str) -> list[str]:
-    encoded_commit = urllib.parse.quote(source_commit, safe="")
+    encoded_commit = urllib.parse.quote(source_commit, safe = "")
     return [
         f"https://codeload.github.com/{repo}/tar.gz/{encoded_commit}",
         f"https://github.com/{repo}/archive/{encoded_commit}.tar.gz",
@@ -1064,13 +1064,13 @@ def iter_release_payloads_by_time(
     releases = [
         release
         for release in github_releases(
-            repo, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+            repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
         )
         if isinstance(release, dict)
         and not release.get("draft")
         and not release.get("prerelease")
     ]
-    releases.sort(key=release_time_sort_key, reverse=True)
+    releases.sort(key = release_time_sort_key, reverse = True)
     for release in releases:
         yield release
 
@@ -1090,10 +1090,10 @@ def synthetic_checksums_for_release(
     repo: str, release_tag: str, upstream_tag: str
 ) -> ApprovedReleaseChecksums:
     return ApprovedReleaseChecksums(
-        repo=repo,
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        artifacts={},
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        artifacts = {},
     )
 
 
@@ -1120,15 +1120,15 @@ def parse_direct_linux_release_bundle(
         if target in {"linux-x64", "linux-x64-cpu"}:
             artifacts.append(
                 PublishedLlamaArtifact(
-                    asset_name=asset_name,
-                    install_kind="linux-cpu",
-                    runtime_line=None,
-                    coverage_class=None,
-                    supported_sms=[],
-                    min_sm=None,
-                    max_sm=None,
-                    bundle_profile=None,
-                    rank=1000,
+                    asset_name = asset_name,
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
                 )
             )
             continue
@@ -1139,15 +1139,15 @@ def parse_direct_linux_release_bundle(
             continue
         artifacts.append(
             PublishedLlamaArtifact(
-                asset_name=asset_name,
-                install_kind="linux-cuda",
-                runtime_line=str(profile["runtime_line"]),
-                coverage_class=str(profile["coverage_class"]),
-                supported_sms=[str(value) for value in profile["supported_sms"]],
-                min_sm=int(profile["min_sm"]),
-                max_sm=int(profile["max_sm"]),
-                bundle_profile=bundle_profile,
-                rank=int(profile["rank"]),
+                asset_name = asset_name,
+                install_kind = "linux-cuda",
+                runtime_line = str(profile["runtime_line"]),
+                coverage_class = str(profile["coverage_class"]),
+                supported_sms = [str(value) for value in profile["supported_sms"]],
+                min_sm = int(profile["min_sm"]),
+                max_sm = int(profile["max_sm"]),
+                bundle_profile = bundle_profile,
+                rank = int(profile["rank"]),
             )
         )
 
@@ -1168,13 +1168,13 @@ def parse_direct_linux_release_bundle(
         "published_release: direct_asset_scan=linux",
     ]
     return PublishedReleaseBundle(
-        repo=repo,
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        assets=assets,
-        manifest_asset_name=DEFAULT_PUBLISHED_MANIFEST_ASSET,
-        artifacts=artifacts,
-        selection_log=selection_log,
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        assets = assets,
+        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        artifacts = artifacts,
+        selection_log = selection_log,
     )
 
 
@@ -1188,9 +1188,9 @@ def direct_linux_release_plan(
     if bundle is None:
         return None
     if not direct_release_matches_request(
-        release_tag=bundle.release_tag,
-        llama_tag=bundle.upstream_tag,
-        requested_tag=requested_tag,
+        release_tag = bundle.release_tag,
+        llama_tag = bundle.upstream_tag,
+        requested_tag = requested_tag,
     ):
         return None
 
@@ -1205,11 +1205,11 @@ def direct_linux_release_plan(
     if not attempts:
         raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
     return InstallReleasePlan(
-        requested_tag=requested_tag,
-        llama_tag=bundle.upstream_tag,
-        release_tag=bundle.release_tag,
-        attempts=attempts,
-        approved_checksums=synthetic_checksums_for_release(
+        requested_tag = requested_tag,
+        llama_tag = bundle.upstream_tag,
+        release_tag = bundle.release_tag,
+        attempts = attempts,
+        approved_checksums = synthetic_checksums_for_release(
             repo,
             bundle.release_tag,
             bundle.upstream_tag,
@@ -1227,9 +1227,9 @@ def direct_upstream_release_plan(
     if not isinstance(release_tag, str) or not release_tag:
         return None
     if not direct_release_matches_request(
-        release_tag=release_tag,
-        llama_tag=release_tag,
-        requested_tag=requested_tag,
+        release_tag = release_tag,
+        llama_tag = release_tag,
+        requested_tag = requested_tag,
     ):
         return None
 
@@ -1252,12 +1252,12 @@ def direct_upstream_release_plan(
         if cpu_url:
             attempts.append(
                 AssetChoice(
-                    repo=repo,
-                    tag=release_tag,
-                    name=cpu_asset,
-                    url=cpu_url,
-                    source_label="upstream",
-                    install_kind="windows-cpu",
+                    repo = repo,
+                    tag = release_tag,
+                    name = cpu_asset,
+                    url = cpu_url,
+                    source_label = "upstream",
+                    install_kind = "windows-cpu",
                 )
             )
     elif host.is_macos and host.is_arm64:
@@ -1266,12 +1266,12 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo=repo,
-                    tag=release_tag,
-                    name=asset_name,
-                    url=asset_url,
-                    source_label="upstream",
-                    install_kind="macos-arm64",
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "macos-arm64",
                 )
             )
     elif host.is_macos and host.is_x86_64:
@@ -1280,12 +1280,12 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo=repo,
-                    tag=release_tag,
-                    name=asset_name,
-                    url=asset_url,
-                    source_label="upstream",
-                    install_kind="macos-x64",
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "macos-x64",
                 )
             )
     elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia:
@@ -1294,22 +1294,22 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo=repo,
-                    tag=release_tag,
-                    name=asset_name,
-                    url=asset_url,
-                    source_label="upstream",
-                    install_kind="linux-cpu",
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "linux-cpu",
                 )
             )
     if not attempts:
         raise PrebuiltFallback("no compatible upstream prebuilt asset was found")
     return InstallReleasePlan(
-        requested_tag=requested_tag,
-        llama_tag=release_tag,
-        release_tag=release_tag,
-        attempts=attempts,
-        approved_checksums=synthetic_checksums_for_release(
+        requested_tag = requested_tag,
+        llama_tag = release_tag,
+        release_tag = release_tag,
+        attempts = attempts,
+        approved_checksums = synthetic_checksums_for_release(
             repo,
             release_tag,
             release_tag,
@@ -1414,7 +1414,7 @@ def normalize_compute_caps(compute_caps: Iterable[str]) -> list[str]:
             continue
         seen.add(normalized_value)
         normalized.append(normalized_value)
-    normalized.sort(key=int)
+    normalized.sort(key = int)
     return normalized
 
 
@@ -1544,7 +1544,7 @@ def linux_runtime_dirs_for_required_libraries(
         if provided:
             matched.append((provided, directory))
 
-    matched.sort(key=lambda item: item[0], reverse=True)
+    matched.sort(key = lambda item: item[0], reverse = True)
     return [directory for _, directory in matched]
 
 
@@ -1637,21 +1637,21 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     except (TypeError, ValueError):
         raise ValueError(f"artifact {asset_name} rank was not an integer")
     return PublishedLlamaArtifact(
-        asset_name=asset_name,
-        install_kind=install_kind,
-        runtime_line=runtime_line
+        asset_name = asset_name,
+        install_kind = install_kind,
+        runtime_line = runtime_line
         if isinstance(runtime_line, str) and runtime_line
         else None,
-        coverage_class=coverage_class
+        coverage_class = coverage_class
         if isinstance(coverage_class, str) and coverage_class
         else None,
-        supported_sms=supported_sms,
-        min_sm=min_sm,
-        max_sm=max_sm,
-        bundle_profile=bundle_profile
+        supported_sms = supported_sms,
+        min_sm = min_sm,
+        max_sm = max_sm,
+        bundle_profile = bundle_profile
         if isinstance(bundle_profile, str) and bundle_profile
         else None,
-        rank=rank,
+        rank = rank,
     )
 
 
@@ -1671,8 +1671,8 @@ def parse_published_release_bundle(
     # by release tag or asset filename conventions.
     manifest_bytes = download_bytes(
         manifest_url,
-        timeout=30,
-        headers=auth_headers(manifest_url),
+        timeout = 30,
+        headers = auth_headers(manifest_url),
     )
     manifest_sha256 = sha256_bytes(manifest_bytes)
     try:
@@ -1687,7 +1687,7 @@ def parse_published_release_bundle(
         )
     validate_schema_version(
         manifest_payload,
-        label=f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} in {repo}@{release_tag}",
+        label = f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} in {repo}@{release_tag}",
     )
     component = manifest_payload.get("component")
     upstream_tag = manifest_payload.get("upstream_tag")
@@ -1733,31 +1733,31 @@ def parse_published_release_bundle(
     if source_commit:
         selection_log.append(f"published_release: source_commit={source_commit}")
     return PublishedReleaseBundle(
-        repo=repo,
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        manifest_sha256=manifest_sha256,
-        source_repo=source_repo
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        manifest_sha256 = manifest_sha256,
+        source_repo = source_repo
         if isinstance(source_repo, str) and source_repo
         else None,
-        source_repo_url=source_repo_url
+        source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
-        source_ref_kind=source_ref_kind,
-        requested_source_ref=requested_source_ref
+        source_ref_kind = source_ref_kind,
+        requested_source_ref = requested_source_ref
         if isinstance(requested_source_ref, str) and requested_source_ref
         else None,
-        resolved_source_ref=resolved_source_ref
+        resolved_source_ref = resolved_source_ref
         if isinstance(resolved_source_ref, str) and resolved_source_ref
         else None,
-        source_commit=source_commit,
-        source_commit_short=source_commit_short
+        source_commit = source_commit,
+        source_commit_short = source_commit_short
         if isinstance(source_commit_short, str) and source_commit_short
         else None,
-        assets=assets,
-        manifest_asset_name=DEFAULT_PUBLISHED_MANIFEST_ASSET,
-        artifacts=artifacts,
-        selection_log=selection_log,
+        assets = assets,
+        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        artifacts = artifacts,
+        selection_log = selection_log,
     )
 
 
@@ -1772,7 +1772,7 @@ def parse_approved_release_checksums(
         )
     validate_schema_version(
         payload,
-        label=f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET}",
+        label = f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET}",
     )
     if payload.get("component") != "llama.cpp":
         raise RuntimeError(
@@ -1817,10 +1817,10 @@ def parse_approved_release_checksums(
         repo_value = raw_entry.get("repo")
         kind_value = raw_entry.get("kind")
         artifacts[asset_name] = ApprovedArtifactHash(
-            asset_name=asset_name,
-            sha256=digest,
-            repo=repo_value if isinstance(repo_value, str) and repo_value else None,
-            kind=kind_value if isinstance(kind_value, str) and kind_value else None,
+            asset_name = asset_name,
+            sha256 = digest,
+            repo = repo_value if isinstance(repo_value, str) and repo_value else None,
+            kind = kind_value if isinstance(kind_value, str) and kind_value else None,
         )
 
     source_commit = normalize_source_commit(payload.get("source_commit"))
@@ -1831,27 +1831,27 @@ def parse_approved_release_checksums(
     requested_source_ref = payload.get("requested_source_ref")
     resolved_source_ref = payload.get("resolved_source_ref")
     return ApprovedReleaseChecksums(
-        repo=repo,
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        source_repo=source_repo
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        source_repo = source_repo
         if isinstance(source_repo, str) and source_repo
         else None,
-        source_repo_url=source_repo_url
+        source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
-        source_ref_kind=source_ref_kind,
-        requested_source_ref=requested_source_ref
+        source_ref_kind = source_ref_kind,
+        requested_source_ref = requested_source_ref
         if isinstance(requested_source_ref, str) and requested_source_ref
         else None,
-        resolved_source_ref=resolved_source_ref
+        resolved_source_ref = resolved_source_ref
         if isinstance(resolved_source_ref, str) and resolved_source_ref
         else None,
-        source_commit=source_commit,
-        source_commit_short=source_commit_short
+        source_commit = source_commit,
+        source_commit_short = source_commit_short
         if isinstance(source_commit_short, str) and source_commit_short
         else None,
-        artifacts=artifacts,
+        artifacts = artifacts,
     )
 
 
@@ -1888,7 +1888,7 @@ def iter_published_release_bundles(
     releases = (
         [github_release(repo, published_release_tag)]
         if published_release_tag
-        else github_releases(repo, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+        else github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     )
     for release in releases:
         if not published_release_tag and (
@@ -1997,20 +1997,20 @@ def linux_cuda_choice_from_release(
         seen_attempts.add(asset_name)
         attempts.append(
             AssetChoice(
-                repo=release.repo,
-                tag=release.release_tag,
-                name=asset_name,
-                url=asset_url,
-                source_label="published",
-                is_ready_bundle=True,
-                install_kind="linux-cuda",
-                bundle_profile=artifact.bundle_profile,
-                runtime_line=artifact.runtime_line,
-                coverage_class=artifact.coverage_class,
-                supported_sms=artifact.supported_sms,
-                min_sm=artifact.min_sm,
-                max_sm=artifact.max_sm,
-                selection_log=list(selection_log)
+                repo = release.repo,
+                tag = release.release_tag,
+                name = asset_name,
+                url = asset_url,
+                source_label = "published",
+                is_ready_bundle = True,
+                install_kind = "linux-cuda",
+                bundle_profile = artifact.bundle_profile,
+                runtime_line = artifact.runtime_line,
+                coverage_class = artifact.coverage_class,
+                supported_sms = artifact.supported_sms,
+                min_sm = artifact.min_sm,
+                max_sm = artifact.max_sm,
+                selection_log = list(selection_log)
                 + [
                     "linux_cuda_selection: selected "
                     f"{asset_name} runtime_line={artifact.runtime_line} coverage_class={artifact.coverage_class} reason={reason}"
@@ -2088,7 +2088,7 @@ def linux_cuda_choice_from_release(
         if coverage_candidates:
             artifact, url = sorted(
                 coverage_candidates,
-                key=lambda item: (
+                key = lambda item: (
                     (item[0].max_sm or 0) - (item[0].min_sm or 0),
                     item[0].rank,
                     item[0].max_sm or 0,
@@ -2111,7 +2111,7 @@ def linux_cuda_choice_from_release(
             "linux_cuda_selection: attempt "
             f"{attempt.name} runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
         ]
-    return LinuxCudaSelection(attempts=attempts, selection_log=selection_log)
+    return LinuxCudaSelection(attempts = attempts, selection_log = selection_log)
 
 
 def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str | None:
@@ -2123,7 +2123,7 @@ def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str 
 
 def iter_upstream_releases() -> Iterable[dict[str, Any]]:
     for release in github_releases(
-        UPSTREAM_REPO, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+        UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
     ):
         if release.get("draft") or release.get("prerelease"):
             continue
@@ -2192,8 +2192,8 @@ def resolve_published_release(
                 f"but requested {normalized_requested}"
             )
         return ResolvedPublishedRelease(
-            bundle=bundle,
-            checksums=validated_checksums_for_bundle(repo, bundle),
+            bundle = bundle,
+            checksums = validated_checksums_for_bundle(repo, bundle),
         )
 
     skipped_invalid = 0
@@ -2209,7 +2209,7 @@ def resolve_published_release(
                 f"{repo}@{bundle.release_tag} ({exc})"
             )
             continue
-        return ResolvedPublishedRelease(bundle=bundle, checksums=checksums)
+        return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
 
     if normalized_requested == "latest":
         if skipped_invalid:
@@ -2242,8 +2242,8 @@ def iter_resolved_published_releases(
                 f"but requested {normalized_requested}"
             )
         yield ResolvedPublishedRelease(
-            bundle=bundle,
-            checksums=validated_checksums_for_bundle(repo, bundle),
+            bundle = bundle,
+            checksums = validated_checksums_for_bundle(repo, bundle),
         )
         return
 
@@ -2264,7 +2264,7 @@ def iter_resolved_published_releases(
             )
             continue
         yielded_valid = True
-        yield ResolvedPublishedRelease(bundle=bundle, checksums=checksums)
+        yield ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
 
     if yielded_valid:
         return
@@ -2369,15 +2369,15 @@ def source_build_plan_for_release(
     source_url = source_repo_clone_url(source_repo, source_repo_url)
     if exact_source is not None and source_url and source_commit:
         return SourceBuildPlan(
-            source_url=source_url,
-            source_ref=source_commit,
-            source_ref_kind="commit",
-            compatibility_upstream_tag=release.bundle.upstream_tag,
-            source_repo=source_repo,
-            source_repo_url=source_repo_url,
-            requested_source_ref=requested_source_ref,
-            resolved_source_ref=resolved_source_ref,
-            source_commit=source_commit,
+            source_url = source_url,
+            source_ref = source_commit,
+            source_ref_kind = "commit",
+            compatibility_upstream_tag = release.bundle.upstream_tag,
+            source_repo = source_repo,
+            source_repo_url = source_repo_url,
+            requested_source_ref = requested_source_ref,
+            resolved_source_ref = resolved_source_ref,
+            source_commit = source_commit,
         )
     source_ref = checkout_friendly_ref(
         source_ref_kind, resolved_source_ref or requested_source_ref
@@ -2388,27 +2388,27 @@ def source_build_plan_for_release(
         and source_ref_kind in {"tag", "branch", "pull", "commit"}
     ):
         return SourceBuildPlan(
-            source_url=source_url,
-            source_ref=source_ref,
-            source_ref_kind=source_ref_kind,
-            compatibility_upstream_tag=release.bundle.upstream_tag,
-            source_repo=source_repo,
-            source_repo_url=source_repo_url,
-            requested_source_ref=requested_source_ref,
-            resolved_source_ref=resolved_source_ref,
-            source_commit=source_commit,
+            source_url = source_url,
+            source_ref = source_ref,
+            source_ref_kind = source_ref_kind,
+            compatibility_upstream_tag = release.bundle.upstream_tag,
+            source_repo = source_repo,
+            source_repo_url = source_repo_url,
+            requested_source_ref = requested_source_ref,
+            resolved_source_ref = resolved_source_ref,
+            source_commit = source_commit,
         )
     return SourceBuildPlan(
-        source_url=source_url_from_repo_slug(UPSTREAM_REPO)
+        source_url = source_url_from_repo_slug(UPSTREAM_REPO)
         or "https://github.com/ggml-org/llama.cpp",
-        source_ref=release.bundle.upstream_tag,
-        source_ref_kind="tag",
-        compatibility_upstream_tag=release.bundle.upstream_tag,
-        source_repo=source_repo,
-        source_repo_url=source_repo_url,
-        requested_source_ref=requested_source_ref,
-        resolved_source_ref=resolved_source_ref,
-        source_commit=source_commit,
+        source_ref = release.bundle.upstream_tag,
+        source_ref_kind = "tag",
+        compatibility_upstream_tag = release.bundle.upstream_tag,
+        source_repo = source_repo,
+        source_repo_url = source_repo_url,
+        requested_source_ref = requested_source_ref,
+        resolved_source_ref = resolved_source_ref,
+        source_commit = source_commit,
     )
 
 
@@ -2430,11 +2430,11 @@ def resolve_source_build_plan(
             pass
         inferred_kind = infer_source_ref_kind(normalized_requested)
         return SourceBuildPlan(
-            source_url="https://github.com/ggml-org/llama.cpp",
-            source_ref=checkout_friendly_ref(inferred_kind, normalized_requested)
+            source_url = "https://github.com/ggml-org/llama.cpp",
+            source_ref = checkout_friendly_ref(inferred_kind, normalized_requested)
             or normalized_requested,
-            source_ref_kind=inferred_kind,
-            compatibility_upstream_tag=normalized_requested,
+            source_ref_kind = inferred_kind,
+            compatibility_upstream_tag = normalized_requested,
         )
 
     if published_repo:
@@ -2449,10 +2449,10 @@ def resolve_source_build_plan(
             pass
     latest_tag = latest_upstream_release_tag()
     return SourceBuildPlan(
-        source_url="https://github.com/ggml-org/llama.cpp",
-        source_ref=latest_tag,
-        source_ref_kind="tag",
-        compatibility_upstream_tag=latest_tag,
+        source_url = "https://github.com/ggml-org/llama.cpp",
+        source_ref = latest_tag,
+        source_ref_kind = "tag",
+        compatibility_upstream_tag = latest_tag,
     )
 
 
@@ -2465,10 +2465,10 @@ def run_capture(
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+        env = env,
     )
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
@@ -2500,7 +2500,7 @@ def detect_host() -> HostInfo:
         # container leftovers), which would otherwise misclassify an AMD
         # ROCm host as NVIDIA and short-circuit the ROCm path.
         try:
-            listing = run_capture([nvidia_smi, "-L"], timeout=20)
+            listing = run_capture([nvidia_smi, "-L"], timeout = 20)
             gpu_lines = [
                 line for line in listing.stdout.splitlines() if line.startswith("GPU ")
             ]
@@ -2511,7 +2511,7 @@ def detect_host() -> HostInfo:
             pass
 
         try:
-            result = run_capture([nvidia_smi], timeout=20)
+            result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
             for line in merged.splitlines():
                 if "CUDA Version:" in line:
@@ -2529,7 +2529,7 @@ def detect_host() -> HostInfo:
                     "--query-gpu=index,uuid,compute_cap",
                     "--format=csv,noheader",
                 ],
-                timeout=20,
+                timeout = 20,
             )
             visible_gpu_rows: list[tuple[str, str, str]] = []
             for raw in caps.stdout.splitlines():
@@ -2590,7 +2590,7 @@ def detect_host() -> HostInfo:
             if not _exe:
                 continue
             try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout=10)
+                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
@@ -2607,7 +2607,7 @@ def detect_host() -> HostInfo:
             if not _exe:
                 continue
             try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout=10)
+                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
@@ -2618,20 +2618,20 @@ def detect_host() -> HostInfo:
         # since the HIP SDK can be installed without an AMD GPU.
 
     return HostInfo(
-        system=system,
-        machine=machine,
-        is_windows=is_windows,
-        is_linux=is_linux,
-        is_macos=is_macos,
-        is_x86_64=is_x86_64,
-        is_arm64=is_arm64,
-        nvidia_smi=nvidia_smi,
-        driver_cuda_version=driver_cuda_version,
-        compute_caps=compute_caps,
-        visible_cuda_devices=visible_cuda_devices,
-        has_physical_nvidia=has_physical_nvidia,
-        has_usable_nvidia=has_usable_nvidia,
-        has_rocm=has_rocm,
+        system = system,
+        machine = machine,
+        is_windows = is_windows,
+        is_linux = is_linux,
+        is_macos = is_macos,
+        is_x86_64 = is_x86_64,
+        is_arm64 = is_arm64,
+        nvidia_smi = nvidia_smi,
+        driver_cuda_version = driver_cuda_version,
+        compute_caps = compute_caps,
+        visible_cuda_devices = visible_cuda_devices,
+        has_physical_nvidia = has_physical_nvidia,
+        has_usable_nvidia = has_usable_nvidia,
+        has_rocm = has_rocm,
     )
 
 
@@ -2703,25 +2703,25 @@ def detect_torch_cuda_runtime_preference(host: HostInfo) -> CudaRuntimePreferenc
     selection_log: list[str] = []
     if host.is_macos:
         selection_log.append("torch_cuda_preference: skipped on macOS")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
     if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
         selection_log.append(
             "torch_cuda_preference: skipped because CUDA host prerequisites were not met"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     try:
         import torch
     except Exception as exc:
         selection_log.append(f"torch_cuda_preference: import failed: {exc}")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
     if not isinstance(cuda_version, str) or not cuda_version.strip():
         selection_log.append(
             "torch_cuda_preference: torch.version.cuda missing; skipping Torch shortcut"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     try:
         cuda_available = bool(torch.cuda.is_available())
@@ -2729,26 +2729,26 @@ def detect_torch_cuda_runtime_preference(host: HostInfo) -> CudaRuntimePreferenc
         selection_log.append(
             f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     if not cuda_available:
         selection_log.append(
             "torch_cuda_preference: torch.cuda.is_available() returned False; falling back to normal selection"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     runtime_line = runtime_line_from_cuda_version(cuda_version)
     if runtime_line is None:
         selection_log.append(
             f"torch_cuda_preference: unsupported torch.version.cuda={cuda_version}; falling back to normal selection"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     selection_log.append(
         "torch_cuda_preference: selected runtime_line="
         f"{runtime_line} from torch.version.cuda={cuda_version}"
     )
-    return CudaRuntimePreference(runtime_line=runtime_line, selection_log=selection_log)
+    return CudaRuntimePreference(runtime_line = runtime_line, selection_log = selection_log)
 
 
 def windows_cuda_attempts(
@@ -2858,14 +2858,14 @@ def windows_cuda_attempts(
             continue
         attempts.append(
             AssetChoice(
-                repo=UPSTREAM_REPO,
-                tag=llama_tag,
-                name=selected_name,
-                url=asset_url,
-                source_label="upstream",
-                install_kind="windows-cuda",
-                runtime_line=runtime_line,
-                selection_log=list(selection_log)
+                repo = UPSTREAM_REPO,
+                tag = llama_tag,
+                name = selected_name,
+                url = asset_url,
+                source_label = "upstream",
+                install_kind = "windows-cuda",
+                runtime_line = runtime_line,
+                selection_log = list(selection_log)
                 + [
                     f"windows_cuda_selection: selected {selected_name} runtime={runtime}"
                 ],
@@ -2910,7 +2910,7 @@ def published_windows_cuda_attempts(
             continue
         candidates = sorted(
             artifacts_by_runtime.get(runtime_line, []),
-            key=lambda artifact: (artifact.rank, artifact.asset_name),
+            key = lambda artifact: (artifact.rank, artifact.asset_name),
         )
         for artifact in candidates:
             asset_url = release.assets.get(artifact.asset_name)
@@ -2918,14 +2918,14 @@ def published_windows_cuda_attempts(
                 continue
             attempts.append(
                 AssetChoice(
-                    repo=release.repo,
-                    tag=release.release_tag,
-                    name=artifact.asset_name,
-                    url=asset_url,
-                    source_label="published",
-                    install_kind="windows-cuda",
-                    runtime_line=runtime_line,
-                    selection_log=list(ordered_attempt.selection_log or [])
+                    repo = release.repo,
+                    tag = release.release_tag,
+                    name = artifact.asset_name,
+                    url = asset_url,
+                    source_label = "published",
+                    install_kind = "windows-cuda",
+                    runtime_line = runtime_line,
+                    selection_log = list(ordered_attempt.selection_log or [])
                     + [
                         "windows_cuda_selection: selected published asset "
                         f"{artifact.asset_name} for runtime_line={runtime_line}"
@@ -2957,8 +2957,8 @@ def resolve_linux_cuda_choice(
     selection = linux_cuda_choice_from_release(
         host,
         release,
-        preferred_runtime_line=torch_preference.runtime_line,
-        selection_preamble=torch_preference.selection_log,
+        preferred_runtime_line = torch_preference.runtime_line,
+        selection_preamble = torch_preference.selection_log,
     )
     if selection is not None:
         return selection
@@ -2975,21 +2975,21 @@ def published_asset_choice_for_kind(
             for artifact in release.artifacts
             if artifact.install_kind == install_kind
         ),
-        key=lambda artifact: (artifact.rank, artifact.asset_name),
+        key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
         asset_url = release.assets.get(artifact.asset_name)
         if not asset_url:
             continue
         return AssetChoice(
-            repo=release.repo,
-            tag=release.release_tag,
-            name=artifact.asset_name,
-            url=asset_url,
-            source_label="published",
-            install_kind=install_kind,
-            runtime_line=artifact.runtime_line,
-            selection_log=list(release.selection_log)
+            repo = release.repo,
+            tag = release.release_tag,
+            name = artifact.asset_name,
+            url = asset_url,
+            source_label = "published",
+            install_kind = install_kind,
+            runtime_line = artifact.runtime_line,
+            selection_log = list(release.selection_log)
             + [
                 f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"
             ],
@@ -3025,10 +3025,10 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [amd_smi, "version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=5,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
             )
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
@@ -3041,10 +3041,10 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [hipconfig, "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=5,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
             )
             if result.returncode == 0:
                 raw = (result.stdout or "").strip().split("\n")[0]
@@ -3073,10 +3073,10 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             _result = subprocess.run(
                 [_exe, *_cmd[1:]],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=5,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
             )
         except Exception:
             continue
@@ -3117,7 +3117,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     continue
                 _parts = tuple(int(p) for p in _m.group(1).split("."))
                 rocm_candidates.append((_parts, _name))
-            rocm_candidates.sort(reverse=True)
+            rocm_candidates.sort(reverse = True)
             _host_rocm_version = _detect_host_rocm_version()
             _compatible: list[tuple[tuple[int, ...], str]] = rocm_candidates
             if _host_rocm_version is not None:
@@ -3146,12 +3146,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     "this may fail preflight and fall back to a source build (safe)"
                 )
                 return AssetChoice(
-                    repo=UPSTREAM_REPO,
-                    tag=llama_tag,
-                    name=rocm_name,
-                    url=upstream_assets[rocm_name],
-                    source_label="upstream",
-                    install_kind="linux-rocm",
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = rocm_name,
+                    url = upstream_assets[rocm_name],
+                    source_label = "upstream",
+                    install_kind = "linux-rocm",
                 )
             # No ROCm prebuilt available -- fall back to source build
             raise PrebuiltFallback(
@@ -3163,12 +3163,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="linux-cpu",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "linux-cpu",
         )
 
     if host.is_windows and host.is_x86_64:
@@ -3186,12 +3186,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}"
                 )
                 return AssetChoice(
-                    repo=UPSTREAM_REPO,
-                    tag=llama_tag,
-                    name=hip_name,
-                    url=upstream_assets[hip_name],
-                    source_label="upstream",
-                    install_kind="windows-hip",
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = hip_name,
+                    url = upstream_assets[hip_name],
+                    source_label = "upstream",
+                    install_kind = "windows-hip",
                 )
             log(
                 "AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU"
@@ -3201,12 +3201,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Windows CPU asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="windows-cpu",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "windows-cpu",
         )
 
     if host.is_macos and host.is_arm64:
@@ -3214,12 +3214,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream macOS arm64 asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="macos-arm64",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "macos-arm64",
         )
 
     if host.is_macos and host.is_x86_64:
@@ -3227,12 +3227,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream macOS x64 asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="macos-x64",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "macos-x64",
         )
 
     raise PrebuiltFallback(
@@ -3356,9 +3356,9 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                         f"zip archive contained a symlink entry: {member.filename}"
                     )
                 if member.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    target.mkdir(parents = True, exist_ok = True)
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents = True, exist_ok = True)
                 with archive.open(member, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
 
@@ -3368,7 +3368,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
             for member in archive.getmembers():
                 target = safe_extract_path(base, member.name)
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    target.mkdir(parents = True, exist_ok = True)
                     continue
                 if member.islnk() or member.issym():
                     pending_links.append((member, target))
@@ -3377,7 +3377,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                     raise PrebuiltFallback(
                         f"tar archive contained an unsupported entry: {member.name}"
                     )
-                target.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents = True, exist_ok = True)
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     raise PrebuiltFallback(
@@ -3402,7 +3402,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                         f"archive link targeted a directory: {member.name} -> {member.linkname}"
                     )
 
-                target.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents = True, exist_ok = True)
                 if target.exists() or target.is_symlink():
                     target.unlink()
 
@@ -3421,7 +3421,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 )
             unresolved = next_round
 
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents = True, exist_ok = True)
     if archive_path.name.endswith(".zip"):
         extract_zip_safely(archive_path, destination)
         return
@@ -3434,11 +3434,11 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
 def copy_globs(
     source_dir: Path, destination: Path, patterns: list[str], *, required: bool = True
 ) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents = True, exist_ok = True)
     matched_sources: dict[str, Path] = {}
     for path in sorted(
         (candidate for candidate in source_dir.rglob("*") if candidate.is_file()),
-        key=lambda candidate: (
+        key = lambda candidate: (
             len(candidate.relative_to(source_dir).parts),
             str(candidate),
         ),
@@ -3470,7 +3470,7 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
         source_url = f"{raw_base}/convert_hf_to_gguf.py"
         data = download_bytes(
             source_url,
-            progress_label=f"Downloading {download_label_from_url(source_url)}",
+            progress_label = f"Downloading {download_label_from_url(source_url)}",
         )
         if not data:
             raise RuntimeError(f"downloaded empty converter script from {source_url}")
@@ -3496,11 +3496,11 @@ def extracted_archive_root(extract_dir: Path) -> Path:
 
 
 def copy_directory_contents(source_dir: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents = True, exist_ok = True)
     for item in source_dir.iterdir():
         target = destination / item.name
         if item.is_dir():
-            shutil.copytree(item, target, dirs_exist_ok=True)
+            shutil.copytree(item, target, dirs_exist_ok = True)
         else:
             shutil.copy2(item, target)
 
@@ -3522,7 +3522,7 @@ def hydrate_source_tree(
         else upstream_source_archive_urls(source_ref)
     )
     label = source_label or f"llama.cpp source tree for {source_ref}"
-    extract_dir = Path(tempfile.mkdtemp(prefix="source-extract-", dir=work_dir))
+    extract_dir = Path(tempfile.mkdtemp(prefix = "source-extract-", dir = work_dir))
 
     try:
         log(f"downloading {label}")
@@ -3537,8 +3537,8 @@ def hydrate_source_tree(
                 download_file_verified(
                     source_url,
                     archive_path,
-                    expected_sha256=expected_sha256,
-                    label=label,
+                    expected_sha256 = expected_sha256,
+                    label = label,
                 )
                 downloaded = True
                 break
@@ -3580,11 +3580,11 @@ def normalize_install_layout(install_dir: Path, host: HostInfo) -> tuple[Path, P
     build_bin = install_dir / "build" / "bin"
     if host.is_windows:
         exec_dir = build_bin / "Release"
-        exec_dir.mkdir(parents=True, exist_ok=True)
+        exec_dir.mkdir(parents = True, exist_ok = True)
         return exec_dir / "llama-server.exe", exec_dir / "llama-quantize.exe"
 
-    install_dir.mkdir(parents=True, exist_ok=True)
-    build_bin.mkdir(parents=True, exist_ok=True)
+    install_dir.mkdir(parents = True, exist_ok = True)
+    build_bin.mkdir(parents = True, exist_ok = True)
     return install_dir / "llama-server", install_dir / "llama-quantize"
 
 
@@ -3631,7 +3631,7 @@ def overlay_directory_for_choice(
         path = install_dir / "build" / "bin" / "Release"
     else:
         path = install_dir / "build" / "bin"
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents = True, exist_ok = True)
     return path
 
 
@@ -3669,7 +3669,7 @@ def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
 
 @contextmanager
 def install_lock(lock_path: Path) -> Iterator[None]:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
 
     if FileLock is None:
         # Fallback: exclusive file creation as a simple lock.
@@ -3685,7 +3685,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 except Exception:
                     os.close(fd)
                     fd = None
-                    lock_path.unlink(missing_ok=True)
+                    lock_path.unlink(missing_ok = True)
                     raise
                 break
             except FileExistsError:
@@ -3718,7 +3718,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     # Process is alive but owned by another user -- not stale
                     pass
                 if stale:
-                    lock_path.unlink(missing_ok=True)
+                    lock_path.unlink(missing_ok = True)
                     continue
                 if time.monotonic() >= deadline:
                     raise BusyInstallConflict(
@@ -3730,11 +3730,11 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         finally:
             if fd is not None:
                 os.close(fd)
-            lock_path.unlink(missing_ok=True)
+            lock_path.unlink(missing_ok = True)
         return
 
     try:
-        with FileLock(lock_path, timeout=INSTALL_LOCK_TIMEOUT_SECONDS):
+        with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
             yield
     except FileLockTimeout as exc:
         raise BusyInstallConflict(
@@ -3748,7 +3748,7 @@ def install_lock_path(install_dir: Path) -> Path:
 
 def install_staging_root(install_dir: Path) -> Path:
     root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents = True, exist_ok = True)
     return root
 
 
@@ -3763,7 +3763,7 @@ def prune_install_staging_root(install_dir: Path) -> None:
 def create_install_staging_dir(install_dir: Path) -> Path:
     staging_dir = Path(
         tempfile.mkdtemp(
-            prefix=f"{install_dir.name}.staging-", dir=install_staging_root(install_dir)
+            prefix = f"{install_dir.name}.staging-", dir = install_staging_root(install_dir)
         )
     )
     log(f"created install staging dir {staging_dir}")
@@ -3784,7 +3784,7 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
 
 def remove_tree(path: Path | None) -> None:
     if path and path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, ignore_errors = True)
 
 
 def remove_tree_logged(path: Path | None, label: str) -> None:
@@ -3907,15 +3907,15 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         try:
             cleanup_install_side_paths(
                 install_dir,
-                staging_dir=staging_dir,
-                rollback_dir=rollback_dir,
-                failed_dir=failed_dir,
-                active_dir=install_dir,
+                staging_dir = staging_dir,
+                rollback_dir = rollback_dir,
+                failed_dir = failed_dir,
+                active_dir = install_dir,
             )
         except Exception as cleanup_exc:
             cleanup_error = cleanup_exc
             log(f"cleanup after rollback failure also failed: {cleanup_exc}")
-        details = textwrap.shorten(str(exc), width=200, placeholder="...")
+        details = textwrap.shorten(str(exc), width = 200, placeholder = "...")
         if cleanup_error is not None:
             raise PrebuiltFallback(
                 "staged prebuilt validation passed but activation and rollback failed; "
@@ -3947,25 +3947,25 @@ def install_from_archives(
     download_file_verified(
         choice.url,
         main_archive,
-        expected_sha256=choice.expected_sha256,
-        label=f"prebuilt archive {choice.name}",
+        expected_sha256 = choice.expected_sha256,
+        label = f"prebuilt archive {choice.name}",
     )
 
-    install_dir.mkdir(parents=True, exist_ok=True)
-    extract_dir = Path(tempfile.mkdtemp(prefix="extract-", dir=work_dir))
+    install_dir.mkdir(parents = True, exist_ok = True)
+    extract_dir = Path(tempfile.mkdtemp(prefix = "extract-", dir = work_dir))
 
     try:
         extract_archive(main_archive, extract_dir)
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
         copy_globs(
-            source_dir, overlay_dir, runtime_patterns_for_choice(choice), required=True
+            source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
         )
         copy_globs(
             source_dir,
             install_dir,
             metadata_patterns_for_choice(choice),
-            required=False,
+            required = False,
         )
     finally:
         remove_tree(extract_dir)
@@ -4021,7 +4021,7 @@ def ensure_repo_shape(install_dir: Path) -> None:
 
 def validation_model_cache_path(install_dir: Path) -> Path:
     cache_dir = install_dir.parent / VALIDATION_MODEL_CACHE_DIRNAME
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents = True, exist_ok = True)
     return cache_dir / VALIDATION_MODEL_CACHE_FILENAME
 
 
@@ -4054,7 +4054,7 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
             data = validated_validation_model_bytes(
                 download_bytes(
                     TEST_MODEL_URL,
-                    progress_label=f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
+                    progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
                 )
             )
             if cache_path is not None:
@@ -4074,7 +4074,7 @@ def free_local_port() -> int:
 
 def read_log_excerpt(log_path: Path, *, max_lines: int = 60) -> str:
     try:
-        content = log_path.read_text(encoding="utf-8", errors="replace")
+        content = log_path.read_text(encoding = "utf-8", errors = "replace")
     except FileNotFoundError:
         return ""
     return "\n".join(content.splitlines()[-max_lines:])
@@ -4140,7 +4140,7 @@ def linux_missing_libraries(
     binary_path: Path, *, env: dict[str, str] | None = None
 ) -> list[str]:
     try:
-        result = run_capture(["ldd", str(binary_path)], timeout=20, env=env)
+        result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
     except Exception:
         return []
 
@@ -4180,7 +4180,7 @@ def python_runtime_dirs() -> list[str]:
 
 def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
     try:
-        result = run_capture(["ldconfig", "-p"], timeout=20)
+        result = run_capture(["ldconfig", "-p"], timeout = 20)
     except Exception:
         return []
 
@@ -4216,7 +4216,7 @@ def preflight_linux_installed_binaries(
     issues: list[str] = []
     for binary_path in binaries:
         env = binary_env(binary_path, install_dir, host)
-        missing = linux_missing_libraries(binary_path, env=env)
+        missing = linux_missing_libraries(binary_path, env = env)
         if not missing:
             continue
         runtime_dirs = [
@@ -4352,10 +4352,10 @@ def validate_quantize(
     command = [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"]
     result = subprocess.run(
         command,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env=binary_env(quantize_path, install_dir, host, runtime_line=runtime_line),
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
     )
     if (
         result.returncode != 0
@@ -4429,19 +4429,19 @@ def validate_server(
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
 
-        log_fd, log_name = tempfile.mkstemp(prefix="llama-server-", suffix=".log")
+        log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
         os.close(log_fd)
         log_path = Path(log_name)
         process: subprocess.Popen[str] | None = None
         try:
-            with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
+            with log_path.open("w", encoding = "utf-8", errors = "replace") as log_handle:
                 process = subprocess.Popen(
                     command,
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=binary_env(
-                        server_path, install_dir, host, runtime_line=runtime_line
+                    stdout = log_handle,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                    env = binary_env(
+                        server_path, install_dir, host, runtime_line = runtime_line
                     ),
                 )
                 deadline = time.time() + 20
@@ -4450,7 +4450,7 @@ def validate_server(
                 last_error: Exception | None = None
                 while time.time() < deadline:
                     if process.poll() is not None:
-                        process.wait(timeout=5)
+                        process.wait(timeout = 5)
                         log_handle.flush()
                         output = read_log_excerpt(log_path)
                         exited_quickly = (
@@ -4464,7 +4464,7 @@ def validate_server(
                             and is_retryable_server_bind_error(
                                 last_error,
                                 output,
-                                exited_quickly=exited_quickly,
+                                exited_quickly = exited_quickly,
                             )
                         ):
                             log(
@@ -4480,11 +4480,11 @@ def validate_server(
                     )
                     request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/completion",
-                        data=payload,
-                        headers={"Content-Type": "application/json"},
+                        data = payload,
+                        headers = {"Content-Type": "application/json"},
                     )
                     try:
-                        with urllib.request.urlopen(request, timeout=5) as response:
+                        with urllib.request.urlopen(request, timeout = 5) as response:
                             status_code = response.status
                             response_body = response.read().decode("utf-8", "replace")
                             if status_code == 200:
@@ -4512,12 +4512,12 @@ def validate_server(
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
-                    process.wait(timeout=5)
+                    process.wait(timeout = 5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.wait(timeout=5)
+                    process.wait(timeout = 5)
             try:
-                log_path.unlink(missing_ok=True)
+                log_path.unlink(missing_ok = True)
             except Exception:
                 pass
     if last_failure is not None:
@@ -4558,7 +4558,7 @@ def collect_system_report(
         lines.extend(choice.selection_log)
     if host.nvidia_smi:
         try:
-            smi = run_capture([host.nvidia_smi], timeout=20)
+            smi = run_capture([host.nvidia_smi], timeout = 20)
             excerpt = "\n".join((smi.stdout + smi.stderr).splitlines()[:20])
             lines.append("nvidia-smi:")
             lines.append(excerpt)
@@ -4572,7 +4572,7 @@ def collect_system_report(
             lines.append(
                 "linux_missing_libs="
                 + (
-                    ",".join(linux_missing_libraries(server_binary, env=server_env))
+                    ",".join(linux_missing_libraries(server_binary, env = server_env))
                     or "none"
                 )
             )
@@ -4593,7 +4593,7 @@ def collect_system_report(
             )
             try:
                 ldd = run_capture(
-                    ["ldd", str(server_binary)], timeout=20, env=server_env
+                    ["ldd", str(server_binary)], timeout = 20, env = server_env
                 )
                 lines.append("ldd llama-server:")
                 lines.append((ldd.stdout + ldd.stderr).strip())
@@ -4621,7 +4621,7 @@ def collect_system_report(
         server_binary = install_dir / "llama-server"
         if server_binary.exists():
             try:
-                otool = run_capture(["otool", "-L", str(server_binary)], timeout=20)
+                otool = run_capture(["otool", "-L", str(server_binary)], timeout = 20)
                 lines.append("otool -L llama-server:")
                 lines.append((otool.stdout + otool.stderr).strip())
             except Exception as exc:
@@ -4653,7 +4653,7 @@ def apply_approved_hashes(
         candidate_names.extend(
             windows_cuda_asset_aliases(
                 attempt.name,
-                compatibility_tag=checksums.upstream_tag,
+                compatibility_tag = checksums.upstream_tag,
             )
         )
         seen_names: set[str] = set()
@@ -4805,11 +4805,11 @@ def resolve_install_release_plans(
 
         plans.append(
             InstallReleasePlan(
-                requested_tag=requested_tag,
-                llama_tag=resolved_tag,
-                release_tag=bundle.release_tag,
-                attempts=attempts,
-                approved_checksums=checksums,
+                requested_tag = requested_tag,
+                llama_tag = resolved_tag,
+                release_tag = bundle.release_tag,
+                attempts = attempts,
+                approved_checksums = checksums,
             )
         )
 
@@ -4851,7 +4851,7 @@ def write_prebuilt_metadata(
         "coverage_class": choice.coverage_class,
     }
     fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode(
+        json.dumps(fingerprint_payload, sort_keys = True, separators = (",", ":")).encode(
             "utf-8"
         )
     ).hexdigest()
@@ -4880,7 +4880,7 @@ def write_prebuilt_metadata(
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps(metadata, indent=2) + "\n"
+        json.dumps(metadata, indent = 2) + "\n"
     )
 
 
@@ -4909,7 +4909,7 @@ def expected_install_fingerprint(
         "coverage_class": choice.coverage_class,
     }
     return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
     ).hexdigest()
 
 
@@ -4918,7 +4918,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     if not metadata_path.is_file():
         return None
     try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload = json.loads(metadata_path.read_text(encoding = "utf-8"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -5022,10 +5022,10 @@ def existing_install_matches_choice(
         if not (runtime_dir / f"{binary}{ext}").exists():
             return False
     expected_fingerprint = expected_install_fingerprint(
-        llama_tag=llama_tag,
-        release_tag=release_tag,
-        choice=choice,
-        approved_checksums=approved_checksums,
+        llama_tag = llama_tag,
+        release_tag = release_tag,
+        choice = choice,
+        approved_checksums = approved_checksums,
     )
     if not expected_fingerprint:
         return False
@@ -5064,10 +5064,10 @@ def existing_install_matches_plan(
     return existing_install_matches_choice(
         install_dir,
         host,
-        llama_tag=plan.llama_tag,
-        release_tag=plan.release_tag,
-        choice=plan.attempts[0],
-        approved_checksums=plan.approved_checksums,
+        llama_tag = plan.llama_tag,
+        release_tag = plan.release_tag,
+        choice = plan.attempts[0],
+        approved_checksums = plan.approved_checksums,
     )
 
 
@@ -5098,14 +5098,14 @@ def validate_prebuilt_choice(
         source_ref,
         install_dir,
         work_dir,
-        source_repo=source_repo,
-        expected_sha256=source_archive.sha256 if source_archive is not None else None,
-        source_label=(
+        source_repo = source_repo,
+        expected_sha256 = source_archive.sha256 if source_archive is not None else None,
+        source_label = (
             f"llama.cpp source tree for {source_repo}@{source_ref}"
             if exact_source
             else f"llama.cpp source tree for {llama_tag}"
         ),
-        exact_source=exact_source,
+        exact_source = exact_source,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(
@@ -5115,12 +5115,12 @@ def validate_prebuilt_choice(
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,
-        requested_tag=requested_tag,
-        llama_tag=llama_tag,
-        release_tag=release_tag,
-        choice=choice,
-        approved_checksums=approved_checksums,
-        prebuilt_fallback_used=prebuilt_fallback_used,
+        requested_tag = requested_tag,
+        llama_tag = llama_tag,
+        release_tag = release_tag,
+        choice = choice,
+        approved_checksums = approved_checksums,
+        prebuilt_fallback_used = prebuilt_fallback_used,
     )
     validate_quantize(
         quantize_path,
@@ -5128,15 +5128,15 @@ def validate_prebuilt_choice(
         quantized_path,
         install_dir,
         host,
-        runtime_line=choice.runtime_line,
+        runtime_line = choice.runtime_line,
     )
     validate_server(
         server_path,
         probe_path,
         host,
         install_dir,
-        runtime_line=choice.runtime_line,
-        install_kind=choice.install_kind,
+        runtime_line = choice.runtime_line,
+        install_kind = choice.install_kind,
     )
     log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
@@ -5173,10 +5173,10 @@ def validate_prebuilt_attempts(
         if existing_install_dir is not None and existing_install_matches_choice(
             existing_install_dir,
             host,
-            llama_tag=llama_tag,
-            release_tag=release_tag,
-            choice=attempt,
-            approved_checksums=approved_checksums,
+            llama_tag = llama_tag,
+            release_tag = release_tag,
+            choice = attempt,
+            approved_checksums = approved_checksums,
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
@@ -5195,12 +5195,12 @@ def validate_prebuilt_attempts(
                 staging_dir,
                 work_dir,
                 probe_path,
-                requested_tag=requested_tag,
-                llama_tag=llama_tag,
-                release_tag=release_tag,
-                approved_checksums=approved_checksums,
-                prebuilt_fallback_used=tried_fallback,
-                quantized_path=quantized_path,
+                requested_tag = requested_tag,
+                llama_tag = llama_tag,
+                release_tag = release_tag,
+                approved_checksums = approved_checksums,
+                prebuilt_fallback_used = tried_fallback,
+                quantized_path = quantized_path,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -5267,7 +5267,7 @@ def install_prebuilt(
                     f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
                 )
                 return
-            with tempfile.TemporaryDirectory(prefix="unsloth-llama-prebuilt-") as tmp:
+            with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
                 download_validation_model(
@@ -5294,12 +5294,12 @@ def install_prebuilt(
                             install_dir,
                             work_dir,
                             probe_path,
-                            requested_tag=requested_tag,
-                            llama_tag=plan.llama_tag,
-                            release_tag=plan.release_tag,
-                            approved_checksums=plan.approved_checksums,
-                            initial_fallback_used=release_index > 0,
-                            existing_install_dir=install_dir,
+                            requested_tag = requested_tag,
+                            llama_tag = plan.llama_tag,
+                            release_tag = plan.release_tag,
+                            approved_checksums = plan.approved_checksums,
+                            initial_fallback_used = release_index > 0,
+                            existing_install_dir = install_dir,
                         )
                     except ExistingInstallSatisfied:
                         return
@@ -5337,69 +5337,69 @@ def install_prebuilt(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install and validate a prebuilt llama.cpp bundle for Unsloth Studio."
+        description = "Install and validate a prebuilt llama.cpp bundle for Unsloth Studio."
     )
-    parser.add_argument("--install-dir", help="Target ~/.unsloth/llama.cpp directory")
+    parser.add_argument("--install-dir", help = "Target ~/.unsloth/llama.cpp directory")
     parser.add_argument(
         "--llama-tag",
-        default=DEFAULT_LLAMA_TAG,
-        help=(
+        default = DEFAULT_LLAMA_TAG,
+        help = (
             "llama.cpp release tag. Defaults to the latest usable published Unsloth "
             "release unless UNSLOTH_LLAMA_TAG overrides it."
         ),
     )
     parser.add_argument(
         "--published-repo",
-        default=DEFAULT_PUBLISHED_REPO,
-        help="Published bundle repository",
+        default = DEFAULT_PUBLISHED_REPO,
+        help = "Published bundle repository",
     )
     parser.add_argument(
         "--published-release-tag",
-        default=DEFAULT_PUBLISHED_TAG,
-        help=(
+        default = DEFAULT_PUBLISHED_TAG,
+        help = (
             "Published GitHub release tag to pin. By default, scan releases "
             "until a usable published llama.cpp release bundle is found."
         ),
     )
     parser.add_argument(
         "--simple-policy",
-        action="store_true",
-        help="Use the simplified platform-specific prebuilt selection policy.",
+        action = "store_true",
+        help = "Use the simplified platform-specific prebuilt selection policy.",
     )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
-        nargs="?",
-        const="latest",
-        help="Resolve a llama.cpp tag such as 'latest' to the logical upstream release tag.",
+        nargs = "?",
+        const = "latest",
+        help = "Resolve a llama.cpp tag such as 'latest' to the logical upstream release tag.",
     )
     resolve_group.add_argument(
         "--resolve-install-tag",
-        nargs="?",
-        const="latest",
-        help=(
+        nargs = "?",
+        const = "latest",
+        help = (
             "Resolve a llama.cpp tag such as 'latest' to the concrete upstream tag "
             "selected by the current published-release policy."
         ),
     )
     resolve_group.add_argument(
         "--resolve-source-build",
-        nargs="?",
-        const="latest",
-        help=("Resolve the source-build fallback plan."),
+        nargs = "?",
+        const = "latest",
+        help = ("Resolve the source-build fallback plan."),
     )
     parser.add_argument(
         "--output-format",
-        choices=("plain", "json"),
-        default="plain",
-        help="Resolver output format. Defaults to plain.",
+        choices = ("plain", "json"),
+        default = "plain",
+        help = "Resolver output format. Defaults to plain.",
     )
     return parser.parse_args()
 
 
 def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None:
     if output_format == "json":
-        print(json.dumps(payload, sort_keys=True))
+        print(json.dumps(payload, sort_keys = True))
         return
     if "llama_tag" in payload:
         print(payload["llama_tag"])
@@ -5419,7 +5419,7 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
             )
         )
         return
-    print(json.dumps(payload, sort_keys=True))
+    print(json.dumps(payload, sort_keys = True))
 
 
 def main() -> int:
@@ -5435,7 +5435,7 @@ def main() -> int:
                 "requested_tag": normalized_requested_llama_tag(args.resolve_llama_tag),
                 "llama_tag": resolved,
             },
-            output_format=args.output_format,
+            output_format = args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -5452,7 +5452,7 @@ def main() -> int:
                 ),
                 "llama_tag": resolved,
             },
-            output_format=args.output_format,
+            output_format = args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -5472,7 +5472,7 @@ def main() -> int:
                 "source_ref": plan.source_ref,
                 "compatibility_upstream_tag": plan.compatibility_upstream_tag,
             },
-            output_format=args.output_format,
+            output_format = args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -5481,11 +5481,11 @@ def main() -> int:
             "install_llama_prebuilt.py: --install-dir is required unless --resolve-llama-tag, --resolve-install-tag, or --resolve-source-build is used"
         )
     install_prebuilt(
-        install_dir=Path(args.install_dir).expanduser().resolve(),
-        llama_tag=args.llama_tag,
-        published_repo=args.published_repo,
-        published_release_tag=args.published_release_tag or "",
-        simple_policy=args.simple_policy,
+        install_dir = Path(args.install_dir).expanduser().resolve(),
+        llama_tag = args.llama_tag,
+        published_repo = args.published_repo,
+        published_release_tag = args.published_release_tag or "",
+        simple_policy = args.simple_policy,
     )
     return EXIT_SUCCESS
 
@@ -5504,9 +5504,9 @@ if __name__ == "__main__":
         # Expected when the published repo (e.g. ggml-org/llama.cpp) has no
         # prebuilt manifest.  Exit quietly with EXIT_FALLBACK so the caller
         # falls back to source build without a noisy "fatal helper error".
-        log(textwrap.shorten(str(exc), width=400, placeholder="..."))
+        log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
-        message = textwrap.shorten(str(exc), width=400, placeholder="...")
+        message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
         log(f"fatal helper error: {message}")
         raise SystemExit(EXIT_ERROR)

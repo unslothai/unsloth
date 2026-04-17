@@ -43,7 +43,9 @@ def test_partial_failure_message_is_generic(monkeypatch, fake_datasets, fake_str
     assert "Some subset options may be missing" in resp.partial_failure
 
 
-def test_partial_failure_message_does_not_leak_upstream_detail(monkeypatch, fake_datasets, fake_structlog):
+def test_partial_failure_message_does_not_leak_upstream_detail(
+    monkeypatch, fake_datasets, fake_structlog
+):
     import datasets as ds
     from huggingface_hub.utils import HfHubHTTPError
 

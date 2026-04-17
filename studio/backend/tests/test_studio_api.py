@@ -87,14 +87,14 @@ def _http(
 ) -> tuple[int, str]:
     """Minimal stdlib HTTP helper.  Returns (status_code, body_text)."""
     data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    req = urllib.request.Request(url, data = data, headers = headers or {}, method = method)
     if body:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode(errors="replace")
+        return exc.code, exc.read().decode(errors = "replace")
 
 
 def _stream_http(
@@ -106,11 +106,11 @@ def _stream_http(
 ) -> tuple[int, list[dict]]:
     """POST a streaming request and collect SSE chunks."""
     data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req = urllib.request.Request(url, data = data, headers = headers, method = "POST")
     req.add_header("Content-Type", "application/json")
     chunks: list[dict] = []
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             status = resp.status
             for raw_line in resp:
                 line = raw_line.decode().strip()
@@ -131,9 +131,9 @@ def test_help_output():
     """``unsloth studio run --help`` should show all documented options."""
     result = subprocess.run(
         ["unsloth", "studio", "run", "--help"],
-        capture_output=True,
-        text=True,
-        timeout=15,
+        capture_output = True,
+        text = True,
+        timeout = 15,
     )
     out = result.stdout
     assert result.returncode == 0, f"--help exited with {result.returncode}"
@@ -158,11 +158,11 @@ def test_curl_basic(base_url: str, api_key: str):
     status, text = _http(
         "POST",
         f"{base_url}/v1/chat/completions",
-        body={
+        body = {
             "messages": [{"role": "user", "content": "Say just the word hello"}],
             "stream": False,
         },
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers = {"Authorization": f"Bearer {api_key}"},
     )
     assert status == 200, f"Expected 200, got {status}: {text[:300]}"
     data = json.loads(text)
@@ -190,11 +190,11 @@ def test_curl_streaming(base_url: str, api_key: str):
     """Example 2: streaming chat completion via HTTP SSE."""
     status, chunks = _stream_http(
         f"{base_url}/v1/chat/completions",
-        body={
+        body = {
             "messages": [{"role": "user", "content": "Count from 1 to 3"}],
             "stream": True,
         },
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers = {"Authorization": f"Bearer {api_key}"},
     )
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received"
@@ -211,13 +211,13 @@ def test_openai_sdk(base_url: str, api_key: str):
         print("  SKIP  openai SDK not installed")
         return
 
-    client = OpenAI(base_url=f"{base_url}/v1", api_key=api_key)
+    client = OpenAI(base_url = f"{base_url}/v1", api_key = api_key)
     response = client.chat.completions.create(
-        model="current",
-        messages=[
+        model = "current",
+        messages = [
             {"role": "user", "content": "What is 2+2? Answer with just the number."}
         ],
-        stream=True,
+        stream = True,
     )
     content_parts = []
     for chunk in response:
@@ -241,7 +241,7 @@ def test_curl_with_tools(base_url: str, api_key: str):
     """
     status, chunks = _stream_http(
         f"{base_url}/v1/chat/completions",
-        body={
+        body = {
             "messages": [
                 {
                     "role": "user",
@@ -253,8 +253,8 @@ def test_curl_with_tools(base_url: str, api_key: str):
             "enabled_tools": ["python"],
             "session_id": "test-session",
         },
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=120,
+        headers = {"Authorization": f"Bearer {api_key}"},
+        timeout = 120,
     )
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received for tools request"
@@ -271,11 +271,11 @@ def test_invalid_key_rejected(base_url: str):
     status, _text = _http(
         "POST",
         f"{base_url}/v1/chat/completions",
-        body={
+        body = {
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
         },
-        headers={"Authorization": "Bearer sk-unsloth-boguskey123"},
+        headers = {"Authorization": "Bearer sk-unsloth-boguskey123"},
     )
     assert status == 401, f"Expected 401 for invalid key, got {status}"
     print("  PASS  invalid API key rejected (401)")
@@ -286,7 +286,7 @@ def test_no_key_rejected(base_url: str):
     status, _text = _http(
         "POST",
         f"{base_url}/v1/chat/completions",
-        body={
+        body = {
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
         },
@@ -310,11 +310,11 @@ def _stream_anthropic_http(
     Returns (status, [(event_type, data_dict), ...]).
     """
     data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req = urllib.request.Request(url, data = data, headers = headers, method = "POST")
     req.add_header("Content-Type", "application/json")
     events: list[tuple[str, dict]] = []
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             status = resp.status
             current_event = None
             for raw_line in resp:
@@ -351,12 +351,12 @@ def test_anthropic_basic(base_url: str, api_key: str):
     status, text = _http(
         "POST",
         f"{base_url}/v1/messages",
-        body={
+        body = {
             "model": "default",
             "max_tokens": 100,
             "messages": [{"role": "user", "content": "Say just the word hello"}],
         },
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers = {"Authorization": f"Bearer {api_key}"},
     )
     assert status == 200, f"Expected 200, got {status}: {text[:300]}"
     data = json.loads(text)
@@ -374,13 +374,13 @@ def test_anthropic_streaming(base_url: str, api_key: str):
     """Anthropic Messages API: streaming SSE."""
     status, events = _stream_anthropic_http(
         f"{base_url}/v1/messages",
-        body={
+        body = {
             "model": "default",
             "max_tokens": 100,
             "messages": [{"role": "user", "content": "Count from 1 to 3"}],
             "stream": True,
         },
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers = {"Authorization": f"Bearer {api_key}"},
     )
     assert status == 200, f"Expected 200, got {status}"
     assert len(events) > 0, "No SSE events received"
@@ -402,11 +402,11 @@ def test_anthropic_sdk(base_url: str, api_key: str):
         print("  SKIP  anthropic SDK not installed")
         return
 
-    client = Anthropic(base_url=f"{base_url}/v1", api_key=api_key)
+    client = Anthropic(base_url = f"{base_url}/v1", api_key = api_key)
     message = client.messages.create(
-        model="default",
-        max_tokens=100,
-        messages=[
+        model = "default",
+        max_tokens = 100,
+        messages = [
             {"role": "user", "content": "What is 2+2? Answer with just the number."}
         ],
     )
@@ -421,7 +421,7 @@ def test_anthropic_with_tools(base_url: str, api_key: str):
     """Anthropic Messages API: streaming with tools."""
     status, events = _stream_anthropic_http(
         f"{base_url}/v1/messages",
-        body={
+        body = {
             "model": "default",
             "max_tokens": 1024,
             "messages": [
@@ -448,8 +448,8 @@ def test_anthropic_with_tools(base_url: str, api_key: str):
             ],
             "stream": True,
         },
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=120,
+        headers = {"Authorization": f"Bearer {api_key}"},
+        timeout = 120,
     )
     assert status == 200, f"Expected 200, got {status}"
     assert len(events) > 0, "No SSE events received for tools request"
@@ -488,13 +488,13 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
     if variant:
         cmd.extend(["--gguf-variant", variant])
 
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOG_FILE.parent.mkdir(parents = True, exist_ok = True)
     log_fh = open(LOG_FILE, "w")
     proc = subprocess.Popen(
         cmd,
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        preexec_fn=os.setsid,
+        stdout = log_fh,
+        stderr = subprocess.STDOUT,
+        preexec_fn = os.setsid,
     )
 
     # Wait for the banner containing the API key
@@ -533,13 +533,13 @@ def _kill_server(proc: subprocess.Popen):
     except (ProcessLookupError, PermissionError):
         pass
     try:
-        proc.wait(timeout=10)
+        proc.wait(timeout = 10)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-        proc.wait(timeout=5)
+        proc.wait(timeout = 5)
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -547,17 +547,17 @@ def _kill_server(proc: subprocess.Popen):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="End-to-end tests for unsloth studio run"
+        description = "End-to-end tests for unsloth studio run"
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=f"Model to test with (default: {DEFAULT_MODEL})",
+        default = DEFAULT_MODEL,
+        help = f"Model to test with (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--gguf-variant",
-        default=DEFAULT_VARIANT,
-        help=f"GGUF variant (default: {DEFAULT_VARIANT})",
+        default = DEFAULT_VARIANT,
+        help = f"GGUF variant (default: {DEFAULT_VARIANT})",
     )
     args = parser.parse_args()
 

@@ -496,7 +496,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         result = _smi_query(
             "get_visible_gpu_utilization",
             parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices=parent_visible_spec["raw"],
+            parent_cuda_visible_devices = parent_visible_spec["raw"],
         )
         if result is not None:
             result["backend"] = _backend_label(device)
@@ -718,7 +718,7 @@ def _resolve_model_identifier_for_gpu_estimate(
     try:
         from utils.models.model_config import ModelConfig
 
-        config = ModelConfig.from_identifier(model_name, hf_token=hf_token)
+        config = ModelConfig.from_identifier(model_name, hf_token = hf_token)
         if config and config.is_lora and config.base_model:
             return config.base_model
         return config.identifier if config else model_name
@@ -748,7 +748,7 @@ def _get_hf_safetensors_total_params(
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token=hf_token)
+        info = hf_model_info(model_name, token = hf_token)
         safetensors = getattr(info, "safetensors", None)
         if isinstance(safetensors, dict):
             total = safetensors.get("total")
@@ -766,8 +766,8 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
         trust_remote_code = model_name.lower().startswith("unsloth/")
         return AutoConfig.from_pretrained(
             model_name,
-            token=hf_token,
-            trust_remote_code=trust_remote_code,
+            token = hf_token,
+            trust_remote_code = trust_remote_code,
         )
     except Exception as e:
         logger.warning("Could not load config for '%s': %s", model_name, e)
@@ -802,13 +802,13 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
             _, _, _, memory_left_for_kv_cache_gb = (
                 _vllm_utils.approximate_vllm_memory_usage(
                     config,
-                    load_in_4bit=False,
-                    load_in_8bit=False,
-                    max_seq_length=1,
-                    gpu_memory_utilization=1.0,
-                    enable_lora=False,
-                    account_for_gradients=False,
-                    cuda_graph_overhead=False,
+                    load_in_4bit = False,
+                    load_in_8bit = False,
+                    max_seq_length = 1,
+                    gpu_memory_utilization = 1.0,
+                    enable_lora = False,
+                    account_for_gradients = False,
+                    cuda_graph_overhead = False,
                 )
             )
         finally:
@@ -832,18 +832,18 @@ def estimate_fp16_model_size_bytes(
     model_name: str, hf_token: Optional[str] = None
 ) -> tuple[Optional[int], str]:
     estimate_model = _resolve_model_identifier_for_gpu_estimate(
-        model_name, hf_token=hf_token
+        model_name, hf_token = hf_token
     )
 
     total_params = None
     if "/" in estimate_model and not Path(estimate_model).exists():
         total_params = _get_hf_safetensors_total_params(
-            estimate_model, hf_token=hf_token
+            estimate_model, hf_token = hf_token
         )
     if total_params:
         return int(total_params * 2), "safetensors"
 
-    config = _load_config_for_gpu_estimate(estimate_model, hf_token=hf_token)
+    config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     if config is not None:
         config_bytes = _estimate_fp16_model_size_bytes_from_config(config)
         if config_bytes is not None:
@@ -883,7 +883,7 @@ def estimate_required_model_memory_gb(
     )
 
     model_size_bytes, source = estimate_fp16_model_size_bytes(
-        model_name, hf_token=hf_token
+        model_name, hf_token = hf_token
     )
     metadata: Dict[str, Any] = {
         "mode": "inference" if training_type is None else "training",
@@ -912,20 +912,20 @@ def estimate_required_model_memory_gb(
         else ("qlora" if load_in_4bit else "lora")
     )
     vram_config = TrainingVramConfig(
-        training_method=training_method,
-        batch_size=batch_size,
-        max_seq_length=max_seq_length,
-        lora_rank=lora_rank,
-        target_modules=target_modules or list(DEFAULT_TARGET_MODULES),
-        gradient_checkpointing=gradient_checkpointing,
-        optimizer=optimizer,
-        load_in_4bit=load_in_4bit,
+        training_method = training_method,
+        batch_size = batch_size,
+        max_seq_length = max_seq_length,
+        lora_rank = lora_rank,
+        target_modules = target_modules or list(DEFAULT_TARGET_MODULES),
+        gradient_checkpointing = gradient_checkpointing,
+        optimizer = optimizer,
+        load_in_4bit = load_in_4bit,
     )
 
     estimate_model = _resolve_model_identifier_for_gpu_estimate(
-        model_name, hf_token=hf_token
+        model_name, hf_token = hf_token
     )
-    config = _load_config_for_gpu_estimate(estimate_model, hf_token=hf_token)
+    config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:
@@ -981,15 +981,15 @@ def auto_select_gpu_ids(
 
     required_gb, estimate_metadata = estimate_required_model_memory_gb(
         model_name,
-        hf_token=hf_token,
-        training_type=training_type,
-        load_in_4bit=load_in_4bit,
-        batch_size=batch_size,
-        max_seq_length=max_seq_length,
-        lora_rank=lora_rank,
-        target_modules=target_modules,
-        gradient_checkpointing=gradient_checkpointing,
-        optimizer=optimizer,
+        hf_token = hf_token,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+        batch_size = batch_size,
+        max_seq_length = max_seq_length,
+        lora_rank = lora_rank,
+        target_modules = target_modules,
+        gradient_checkpointing = gradient_checkpointing,
+        optimizer = optimizer,
     )
     metadata.update(estimate_metadata)
     parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -1037,7 +1037,7 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    ranked = sorted(gpu_candidates, key=lambda item: (-item["free_gb"], item["index"]))
+    ranked = sorted(gpu_candidates, key = lambda item: (-item["free_gb"], item["index"]))
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
@@ -1080,11 +1080,11 @@ def auto_select_gpu_ids(
             metadata["selected_gpu_ids"] = selected
             logger.debug(
                 "Selected GPUs automatically",
-                model_name=model_name,
-                selected_gpu_ids=selected,
-                usable_gb=metadata["usable_gb"],
-                required_gb=metadata.get("required_gb"),
-                multi_gpu_overhead=multi_gpu_overhead,
+                model_name = model_name,
+                selected_gpu_ids = selected,
+                usable_gb = metadata["usable_gb"],
+                required_gb = metadata.get("required_gb"),
+                multi_gpu_overhead = multi_gpu_overhead,
             )
             return selected, metadata
 
@@ -1103,11 +1103,11 @@ def auto_select_gpu_ids(
     metadata["selected_gpu_ids"] = fallback_all
     logger.warning(
         "Falling back to all visible GPUs -- model may not fit",
-        model_name=model_name,
-        selected_gpu_ids=fallback_all,
-        usable_gb=metadata["usable_gb"],
-        required_gb=metadata.get("required_gb"),
-        multi_gpu_overhead=multi_gpu_overhead,
+        model_name = model_name,
+        selected_gpu_ids = fallback_all,
+        usable_gb = metadata["usable_gb"],
+        required_gb = metadata.get("required_gb"),
+        multi_gpu_overhead = multi_gpu_overhead,
     )
     return fallback_all, metadata
 
@@ -1158,15 +1158,15 @@ def prepare_gpu_selection(
 
     selected_gpu_ids, metadata = auto_select_gpu_ids(
         model_name,
-        hf_token=hf_token,
-        training_type=training_type,
-        load_in_4bit=load_in_4bit,
-        batch_size=batch_size,
-        max_seq_length=max_seq_length,
-        lora_rank=lora_rank,
-        target_modules=target_modules,
-        gradient_checkpointing=gradient_checkpointing,
-        optimizer=optimizer,
+        hf_token = hf_token,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+        batch_size = batch_size,
+        max_seq_length = max_seq_length,
+        lora_rank = lora_rank,
+        target_modules = target_modules,
+        gradient_checkpointing = gradient_checkpointing,
+        optimizer = optimizer,
     )
     return selected_gpu_ids, metadata
 

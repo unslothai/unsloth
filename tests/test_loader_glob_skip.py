@@ -15,7 +15,7 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
     """Verify HfFileSystem.glob is not called when is_model or is_peft is False."""
 
     def _run_both_exist_block(
-        self, is_model, is_peft, supports_llama32, model_name, is_local_dir=False
+        self, is_model, is_peft, supports_llama32, model_name, is_local_dir = False
     ):
         """Simulate the both_exist detection block from loader.py.
 
@@ -26,7 +26,7 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
         both_exist = (is_model and is_peft) and not supports_llama32
         glob_mock = MagicMock(
-            return_value=[
+            return_value = [
                 f"{model_name}/config.json",
                 f"{model_name}/adapter_config.json",
             ]
@@ -52,40 +52,40 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
     def test_glob_skipped_when_is_model_false(self):
         both_exist, glob_called = self._run_both_exist_block(
-            is_model=False,
-            is_peft=True,
-            supports_llama32=True,
-            model_name="org/some-adapter",
+            is_model = False,
+            is_peft = True,
+            supports_llama32 = True,
+            model_name = "org/some-adapter",
         )
         self.assertFalse(glob_called, "glob should not be called when is_model=False")
         self.assertFalse(both_exist)
 
     def test_glob_skipped_when_is_peft_false(self):
         both_exist, glob_called = self._run_both_exist_block(
-            is_model=True,
-            is_peft=False,
-            supports_llama32=True,
-            model_name="org/some-model",
+            is_model = True,
+            is_peft = False,
+            supports_llama32 = True,
+            model_name = "org/some-model",
         )
         self.assertFalse(glob_called, "glob should not be called when is_peft=False")
         self.assertFalse(both_exist)
 
     def test_glob_skipped_when_both_false(self):
         both_exist, glob_called = self._run_both_exist_block(
-            is_model=False,
-            is_peft=False,
-            supports_llama32=True,
-            model_name="org/bad-repo",
+            is_model = False,
+            is_peft = False,
+            supports_llama32 = True,
+            model_name = "org/bad-repo",
         )
         self.assertFalse(glob_called, "glob should not be called when both are False")
         self.assertFalse(both_exist)
 
     def test_glob_skipped_when_supports_llama32_false(self):
         both_exist, glob_called = self._run_both_exist_block(
-            is_model=True,
-            is_peft=True,
-            supports_llama32=False,
-            model_name="org/some-model",
+            is_model = True,
+            is_peft = True,
+            supports_llama32 = False,
+            model_name = "org/some-model",
         )
         self.assertFalse(
             glob_called, "glob should not be called when SUPPORTS_LLAMA32=False"
@@ -97,10 +97,10 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
     def test_glob_called_when_both_true_and_supports_llama32(self):
         both_exist, glob_called = self._run_both_exist_block(
-            is_model=True,
-            is_peft=True,
-            supports_llama32=True,
-            model_name="org/mixed-repo",
+            is_model = True,
+            is_peft = True,
+            supports_llama32 = True,
+            model_name = "org/mixed-repo",
         )
         self.assertTrue(
             glob_called, "glob should be called when is_model and is_peft are both True"
@@ -109,11 +109,11 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
     def test_local_dir_skips_glob(self):
         both_exist, glob_called = self._run_both_exist_block(
-            is_model=True,
-            is_peft=True,
-            supports_llama32=True,
-            model_name="/local/path/to/model",
-            is_local_dir=True,
+            is_model = True,
+            is_peft = True,
+            supports_llama32 = True,
+            model_name = "/local/path/to/model",
+            is_local_dir = True,
         )
         self.assertFalse(glob_called, "glob should not be called for local directories")
         self.assertTrue(both_exist)
