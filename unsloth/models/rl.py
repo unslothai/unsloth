@@ -2018,11 +2018,12 @@ def patch_trl_disable_gradient_checkpointing():
         except (AttributeError, TypeError):
             pass
 
-    logger.warning_once(
-        "Unsloth: Patched trl.models.utils.disable_gradient_checkpointing with "
-        "a no-op to preserve Unsloth gradient checkpointing across TRL "
-        "generation passes."
-    )
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+        logger.warning_once(
+            "Unsloth: Patched trl.models.utils.disable_gradient_checkpointing with "
+            "a no-op to preserve Unsloth gradient checkpointing across TRL "
+            "generation passes."
+        )
     return
 
 

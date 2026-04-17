@@ -1154,6 +1154,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 ref_logps,
                 per_token_logps,
                 old_logps,
+                sampling_per_token_logps,
                 input_ids,
                 completion_mask,
                 self.beta,
@@ -1174,7 +1175,6 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
-                sampling_per_token_logps = sampling_per_token_logps,
             )
         else:
             if hasattr(self.args, "loss_type"):
