@@ -640,19 +640,26 @@ DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
 
 # =========================================== Phi-4 Multimodal
 phi4_mm_template = \
+    "{% if tools is defined and tools %}"\
+        "{{ '<|system|>\nYou are a helpful assistant with some tools.<|tool|>' }}"\
+        "{{ tools | tojson }}"\
+        "{{ '<|/tool|><|end|>\n' }}"\
+    "{% endif %}"\
     "{% for message in messages %}"\
-        "{{'<|' + message['role'] + '|>\n'}}" \
-        "{% if message['content'] is string %}"\
-            "{{ message['content'] }}"\
-        "{% else %}"\
-            "{% for content in message['content'] %}"\
-                "{% if content['type'] == 'image' %}{{ '<|image_1|>' }}"\
-                "{% elif content['type'] == 'audio' %}{{ '<|audio_1|>' }}"\
-                "{% elif content['type'] == 'text' %}{{ content['text'] }}"\
-                "{% endif %}"\
-            "{% endfor %}"\
+        "{% if message['role'] != 'system' or not (tools is defined and tools) %}"\
+            "{{'<|' + message['role'] + '|>\n'}}" \
+            "{% if message['content'] is string %}"\
+                "{{ message['content'] }}"\
+            "{% else %}"\
+                "{% for content in message['content'] %}"\
+                    "{% if content['type'] == 'image' %}{{ '<|image_1|>' }}"\
+                    "{% elif content['type'] == 'audio' %}{{ '<|audio_1|>' }}"\
+                    "{% elif content['type'] == 'text' %}{{ content['text'] }}"\
+                    "{% endif %}"\
+                "{% endfor %}"\
+            "{% endif %}"\
+            "{{'<|end|>\n'}}" \
         "{% endif %}"\
-        "{{'<|end|>\n'}}" \
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>\n' }}"\
