@@ -5,7 +5,15 @@
 Path utilities for model and dataset handling
 """
 
-from .path_utils import normalize_path, is_local_path, is_model_cached, get_cache_path
+from .path_utils import (
+    normalize_path,
+    is_local_path,
+    is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
+    get_cache_case_resolution_stats,
+    reset_cache_case_resolution_state,
+)
 from .storage_roots import (
     studio_root,
     assets_root,
@@ -26,6 +34,7 @@ from .storage_roots import (
     legacy_hf_cache_dir,
     hf_default_cache_dir,
     lmstudio_model_dirs,
+    well_known_model_dirs,
     ensure_dir,
     ensure_studio_directories,
     resolve_under_root,
@@ -40,6 +49,9 @@ __all__ = [
     "is_local_path",
     "is_model_cached",
     "get_cache_path",
+    "resolve_cached_repo_id_case",
+    "get_cache_case_resolution_stats",
+    "reset_cache_case_resolution_state",
     "studio_root",
     "assets_root",
     "datasets_root",
@@ -59,6 +71,7 @@ __all__ = [
     "legacy_hf_cache_dir",
     "hf_default_cache_dir",
     "lmstudio_model_dirs",
+    "well_known_model_dirs",
     "ensure_dir",
     "ensure_studio_directories",
     "resolve_under_root",

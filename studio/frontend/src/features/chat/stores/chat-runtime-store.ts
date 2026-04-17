@@ -132,7 +132,8 @@ function loadInferenceParams(): InferenceParams {
 function saveInferenceParams(params: InferenceParams): boolean {
   if (!canUseStorage()) return false;
   try {
-    const { checkpoint: _, ...rest } = params;
+    const { checkpoint, ...rest } = params;
+    void checkpoint;
     localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
     return true;
   } catch {
@@ -152,6 +153,7 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
+  modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
@@ -165,10 +167,13 @@ type ChatRuntimeStore = {
   toolCallTimeout: number;
   kvCacheDtype: string | null;
   loadedKvCacheDtype: string | null;
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   activeThreadId: string | null;
+  settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   contextUsage: {
@@ -179,6 +184,7 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   setModelLoading: (loading: boolean) => void;
+  setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
@@ -188,6 +194,7 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (enabled: boolean) => void;
   setToolsEnabled: (enabled: boolean) => void;
@@ -198,6 +205,7 @@ type ChatRuntimeStore = {
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
+  setSpeculativeType: (type: string | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -217,6 +225,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
+  modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
   reasoningEnabled: true,
@@ -230,15 +239,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
+  speculativeType: "ngram-mod",
+  loadedSpeculativeType: null,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   activeThreadId: null,
+  settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
   contextUsage: null,
   modelLoading: false,
   setModelLoading: (loading) => set({ modelLoading: loading }),
+  setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
+    set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set(() => {
       const persisted = saveInferenceParams(params);
@@ -283,6 +297,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       activeGgufVariant: ggufVariant ?? null,
     })),
   setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
+  setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
@@ -293,6 +308,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
+      modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,
@@ -302,6 +318,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
+      speculativeType: "ngram-mod",
+      loadedSpeculativeType: null,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -327,6 +345,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
+  setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>

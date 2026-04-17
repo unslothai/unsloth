@@ -386,7 +386,17 @@ export function applyRecipeConnection(
     nextBaseEdges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
-    const next = { ...target, provider: source.name };
+    // Keep the model_config.model field in sync with provider mode when the
+    // link is changed via graph drag (the model-config dialog path has its
+    // own applyProviderChange helper that does the same thing).
+    const isSourceLocal = source.is_local === true;
+    let nextModel = target.model;
+    if (isSourceLocal && !nextModel.trim()) {
+      nextModel = "local";
+    } else if (!isSourceLocal && nextModel === "local") {
+      nextModel = "";
+    }
+    const next = { ...target, provider: source.name, model: nextModel };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (source.kind === "model_config" && target.kind === "llm") {

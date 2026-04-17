@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Generator, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -45,15 +46,21 @@ _INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-_MAX_REPROMPTS = 1
-_REPROMPT_MAX_CHARS = 500
+_MAX_REPROMPTS = 3
+_REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
-# Model size extraction (shared with routes/inference.py)
-from utils.models import extract_model_size_b as _extract_model_size_b
+
+# Model size extraction — lazy import to avoid pulling in transformers
+# at module level.  See PR description for the full explanation.
+def _extract_model_size_b(model_id: str):
+    from utils.models import extract_model_size_b
+
+    return extract_model_size_b(model_id)
+
 
 # ── Pre-compiled patterns for tool XML stripping ─────────────
 _TOOL_CLOSED_PATS = [
@@ -102,6 +109,7 @@ class LlamaCppBackend:
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        self._speculative_type: Optional[str] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
@@ -159,13 +167,113 @@ class LlamaCppBackend:
 
     @property
     def max_context_length(self) -> Optional[int]:
-        """Return the maximum context currently available on this hardware."""
+        """Return the largest context that fits on this hardware at load time.
+
+        This is the "safe zone" threshold the UI renders warnings
+        against. For a model whose weights fit on some GPU subset, it
+        is the binary-search cap from ``_fit_context_to_vram`` for that
+        subset. For a model whose weights exceed 90% of every GPU
+        subset, it is the 4096 fallback -- the spec's default when the
+        model will not fit. The UI slider ceiling is
+        ``native_context_length``; dragging above ``max_context_length``
+        triggers the "might be slower" warning.
+        """
         return self._max_context_length or self._context_length
 
     @property
     def native_context_length(self) -> Optional[int]:
         """Return the model's native context length from GGUF metadata."""
         return self._context_length
+
+    def load_progress(self) -> Optional[dict]:
+        """Return live model-load progress, or None if not loading.
+
+        While llama-server is warming up, its process is typically in
+        kernel state D (disk sleep) mmap'ing the weight shards into
+        page cache before pushing layers to VRAM. During that window
+        ``/api/inference/status`` only reports ``loading``, which gives
+        the UI nothing to display besides a spinner that looks stuck
+        for minutes on large MoE models.
+
+        This method samples ``/proc/<pid>/status VmRSS`` against the
+        sum of the GGUF shard sizes so the UI can render a real bar
+        and compute rate / ETA. Returns ``None`` when no load is in
+        flight (no process, or process already healthy).
+
+        Shape::
+
+            {
+                "phase": "mmap" | "ready",
+                "bytes_loaded": int,   # VmRSS of the llama-server
+                "bytes_total":  int,   # sum of shard file sizes
+                "fraction": float,     # bytes_loaded / bytes_total, 0..1
+            }
+
+        Linux-only in the current implementation. On macOS/Windows the
+        equivalent would be a different API; this returns ``None`` on
+        platforms where ``/proc/<pid>/status`` is unavailable.
+        """
+        proc = self._process
+        if proc is None:
+            return None
+        pid = proc.pid
+        if pid is None:
+            return None
+
+        # Sum up shard sizes (primary + any extras sitting alongside).
+        bytes_total = 0
+        gguf_path = self._gguf_path
+        if gguf_path:
+            primary = Path(gguf_path)
+            try:
+                if primary.is_file():
+                    bytes_total += primary.stat().st_size
+            except OSError:
+                pass
+            # Extra shards live alongside the primary with the same prefix
+            # before the shard index (e.g. ``-00001-of-00004.gguf``).
+            try:
+                parent = primary.parent
+                stem = primary.name
+                m = _SHARD_RE.match(stem)
+                prefix = m.group(1) if m else None
+                if prefix and parent.is_dir():
+                    for sibling in parent.iterdir():
+                        if (
+                            sibling.is_file()
+                            and sibling.name.startswith(prefix)
+                            and sibling.name != stem
+                            and sibling.suffix == ".gguf"
+                        ):
+                            try:
+                                bytes_total += sibling.stat().st_size
+                            except OSError:
+                                pass
+            except OSError:
+                pass
+
+        # Read VmRSS from /proc/<pid>/status. Kilobytes on Linux.
+        bytes_loaded = 0
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = int(line.split()[1])
+                        bytes_loaded = kb * 1024
+                        break
+        except (FileNotFoundError, PermissionError, ValueError, OSError):
+            return None
+
+        phase = "ready" if self._healthy else "mmap"
+        fraction = 0.0
+        if bytes_total > 0:
+            fraction = min(1.0, bytes_loaded / bytes_total)
+        return {
+            "phase": phase,
+            "bytes_loaded": bytes_loaded,
+            "bytes_total": bytes_total,
+            "fraction": round(fraction, 4),
+        }
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -190,6 +298,10 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def speculative_type(self) -> Optional[str]:
+        return self._speculative_type
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -810,7 +922,9 @@ class LlamaCppBackend:
                 # Detect tool calling support from chat template
                 tool_markers = [
                     "{%- if tools %}",
+                    "{%- if tools -%}",
                     "{% if tools %}",
+                    "{% if tools -%}",
                     '"role" == "tool"',
                     "'role' == 'tool'",
                     'message.role == "tool"',
@@ -890,10 +1004,34 @@ class LlamaCppBackend:
         try:
             import os
 
-            from huggingface_hub import get_paths_info
+            from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
-            total_download_bytes = sum((p.size or 0) for p in path_infos)
+            total_bytes = sum((p.size or 0) for p in path_infos)
+
+            # Subtract bytes already present in the HF cache so we only
+            # preflight against what we actually have to download. Without
+            # this, re-loading a cached large model (e.g. MiniMax-M2.7-GGUF
+            # at 131 GB) fails cold whenever free disk is below the full
+            # weight footprint, even though nothing needs downloading.
+            already_cached_bytes = 0
+            for p in path_infos:
+                if not p.size:
+                    continue
+                try:
+                    cached_path = try_to_load_from_cache(hf_repo, p.path)
+                except Exception:
+                    cached_path = None
+                if isinstance(cached_path, str) and os.path.exists(cached_path):
+                    try:
+                        on_disk = os.path.getsize(cached_path)
+                    except OSError:
+                        on_disk = 0
+                    # Count as satisfied only when the full blob is present.
+                    if on_disk >= p.size:
+                        already_cached_bytes += p.size
+
+            total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
             if total_download_bytes > 0:
                 cache_dir = os.environ.get(
@@ -905,9 +1043,11 @@ class LlamaCppBackend:
 
                 total_gb = total_download_bytes / (1024**3)
                 free_gb = free_bytes / (1024**3)
+                cached_gb = already_cached_bytes / (1024**3)
 
                 logger.info(
-                    f"GGUF download: {total_gb:.1f} GB needed, "
+                    f"GGUF download: {total_gb:.1f} GB needed "
+                    f"({cached_gb:.1f} GB already cached), "
                     f"{free_gb:.1f} GB free on disk"
                 )
 
@@ -1046,8 +1186,10 @@ class LlamaCppBackend:
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
+        speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
+        n_parallel: int = 1,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1177,36 +1319,28 @@ class LlamaCppBackend:
                                 best_cap = max(best_cap, capped)
                         if best_cap > 0:
                             max_available_ctx = best_cap
+                        else:
+                            # Weights exceed 90% of every GPU subset's free
+                            # memory, so there is no fitting context. Anchor
+                            # the UI's "safe zone" threshold at 4096 (the
+                            # spec's default when the model cannot fit) so
+                            # the ctx slider shows the "might be slower"
+                            # warning as soon as the user drags above the
+                            # fallback default instead of never.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
 
                     if explicit_ctx:
-                        # Try to honor the user's requested context exactly.
+                        # Honor the user's requested context verbatim. If it
+                        # fits, pin GPUs and skip --fit; if it doesn't, ship
+                        # -c <user_ctx> --fit on and let llama-server flex
+                        # -ngl (CPU layer offload). The UI is expected to
+                        # have surfaced the "might be slower" warning before
+                        # the user submitted a ctx above the fit ceiling.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
                             effective_ctx, cache_type_kv
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
-
-                        # Full context doesn't fit anywhere -- cap it on the
-                        # best GPU subset we can find (fewest GPUs first).
-                        if use_fit:
-                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                            for n_gpus in range(1, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
-                                pool_mib = sum(free for _, free in subset)
-                                capped = self._fit_context_to_vram(
-                                    effective_ctx,
-                                    pool_mib,
-                                    model_size,
-                                    cache_type_kv,
-                                )
-                                kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv
-                                )
-                                total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.90:
-                                    effective_ctx = capped
-                                    gpu_indices = sorted(idx for idx, _ in subset)
-                                    use_fit = False
-                                    break
+                        # No silent shrink: effective_ctx stays == n_ctx.
                     else:
                         # Auto context: prefer fewer GPUs, cap context to fit.
                         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -1226,6 +1360,13 @@ class LlamaCppBackend:
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
+                        else:
+                            # No subset can host the weights (weights alone
+                            # exceed 90% of every pool). Per spec, default
+                            # the UI-visible context to 4096 and let
+                            # --fit on flex -ngl so llama-server offloads
+                            # layers to CPU RAM.
+                            effective_ctx = min(4096, effective_ctx)
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check.
@@ -1236,6 +1377,13 @@ class LlamaCppBackend:
                         model_size_gb = round(model_size / (1024**3), 2),
                     )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                    if use_fit and not explicit_ctx:
+                        # Weights don't fit on any subset. Default the UI to
+                        # 4096 so the slider doesn't land on an unusable native
+                        # context. --fit on will flex -ngl at runtime.
+                        effective_ctx = (
+                            min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        )
 
                 if effective_ctx < original_ctx:
                     kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
@@ -1268,9 +1416,11 @@ class LlamaCppBackend:
                 "-c",
                 str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
-                "1",  # Single-user studio, saves VRAM
+                str(n_parallel),
                 "--flash-attn",
                 "on",  # Force flash attention for speed
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                "--no-context-shift",
             ]
 
             if use_fit:
@@ -1306,6 +1456,46 @@ class LlamaCppBackend:
             else:
                 self._cache_type_kv = None
 
+            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+            # variable draft lengths.  Helps most when the model repeats
+            # existing text (code refactoring, summarization, reasoning).
+            # For general chat with low repetition, overhead is ~5 ms.
+            #
+            # Benchmarks from llama.cpp PRs #18471, #19164:
+            #   Scenario                        | Without | With    | Speedup
+            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+            #
+            # Params from llama.cpp docs (docs/speculative.md):
+            #   --spec-ngram-size-n 24  (small n not recommended)
+            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+            #     dense models can reduce these)
+            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            _valid_spec_types = {"ngram-simple", "ngram-mod"}
+            if speculative_type and speculative_type in _valid_spec_types:
+                if not is_vision:  # spec decoding disabled for vision models
+                    cmd.extend(["--spec-type", speculative_type])
+                    if speculative_type == "ngram-mod":
+                        cmd.extend(
+                            [
+                                "--spec-ngram-size-n",
+                                "24",
+                                "--draft-min",
+                                "48",
+                                "--draft-max",
+                                "64",
+                            ]
+                        )
+                    self._speculative_type = speculative_type
+                else:
+                    self._speculative_type = None
+            else:
+                self._speculative_type = None
+
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
@@ -1324,12 +1514,12 @@ class LlamaCppBackend:
                 )
 
             # For reasoning models, set default thinking mode.
-            # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
             # Only 9B and larger enable thinking.
             if self._supports_reasoning:
                 thinking_default = True
                 mid = (model_identifier or "").lower()
-                if "qwen3.5" in mid:
+                if "qwen3.5" in mid or "qwen3.6" in mid:
                     size_val = _extract_model_size_b(mid)
                     if size_val is not None and size_val < 9:
                         thinking_default = False
@@ -1476,7 +1666,12 @@ class LlamaCppBackend:
             )
             self._stdout_thread.start()
 
-            self._gguf_path = gguf_path
+            # Store the resolved on-disk path, not the caller's kwarg. In
+            # HF mode the caller passes gguf_path=None and the real path
+            # (``model_path``) is what llama-server is actually mmap'ing.
+            # Downstream consumers (load_progress, log lines, etc.) need
+            # the path that exists on disk.
+            self._gguf_path = model_path
             self._hf_repo = hf_repo
             # For local GGUF files, extract variant from filename if not provided
             if hf_variant:
@@ -1508,6 +1703,28 @@ class LlamaCppBackend:
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
+                _gguf = gguf_path or ""
+                _is_ollama = (
+                    ".studio_links" in _gguf
+                    or os.sep + "ollama_links" + os.sep in _gguf
+                    or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
+                    or (self._model_identifier or "").startswith("ollama/")
+                )
+                # Only show the Ollama-specific message when the server
+                # output indicates a GGUF compatibility issue, not for
+                # unrelated failures like OOM or missing binaries.
+                if _is_ollama:
+                    _output = "\n".join(self._stdout_lines[-50:]).lower()
+                    _gguf_compat_hints = (
+                        "key not found",
+                        "unknown model architecture",
+                        "failed to load model",
+                    )
+                    if any(h in _output for h in _gguf_compat_hints):
+                        raise RuntimeError(
+                            "Some Ollama models do not work with llama.cpp. "
+                            "Try a different model, or use this model directly through Ollama instead."
+                        )
                 raise RuntimeError(
                     "llama-server failed to start. "
                     "Check that the GGUF file is valid and you have enough memory."
@@ -1544,6 +1761,7 @@ class LlamaCppBackend:
             self._reasoning_always_on = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_heads = None
@@ -2262,7 +2480,7 @@ class LlamaCppBackend:
         Agentic loop: let the model call tools, execute them, and continue.
 
         Yields dicts with:
-          {"type": "status", "text": "Searching: ..."}   -- tool status updates
+          {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
@@ -2657,8 +2875,9 @@ class LlamaCppBackend:
                                 {
                                     "role": "user",
                                     "content": (
-                                        "Please use the available tools to complete "
-                                        "the task instead of describing what to do."
+                                        "STOP. Do NOT write code or explain. "
+                                        "You MUST call a tool NOW. "
+                                        "Call web_search or python immediately."
                                     ),
                                 }
                             )
@@ -2828,7 +3047,18 @@ class LlamaCppBackend:
                         arguments = raw_args
 
                     if tool_name == "web_search":
-                        status_text = f"Searching: {arguments.get('query', '')}"
+                        _ws_url = (arguments.get("url") or "").strip()
+                        if _ws_url:
+                            _parsed = urlparse(_ws_url)
+                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
+                                _ws_host = _parsed.hostname
+                                if _ws_host.startswith("www."):
+                                    _ws_host = _ws_host[4:]
+                                status_text = f"Reading: {_ws_host}"
+                            else:
+                                status_text = "Reading page..."
+                        else:
+                            status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
                         preview = (
                             (arguments.get("code") or "").strip().split("\n")[0][:60]
@@ -2905,10 +3135,15 @@ class LlamaCppBackend:
                         _error_prefixes
                     )
                     _tool_call_history.append((_tc_key, _is_error))
+                    # Strip image sentinel before feeding result to the LLM
+                    # (the full result with sentinel is still yielded via
+                    # tool_end so the frontend can extract image paths).
                     _result_content = result
+                    if "\n__IMAGES__:" in _result_content:
+                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
                     if _is_error:
                         _result_content = (
-                            result + "\n\nThe tool call encountered an issue. "
+                            _result_content + "\n\nThe tool call encountered an issue. "
                             "Please try a different approach or rephrase your request."
                         )
 

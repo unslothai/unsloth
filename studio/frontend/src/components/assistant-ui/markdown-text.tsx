@@ -41,7 +41,7 @@ const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
-  "pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur";
+  "pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur dark:border-white/10 dark:bg-code-block dark:supports-[backdrop-filter]:bg-code-block";
 const ACTION_BUTTON_CLASS =
   "cursor-pointer p-1 text-muted-foreground transition-all hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -100,20 +100,27 @@ function getCodeFilename(language: string | null) {
 function isSvgFence(codeFence: CodeFence): boolean {
   const lang = codeFence.language?.toLowerCase() ?? "";
   if (lang === "svg") return true;
-  if ((lang === "xml" || lang === "html") && codeFence.source.trimStart().startsWith("<svg")) return true;
+  if (lang === "xml" || lang === "html") {
+    const trimmed = codeFence.source.trimStart();
+    // Match <svg directly or <?xml ...?> followed by <svg
+    if (trimmed.startsWith("<svg")) return true;
+    if (trimmed.startsWith("<?xml") && trimmed.includes("<svg")) return true;
+  }
   return false;
 }
 
 function isHtmlFence(codeFence: CodeFence): boolean {
   const lang = codeFence.language?.toLowerCase() ?? "";
-  return lang === "html" && !codeFence.source.trimStart().startsWith("<svg");
+  return lang === "html" && !isSvgFence(codeFence);
 }
 
 const UNSAFE_SVG_RE = /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
 function sanitizeSvg(source: string): string | null {
   if (UNSAFE_SVG_RE.test(source)) return null;
-  return source;
+  // Strip XML declaration (<?xml ...?>) -- not needed for data URI
+  // rendering and can cause issues with some renderers.
+  return source.replace(/^\s*<\?xml[^?]*\?>\s*/i, "");
 }
 
 function SvgPreview({ source }: { source: string }) {

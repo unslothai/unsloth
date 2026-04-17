@@ -511,6 +511,56 @@ class TestApplyApprovedHashes:
         result = apply_approved_hashes([choice], checksums)
         assert result[0].expected_sha256 == "a" * 64
 
+    def test_windows_cuda_legacy_choice_can_match_current_upstream_name(self):
+        choice = AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = "b9000",
+            name = "llama-b9000-bin-win-cuda-13.1-x64.zip",
+            url = "https://x/llama-b9000-bin-win-cuda-13.1-x64.zip",
+            source_label = "upstream",
+        )
+        checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = "r1",
+            upstream_tag = "b9000",
+            artifacts = {
+                "cudart-llama-bin-win-cuda-13.1-x64.zip": ApprovedArtifactHash(
+                    asset_name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+                    sha256 = "b" * 64,
+                    repo = UPSTREAM_REPO,
+                    kind = "windows-cuda-upstream",
+                )
+            },
+        )
+
+        result = apply_approved_hashes([choice], checksums)
+        assert result[0].expected_sha256 == "b" * 64
+
+    def test_windows_cuda_current_choice_can_match_legacy_compatibility_name(self):
+        choice = AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = "main",
+            name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+            url = "https://x/cudart-llama-bin-win-cuda-13.1-x64.zip",
+            source_label = "upstream",
+        )
+        checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = "r1",
+            upstream_tag = "b9000",
+            artifacts = {
+                "llama-b9000-bin-win-cuda-13.1-x64.zip": ApprovedArtifactHash(
+                    asset_name = "llama-b9000-bin-win-cuda-13.1-x64.zip",
+                    sha256 = "c" * 64,
+                    repo = UPSTREAM_REPO,
+                    kind = "windows-cuda-upstream",
+                )
+            },
+        )
+
+        result = apply_approved_hashes([choice], checksums)
+        assert result[0].expected_sha256 == "c" * 64
+
     def test_none_approved(self):
         c1 = self._choice("missing.tar.gz")
         checksums = make_checksums(["other.tar.gz"])
