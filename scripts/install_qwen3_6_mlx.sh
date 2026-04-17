@@ -108,7 +108,7 @@ if ! command -v uv >/dev/null 2>&1; then
     step "uv" "installing uv package manager..."
     _uv_tmp=$(mktemp)
     curl -LsSf "https://astral.sh/uv/install.sh" -o "$_uv_tmp"
-    sh "$_uv_tmp" </dev/null >/dev/null 2>&1
+    sh "$_uv_tmp" </dev/null
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
@@ -126,16 +126,15 @@ step "install" "installing mlx-vlm..."
 uv pip install --python "$_VENV_PY" -q mlx-vlm
 substep "done"
 
-step "install" "installing transformers>=5.5.0..."
-if uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null; then
+step "install" "installing transformers>=5.2.0..."
+if uv pip install --python "$_VENV_PY" -q "transformers>=5.2.0"; then
     substep "installed from PyPI"
 else
-    substep "PyPI install failed (Python <3.10?), trying GitHub..."
-    if uv pip install --python "$_VENV_PY" -q "git+https://github.com/huggingface/transformers.git@v5.5-release" 2>/dev/null; then
-        substep "installed from huggingface/transformers v5.5-release"
+    substep "PyPI install failed, trying GitHub..."
+    if uv pip install --python "$_VENV_PY" -q "git+https://github.com/huggingface/transformers.git"; then
+        substep "installed from huggingface/transformers main"
     else
-        step "warning" "could not install transformers>=5.5.0" "$C_WARN"
-        substep "tried: PyPI, huggingface/transformers v5.5-release"
+        fail "Could not install transformers>=5.2.0 (required for Qwen3.5/3.6 model support). Please check your Python version (>=3.10 required) and network connection, then try again."
     fi
 fi
 
@@ -144,10 +143,10 @@ uv pip install --python "$_VENV_PY" -q torch torchvision
 substep "done"
 
 # ── Verify installation ──────────────────────────────────────
-if "$_VENV_PY" -c "import mlx_vlm; import torch; import torchvision"; then
-    substep "mlx-vlm + torch verified"
+if "$_VENV_PY" -c "import mlx_vlm; import torch; import torchvision; import transformers"; then
+    substep "mlx-vlm + torch + transformers verified"
 else
-    fail "Installation verification failed."
+    fail "Installation verification failed. Please ensure Python >=3.10 and try again."
 fi
 
 # ── Apply patches for multi-turn image chat ──────────────────
@@ -156,11 +155,17 @@ _SITE_PKGS=$("$_VENV_PY" -c "import site; print(site.getsitepackages()[0])")
 
 step "patch" "fixing multi-turn image chat..."
 
-curl -sSL "${_PATCH_BASE}/qwen3_5.py" -o "${_SITE_PKGS}/mlx_vlm/models/qwen3_5/qwen3_5.py"
-substep "patched qwen3_5.py (MRoPE position reset)"
+if curl -sSLf "${_PATCH_BASE}/qwen3_5.py" -o "${_SITE_PKGS}/mlx_vlm/models/qwen3_5/qwen3_5.py"; then
+    substep "patched qwen3_5.py (MRoPE position reset)"
+else
+    step "warning" "failed to download qwen3_5.py patch — multi-turn image chat may not work" "$C_WARN"
+fi
 
-curl -sSL "${_PATCH_BASE}/generate.py" -o "${_SITE_PKGS}/mlx_vlm/generate.py"
-substep "patched generate.py (mask trim on cache reuse)"
+if curl -sSLf "${_PATCH_BASE}/generate.py" -o "${_SITE_PKGS}/mlx_vlm/generate.py"; then
+    substep "patched generate.py (mask trim on cache reuse)"
+else
+    step "warning" "failed to download generate.py patch — multi-turn image chat may not work" "$C_WARN"
+fi
 
 # Clear pycache so patches take effect
 find "${_SITE_PKGS}/mlx_vlm" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
