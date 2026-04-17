@@ -640,26 +640,43 @@ DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
 
 # =========================================== Phi-4 Multimodal
 phi4_mm_template = \
-    "{% if tools is defined and tools %}"\
+    "{% set img_idx = namespace(value=1) %}"\
+    "{% set aud_idx = namespace(value=1) %}"\
+    "{% if messages[0]['role'] == 'system' %}"\
+        "{{'<|system|>' + messages[0]['content']}}"\
+        "{% if tools is defined and tools %}"\
+            "{{ '\n\nYou are a helpful assistant with some tools.<|tool|>' }}"\
+            "{{ tools | tojson }}"\
+            "{{ '<|/tool|>' }}"\
+        "{% endif %}"\
+        "{{'<|end|>'}}"\
+        "{% set loop_messages = messages[1:] %}"\
+    "{% elif tools is defined and tools %}"\
         "{{ '<|system|>You are a helpful assistant with some tools.<|tool|>' }}"\
         "{{ tools | tojson }}"\
         "{{ '<|/tool|><|end|>' }}"\
+        "{% set loop_messages = messages %}"\
+    "{% else %}"\
+        "{% set loop_messages = messages %}"\
     "{% endif %}"\
-    "{% for message in messages %}"\
-        "{% if message['role'] != 'system' or not (tools is defined and tools) %}"\
-            "{{'<|' + message['role'] + '|>'}}"\
-            "{% if message['content'] is string %}"\
-                "{{ message['content'] }}"\
-            "{% else %}"\
-                "{% for content in message['content'] %}"\
-                    "{% if content['type'] == 'image' %}{{ '<|image_1|>' }}"\
-                    "{% elif content['type'] == 'audio' %}{{ '<|audio_1|>' }}"\
-                    "{% elif content['type'] == 'text' %}{{ content['text'] }}"\
-                    "{% endif %}"\
-                "{% endfor %}"\
-            "{% endif %}"\
-            "{{'<|end|>'}}"\
+    "{% for message in loop_messages %}"\
+        "{{'<|' + message['role'] + '|>'}}"\
+        "{% if message['content'] is string %}"\
+            "{{ message['content'] }}"\
+        "{% else %}"\
+            "{% for content in message['content'] %}"\
+                "{% if content['type'] == 'image' %}"\
+                    "{{ '<|image_' ~ img_idx.value ~ '|>' }}"\
+                    "{% set img_idx.value = img_idx.value + 1 %}"\
+                "{% elif content['type'] == 'audio' %}"\
+                    "{{ '<|audio_' ~ aud_idx.value ~ '|>' }}"\
+                    "{% set aud_idx.value = aud_idx.value + 1 %}"\
+                "{% elif content['type'] == 'text' %}"\
+                    "{{ content['text'] }}"\
+                "{% endif %}"\
+            "{% endfor %}"\
         "{% endif %}"\
+        "{{'<|end|>'}}"\
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>' }}"\
