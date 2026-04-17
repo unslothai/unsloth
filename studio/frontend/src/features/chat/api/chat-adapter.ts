@@ -47,6 +47,41 @@ type RunMessage = RunMessages[number];
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
+/**
+ * Match error messages that indicate the request filled or would fill
+ * the KV cache, so the UI can show a dedicated toast pointing at the
+ * ``Context Length`` setting.
+ *
+ * Two wordings reach the client and both must hit:
+ *
+ *   1. The raw llama-server text when ``--no-context-shift`` trips --
+ *      "the request exceeds the available context size (N tokens)".
+ *   2. The rewritten friendly text emitted by
+ *      ``backend/routes/inference.py::_friendly_error`` -- "Message too
+ *      long: X tokens exceeds the Y-token context window. Try
+ *      increasing the Context Length ..." This is the one most users
+ *      see on the streaming GGUF path.
+ *
+ * We match on substrings rather than full regexes because both layers
+ * have drifted across versions (llama.cpp master has tweaked the
+ * phrasing; ``_friendly_error`` has gone through several copy edits).
+ */
+export function isContextLimitError(message: string): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    // Raw llama-server wording.
+    m.includes("context size") ||
+    m.includes("context shift") ||
+    m.includes("exceeds the available context") ||
+    // Backend _friendly_error rewrite.
+    m.includes("message too long") ||
+    m.includes("context window") ||
+    // n_ctx mentions that carry an "exceed"/"full" signal.
+    (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
+  );
+}
+
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
 function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
   if (!raw) return [];
@@ -420,13 +455,13 @@ async function autoLoadSmallestModel(): Promise<{
     // No cached models found — try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
-      description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
+      description: "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/Qwen3.5-4B-GGUF",
+          model_path: "unsloth/gemma-4-E2B-it-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
@@ -436,7 +471,7 @@ async function autoLoadSmallestModel(): Promise<{
         return { loaded: false, blockedByTrustRemoteCode };
       }
       const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-GGUF",
+        model_path: "unsloth/gemma-4-E2B-it-GGUF",
         hf_token: hfToken,
         max_seq_length: 0,
         load_in_4bit: true,
@@ -444,20 +479,20 @@ async function autoLoadSmallestModel(): Promise<{
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
       });
-      useChatRuntimeStore.getState().setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
+      useChatRuntimeStore.getState().setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
       store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-GGUF",
+        id: "unsloth/gemma-4-E2B-it-GGUF",
+        name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-GGUF")) {
+      if (!store.models.some((m) => m.id === "unsloth/gemma-4-E2B-it-GGUF")) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -474,7 +509,7 @@ async function autoLoadSmallestModel(): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
       });
-      toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
+      toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -868,9 +903,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       } catch (err) {
         settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
         if (!abortSignal.aborted) {
-          toast.error("Generation failed", {
-            description: err instanceof Error ? err.message : "Unknown error",
-          });
+          const msg = err instanceof Error ? err.message : String(err);
+          if (isContextLimitError(msg)) {
+            // llama-server was launched with --no-context-shift, so it
+            // returns a hard error instead of silently dropping old
+            // turns from the KV cache. Point the user at the exact
+            // control that raises the ceiling.
+            toast.error("Context limit reached", {
+              description:
+                "The conversation has filled the model's context window. " +
+                "Increase \"Context Length\" in the chat Settings panel (⚙ in the top-right), " +
+                "or start a new chat.",
+              duration: 8000,
+            });
+          } else {
+            toast.error("Generation failed", {
+              description: msg || "Unknown error",
+            });
+          }
         }
         throw err;
       } finally {

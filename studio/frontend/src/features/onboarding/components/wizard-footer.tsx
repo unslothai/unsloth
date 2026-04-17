@@ -7,10 +7,15 @@ import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 
-export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void }) {
+export function WizardFooter({
+  returnTo,
+  onBackToSplash,
+}: {
+  returnTo: string;
+  onBackToSplash: () => void;
+}) {
   const { currentStep, prevStep, nextStep, canProceed } = useTrainingConfigStore(
     useShallow((s) => ({
       currentStep: s.currentStep,
@@ -19,7 +24,6 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
       canProceed: s.canProceed(),
     })),
   );
-  const navigate = useNavigate();
   const isFirst = currentStep === 1;
   const isLast = currentStep === STEPS.length;
 
@@ -41,7 +45,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
               className="px-4"
               onClick={() => {
                 markOnboardingDone();
-                navigate({ to: "/studio" });
+                window.location.assign(returnTo);
               }}
             >
               Skip
@@ -51,12 +55,12 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
             <Button
               onClick={() => {
                 markOnboardingDone();
-                navigate({ to: "/studio" });
+                window.location.assign(returnTo);
               }}
               disabled={!canProceed}
               className="px-4 !pr-4"
             >
-              Go to Studio
+              Finish onboarding
               <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
             </Button>
           ) : (
@@ -65,7 +69,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
                 if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
                   sessionStorage.removeItem("unsloth_chat_only");
                   markOnboardingDone();
-                  window.location.href = "/chat";
+                  window.location.assign("/chat");
                 } else {
                   nextStep();
                 }
