@@ -34,6 +34,7 @@ except ImportError:
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
 
+
 def _get_llama_cpp_dir():
     """
     Return the llama.cpp directory to use.
@@ -44,6 +45,8 @@ def _get_llama_cpp_dir():
     if env_path and os.path.isdir(env_path):
         return env_path
     return LLAMA_CPP_DEFAULT_DIR
+
+
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -528,12 +531,12 @@ def unsloth_save_model(
 
         model.save_pretrained(**save_pretrained_settings)
 
-
         # Fix issue #3726: adapter_config.json may store an absolute local
         # cache path in base_model_name_or_path instead of the HF repo ID.
         # This breaks GGUF export and model merging on other machines.
         # Normalize it back to the HF repo ID if possible.
         import json as _json
+
         _adapter_config_path = os.path.join(
             save_pretrained_settings["save_directory"], "adapter_config.json"
         )
@@ -542,18 +545,17 @@ def unsloth_save_model(
                 _adapter_cfg = _json.load(_f)
             _bm = _adapter_cfg.get("base_model_name_or_path", "")
             # Detect absolute paths: Unix (/path) or Windows (C:\path or C:/path)
-            _is_absolute = (
-                _bm.startswith("/") or
-                (len(_bm) >= 2 and _bm[1] == ":" and _bm[2] in ("/", "\\"))
+            _is_absolute = _bm.startswith("/") or (
+                len(_bm) >= 2 and _bm[1] == ":" and _bm[2] in ("/", "\\")
             )
             if _is_absolute:
                 # HuggingFace cache layout:
                 # .../hub/models--{org}--{model}/snapshots/{sha}/
                 # Parse this to recover org/model
                 import re as _re
+
                 _hf_match = _re.search(
-                    r"models--([^/\\]+)--([^/\\]+)[/\\]snapshots",
-                    _bm
+                    r"models--([^/\\]+)--([^/\\]+)[/\\]snapshots", _bm
                 )
                 if _hf_match:
                     _repo_id = f"{_hf_match.group(1)}/{_hf_match.group(2)}"
@@ -561,6 +563,7 @@ def unsloth_save_model(
                     with open(_adapter_config_path, "w", encoding = "utf-8") as _f:
                         _json.dump(_adapter_cfg, _f, indent = 2)
                     import warnings as _warnings
+
                     _warnings.warn(
                         f"Unsloth: adapter_config.json had a local absolute path "
                         f"'{_bm}' as base_model_name_or_path. "
@@ -2727,7 +2730,9 @@ def save_to_gguf_generic(
         raise RuntimeError("Unsloth: Please specify a token for uploading!")
 
     _llama_cpp_dir = _get_llama_cpp_dir()
-    if not os.path.exists(os.path.join(_llama_cpp_dir, "unsloth_convert_hf_to_gguf.py")):
+    if not os.path.exists(
+        os.path.join(_llama_cpp_dir, "unsloth_convert_hf_to_gguf.py")
+    ):
         install_llama_cpp(just_clone_repo = True)
 
     # Use old style quantization_method
