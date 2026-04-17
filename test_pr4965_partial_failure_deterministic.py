@@ -35,7 +35,7 @@ def _run_with_error(monkeypatch, upstream_msg):
     return rd.get_dataset_splits(req, current_subject = "t").partial_failure
 
 
-def test_partial_failure_message_is_deterministic_across_errors(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_partial_failure_message_is_deterministic_across_errors(monkeypatch, fake_datasets, fake_structlog):
     m1 = _run_with_error(monkeypatch, "Error A with URL https://a.b/c")
     m2 = _run_with_error(monkeypatch, "Error B completely different text")
     m3 = _run_with_error(monkeypatch, "X" * 4000)
@@ -43,7 +43,7 @@ def test_partial_failure_message_is_deterministic_across_errors(monkeypatch, fak
     assert m1 == m2 == m3
 
 
-def test_partial_failure_message_deterministic_for_same_counts(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_partial_failure_message_deterministic_for_same_counts(monkeypatch, fake_datasets, fake_structlog):
     import datasets as ds
     from huggingface_hub.utils import HfHubHTTPError
 

@@ -39,7 +39,7 @@ def _make_http_error(status):
     return e
 
 
-def test_hfhub_error_handler_has_no_exc_info_kwarg(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_hfhub_error_handler_has_no_exc_info_kwarg(monkeypatch, fake_datasets, fake_structlog):
     import datasets as ds
 
     cap = _CapturingLogger()
@@ -63,7 +63,7 @@ def test_hfhub_error_handler_has_no_exc_info_kwarg(monkeypatch, fake_datasets, f
             assert not isinstance(a, bool)
 
 
-def test_generic_exception_handler_has_no_exc_info_kwarg(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_generic_exception_handler_has_no_exc_info_kwarg(monkeypatch, fake_datasets, fake_structlog):
     import datasets as ds
 
     cap = _CapturingLogger()

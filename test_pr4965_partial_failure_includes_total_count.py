@@ -35,19 +35,19 @@ def _run(monkeypatch, configs, fail_set):
     return rd.get_dataset_splits(req, current_subject = "t")
 
 
-def test_partial_failure_count_three_of_five(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_partial_failure_count_three_of_five(monkeypatch, fake_datasets, fake_structlog):
     resp = _run(monkeypatch, ["a", "b", "c", "d", "e"], {"a", "b", "c"})
     assert resp.partial_failure is not None
     assert "3 of 5 config(s)" in resp.partial_failure
 
 
-def test_partial_failure_count_one_of_ten(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_partial_failure_count_one_of_ten(monkeypatch, fake_datasets, fake_structlog):
     cfgs = [f"c{i}" for i in range(10)]
     resp = _run(monkeypatch, cfgs, {"c7"})
     assert resp.partial_failure is not None
     assert "1 of 10 config(s)" in resp.partial_failure
 
 
-def test_partial_failure_none_when_no_failures(monkeypatch, fake_datasets, fake_structlog, fake_datasets, fake_structlog):
+def test_partial_failure_none_when_no_failures(monkeypatch, fake_datasets, fake_structlog):
     resp = _run(monkeypatch, ["a", "b"], set())
     assert resp.partial_failure is None
