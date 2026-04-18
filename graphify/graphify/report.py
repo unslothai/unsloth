@@ -18,13 +18,15 @@ def generate(
 ) -> str:
     today = date.today().isoformat()
 
-    confidences = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
+    confidences = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data = True)]
     total = len(confidences) or 1
     ext_pct = round(confidences.count("EXTRACTED") / total * 100)
     inf_pct = round(confidences.count("INFERRED") / total * 100)
     amb_pct = round(confidences.count("AMBIGUOUS") / total * 100)
 
-    inf_edges = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "INFERRED"]
+    inf_edges = [
+        (u, v, d) for u, v, d in G.edges(data = True) if d.get("confidence") == "INFERRED"
+    ]
     inf_scores = [d.get("confidence_score", 0.5) for _, _, d in inf_edges]
     inf_avg = round(sum(inf_scores) / len(inf_scores), 2) if inf_scores else None
 
@@ -46,7 +48,11 @@ def generate(
         "## Summary",
         f"- {G.number_of_nodes()} nodes · {G.number_of_edges()} edges · {len(communities)} communities detected",
         f"- Extraction: {ext_pct}% EXTRACTED · {inf_pct}% INFERRED · {amb_pct}% AMBIGUOUS"
-        + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
+        + (
+            f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})"
+            if inf_avg is not None
+            else ""
+        ),
         f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
         "",
         "## God Nodes (most connected - your core abstractions)",
@@ -66,13 +72,19 @@ def generate(
                 conf_tag = f"INFERRED {cscore:.2f}"
             else:
                 conf_tag = conf
-            sem_tag = " [semantically similar]" if relation == "semantically_similar_to" else ""
+            sem_tag = (
+                " [semantically similar]"
+                if relation == "semantically_similar_to"
+                else ""
+            )
             lines += [
                 f"- `{s['source']}` --{relation}--> `{s['target']}`  [{conf_tag}]{sem_tag}",
                 f"  {files[0]} → {files[1]}" + (f"  _{note}_" if note else ""),
             ]
     else:
-        lines.append("- None detected - all connections are within the same source files.")
+        lines.append(
+            "- None detected - all connections are within the same source files."
+        )
 
     hyperedges = G.graph.get("hyperedges", [])
     if hyperedges:
@@ -82,10 +94,13 @@ def generate(
             conf = h.get("confidence", "INFERRED")
             cscore = h.get("confidence_score")
             conf_tag = f"{conf} {cscore:.2f}" if cscore is not None else conf
-            lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
+            lines.append(
+                f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]"
+            )
 
     lines += ["", "## Communities"]
     from .analyze import _is_file_node as _ifn
+
     for cid, nodes in communities.items():
         label = community_labels.get(cid, f"Community {cid}")
         score = cohesion_scores.get(cid, 0.0)
@@ -95,12 +110,16 @@ def generate(
         suffix = f" (+{len(real_nodes)-8} more)" if len(real_nodes) > 8 else ""
         lines += [
             "",
-            f"### Community {cid} - \"{label}\"",
+            f'### Community {cid} - "{label}"',
             f"Cohesion: {score}",
             f"Nodes ({len(real_nodes)}): {', '.join(display)}{suffix}",
         ]
 
-    ambiguous = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "AMBIGUOUS"]
+    ambiguous = [
+        (u, v, d)
+        for u, v, d in G.edges(data = True)
+        if d.get("confidence") == "AMBIGUOUS"
+    ]
     if ambiguous:
         lines += ["", "## Ambiguous Edges - Review These"]
         for u, v, d in ambiguous:
@@ -115,7 +134,8 @@ def generate(
     from .analyze import _is_file_node, _is_concept_node
 
     isolated = [
-        n for n in G.nodes()
+        n
+        for n in G.nodes()
         if G.degree(n) <= 1 and not _is_file_node(G, n) and not _is_concept_node(G, n)
     ]
     thin_communities = {
@@ -128,20 +148,33 @@ def generate(
         if isolated:
             isolated_labels = [G.nodes[n].get("label", n) for n in isolated[:5]]
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
-            lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
-            lines.append("  These have ≤1 connection - possible missing edges or undocumented components.")
+            lines.append(
+                f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}"
+            )
+            lines.append(
+                "  These have ≤1 connection - possible missing edges or undocumented components."
+            )
         if thin_communities:
             for cid, nodes in thin_communities.items():
                 label = community_labels.get(cid, f"Community {cid}")
                 node_labels = [G.nodes[n].get("label", n) for n in nodes]
-                lines.append(f"- **Thin community `{label}`** ({len(nodes)} nodes): {', '.join(f'`{l}`' for l in node_labels)}")
-                lines.append("  Too small to be a meaningful cluster - may be noise or needs more connections extracted.")
+                lines.append(
+                    f"- **Thin community `{label}`** ({len(nodes)} nodes): {', '.join(f'`{l}`' for l in node_labels)}"
+                )
+                lines.append(
+                    "  Too small to be a meaningful cluster - may be noise or needs more connections extracted."
+                )
         if amb_pct > 20:
-            lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
+            lines.append(
+                f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above."
+            )
 
     if suggested_questions:
         lines += ["", "## Suggested Questions"]
-        no_signal = len(suggested_questions) == 1 and suggested_questions[0].get("type") == "no_signal"
+        no_signal = (
+            len(suggested_questions) == 1
+            and suggested_questions[0].get("type") == "no_signal"
+        )
         if no_signal:
             lines.append(f"_{suggested_questions[0]['why']}_")
         else:

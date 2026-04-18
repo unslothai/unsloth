@@ -2,6 +2,7 @@
 Utility functions shared across the library.
 Small helpers that don't belong in any one module.
 """
+
 import re
 from models import Cookies
 
@@ -68,6 +69,7 @@ def unset_all_cookies(cookies: Cookies) -> None:
 def is_known_encoding(encoding: str) -> bool:
     """Check if a character encoding label is recognized by Python's codec system."""
     import codecs
+
     try:
         codecs.lookup(encoding)
         return True

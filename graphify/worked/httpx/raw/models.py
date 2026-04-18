@@ -2,6 +2,7 @@
 Core data models: URL, Headers, Cookies, Request, Response.
 These are the central data types that everything else in the library references.
 """
+
 import json as _json
 from exceptions import HTTPStatusError
 
@@ -24,12 +25,12 @@ class URL:
 
 
 class Headers:
-    def __init__(self, headers=None):
+    def __init__(self, headers = None):
         self._store = {}
         for k, v in (headers or {}).items():
             self._store[k.lower()] = v
 
-    def get(self, key: str, default=None):
+    def get(self, key: str, default = None):
         return self._store.get(key.lower(), default)
 
     def items(self):
@@ -46,13 +47,13 @@ class Headers:
 
 
 class Cookies:
-    def __init__(self, cookies=None):
+    def __init__(self, cookies = None):
         self._jar = dict(cookies or {})
 
     def set(self, name: str, value: str, domain: str = "") -> None:
         self._jar[name] = value
 
-    def get(self, name: str, default=None):
+    def get(self, name: str, default = None):
         return self._jar.get(name, default)
 
     def delete(self, name: str) -> None:
@@ -66,7 +67,7 @@ class Cookies:
 
 
 class Request:
-    def __init__(self, method: str, url, *, headers=None, content=None, cookies=None):
+    def __init__(self, method: str, url, *, headers = None, content = None, cookies = None):
         self.method = method.upper()
         self.url = URL(url) if isinstance(url, str) else url
         self.headers = Headers(headers)
@@ -78,7 +79,7 @@ class Request:
 
 
 class Response:
-    def __init__(self, status_code: int, *, headers=None, content=None, request=None):
+    def __init__(self, status_code: int, *, headers = None, content = None, request = None):
         self.status_code = status_code
         self.headers = Headers(headers)
         self.content = content or b""
@@ -86,7 +87,7 @@ class Response:
 
     @property
     def text(self) -> str:
-        return self.content.decode("utf-8", errors="replace")
+        return self.content.decode("utf-8", errors = "replace")
 
     def json(self):
         return _json.loads(self.content)
@@ -105,7 +106,7 @@ class Response:
     def raise_for_status(self) -> None:
         if self.is_error:
             message = f"{self.status_code} Error"
-            raise HTTPStatusError(message, request=self.request, response=self)
+            raise HTTPStatusError(message, request = self.request, response = self)
 
     @property
     def cookies(self) -> Cookies:

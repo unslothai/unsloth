@@ -58,9 +58,27 @@ def test_extract_merges_multiple_files():
 
 def test_collect_files_from_dir():
     files = collect_files(FIXTURES)
-    supported = {".py", ".js", ".ts", ".tsx", ".go", ".rs",
-                 ".java", ".c", ".cpp", ".cc", ".cxx", ".rb",
-                 ".cs", ".kt", ".kts", ".scala", ".php", ".h", ".hpp"}
+    supported = {
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".c",
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".rb",
+        ".cs",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".php",
+        ".h",
+        ".hpp",
+    }
     assert all(f.suffix in supported for f in files)
     assert len(files) > 0
 
@@ -108,7 +126,9 @@ def test_calls_no_self_loops():
 def test_run_analysis_calls_compute_score():
     """run_analysis() calls compute_score() - must appear as a calls edge."""
     result = extract_python(FIXTURES / "sample_calls.py")
-    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    calls = {
+        (e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"
+    }
     node_by_label = {n["label"]: n["id"] for n in result["nodes"]}
     src = node_by_label.get("run_analysis()")
     tgt = node_by_label.get("compute_score()")
@@ -118,7 +138,9 @@ def test_run_analysis_calls_compute_score():
 
 def test_run_analysis_calls_normalize():
     result = extract_python(FIXTURES / "sample_calls.py")
-    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    calls = {
+        (e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"
+    }
     node_by_label = {n["label"]: n["id"] for n in result["nodes"]}
     src = node_by_label.get("run_analysis()")
     tgt = node_by_label.get("normalize()")
@@ -129,7 +151,9 @@ def test_run_analysis_calls_normalize():
 def test_method_calls_module_function():
     """Analyzer.process() calls run_analysis() - cross class→function calls edge."""
     result = extract_python(FIXTURES / "sample_calls.py")
-    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    calls = {
+        (e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"
+    }
     node_by_label = {n["label"]: n["id"] for n in result["nodes"]}
     src = node_by_label.get(".process()")
     tgt = node_by_label.get("run_analysis()")
@@ -140,5 +164,7 @@ def test_method_calls_module_function():
 def test_calls_deduplication():
     """Same caller→callee pair must appear only once even if called multiple times."""
     result = extract_python(FIXTURES / "sample_calls.py")
-    call_pairs = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    call_pairs = [
+        (e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"
+    ]
     assert len(call_pairs) == len(set(call_pairs)), "Duplicate calls edges found"

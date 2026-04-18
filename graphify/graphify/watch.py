@@ -6,15 +6,57 @@ from pathlib import Path
 
 
 _WATCHED_EXTENSIONS = {
-    ".py", ".ts", ".js", ".go", ".rs", ".java", ".cpp", ".c", ".rb", ".swift", ".kt",
-    ".cs", ".scala", ".php", ".cc", ".cxx", ".hpp", ".h", ".kts",
-    ".md", ".txt", ".rst", ".pdf",
-    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
+    ".py",
+    ".ts",
+    ".js",
+    ".go",
+    ".rs",
+    ".java",
+    ".cpp",
+    ".c",
+    ".rb",
+    ".swift",
+    ".kt",
+    ".cs",
+    ".scala",
+    ".php",
+    ".cc",
+    ".cxx",
+    ".hpp",
+    ".h",
+    ".kts",
+    ".md",
+    ".txt",
+    ".rst",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".svg",
 }
 
 _CODE_EXTENSIONS = {
-    ".py", ".ts", ".js", ".go", ".rs", ".java", ".cpp", ".c", ".rb", ".swift", ".kt",
-    ".cs", ".scala", ".php", ".cc", ".cxx", ".hpp", ".h", ".kts",
+    ".py",
+    ".ts",
+    ".js",
+    ".go",
+    ".rs",
+    ".java",
+    ".cpp",
+    ".c",
+    ".rb",
+    ".swift",
+    ".kt",
+    ".cs",
+    ".scala",
+    ".php",
+    ".cc",
+    ".cxx",
+    ".hpp",
+    ".h",
+    ".kts",
 }
 
 
@@ -27,7 +69,11 @@ def _rebuild_code(watch_path: Path) -> bool:
         from graphify.extract import collect_files, extract
         from graphify.build import build_from_json
         from graphify.cluster import cluster, score_all
-        from graphify.analyze import god_nodes, surprising_connections, suggest_questions
+        from graphify.analyze import (
+            god_nodes,
+            surprising_connections,
+            suggest_questions,
+        )
         from graphify.report import generate
         from graphify.export import to_json
 
@@ -35,7 +81,8 @@ def _rebuild_code(watch_path: Path) -> bool:
         for ext in _CODE_EXTENSIONS:
             code_files.extend(watch_path.rglob(f"*{ext}"))
         code_files = [
-            f for f in code_files
+            f
+            for f in code_files
             if not any(part.startswith(".") for part in f.parts)
             and "graphify-out" not in f.parts
             and "__pycache__" not in f.parts
@@ -48,9 +95,16 @@ def _rebuild_code(watch_path: Path) -> bool:
         result = extract(code_files)
 
         detection = {
-            "files": {"code": [str(f) for f in code_files], "document": [], "paper": [], "image": []},
+            "files": {
+                "code": [str(f) for f in code_files],
+                "document": [],
+                "paper": [],
+                "image": [],
+            },
             "total_files": len(code_files),
-            "total_words": sum(len(f.read_text(errors="ignore").split()) for f in code_files),
+            "total_words": sum(
+                len(f.read_text(errors = "ignore").split()) for f in code_files
+            ),
         }
 
         G = build_from_json(result)
@@ -62,10 +116,20 @@ def _rebuild_code(watch_path: Path) -> bool:
         questions = suggest_questions(G, communities, labels)
 
         out = watch_path / "graphify-out"
-        out.mkdir(exist_ok=True)
+        out.mkdir(exist_ok = True)
 
-        report = generate(G, communities, cohesion, labels, gods, surprises, detection,
-                          {"input": 0, "output": 0}, str(watch_path), suggested_questions=questions)
+        report = generate(
+            G,
+            communities,
+            cohesion,
+            labels,
+            gods,
+            surprises,
+            detection,
+            {"input": 0, "output": 0},
+            str(watch_path),
+            suggested_questions = questions,
+        )
         (out / "GRAPH_REPORT.md").write_text(report)
         to_json(G, communities, str(out / "graph.json"))
 
@@ -74,8 +138,10 @@ def _rebuild_code(watch_path: Path) -> bool:
         if flag.exists():
             flag.unlink()
 
-        print(f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
-              f"{G.number_of_edges()} edges, {len(communities)} communities")
+        print(
+            f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
+            f"{G.number_of_edges()} edges, {len(communities)} communities"
+        )
         print(f"[graphify watch] graph.json and GRAPH_REPORT.md updated in {out}")
         return True
 
@@ -87,11 +153,15 @@ def _rebuild_code(watch_path: Path) -> bool:
 def _notify_only(watch_path: Path) -> None:
     """Write a flag file and print a notification (fallback for non-code-only corpora)."""
     flag = watch_path / "graphify-out" / "needs_update"
-    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.parent.mkdir(parents = True, exist_ok = True)
     flag.write_text("1")
     print(f"\n[graphify watch] New or changed files detected in {watch_path}")
-    print("[graphify watch] Non-code files changed - semantic re-extraction requires LLM.")
-    print("[graphify watch] Run `/graphify --update` in Claude Code to update the graph.")
+    print(
+        "[graphify watch] Non-code files changed - semantic re-extraction requires LLM."
+    )
+    print(
+        "[graphify watch] Run `/graphify --update` in Claude Code to update the graph."
+    )
     print(f"[graphify watch] Flag written to {flag}")
 
 
@@ -139,12 +209,14 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
 
     handler = Handler()
     observer = Observer()
-    observer.schedule(handler, str(watch_path), recursive=True)
+    observer.schedule(handler, str(watch_path), recursive = True)
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
-    print(f"[graphify watch] Code changes rebuild graph automatically. "
-          f"Doc/image changes require /graphify --update.")
+    print(
+        f"[graphify watch] Code changes rebuild graph automatically. "
+        f"Doc/image changes require /graphify --update."
+    )
     print(f"[graphify watch] Debounce: {debounce}s")
 
     try:
@@ -168,9 +240,18 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Watch a folder and auto-update the graphify graph")
-    parser.add_argument("path", nargs="?", default=".", help="Folder to watch (default: .)")
-    parser.add_argument("--debounce", type=float, default=3.0,
-                        help="Seconds to wait after last change before updating (default: 3)")
+
+    parser = argparse.ArgumentParser(
+        description = "Watch a folder and auto-update the graphify graph"
+    )
+    parser.add_argument(
+        "path", nargs = "?", default = ".", help = "Folder to watch (default: .)"
+    )
+    parser.add_argument(
+        "--debounce",
+        type = float,
+        default = 3.0,
+        help = "Seconds to wait after last change before updating (default: 3)",
+    )
     args = parser.parse_args()
-    watch(Path(args.path), debounce=args.debounce)
+    watch(Path(args.path), debounce = args.debounce)

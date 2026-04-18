@@ -4,6 +4,7 @@ Auth objects are callables that modify a request before it is sent.
 DigestAuth is the most interesting: it participates in a full request/response cycle,
 reading the 401 response to build the challenge before re-sending.
 """
+
 import hashlib
 import time
 from models import Request, Response
@@ -26,6 +27,7 @@ class BasicAuth(Auth):
 
     def auth_flow(self, request: Request):
         import base64
+
         credentials = f"{self.username}:{self.password}".encode()
         encoded = base64.b64encode(credentials).decode()
         request.headers["Authorization"] = f"Basic {encoded}"
@@ -86,9 +88,13 @@ class DigestAuth(Auth):
         realm = challenge.get("realm", "")
         nonce = challenge.get("nonce", "")
 
-        ha1 = hashlib.md5(f"{self.username}:{realm}:{self.password}".encode()).hexdigest()
+        ha1 = hashlib.md5(
+            f"{self.username}:{realm}:{self.password}".encode()
+        ).hexdigest()
         ha2 = hashlib.md5(f"{request.method}:{request.url.path}".encode()).hexdigest()
-        response_hash = hashlib.md5(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}".encode()).hexdigest()
+        response_hash = hashlib.md5(
+            f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}".encode()
+        ).hexdigest()
 
         return (
             f'Digest username="{self.username}", realm="{realm}", '
@@ -102,6 +108,7 @@ class NetRCAuth(Auth):
 
     def auth_flow(self, request: Request):
         import netrc
+
         try:
             credentials = netrc.netrc().authenticators(request.url.host)
             if credentials:

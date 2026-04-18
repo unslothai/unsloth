@@ -3,6 +3,7 @@ The main Client and AsyncClient classes.
 BaseClient holds all shared logic. Client and AsyncClient extend it for sync/async.
 This is the integration hub of the library - it imports from every other module.
 """
+
 from models import Request, Response, URL, Headers, Cookies
 from auth import Auth, BasicAuth
 from transport import BaseTransport, HTTPTransport, AsyncHTTPTransport
@@ -14,7 +15,7 @@ DEFAULT_MAX_REDIRECTS = 20
 
 
 class Timeout:
-    def __init__(self, timeout=5.0, *, connect=None, read=None, write=None, pool=None):
+    def __init__(self, timeout = 5.0, *, connect = None, read = None, write = None, pool = None):
         self.connect = connect or timeout
         self.read = read or timeout
         self.write = write or timeout
@@ -22,7 +23,9 @@ class Timeout:
 
 
 class Limits:
-    def __init__(self, max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0):
+    def __init__(
+        self, max_connections = 100, max_keepalive_connections = 20, keepalive_expiry = 5.0
+    ):
         self.max_connections = max_connections
         self.max_keepalive_connections = max_keepalive_connections
         self.keepalive_expiry = keepalive_expiry
@@ -37,12 +40,12 @@ class BaseClient:
     def __init__(
         self,
         *,
-        auth=None,
-        headers=None,
-        cookies=None,
-        timeout=Timeout(),
-        max_redirects=DEFAULT_MAX_REDIRECTS,
-        base_url="",
+        auth = None,
+        headers = None,
+        cookies = None,
+        timeout = Timeout(),
+        max_redirects = DEFAULT_MAX_REDIRECTS,
+        base_url = "",
     ):
         self._auth = auth
         self._headers = Headers(headers or {})
@@ -60,7 +63,13 @@ class BaseClient:
         for k, v in self._headers.items():
             if k not in headers:
                 headers[k] = v
-        return Request(method, url, headers=headers, content=kwargs.get("content"), cookies=self._cookies)
+        return Request(
+            method,
+            url,
+            headers = headers,
+            content = kwargs.get("content"),
+            cookies = self._cookies,
+        )
 
     def _merge_cookies(self, response: Response) -> None:
         for name, value in response.cookies.items():
@@ -123,7 +132,7 @@ class Client(BaseClient):
 class AsyncClient(BaseClient):
     """Asynchronous HTTP client."""
 
-    def __init__(self, *, transport=None, **kwargs):
+    def __init__(self, *, transport = None, **kwargs):
         super().__init__(**kwargs)
         self._transport = transport or AsyncHTTPTransport()
 

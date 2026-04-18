@@ -1,4 +1,5 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
+
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -17,12 +18,12 @@ def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
     """Run BFS from best-matching nodes and return estimated tokens in the subgraph context."""
     terms = [t.lower() for t in question.split() if len(t) > 2]
     scored = []
-    for nid, data in G.nodes(data=True):
+    for nid, data in G.nodes(data = True):
         label = data.get("label", "").lower()
         score = sum(1 for t in terms if t in label)
         if score > 0:
             scored.append((score, nid))
-    scored.sort(reverse=True)
+    scored.sort(reverse = True)
     start_nodes = [nid for _, nid in scored[:3]]
     if not start_nodes:
         return 0
@@ -43,11 +44,15 @@ def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
     lines = []
     for nid in visited:
         d = G.nodes[nid]
-        lines.append(f"NODE {d.get('label', nid)} src={d.get('source_file', '')} loc={d.get('source_location', '')}")
+        lines.append(
+            f"NODE {d.get('label', nid)} src={d.get('source_file', '')} loc={d.get('source_location', '')}"
+        )
     for u, v in edges_seen:
         if u in visited and v in visited:
             d = G.edges[u, v]
-            lines.append(f"EDGE {G.nodes[u].get('label', u)} --{d.get('relation', '')}--> {G.nodes[v].get('label', v)}")
+            lines.append(
+                f"EDGE {G.nodes[u].get('label', u)} --{d.get('relation', '')}--> {G.nodes[v].get('label', v)}"
+            )
 
     return _estimate_tokens("\n".join(lines))
 
@@ -76,7 +81,7 @@ def run_benchmark(
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
     data = json.loads(Path(graph_path).read_text())
-    G = json_graph.node_link_graph(data, edges="links")
+    G = json_graph.node_link_graph(data, edges = "links")
 
     if corpus_words is None:
         # Rough estimate: each node label is ~3 words, plus source context
@@ -89,13 +94,23 @@ def run_benchmark(
     for q in qs:
         qt = _query_subgraph_tokens(G, q)
         if qt > 0:
-            per_question.append({"question": q, "query_tokens": qt, "reduction": round(corpus_tokens / qt, 1)})
+            per_question.append(
+                {
+                    "question": q,
+                    "query_tokens": qt,
+                    "reduction": round(corpus_tokens / qt, 1),
+                }
+            )
 
     if not per_question:
-        return {"error": "No matching nodes found for sample questions. Build the graph first."}
+        return {
+            "error": "No matching nodes found for sample questions. Build the graph first."
+        }
 
     avg_query_tokens = sum(p["query_tokens"] for p in per_question) // len(per_question)
-    reduction_ratio = round(corpus_tokens / avg_query_tokens, 1) if avg_query_tokens > 0 else 0
+    reduction_ratio = (
+        round(corpus_tokens / avg_query_tokens, 1) if avg_query_tokens > 0 else 0
+    )
 
     return {
         "corpus_tokens": corpus_tokens,
@@ -116,7 +131,9 @@ def print_benchmark(result: dict) -> None:
 
     print(f"\ngraphify token reduction benchmark")
     print(f"{'─' * 50}")
-    print(f"  Corpus:          {result['corpus_words']:,} words → ~{result['corpus_tokens']:,} tokens (naive)")
+    print(
+        f"  Corpus:          {result['corpus_words']:,} words → ~{result['corpus_tokens']:,} tokens (naive)"
+    )
     print(f"  Graph:           {result['nodes']:,} nodes, {result['edges']:,} edges")
     print(f"  Avg query cost:  ~{result['avg_query_tokens']:,} tokens")
     print(f"  Reduction:       {result['reduction_ratio']}x fewer tokens per query")

@@ -97,6 +97,8 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
     except ValueError:
         return default
     return max(minimum, value)
+
+
 def get_unsloth_version() -> str:
     try:
         return package_version("unsloth")
@@ -172,12 +174,16 @@ async def lifespan(app: FastAPI):
             raw_dir = vault_root / "raw"
             raw_dir.mkdir(parents = True, exist_ok = True)
 
-            auto_query_on_ingest = _env_flag("UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST", default = True)
+            auto_query_on_ingest = _env_flag(
+                "UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST", default = True
+            )
             auto_query_chat_history = _env_flag(
                 "UNSLOTH_WIKI_AUTO_QUERY_CHAT_HISTORY",
                 default = False,
             )
-            auto_lint_every = _env_int("UNSLOTH_WIKI_AUTO_LINT_EVERY", default = 10, minimum = 0)
+            auto_lint_every = _env_int(
+                "UNSLOTH_WIKI_AUTO_LINT_EVERY", default = 10, minimum = 0
+            )
 
             def _wiki_llm_fn(prompt: str) -> str:
                 return _route_wiki_llm_stub(prompt)

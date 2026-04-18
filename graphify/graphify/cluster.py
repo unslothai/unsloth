@@ -1,4 +1,5 @@
 """Community detection on NetworkX graphs. Uses Leiden (graspologic) if available, falls back to Louvain (networkx). Splits oversized communities. Returns cohesion scores."""
+
 from __future__ import annotations
 import networkx as nx
 
@@ -11,12 +12,13 @@ def _partition(G: nx.Graph) -> dict[str, int]:
     """
     try:
         from graspologic.partition import leiden
+
         return leiden(G)
     except ImportError:
         pass
 
     # Fallback: networkx louvain (available since networkx 2.7)
-    communities = nx.community.louvain_communities(G, seed=42)
+    communities = nx.community.louvain_communities(G, seed = 42)
     return {node: cid for cid, nodes in enumerate(communities) for node in nodes}
 
 
@@ -37,8 +39,9 @@ def build_graph(nodes: list[dict], edges: list[dict]) -> nx.Graph:
         G.add_edge(e["source"], e["target"], **attrs)
     return G
 
-_MAX_COMMUNITY_FRACTION = 0.25   # communities larger than 25% of graph get split
-_MIN_SPLIT_SIZE = 10             # only split if community has at least this many nodes
+
+_MAX_COMMUNITY_FRACTION = 0.25  # communities larger than 25% of graph get split
+_MIN_SPLIT_SIZE = 10  # only split if community has at least this many nodes
 
 
 def cluster(G: nx.Graph) -> dict[int, list[str]]:
@@ -65,7 +68,7 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
             raw.setdefault(cid, []).append(node)
 
     # Each isolate becomes its own single-node community
-    next_cid = max(raw.keys(), default=-1) + 1
+    next_cid = max(raw.keys(), default = -1) + 1
     for node in isolates:
         raw[next_cid] = [node]
         next_cid += 1
@@ -80,7 +83,7 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
             final_communities.append(nodes)
 
     # Re-index by size descending for deterministic ordering
-    final_communities.sort(key=len, reverse=True)
+    final_communities.sort(key = len, reverse = True)
     return {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
 
 

@@ -1,4 +1,5 @@
 """Tests for graphify/security.py - URL validation, safe fetch, path guards, label sanitisation."""
+
 from __future__ import annotations
 
 import json
@@ -23,23 +24,32 @@ from graphify.security import (
 # validate_url
 # ---------------------------------------------------------------------------
 
+
 def test_validate_url_accepts_http():
     assert validate_url("http://example.com/page") == "http://example.com/page"
 
+
 def test_validate_url_accepts_https():
-    assert validate_url("https://arxiv.org/abs/1706.03762") == "https://arxiv.org/abs/1706.03762"
+    assert (
+        validate_url("https://arxiv.org/abs/1706.03762")
+        == "https://arxiv.org/abs/1706.03762"
+    )
+
 
 def test_validate_url_rejects_file():
-    with pytest.raises(ValueError, match="file"):
+    with pytest.raises(ValueError, match = "file"):
         validate_url("file:///etc/passwd")
 
+
 def test_validate_url_rejects_ftp():
-    with pytest.raises(ValueError, match="ftp"):
+    with pytest.raises(ValueError, match = "ftp"):
         validate_url("ftp://files.example.com/data.zip")
 
+
 def test_validate_url_rejects_data():
-    with pytest.raises(ValueError, match="data"):
+    with pytest.raises(ValueError, match = "data"):
         validate_url("data:text/html,<script>alert(1)</script>")
+
 
 def test_validate_url_rejects_empty_scheme():
     with pytest.raises(ValueError):
@@ -50,24 +60,27 @@ def test_validate_url_rejects_empty_scheme():
 # safe_fetch - scheme and redirect guards (mocked network)
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_response(content: bytes, status: int = 200):
     mock = MagicMock()
     mock.__enter__ = lambda s: s
-    mock.__exit__ = MagicMock(return_value=False)
+    mock.__exit__ = MagicMock(return_value = False)
     mock.status = status
     mock.code = status
-    chunks = [content[i:i+65536] for i in range(0, len(content), 65536)] + [b""]
+    chunks = [content[i : i + 65536] for i in range(0, len(content), 65536)] + [b""]
     mock.read.side_effect = chunks
     return mock
 
 
 def test_safe_fetch_rejects_file_url():
-    with pytest.raises(ValueError, match="file"):
+    with pytest.raises(ValueError, match = "file"):
         safe_fetch("file:///etc/passwd")
 
+
 def test_safe_fetch_rejects_ftp_url():
-    with pytest.raises(ValueError, match="ftp"):
+    with pytest.raises(ValueError, match = "ftp"):
         safe_fetch("ftp://example.com/file.zip")
+
 
 def test_safe_fetch_returns_bytes(tmp_path):
     mock_resp = _make_mock_response(b"hello world")
@@ -78,8 +91,9 @@ def test_safe_fetch_returns_bytes(tmp_path):
         result = safe_fetch("https://example.com/")
     assert result == b"hello world"
 
+
 def test_safe_fetch_raises_on_non_2xx():
-    mock_resp = _make_mock_response(b"Not Found", status=404)
+    mock_resp = _make_mock_response(b"Not Found", status = 404)
     with patch("graphify.security._build_opener") as mock_opener_fn:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
@@ -87,12 +101,13 @@ def test_safe_fetch_raises_on_non_2xx():
         with pytest.raises(urllib.error.HTTPError):
             safe_fetch("https://example.com/missing")
 
+
 def test_safe_fetch_raises_on_size_exceeded():
     # Build a response larger than max_bytes
     big_chunk = b"x" * 65_537
     mock_resp = MagicMock()
     mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.__exit__ = MagicMock(return_value = False)
     mock_resp.status = 200
     mock_resp.code = 200
     # Return the chunk twice so total > max_bytes=65536
@@ -102,13 +117,14 @@ def test_safe_fetch_raises_on_size_exceeded():
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
         mock_opener_fn.return_value = mock_opener
-        with pytest.raises(OSError, match="size limit"):
-            safe_fetch("https://example.com/huge", max_bytes=65_536)
+        with pytest.raises(OSError, match = "size limit"):
+            safe_fetch("https://example.com/huge", max_bytes = 65_536)
 
 
 # ---------------------------------------------------------------------------
 # safe_fetch_text
 # ---------------------------------------------------------------------------
+
 
 def test_safe_fetch_text_decodes_utf8():
     content = "héllo wörld".encode("utf-8")
@@ -119,6 +135,7 @@ def test_safe_fetch_text_decodes_utf8():
         mock_opener_fn.return_value = mock_opener
         result = safe_fetch_text("https://example.com/")
     assert result == "héllo wörld"
+
 
 def test_safe_fetch_text_replaces_bad_bytes():
     bad = b"hello \xff world"
@@ -137,40 +154,46 @@ def test_safe_fetch_text_replaces_bad_bytes():
 # validate_graph_path
 # ---------------------------------------------------------------------------
 
+
 def test_validate_graph_path_allows_inside_base(tmp_path):
     base = tmp_path / "graphify-out"
     base.mkdir()
     graph = base / "graph.json"
     graph.write_text("{}")
-    result = validate_graph_path(str(graph), base=base)
+    result = validate_graph_path(str(graph), base = base)
     assert result == graph.resolve()
+
 
 def test_validate_graph_path_blocks_traversal(tmp_path):
     base = tmp_path / "graphify-out"
     base.mkdir()
     evil = tmp_path / "graphify-out" / ".." / "etc_passwd"
-    with pytest.raises(ValueError, match="escapes"):
-        validate_graph_path(str(evil), base=base)
+    with pytest.raises(ValueError, match = "escapes"):
+        validate_graph_path(str(evil), base = base)
+
 
 def test_validate_graph_path_requires_base_exists(tmp_path):
     base = tmp_path / "graphify-out"  # not created
-    with pytest.raises(ValueError, match="does not exist"):
-        validate_graph_path(str(base / "graph.json"), base=base)
+    with pytest.raises(ValueError, match = "does not exist"):
+        validate_graph_path(str(base / "graph.json"), base = base)
+
 
 def test_validate_graph_path_raises_if_file_missing(tmp_path):
     base = tmp_path / "graphify-out"
     base.mkdir()
     with pytest.raises(FileNotFoundError):
-        validate_graph_path(str(base / "missing.json"), base=base)
+        validate_graph_path(str(base / "missing.json"), base = base)
 
 
 # ---------------------------------------------------------------------------
 # sanitize_label
 # ---------------------------------------------------------------------------
 
+
 def test_sanitize_label_escapes_html():
     assert "&lt;script&gt;" in sanitize_label("<script>")
     assert "&amp;" in sanitize_label("foo & bar")
+
 
 def test_sanitize_label_strips_control_chars():
     result = sanitize_label("hello\x00\x1fworld")
@@ -178,9 +201,11 @@ def test_sanitize_label_strips_control_chars():
     assert "\x1f" not in result
     assert "helloworld" in result
 
+
 def test_sanitize_label_caps_at_256():
     long_label = "a" * 300
     assert len(sanitize_label(long_label)) <= 256
+
 
 def test_sanitize_label_safe_passthrough():
     assert sanitize_label("MyClass") == "MyClass"

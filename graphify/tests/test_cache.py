@@ -1,7 +1,15 @@
 """Tests for graphify/cache.py."""
+
 import pytest
 from pathlib import Path
-from graphify.cache import file_hash, cache_dir, load_cached, save_cached, cached_files, clear_cache
+from graphify.cache import (
+    file_hash,
+    cache_dir,
+    load_cached,
+    save_cached,
+    cached_files,
+    clear_cache,
+)
 
 
 @pytest.fixture
@@ -37,18 +45,18 @@ def test_file_hash_changes(tmp_path):
 def test_cache_roundtrip(tmp_file, cache_root):
     """Save then load returns the same result dict."""
     result = {"nodes": [{"id": "n1", "label": "Node1"}], "edges": []}
-    save_cached(tmp_file, result, root=cache_root)
-    loaded = load_cached(tmp_file, root=cache_root)
+    save_cached(tmp_file, result, root = cache_root)
+    loaded = load_cached(tmp_file, root = cache_root)
     assert loaded == result
 
 
 def test_cache_miss_on_change(tmp_file, cache_root):
     """After file content changes, load_cached returns None."""
     result = {"nodes": [], "edges": [{"source": "a", "target": "b"}]}
-    save_cached(tmp_file, result, root=cache_root)
+    save_cached(tmp_file, result, root = cache_root)
     # Modify the file
     tmp_file.write_text("completely different content")
-    assert load_cached(tmp_file, root=cache_root) is None
+    assert load_cached(tmp_file, root = cache_root) is None
 
 
 def test_cached_files(tmp_path, cache_root):
@@ -58,8 +66,8 @@ def test_cached_files(tmp_path, cache_root):
     f1.write_text("alpha")
     f2.write_text("beta")
 
-    save_cached(f1, {"nodes": [], "edges": []}, root=cache_root)
-    save_cached(f2, {"nodes": [], "edges": []}, root=cache_root)
+    save_cached(f1, {"nodes": [], "edges": []}, root = cache_root)
+    save_cached(f2, {"nodes": [], "edges": []}, root = cache_root)
 
     hashes = cached_files(cache_root)
     assert file_hash(f1) in hashes
@@ -68,7 +76,7 @@ def test_cached_files(tmp_path, cache_root):
 
 def test_clear_cache(tmp_file, cache_root):
     """clear_cache removes all .json files from graphify-out/cache/."""
-    save_cached(tmp_file, {"nodes": [], "edges": []}, root=cache_root)
+    save_cached(tmp_file, {"nodes": [], "edges": []}, root = cache_root)
     assert len(list((cache_root / "graphify-out" / "cache").glob("*.json"))) > 0
     clear_cache(cache_root)
     assert len(list((cache_root / "graphify-out" / "cache").glob("*.json"))) == 0

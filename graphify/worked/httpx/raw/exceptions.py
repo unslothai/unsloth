@@ -6,7 +6,8 @@ All exceptions inherit from HTTPError at the top.
 
 class HTTPError(Exception):
     """Base class for all httpx exceptions."""
-    def __init__(self, message, *, request=None):
+
+    def __init__(self, message, *, request = None):
         self.request = request
         super().__init__(message)
 
@@ -77,9 +78,10 @@ class TooManyRedirects(RequestError):
 
 class HTTPStatusError(HTTPError):
     """A 4xx or 5xx response was received."""
+
     def __init__(self, message, *, request, response):
         self.response = response
-        super().__init__(message, request=request)
+        super().__init__(message, request = request)
 
 
 class InvalidURL(Exception):

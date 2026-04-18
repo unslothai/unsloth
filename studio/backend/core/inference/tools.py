@@ -295,10 +295,18 @@ def _ensure_wiki_shortcuts(workdir: str):
     wiki_root = os.path.join(vault_root, "wiki")
 
     _safe_link_directory(wiki_root, os.path.join(workdir, "wiki"))
-    _safe_link_directory(os.path.join(wiki_root, "sources"), os.path.join(workdir, "sources"))
-    _safe_link_directory(os.path.join(wiki_root, "entities"), os.path.join(workdir, "entities"))
-    _safe_link_directory(os.path.join(wiki_root, "concepts"), os.path.join(workdir, "concepts"))
-    _safe_link_directory(os.path.join(wiki_root, "analysis"), os.path.join(workdir, "analysis"))
+    _safe_link_directory(
+        os.path.join(wiki_root, "sources"), os.path.join(workdir, "sources")
+    )
+    _safe_link_directory(
+        os.path.join(wiki_root, "entities"), os.path.join(workdir, "entities")
+    )
+    _safe_link_directory(
+        os.path.join(wiki_root, "concepts"), os.path.join(workdir, "concepts")
+    )
+    _safe_link_directory(
+        os.path.join(wiki_root, "analysis"), os.path.join(workdir, "analysis")
+    )
     _safe_link_directory(os.path.join(vault_root, "raw"), os.path.join(workdir, "raw"))
 
 

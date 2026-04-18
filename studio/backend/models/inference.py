@@ -776,6 +776,8 @@ class WikiLintResponse(BaseModel):
     missing_concepts: list[str]
     low_coverage_sources: list[str]
     total_pages: int
+
+
 # =====================================================================
 # OpenAI Responses API Models  (/v1/responses)
 # =====================================================================

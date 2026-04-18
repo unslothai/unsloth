@@ -227,6 +227,7 @@ class InferenceBackend:
         from core.wiki.manager import WikiManager
         from core.wiki.ingestor import WikiIngestor
         from pathlib import Path
+
         self.vault_root = Path("/tmp/unsloth_wiki")
         self.wiki_manager = WikiManager.create(self.vault_root, self._wiki_llm_fn)
         self.wiki_ingestor = WikiIngestor(self.wiki_manager, self.vault_root / "raw")
@@ -997,7 +998,7 @@ class InferenceBackend:
             logger.info("Injecting RAG context into prompt")
             context_message = {
                 "role": "system",
-                "content": f"Use the following context to help answer the user's request:\n\n{rag_context}"
+                "content": f"Use the following context to help answer the user's request:\n\n{rag_context}",
             }
             # Insert context after system prompt if it exists, or at the beginning
             if system_prompt:
@@ -2164,9 +2165,7 @@ class InferenceBackend:
                 score = block.get("score", 0.0)
                 content = block.get("content", "")
                 context_parts.append(
-                    f"PAGE: {page}\n"
-                    f"SCORE: {score:.4f}\n"
-                    f"CONTENT:\n{content}"
+                    f"PAGE: {page}\n" f"SCORE: {score:.4f}\n" f"CONTENT:\n{content}"
                 )
 
             return "\n\n---\n\n".join(context_parts)
@@ -2189,6 +2188,7 @@ class InferenceBackend:
         """
         try:
             import datetime
+
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             lines = [f"## Chat Snapshot - {timestamp}\n"]
             for msg in messages:
@@ -2218,15 +2218,16 @@ class InferenceBackend:
 
                 filename = f"chat_history_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
                 file_path = self.vault_root / "raw" / filename
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                content = "# Chat History Batch\n\n" + "\n\n---\n\n".join(self._pending_chat_history_blocks)
-                file_path.write_text(content, encoding="utf-8")
+                file_path.parent.mkdir(parents = True, exist_ok = True)
+                content = "# Chat History Batch\n\n" + "\n\n---\n\n".join(
+                    self._pending_chat_history_blocks
+                )
+                file_path.write_text(content, encoding = "utf-8")
                 self._pending_chat_history_blocks.clear()
                 self._chat_history_buffer_started_at = None
                 logger.info(f"Saved buffered chat history to {file_path}")
         except Exception as e:
             logger.error(f"Failed to save chat history to wiki: {e}")
-
 
     def is_model_loading(self) -> bool:
         """Check if any model is currently loading"""

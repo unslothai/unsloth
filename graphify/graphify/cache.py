@@ -14,7 +14,7 @@ def file_hash(path: Path) -> str:
 def cache_dir(root: Path = Path(".")) -> Path:
     """Returns graphify-out/cache/ - creates it if needed."""
     d = Path(root) / "graphify-out" / "cache"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents = True, exist_ok = True)
     return d
 
 
@@ -101,7 +101,9 @@ def save_semantic_cache(
     """
     from collections import defaultdict
 
-    by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": [], "hyperedges": []})
+    by_file: dict[str, dict] = defaultdict(
+        lambda: {"nodes": [], "edges": [], "hyperedges": []}
+    )
     for n in nodes:
         src = n.get("source_file", "")
         if src:
@@ -110,7 +112,7 @@ def save_semantic_cache(
         src = e.get("source_file", "")
         if src:
             by_file[src]["edges"].append(e)
-    for h in (hyperedges or []):
+    for h in hyperedges or []:
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)

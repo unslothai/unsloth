@@ -16,40 +16,63 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = "graphify-out/manifest.json"
 
-CODE_EXTENSIONS = {'.py', '.ts', '.js', '.tsx', '.go', '.rs', '.java', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php'}
-DOC_EXTENSIONS = {'.md', '.txt', '.rst'}
-PAPER_EXTENSIONS = {'.pdf'}
-IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
+CODE_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".js",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".cpp",
+    ".cc",
+    ".cxx",
+    ".c",
+    ".h",
+    ".hpp",
+    ".rb",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".cs",
+    ".scala",
+    ".php",
+}
+DOC_EXTENSIONS = {".md", ".txt", ".rst"}
+PAPER_EXTENSIONS = {".pdf"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 
-CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
+CORPUS_WARN_THRESHOLD = 50_000  # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
-FILE_COUNT_UPPER = 200             # files - above this, warn about token cost
+FILE_COUNT_UPPER = 200  # files - above this, warn about token cost
 
 # Files that may contain secrets - skip silently
 _SENSITIVE_PATTERNS = [
-    re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
-    re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
-    re.compile(r'(credential|secret|passwd|password|token|private_key)', re.IGNORECASE),
-    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
-    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
-    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
+    re.compile(r"(^|[\\/])\.(env|envrc)(\.|$)", re.IGNORECASE),
+    re.compile(r"\.(pem|key|p12|pfx|cert|crt|der|p8)$", re.IGNORECASE),
+    re.compile(r"(credential|secret|passwd|password|token|private_key)", re.IGNORECASE),
+    re.compile(r"(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$"),
+    re.compile(r"(\.netrc|\.pgpass|\.htpasswd)$", re.IGNORECASE),
+    re.compile(r"(aws_credentials|gcloud_credentials|service.account)", re.IGNORECASE),
 ]
 
 # Signals that a .md/.txt file is actually a converted academic paper
 _PAPER_SIGNALS = [
-    re.compile(r'\barxiv\b', re.IGNORECASE),
-    re.compile(r'\bdoi\s*:', re.IGNORECASE),
-    re.compile(r'\babstract\b', re.IGNORECASE),
-    re.compile(r'\bproceedings\b', re.IGNORECASE),
-    re.compile(r'\bjournal\b', re.IGNORECASE),
-    re.compile(r'\bpreprint\b', re.IGNORECASE),
-    re.compile(r'\\cite\{'),          # LaTeX citation
-    re.compile(r'\[\d+\]'),           # Numbered citation [1], [23] (inline)
-    re.compile(r'\[\n\d+\n\]'),       # Numbered citation spread across lines (markdown conversion)
-    re.compile(r'eq\.\s*\d+|equation\s+\d+', re.IGNORECASE),
-    re.compile(r'\d{4}\.\d{4,5}'),   # arXiv ID like 1706.03762
-    re.compile(r'\bwe propose\b', re.IGNORECASE),   # common academic phrasing
-    re.compile(r'\bliterature\b', re.IGNORECASE),   # "from the literature"
+    re.compile(r"\barxiv\b", re.IGNORECASE),
+    re.compile(r"\bdoi\s*:", re.IGNORECASE),
+    re.compile(r"\babstract\b", re.IGNORECASE),
+    re.compile(r"\bproceedings\b", re.IGNORECASE),
+    re.compile(r"\bjournal\b", re.IGNORECASE),
+    re.compile(r"\bpreprint\b", re.IGNORECASE),
+    re.compile(r"\\cite\{"),  # LaTeX citation
+    re.compile(r"\[\d+\]"),  # Numbered citation [1], [23] (inline)
+    re.compile(
+        r"\[\n\d+\n\]"
+    ),  # Numbered citation spread across lines (markdown conversion)
+    re.compile(r"eq\.\s*\d+|equation\s+\d+", re.IGNORECASE),
+    re.compile(r"\d{4}\.\d{4,5}"),  # arXiv ID like 1706.03762
+    re.compile(r"\bwe propose\b", re.IGNORECASE),  # common academic phrasing
+    re.compile(r"\bliterature\b", re.IGNORECASE),  # "from the literature"
 ]
 _PAPER_SIGNAL_THRESHOLD = 3  # need at least this many signals to call it a paper
 
@@ -65,7 +88,7 @@ def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
         # Only scan first 3000 chars for speed
-        text = path.read_text(errors="ignore")[:3000]
+        text = path.read_text(errors = "ignore")[:3000]
         hits = sum(1 for pattern in _PAPER_SIGNALS if pattern.search(text))
         return hits >= _PAPER_SIGNAL_THRESHOLD
     except Exception:
@@ -92,6 +115,7 @@ def extract_pdf_text(path: Path) -> str:
     """Extract plain text from a PDF file using pypdf."""
     try:
         from pypdf import PdfReader
+
         reader = PdfReader(str(path))
         pages = []
         for page in reader.pages:
@@ -107,20 +131,34 @@ def count_words(path: Path) -> int:
     try:
         if path.suffix.lower() == ".pdf":
             return len(extract_pdf_text(path).split())
-        return len(path.read_text(errors="ignore").split())
+        return len(path.read_text(errors = "ignore").split())
     except Exception:
         return 0
 
 
 # Directory names to always skip - venvs, caches, build artifacts, deps
 _SKIP_DIRS = {
-    "venv", ".venv", "env", ".env",
-    "node_modules", "__pycache__", ".git",
-    "dist", "build", "target", "out",
-    "site-packages", "lib64",
-    ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    ".tox", ".eggs", "*.egg-info",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "node_modules",
+    "__pycache__",
+    ".git",
+    "dist",
+    "build",
+    "target",
+    "out",
+    "site-packages",
+    "lib64",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".eggs",
+    "*.egg-info",
 }
+
 
 def _is_noise_dir(part: str) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
@@ -155,13 +193,16 @@ def detect(root: Path) -> dict:
     all_files: list[Path] = []
 
     for scan_root in scan_paths:
-        in_memory_tree = memory_dir.exists() and str(scan_root).startswith(str(memory_dir))
-        for dirpath, dirnames, filenames in os.walk(scan_root, followlinks=False):
+        in_memory_tree = memory_dir.exists() and str(scan_root).startswith(
+            str(memory_dir)
+        )
+        for dirpath, dirnames, filenames in os.walk(scan_root, followlinks = False):
             dp = Path(dirpath)
             if not in_memory_tree:
                 # Prune noise dirs in-place so os.walk never descends into them
                 dirnames[:] = [
-                    d for d in dirnames
+                    d
+                    for d in dirnames
                     if not d.startswith(".") and not _is_noise_dir(d)
                 ]
             for fname in filenames:
@@ -221,7 +262,9 @@ def load_manifest(manifest_path: str = _MANIFEST_PATH) -> dict[str, float]:
         return {}
 
 
-def save_manifest(files: dict[str, list[str]], manifest_path: str = _MANIFEST_PATH) -> None:
+def save_manifest(
+    files: dict[str, list[str]], manifest_path: str = _MANIFEST_PATH
+) -> None:
     """Save current file mtimes so the next --update run can diff against them."""
     manifest: dict[str, float] = {}
     for file_list in files.values():
@@ -230,8 +273,8 @@ def save_manifest(files: dict[str, list[str]], manifest_path: str = _MANIFEST_PA
                 manifest[f] = Path(f).stat().st_mtime
             except OSError:
                 pass  # file deleted between detect() and manifest write - skip it
-    Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(manifest_path).write_text(json.dumps(manifest, indent=2))
+    Path(manifest_path).parent.mkdir(parents = True, exist_ok = True)
+    Path(manifest_path).write_text(json.dumps(manifest, indent = 2))
 
 
 def detect_incremental(root: Path, manifest_path: str = _MANIFEST_PATH) -> dict:

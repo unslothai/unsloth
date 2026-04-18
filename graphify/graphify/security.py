@@ -9,13 +9,14 @@ import urllib.request
 from pathlib import Path
 
 _ALLOWED_SCHEMES = {"http", "https", "file"}
-_MAX_FETCH_BYTES = 52_428_800   # 50 MB hard cap for binary downloads
-_MAX_TEXT_BYTES  = 10_485_760   # 10 MB hard cap for HTML / text
+_MAX_FETCH_BYTES = 52_428_800  # 50 MB hard cap for binary downloads
+_MAX_TEXT_BYTES = 10_485_760  # 10 MB hard cap for HTML / text
 
 
 # ---------------------------------------------------------------------------
 # URL validation
 # ---------------------------------------------------------------------------
+
 
 def validate_url(url: str) -> str:
     """Raise ValueError if *url* is not http or https.
@@ -40,7 +41,7 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_url(newurl)          # raises ValueError if scheme is wrong
+        validate_url(newurl)  # raises ValueError if scheme is wrong
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -51,6 +52,7 @@ def _build_opener() -> urllib.request.OpenerDirector:
 # ---------------------------------------------------------------------------
 # Safe fetch
 # ---------------------------------------------------------------------------
+
 
 def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -> bytes:
     """Fetch *url* and return raw bytes.
@@ -70,9 +72,11 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     """
     validate_url(url)
     opener = _build_opener()
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
+    req = urllib.request.Request(
+        url, headers = {"User-Agent": "Mozilla/5.0 graphify/1.0"}
+    )
 
-    with opener.open(req, timeout=timeout) as resp:
+    with opener.open(req, timeout = timeout) as resp:
         # urllib raises HTTPError for non-2xx when using urlopen directly;
         # with a custom opener we check manually to be safe.
         status = getattr(resp, "status", None) or getattr(resp, "code", None)
@@ -96,18 +100,21 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     return b"".join(chunks)
 
 
-def safe_fetch_text(url: str, max_bytes: int = _MAX_TEXT_BYTES, timeout: int = 15) -> str:
+def safe_fetch_text(
+    url: str, max_bytes: int = _MAX_TEXT_BYTES, timeout: int = 15
+) -> str:
     """Fetch *url* and return decoded text (UTF-8, replacing bad bytes).
 
     Wraps safe_fetch with tighter defaults for HTML / text content.
     """
-    raw = safe_fetch(url, max_bytes=max_bytes, timeout=timeout)
-    return raw.decode("utf-8", errors="replace")
+    raw = safe_fetch(url, max_bytes = max_bytes, timeout = timeout)
+    return raw.decode("utf-8", errors = "replace")
 
 
 # ---------------------------------------------------------------------------
 # Path validation
 # ---------------------------------------------------------------------------
+
 
 def validate_graph_path(path: str | Path, base: Path | None = None) -> Path:
     """Resolve *path* and verify it stays inside *base*.

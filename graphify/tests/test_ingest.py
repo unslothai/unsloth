@@ -1,4 +1,5 @@
 """Tests for graphify.ingest.save_query_result"""
+
 from __future__ import annotations
 import re
 from pathlib import Path
@@ -7,7 +8,9 @@ from graphify.ingest import save_query_result
 
 
 def test_file_created(tmp_path):
-    out = save_query_result("what is attention?", "Attention is...", tmp_path / "memory")
+    out = save_query_result(
+        "what is attention?", "Attention is...", tmp_path / "memory"
+    )
     assert out.exists()
 
 
@@ -29,7 +32,7 @@ def test_frontmatter_question(tmp_path):
 
 def test_frontmatter_type(tmp_path):
     mem = tmp_path / "memory"
-    out = save_query_result("q", "a", mem, query_type="path_query")
+    out = save_query_result("q", "a", mem, query_type = "path_query")
     content = out.read_text()
     assert 'type: "path_query"' in content
 
@@ -37,7 +40,7 @@ def test_frontmatter_type(tmp_path):
 def test_source_nodes_included(tmp_path):
     mem = tmp_path / "memory"
     nodes = ["AttentionLayer", "SoftmaxFunc"]
-    out = save_query_result("q", "a", mem, source_nodes=nodes)
+    out = save_query_result("q", "a", mem, source_nodes = nodes)
     content = out.read_text()
     assert "AttentionLayer" in content
     assert "SoftmaxFunc" in content
@@ -46,7 +49,7 @@ def test_source_nodes_included(tmp_path):
 def test_source_nodes_capped_at_10(tmp_path):
     mem = tmp_path / "memory"
     nodes = [f"Node{i}" for i in range(20)]
-    out = save_query_result("q", "a", mem, source_nodes=nodes)
+    out = save_query_result("q", "a", mem, source_nodes = nodes)
     content = out.read_text()
     # Only first 10 should appear in frontmatter source_nodes line
     fm_line = [l for l in content.splitlines() if l.startswith("source_nodes:")][0]

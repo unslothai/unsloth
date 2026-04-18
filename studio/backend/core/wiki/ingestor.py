@@ -22,6 +22,7 @@ from .manager import WikiManager
 
 logger = logging.getLogger(__name__)
 
+
 class WikiIngestor:
     """
     Service to ingest various file types into the LLM Wiki.
@@ -31,7 +32,7 @@ class WikiIngestor:
     def __init__(self, wiki_manager: WikiManager, raw_dir: Path):
         self.wiki_manager = wiki_manager
         self.raw_dir = raw_dir
-        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.raw_dir.mkdir(parents = True, exist_ok = True)
 
     _SKIPPED_LOCAL_FILENAMES = {".ds_store", "thumbs.db"}
 
@@ -57,9 +58,9 @@ class WikiIngestor:
 
             text = pymupdf4llm.to_markdown(
                 str(file_path),
-                write_images=False,
-                show_progress=False,
-                use_ocr=False,
+                write_images = False,
+                show_progress = False,
+                use_ocr = False,
             )
             if text and text.strip():
                 return text
@@ -90,9 +91,9 @@ class WikiIngestor:
 
     def _read_text_file(self, file_path: Path) -> str:
         try:
-            return file_path.read_text(encoding="utf-8")
+            return file_path.read_text(encoding = "utf-8")
         except UnicodeDecodeError:
-            return file_path.read_text(encoding="latin-1")
+            return file_path.read_text(encoding = "latin-1")
 
     def _read_local_content(self, file_path: Path) -> Tuple[str, str]:
         suffix = file_path.suffix.lower()
@@ -112,14 +113,18 @@ class WikiIngestor:
             raise ValueError(f"Ingestion produced empty content for {file_path}")
         return file_path.stem, cleaned
 
-    def _ingest_remote_source(self, source: str, contributor: Optional[str]) -> Tuple[str, str]:
-        ingested_path = ingest(source, self.raw_dir, contributor=contributor)
+    def _ingest_remote_source(
+        self, source: str, contributor: Optional[str]
+    ) -> Tuple[str, str]:
+        ingested_path = ingest(source, self.raw_dir, contributor = contributor)
         if not ingested_path.exists():
             raise FileNotFoundError(f"Ingestion failed: {ingested_path} does not exist")
         title, content = self._read_local_content(ingested_path)
         return title, content
 
-    def ingest_file(self, file_path: Path, contributor: Optional[str] = None) -> Optional[str]:
+    def ingest_file(
+        self, file_path: Path, contributor: Optional[str] = None
+    ) -> Optional[str]:
         """
         Ingest a single file into the wiki.
 
@@ -133,7 +138,9 @@ class WikiIngestor:
             # 1. Local files are parsed directly so we can reliably extract PDFs.
             # Remote URLs still go through graphify.ingest fetch logic.
             if self._is_remote_source(source):
-                title, content = self._ingest_remote_source(source, contributor=contributor)
+                title, content = self._ingest_remote_source(
+                    source, contributor = contributor
+                )
                 reference = source
             else:
                 resolved = Path(file_path).expanduser().resolve()
@@ -155,19 +162,23 @@ class WikiIngestor:
 
             # 3. Ingest into the wiki engine
             result = self.wiki_manager.ingest_content(
-                title=title,
-                content=content,
-                reference=reference,
+                title = title,
+                content = content,
+                reference = reference,
             )
 
-            logger.info(f"Successfully ingested {file_path.name} into wiki. Result: {result}")
+            logger.info(
+                f"Successfully ingested {file_path.name} into wiki. Result: {result}"
+            )
             return title
 
         except Exception as e:
             logger.exception(f"Failed to ingest {file_path}: {e}")
             return None
 
-    def ingest_directory(self, directory_path: Path, contributor: Optional[str] = None) -> List[str]:
+    def ingest_directory(
+        self, directory_path: Path, contributor: Optional[str] = None
+    ) -> List[str]:
         """Ingest all supported files in a directory."""
         successes = []
         for file in directory_path.iterdir():
@@ -175,8 +186,19 @@ class WikiIngestor:
                 if self.should_skip_local_file(file):
                     continue
                 # Basic filter for supported types (can be expanded)
-                if file.suffix.lower() in (".py", ".js", ".ts", ".tsx", ".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg"):
-                    res = self.ingest_file(file, contributor=contributor)
+                if file.suffix.lower() in (
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".tsx",
+                    ".pdf",
+                    ".txt",
+                    ".md",
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                ):
+                    res = self.ingest_file(file, contributor = contributor)
                     if res:
                         successes.append(res)
         return successes

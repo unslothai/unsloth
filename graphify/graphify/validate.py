@@ -29,7 +29,9 @@ def validate_extraction(data: dict) -> list[str]:
                 continue
             for field in REQUIRED_NODE_FIELDS:
                 if field not in node:
-                    errors.append(f"Node {i} (id={node.get('id', '?')!r}) missing required field '{field}'")
+                    errors.append(
+                        f"Node {i} (id={node.get('id', '?')!r}) missing required field '{field}'"
+                    )
             if "file_type" in node and node["file_type"] not in VALID_FILE_TYPES:
                 errors.append(
                     f"Node {i} (id={node.get('id', '?')!r}) has invalid file_type "
@@ -42,7 +44,9 @@ def validate_extraction(data: dict) -> list[str]:
     elif not isinstance(data["edges"], list):
         errors.append("'edges' must be a list")
     else:
-        node_ids = {n["id"] for n in data.get("nodes", []) if isinstance(n, dict) and "id" in n}
+        node_ids = {
+            n["id"] for n in data.get("nodes", []) if isinstance(n, dict) and "id" in n
+        }
         for i, edge in enumerate(data["edges"]):
             if not isinstance(edge, dict):
                 errors.append(f"Edge {i} must be an object")
@@ -56,9 +60,13 @@ def validate_extraction(data: dict) -> list[str]:
                     f"- must be one of {sorted(VALID_CONFIDENCES)}"
                 )
             if "source" in edge and node_ids and edge["source"] not in node_ids:
-                errors.append(f"Edge {i} source '{edge['source']}' does not match any node id")
+                errors.append(
+                    f"Edge {i} source '{edge['source']}' does not match any node id"
+                )
             if "target" in edge and node_ids and edge["target"] not in node_ids:
-                errors.append(f"Edge {i} target '{edge['target']}' does not match any node id")
+                errors.append(
+                    f"Edge {i} target '{edge['target']}' does not match any node id"
+                )
 
     return errors
 
@@ -67,5 +75,7 @@ def assert_valid(data: dict) -> None:
     """Raise ValueError with all errors if extraction is invalid."""
     errors = validate_extraction(data)
     if errors:
-        msg = f"Extraction JSON has {len(errors)} error(s):\n" + "\n".join(f"  • {e}" for e in errors)
+        msg = f"Extraction JSON has {len(errors)} error(s):\n" + "\n".join(
+            f"  • {e}" for e in errors
+        )
         raise ValueError(msg)

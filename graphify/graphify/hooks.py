@@ -124,10 +124,12 @@ def install(path: Path = Path(".")) -> str:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
 
     hooks_dir = root / ".git" / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
+    hooks_dir.mkdir(exist_ok = True)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", _HOOK_SCRIPT, _HOOK_MARKER)
-    checkout_msg = _install_hook(hooks_dir, "post-checkout", _CHECKOUT_SCRIPT, _CHECKOUT_MARKER)
+    checkout_msg = _install_hook(
+        hooks_dir, "post-checkout", _CHECKOUT_SCRIPT, _CHECKOUT_MARKER
+    )
 
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
 
@@ -156,7 +158,11 @@ def status(path: Path = Path(".")) -> str:
         p = hooks_dir / name
         if not p.exists():
             return "not installed"
-        return "installed" if marker in p.read_text() else "not installed (hook exists but graphify not found)"
+        return (
+            "installed"
+            if marker in p.read_text()
+            else "not installed (hook exists but graphify not found)"
+        )
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)

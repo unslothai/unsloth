@@ -13,11 +13,13 @@ logger = logging.getLogger(__name__)
 
 # --- Memory Compaction Logic ---
 
+
 @dataclass
 class SessionMemoryConfig:
     minimum_message_tokens_to_init: int = 10_000
     minimum_tokens_between_update: int = 5_000
     tool_calls_between_updates: int = 3
+
 
 @dataclass
 class SessionMemoryState:
@@ -25,11 +27,13 @@ class SessionMemoryState:
     tokens_at_last_extraction: int = 0
     last_summarized_message_id: Optional[str] = None
 
+
 @dataclass
 class SessionMemoryCompactConfig:
     min_tokens: int = 10_000
     min_text_block_messages: int = 5
     max_tokens: int = 40_000
+
 
 @dataclass
 class Message:
@@ -38,8 +42,10 @@ class Message:
     content: Any
     message_id: Optional[str] = None
 
+
 def estimate_message_tokens(msg: Message) -> int:
     return max(1, len(str(msg.content)) // 4)
+
 
 def has_text_blocks(msg: Message) -> bool:
     if msg.role == "assistant" and isinstance(msg.content, list):
@@ -48,8 +54,11 @@ def has_text_blocks(msg: Message) -> bool:
         if isinstance(msg.content, str):
             return len(msg.content.strip()) > 0
         if isinstance(msg.content, list):
-            return any(b.get("type") == "text" for b in msg.content if isinstance(b, dict))
+            return any(
+                b.get("type") == "text" for b in msg.content if isinstance(b, dict)
+            )
     return False
+
 
 def count_tool_calls_since(messages: List[Message], since_uuid: Optional[str]) -> int:
     found_start = since_uuid is None
@@ -60,14 +69,22 @@ def count_tool_calls_since(messages: List[Message], since_uuid: Optional[str]) -
                 found_start = True
             continue
         if m.role == "assistant" and isinstance(m.content, list):
-            n += sum(1 for b in m.content if isinstance(b, dict) and b.get("type") == "tool_use")
+            n += sum(
+                1
+                for b in m.content
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            )
     return n
+
 
 def has_tool_calls_in_last_assistant_turn(messages: List[Message]) -> bool:
     for m in reversed(messages):
         if m.role == "assistant" and isinstance(m.content, list):
-            return any(b.get("type") == "tool_use" for b in m.content if isinstance(b, dict))
+            return any(
+                b.get("type") == "tool_use" for b in m.content if isinstance(b, dict)
+            )
     return False
+
 
 def should_extract_session_memory(
     messages: List[Message],
@@ -92,16 +109,24 @@ def should_extract_session_memory(
     )
     return should_extract
 
+
 def _tool_result_ids(msg: Message) -> List[str]:
     if msg.role != "user" or not isinstance(msg.content, list):
         return []
     out: List[str] = []
     for b in msg.content:
-        if isinstance(b, dict) and b.get("type") == "tool_result" and "tool_use_id" in b:
+        if (
+            isinstance(b, dict)
+            and b.get("type") == "tool_result"
+            and "tool_use_id" in b
+        ):
             out.append(str(b["tool_use_id"]))
     return out
 
-def adjust_index_to_preserve_api_invariants(messages: List[Message], start_index: int) -> int:
+
+def adjust_index_to_preserve_api_invariants(
+    messages: List[Message], start_index: int
+) -> int:
     if start_index <= 0 or start_index >= len(messages):
         return start_index
 
@@ -125,20 +150,26 @@ def adjust_index_to_preserve_api_invariants(messages: List[Message], start_index
         if m.role != "assistant" or not isinstance(m.content, list):
             continue
         used_here = {
-            str(b["id"]) for b in m.content
+            str(b["id"])
+            for b in m.content
             if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
         }
         if used_here & needed_ids:
             adjusted = i
             needed_ids -= used_here
 
-    kept_ids = {m.message_id for m in messages[adjusted:] if m.role == "assistant" and m.message_id}
+    kept_ids = {
+        m.message_id
+        for m in messages[adjusted:]
+        if m.role == "assistant" and m.message_id
+    }
     for i in range(adjusted - 1, -1, -1):
         m = messages[i]
         if m.role == "assistant" and m.message_id and m.message_id in kept_ids:
             adjusted = i
 
     return adjusted
+
 
 def calculate_messages_to_keep_index(
     messages: List[Message],
@@ -152,7 +183,9 @@ def calculate_messages_to_keep_index(
     total = sum(estimate_message_tokens(m) for m in messages[start:])
     text_msgs = sum(1 for m in messages[start:] if has_text_blocks(m))
 
-    if total >= cfg.max_tokens or (total >= cfg.min_tokens and text_msgs >= cfg.min_text_block_messages):
+    if total >= cfg.max_tokens or (
+        total >= cfg.min_tokens and text_msgs >= cfg.min_text_block_messages
+    ):
         return adjust_index_to_preserve_api_invariants(messages, start)
 
     for i in range(start - 1, -1, -1):
@@ -168,6 +201,7 @@ def calculate_messages_to_keep_index(
 
     return adjust_index_to_preserve_api_invariants(messages, start)
 
+
 def try_session_memory_compaction(
     messages: List[Message],
     session_memory_text: Optional[str],
@@ -178,7 +212,14 @@ def try_session_memory_compaction(
         return None
 
     if state.last_summarized_message_id:
-        idx = next((i for i, m in enumerate(messages) if m.uuid == state.last_summarized_message_id), -1)
+        idx = next(
+            (
+                i
+                for i, m in enumerate(messages)
+                if m.uuid == state.last_summarized_message_id
+            ),
+            -1,
+        )
         if idx == -1:
             return None
     else:
@@ -192,6 +233,7 @@ def try_session_memory_compaction(
         "summary": session_memory_text,
         "messages_to_keep": kept,
     }
+
 
 def auto_compact_if_needed(
     messages: List[Message],
@@ -218,6 +260,7 @@ def auto_compact_if_needed(
         "summary": "<LLM-generated summary of earlier conversation>",
         "messages_to_keep": [],
     }
+
 
 # --- LLM Wiki Engine ---
 
@@ -307,77 +350,117 @@ _TERM_STOPWORDS: Set[str] = {
     "your",
 }
 
+
 @dataclass
 class WikiConfig:
     vault_root: Path
     wiki_dirname: str = "wiki"
     raw_dirname: str = "raw"
     max_context_pages: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES", 16, minimum=0)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES", 16, minimum = 0
+        )
     )
     max_chars_per_page: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE", 3500, minimum=0)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE", 3500, minimum = 0
+        )
     )
     query_context_max_chars: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS", 24000, minimum=0)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS", 24000, minimum = 0
+        )
     )
     extract_source_max_chars: int = field(
-        default_factory=lambda: _env_int(
+        default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_ENGINE_EXTRACT_SOURCE_MAX_CHARS", 20000
         )
     )
     ranking_max_chars: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS", 24000, minimum=0)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS", 24000, minimum = 0
+        )
     )
     ranking_link_depth: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH", 0, minimum=0)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH", 0, minimum = 0
+        )
     )
     ranking_link_fanout: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT", 4)
+        default_factory = lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT", 4)
     )
     ranking_llm_rerank_enabled: bool = field(
-        default_factory=lambda: _env_flag("UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED", False)
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED", False
+        )
     )
     ranking_llm_rerank_candidates: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES", 24, minimum=3)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES", 24, minimum = 3
+        )
     )
     ranking_llm_rerank_top_n: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_LLM_RERANK_TOP_N", 12, minimum=1)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_TOP_N", 12, minimum = 1
+        )
     )
     ranking_llm_rerank_preview_chars: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_LLM_RERANK_PREVIEW_CHARS", 420, minimum=80)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_PREVIEW_CHARS", 420, minimum = 80
+        )
     )
     ranking_llm_rerank_log_output: bool = field(
-        default_factory=lambda: _env_flag("UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_OUTPUT", True)
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_OUTPUT", True
+        )
     )
     ranking_llm_rerank_log_max_chars: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_MAX_CHARS", 4000, minimum=200)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_MAX_CHARS", 4000, minimum = 200
+        )
     )
     source_excerpt_max_chars: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS", 8000)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS", 8000
+        )
     )
     include_analysis_pages_in_query: bool = field(
-        default_factory=lambda: _env_flag("UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY", False)
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY", False
+        )
     )
     low_unique_ratio_min_tokens: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_LOW_UNIQUE_RATIO_MIN_TOKENS", 40, minimum=1)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_MIN_TOKENS", 40, minimum = 1
+        )
     )
     low_unique_ratio_threshold: float = field(
-        default_factory=lambda: _env_float("UNSLOTH_WIKI_LOW_UNIQUE_RATIO_THRESHOLD", 0.25, minimum=0.01, maximum=1.0)
+        default_factory = lambda: _env_float(
+            "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_THRESHOLD", 0.25, minimum = 0.01, maximum = 1.0
+        )
     )
     enrichment_fill_gaps_from_web: bool = field(
-        default_factory=lambda: _env_flag("UNSLOTH_WIKI_ENGINE_ENRICH_FILL_GAPS_FROM_WEB", False)
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_FILL_GAPS_FROM_WEB", False
+        )
     )
     enrichment_web_gap_max_queries: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_QUERIES", 4, minimum=1)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_QUERIES", 4, minimum = 1
+        )
     )
     enrichment_web_gap_max_results: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_RESULTS", 3, minimum=1)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_RESULTS", 3, minimum = 1
+        )
     )
     enrichment_web_gap_max_snippet_chars: int = field(
-        default_factory=lambda: _env_int("UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_SNIPPET_CHARS", 280, minimum=80)
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_SNIPPET_CHARS", 280, minimum = 80
+        )
     )
     stale_days: int = 30
+
 
 class LLMWikiEngine:
     def __init__(self, cfg: WikiConfig, llm_fn: LLMFn):
@@ -397,18 +480,20 @@ class LLMWikiEngine:
         self._ensure_layout()
 
     def _ensure_layout(self) -> None:
-        self.raw_dir.mkdir(parents=True, exist_ok=True)
-        self.sources_dir.mkdir(parents=True, exist_ok=True)
-        self.entities_dir.mkdir(parents=True, exist_ok=True)
-        self.concepts_dir.mkdir(parents=True, exist_ok=True)
-        self.analysis_dir.mkdir(parents=True, exist_ok=True)
+        self.raw_dir.mkdir(parents = True, exist_ok = True)
+        self.sources_dir.mkdir(parents = True, exist_ok = True)
+        self.entities_dir.mkdir(parents = True, exist_ok = True)
+        self.concepts_dir.mkdir(parents = True, exist_ok = True)
+        self.analysis_dir.mkdir(parents = True, exist_ok = True)
 
         if not self.index_file.exists():
-            self.index_file.write_text("# Index\n\n", encoding="utf-8")
+            self.index_file.write_text("# Index\n\n", encoding = "utf-8")
         if not self.log_file.exists():
-            self.log_file.write_text("# Log\n\n", encoding="utf-8")
+            self.log_file.write_text("# Log\n\n", encoding = "utf-8")
 
-    def ingest_source(self, source_title: str, source_text: str, source_ref: Optional[str] = None) -> Dict:
+    def ingest_source(
+        self, source_title: str, source_text: str, source_ref: Optional[str] = None
+    ) -> Dict:
         now = self._now_iso()
         source_slug = self._slug(source_title)
         source_path = self.sources_dir / f"{source_slug}.md"
@@ -418,38 +503,38 @@ class LLMWikiEngine:
         concepts = extraction.get("concepts", [])
 
         source_md = self._render_source_page(
-            title=source_title,
-            source_ref=source_ref or "local",
-            extracted=extraction,
-            source_text=source_text,
-            ingested_at=now,
+            title = source_title,
+            source_ref = source_ref or "local",
+            extracted = extraction,
+            source_text = source_text,
+            ingested_at = now,
         )
-        source_path.write_text(source_md, encoding="utf-8")
+        source_path.write_text(source_md, encoding = "utf-8")
 
         for e in entities:
             self._upsert_knowledge_page(
-                folder=self.entities_dir,
-                page_name=e.get("name", "unknown entity"),
-                page_type="entity",
-                summary=e.get("summary", ""),
-                facts=e.get("facts", []),
-                contradictions=e.get("contradictions", []),
-                source_title=source_title,
-                source_slug=source_slug,
-                updated_at=now,
+                folder = self.entities_dir,
+                page_name = e.get("name", "unknown entity"),
+                page_type = "entity",
+                summary = e.get("summary", ""),
+                facts = e.get("facts", []),
+                contradictions = e.get("contradictions", []),
+                source_title = source_title,
+                source_slug = source_slug,
+                updated_at = now,
             )
 
         for c in concepts:
             self._upsert_knowledge_page(
-                folder=self.concepts_dir,
-                page_name=c.get("name", "unknown concept"),
-                page_type="concept",
-                summary=c.get("summary", ""),
-                facts=c.get("facts", []),
-                contradictions=c.get("contradictions", []),
-                source_title=source_title,
-                source_slug=source_slug,
-                updated_at=now,
+                folder = self.concepts_dir,
+                page_name = c.get("name", "unknown concept"),
+                page_type = "concept",
+                summary = c.get("summary", ""),
+                facts = c.get("facts", []),
+                contradictions = c.get("contradictions", []),
+                source_title = source_title,
+                source_slug = source_slug,
+                updated_at = now,
             )
 
         self._rebuild_index()
@@ -483,11 +568,21 @@ class LLMWikiEngine:
         if not ranked:
             ranked = self._rank_pages(question)
 
-        top_pages = ranked if self.cfg.max_context_pages <= 0 else ranked[: self.cfg.max_context_pages]
+        top_pages = (
+            ranked
+            if self.cfg.max_context_pages <= 0
+            else ranked[: self.cfg.max_context_pages]
+        )
         if preferred_context_page:
-            preferred_rel = preferred_context_page[:-3] if preferred_context_page.endswith(".md") else preferred_context_page
+            preferred_rel = (
+                preferred_context_page[:-3]
+                if preferred_context_page.endswith(".md")
+                else preferred_context_page
+            )
             preferred_md = f"{preferred_rel}.md"
-            preferred_entry = next((item for item in ranked if item[0] == preferred_md), None)
+            preferred_entry = next(
+                (item for item in ranked if item[0] == preferred_md), None
+            )
             if preferred_entry is not None:
                 if preferred_context_only:
                     top_pages = [preferred_entry]
@@ -505,7 +600,9 @@ class LLMWikiEngine:
             else int(query_context_max_chars_override)
         )
         remaining_context_chars: Optional[int] = (
-            None if effective_query_context_max_chars <= 0 else effective_query_context_max_chars
+            None
+            if effective_query_context_max_chars <= 0
+            else effective_query_context_max_chars
         )
         pages_remaining = len(top_pages)
         remaining_score_mass = sum(max(1e-6, score) for _, score in top_pages)
@@ -514,21 +611,31 @@ class LLMWikiEngine:
             if remaining_context_chars is not None and remaining_context_chars <= 0:
                 break
 
-            text = (self.wiki_dir / rel_path).read_text(encoding="utf-8", errors="ignore")
+            text = (self.wiki_dir / rel_path).read_text(
+                encoding = "utf-8", errors = "ignore"
+            )
             if not text.strip():
                 pages_remaining = max(0, pages_remaining - 1)
                 continue
 
             preferred_match = False
             if preferred_context_page:
-                preferred_rel = preferred_context_page[:-3] if preferred_context_page.endswith(".md") else preferred_context_page
+                preferred_rel = (
+                    preferred_context_page[:-3]
+                    if preferred_context_page.endswith(".md")
+                    else preferred_context_page
+                )
                 preferred_md = f"{preferred_rel}.md"
                 preferred_match = rel_path == preferred_md
 
             if preferred_match and keep_preferred_context_full:
                 max_page_chars = len(text)
             else:
-                max_page_chars = len(text) if self.cfg.max_chars_per_page <= 0 else self.cfg.max_chars_per_page
+                max_page_chars = (
+                    len(text)
+                    if self.cfg.max_chars_per_page <= 0
+                    else self.cfg.max_chars_per_page
+                )
             if remaining_context_chars is None:
                 page_cap = max_page_chars
             else:
@@ -545,7 +652,9 @@ class LLMWikiEngine:
                     )
                 min_page_budget = min(1200, fair_share) if fair_share > 0 else 1
                 dynamic_cap = max(min_page_budget, weighted_share)
-                page_cap = min(remaining_context_chars, max(1, min(max_page_chars, dynamic_cap)))
+                page_cap = min(
+                    remaining_context_chars, max(1, min(max_page_chars, dynamic_cap))
+                )
 
             snippet = text[:page_cap]
             if not snippet.strip():
@@ -564,8 +673,14 @@ class LLMWikiEngine:
         if not used_pages:
             used_pages = top_pages
             for rel_path, score in top_pages:
-                text = (self.wiki_dir / rel_path).read_text(encoding="utf-8", errors="ignore")
-                fallback_cap = len(text) if self.cfg.max_chars_per_page <= 0 else min(800, self.cfg.max_chars_per_page)
+                text = (self.wiki_dir / rel_path).read_text(
+                    encoding = "utf-8", errors = "ignore"
+                )
+                fallback_cap = (
+                    len(text)
+                    if self.cfg.max_chars_per_page <= 0
+                    else min(800, self.cfg.max_chars_per_page)
+                )
                 context_blocks.append(
                     f"PAGE: {rel_path}\nSCORE: {score}\nCONTENT:\n{text[:fallback_cap]}"
                 )
@@ -628,7 +743,7 @@ class LLMWikiEngine:
                 + "## Context Pages\n"
                 + "\n".join([f"- [[{rp[:-3]}]]" for rp, _ in used_pages])
                 + "\n",
-                encoding="utf-8",
+                encoding = "utf-8",
             )
             answer_page = rel
             self._append_log(
@@ -652,7 +767,11 @@ class LLMWikiEngine:
         pages = self._all_wiki_pages()
         graph = self._build_link_graph(pages)
 
-        orphans = [p for p in pages if p not in ("index.md", "log.md") and len(graph["inbound"].get(p, [])) == 0]
+        orphans = [
+            p
+            for p in pages
+            if p not in ("index.md", "log.md") and len(graph["inbound"].get(p, [])) == 0
+        ]
 
         stale = []
         now = datetime.now(timezone.utc)
@@ -660,10 +779,10 @@ class LLMWikiEngine:
             if rel in ("index.md", "log.md"):
                 continue
             full = self.wiki_dir / rel
-            txt = full.read_text(encoding="utf-8", errors="ignore")
+            txt = full.read_text(encoding = "utf-8", errors = "ignore")
             updated = self._extract_updated_at(txt)
             if updated is None:
-                updated = datetime.fromtimestamp(full.stat().st_mtime, tz=timezone.utc)
+                updated = datetime.fromtimestamp(full.stat().st_mtime, tz = timezone.utc)
             age_days = (now - updated).days
             if age_days >= self.cfg.stale_days:
                 stale.append((rel, age_days))
@@ -672,7 +791,7 @@ class LLMWikiEngine:
         candidate_concepts: Dict[str, int] = {}
         low_coverage_sources: List[str] = []
         for source_page in self.sources_dir.glob("*.md"):
-            source_text = source_page.read_text(encoding="utf-8", errors="ignore")
+            source_text = source_page.read_text(encoding = "utf-8", errors = "ignore")
 
             if (
                 "## Entities Mentioned\n- none" in source_text
@@ -681,14 +800,18 @@ class LLMWikiEngine:
                 low_coverage_sources.append(f"sources/{source_page.stem}.md")
 
             cleaned = self._clean_source_text(source_text)
-            for concept in self._top_concepts(cleaned, limit=6):
+            for concept in self._top_concepts(cleaned, limit = 6):
                 if len(concept) < 6:
                     continue
                 slug = self._slug(concept)
                 candidate_concepts[slug] = candidate_concepts.get(slug, 0) + 1
 
         missing_concepts = sorted(
-            [slug for slug, count in candidate_concepts.items() if count >= 2 and slug not in known_concepts]
+            [
+                slug
+                for slug, count in candidate_concepts.items()
+                if count >= 2 and slug not in known_concepts
+            ]
         )
 
         report = {
@@ -719,8 +842,8 @@ class LLMWikiEngine:
         max_pages = max(1, int(max_analysis_pages))
         analysis_pages = sorted(
             self.analysis_dir.glob("*.md"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
+            key = lambda path: path.stat().st_mtime,
+            reverse = True,
         )[:max_pages]
 
         retried: List[Dict[str, Any]] = []
@@ -732,7 +855,7 @@ class LLMWikiEngine:
 
         for page_path in analysis_pages:
             rel_page = f"analysis/{page_path.name}"
-            text = page_path.read_text(encoding="utf-8", errors="ignore")
+            text = page_path.read_text(encoding = "utf-8", errors = "ignore")
             if not self._analysis_page_uses_fallback(text):
                 continue
 
@@ -750,7 +873,7 @@ class LLMWikiEngine:
                 continue
 
             try:
-                probe_result = self.query(question, save_answer=False)
+                probe_result = self.query(question, save_answer = False)
                 if probe_result.get("used_extractive_fallback"):
                     fallback_still += 1
                     retried.append(
@@ -766,7 +889,7 @@ class LLMWikiEngine:
 
                 new_answer_page = None
                 if not dry_run:
-                    saved_result = self.query(question, save_answer=True)
+                    saved_result = self.query(question, save_answer = True)
                     if saved_result.get("used_extractive_fallback"):
                         fallback_still += 1
                     else:
@@ -774,17 +897,19 @@ class LLMWikiEngine:
                         regenerated_pages += 1
                         if new_answer_page and new_answer_page != rel_page:
                             updated_source = self._upsert_retry_status_section(
-                                text=text,
-                                resolved_by=new_answer_page,
+                                text = text,
+                                resolved_by = new_answer_page,
                             )
-                            page_path.write_text(updated_source, encoding="utf-8")
+                            page_path.write_text(updated_source, encoding = "utf-8")
                 else:
                     regenerated_pages += 1
 
                 retried.append(
                     {
                         "source_page": rel_page,
-                        "status": "regenerated" if new_answer_page or dry_run else "fallback_still",
+                        "status": "regenerated"
+                        if new_answer_page or dry_run
+                        else "fallback_still",
                         "question": question,
                         "fallback_reason": probe_result.get("fallback_reason"),
                         "new_answer_page": new_answer_page,
@@ -855,8 +980,8 @@ class LLMWikiEngine:
         }
         if web_gap_fill_enabled:
             web_gap_fill_report = self._fill_gaps_from_lint_via_web(
-                dry_run=dry_run,
-                max_queries=web_gap_query_limit,
+                dry_run = dry_run,
+                max_queries = web_gap_query_limit,
             )
             if web_gap_fill_report.get("concepts_created", 0) > 0 and not dry_run:
                 # New concept pages should be visible to enrichment candidate selection.
@@ -877,17 +1002,17 @@ class LLMWikiEngine:
 
         for page_path in analysis_pages:
             rel_page = f"analysis/{page_path.name}"
-            original_text = page_path.read_text(encoding="utf-8", errors="ignore")
+            original_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
             existing_links = self._extract_link_targets(original_text)
 
             selected_by_group: Dict[str, List[str]] = {}
             for group_name, links in candidate_groups.items():
                 limit = 4 if group_name == "sources" else 6
                 selected_links = self._select_enrichment_links(
-                    analysis_text=original_text,
-                    candidates=links,
-                    existing_links=existing_links,
-                    limit=limit,
+                    analysis_text = original_text,
+                    candidates = links,
+                    existing_links = existing_links,
+                    limit = limit,
                 )
                 if selected_links:
                     selected_by_group[group_name] = selected_links
@@ -902,13 +1027,13 @@ class LLMWikiEngine:
 
             enrichment_body = self._render_enrichment_body(selected_by_group)
             updated_text = self._upsert_top_section(
-                text=original_text,
-                section_title="Enrichment",
-                section_body=enrichment_body,
+                text = original_text,
+                section_title = "Enrichment",
+                section_body = enrichment_body,
             )
 
             if not dry_run:
-                page_path.write_text(updated_text, encoding="utf-8")
+                page_path.write_text(updated_text, encoding = "utf-8")
 
             updated_pages += 1
             changes.append(
@@ -958,7 +1083,7 @@ class LLMWikiEngine:
             return []
 
         try:
-            results = DDGS(timeout=20).text(query, max_results=max_results)
+            results = DDGS(timeout = 20).text(query, max_results = max_results)
         except Exception as exc:
             logger.warning("Web gap fill search failed for query %r: %s", query, exc)
             return []
@@ -1023,7 +1148,10 @@ class LLMWikiEngine:
                 continue
 
             concept_title = slug.replace("-", " ").title()
-            summary = search_results[0].get("snippet") or f"Web discovery notes for {concept_title}."
+            summary = (
+                search_results[0].get("snippet")
+                or f"Web discovery notes for {concept_title}."
+            )
 
             facts = [
                 item.get("snippet", "")
@@ -1055,7 +1183,10 @@ class LLMWikiEngine:
                 f"{summary}\n\n"
                 "## Facts\n"
                 + "\n".join(
-                    [f"- {fact}" for fact in facts[: self.cfg.enrichment_web_gap_max_results]]
+                    [
+                        f"- {fact}"
+                        for fact in facts[: self.cfg.enrichment_web_gap_max_results]
+                    ]
                 )
                 + "\n\n"
                 + "## External Sources\n"
@@ -1064,7 +1195,7 @@ class LLMWikiEngine:
             )
 
             if not dry_run:
-                concept_page.write_text(page_md, encoding="utf-8")
+                concept_page.write_text(page_md, encoding = "utf-8")
 
             concepts_created += 1
             created_pages.append(f"concepts/{slug}.md")
@@ -1119,9 +1250,9 @@ class LLMWikiEngine:
                 failure_reason = "llm_prompt_echo"
 
             repaired = self._try_json_repair(
-                title=title,
-                source_text=text,
-                model_output=raw_text,
+                title = title,
+                source_text = text,
+                model_output = raw_text,
             )
             if repaired is not None:
                 parsed = repaired
@@ -1130,10 +1261,12 @@ class LLMWikiEngine:
                     "reason": "llm_json_repaired",
                 }
             else:
-                if failure_reason == "llm_json_parse_failed" and self._looks_garbled(raw_text):
+                if failure_reason == "llm_json_parse_failed" and self._looks_garbled(
+                    raw_text
+                ):
                     failure_reason = "llm_garbled_output"
 
-                parsed = self._heuristic_extract_from_text(title=title, text=text)
+                parsed = self._heuristic_extract_from_text(title = title, text = text)
                 meta = {
                     "status": "fallback",
                     "reason": failure_reason,
@@ -1156,7 +1289,9 @@ class LLMWikiEngine:
         parsed["_meta"] = meta
         return parsed
 
-    def _try_json_repair(self, title: str, source_text: str, model_output: str) -> Optional[Dict[str, Any]]:
+    def _try_json_repair(
+        self, title: str, source_text: str, model_output: str
+    ) -> Optional[Dict[str, Any]]:
         if not model_output:
             return None
 
@@ -1258,7 +1393,9 @@ class LLMWikiEngine:
         q_terms = self._terms(question)
         candidates: List[Tuple[float, str, str]] = []
         for rel_path, _score in top_pages[:5]:
-            page_text = (self.wiki_dir / rel_path).read_text(encoding="utf-8", errors="ignore")
+            page_text = (self.wiki_dir / rel_path).read_text(
+                encoding = "utf-8", errors = "ignore"
+            )
             segments = re.split(r"(?<=[.!?])\s+|\n+", page_text)
             for seg in segments:
                 sentence = seg.strip()
@@ -1271,7 +1408,7 @@ class LLMWikiEngine:
                 bonus = 0.5 if rel_path.startswith("sources/") else 0.0
                 candidates.append((overlap + bonus, rel_path, sentence))
 
-        candidates.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+        candidates.sort(key = lambda item: (item[0], len(item[2])), reverse = True)
 
         selected: List[Tuple[str, str]] = []
         seen = set()
@@ -1286,7 +1423,11 @@ class LLMWikiEngine:
 
         if not selected:
             rel_path, _score = top_pages[0]
-            preview = (self.wiki_dir / rel_path).read_text(encoding="utf-8", errors="ignore")[:800].strip()
+            preview = (
+                (self.wiki_dir / rel_path)
+                .read_text(encoding = "utf-8", errors = "ignore")[:800]
+                .strip()
+            )
             if not preview:
                 preview = "No extractive preview available from context page."
             return (
@@ -1304,7 +1445,7 @@ class LLMWikiEngine:
 
     def _heuristic_extract_from_text(self, title: str, text: str) -> Dict[str, Any]:
         cleaned = self._clean_source_text(text)
-        summary = self._first_sentences(cleaned, max_chars=600)
+        summary = self._first_sentences(cleaned, max_chars = 600)
 
         entities = [
             {
@@ -1313,7 +1454,7 @@ class LLMWikiEngine:
                 "facts": [],
                 "contradictions": [],
             }
-            for name in self._top_entities(cleaned, limit=8)
+            for name in self._top_entities(cleaned, limit = 8)
         ]
 
         concepts = [
@@ -1323,7 +1464,7 @@ class LLMWikiEngine:
                 "facts": [],
                 "contradictions": [],
             }
-            for name in self._top_concepts(cleaned, limit=8)
+            for name in self._top_concepts(cleaned, limit = 8)
         ]
 
         if not summary:
@@ -1369,8 +1510,12 @@ class LLMWikiEngine:
                 {
                     "name": name,
                     "summary": str(item.get("summary", "")).strip(),
-                    "facts": [str(f).strip() for f in facts if str(f).strip()] if isinstance(facts, list) else [],
-                    "contradictions": [str(c).strip() for c in contradictions if str(c).strip()]
+                    "facts": [str(f).strip() for f in facts if str(f).strip()]
+                    if isinstance(facts, list)
+                    else [],
+                    "contradictions": [
+                        str(c).strip() for c in contradictions if str(c).strip()
+                    ]
                     if isinstance(contradictions, list)
                     else [],
                 }
@@ -1404,26 +1549,34 @@ class LLMWikiEngine:
                 f"# {page_name}\n\n"
                 f"## Summary\n{summary or 'TBD'}\n\n"
                 f"## Facts\n" + "\n".join([f"- {f}" for f in facts]) + "\n\n"
-                f"## Contradictions\n" + "\n".join([f"- {c}" for c in contradictions]) + "\n\n"
+                f"## Contradictions\n"
+                + "\n".join([f"- {c}" for c in contradictions])
+                + "\n\n"
                 "## Sources\n"
                 f"- [[{rel_source}]] ({source_title})\n"
             )
-            p.write_text(md, encoding="utf-8")
+            p.write_text(md, encoding = "utf-8")
             return
 
-        old = p.read_text(encoding="utf-8", errors="ignore")
+        old = p.read_text(encoding = "utf-8", errors = "ignore")
         updates = []
         if summary:
             updates.append(f"### Summary update ({self._today()})\n{summary}\n")
         if facts:
-            updates.append("### New facts\n" + "\n".join([f"- {f}" for f in facts]) + "\n")
+            updates.append(
+                "### New facts\n" + "\n".join([f"- {f}" for f in facts]) + "\n"
+            )
         if contradictions:
-            updates.append("### New contradictions\n" + "\n".join([f"- {c}" for c in contradictions]) + "\n")
+            updates.append(
+                "### New contradictions\n"
+                + "\n".join([f"- {c}" for c in contradictions])
+                + "\n"
+            )
         updates.append(f"### Source update\n- [[{rel_source}]] ({source_title})\n")
 
         merged = self._set_frontmatter_updated_at(old, updated_at)
         merged += "\n\n## Incremental Updates\n\n" + "\n".join(updates)
-        p.write_text(merged, encoding="utf-8")
+        p.write_text(merged, encoding = "utf-8")
 
     def _rebuild_index(self) -> None:
         sections = [
@@ -1441,19 +1594,21 @@ class LLMWikiEngine:
                 out.append("- (none)")
             for f in files:
                 rel = f"{subdir}/{f.stem}"
-                page_text = f.read_text(encoding="utf-8", errors="ignore")
+                page_text = f.read_text(encoding = "utf-8", errors = "ignore")
                 first_line = self._first_nonempty_content_line(page_text)
-                line = f"- [[{rel}]] - {first_line[:140] if first_line else ''}".rstrip()
+                line = (
+                    f"- [[{rel}]] - {first_line[:140] if first_line else ''}".rstrip()
+                )
                 if subdir == "analysis":
                     fallback_tag = self._analysis_index_fallback_tag(page_text)
                     if fallback_tag:
                         line = f"{line} {fallback_tag}".rstrip()
                 out.append(line)
             out.append("")
-        self.index_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+        self.index_file.write_text("\n".join(out).rstrip() + "\n", encoding = "utf-8")
 
     def _append_log(self, entry: str) -> None:
-        with self.log_file.open("a", encoding="utf-8") as f:
+        with self.log_file.open("a", encoding = "utf-8") as f:
             f.write("\n" + entry.strip() + "\n")
 
     def _analysis_page_uses_fallback(self, text: str) -> bool:
@@ -1513,7 +1668,7 @@ class LLMWikiEngine:
             return out
 
         current_section: Optional[str] = None
-        index_text = self.index_file.read_text(encoding="utf-8", errors="ignore")
+        index_text = self.index_file.read_text(encoding = "utf-8", errors = "ignore")
         for raw_line in index_text.splitlines():
             line = raw_line.strip()
             if line.startswith("## "):
@@ -1547,7 +1702,7 @@ class LLMWikiEngine:
         if not self.index_file.exists():
             return out
 
-        index_text = self.index_file.read_text(encoding="utf-8", errors="ignore")
+        index_text = self.index_file.read_text(encoding = "utf-8", errors = "ignore")
         for raw_line in index_text.splitlines():
             line = raw_line.strip()
             if not line.startswith("- "):
@@ -1586,15 +1741,19 @@ class LLMWikiEngine:
         candidate_scores = {rel: score for rel, score in candidates}
         candidate_paths = sorted(candidate_scores.keys())
 
-        index_text = self.index_file.read_text(encoding="utf-8", errors="ignore")
+        index_text = self.index_file.read_text(encoding = "utf-8", errors = "ignore")
         index_lines = index_text.splitlines()
         index_preview = "\n".join(index_lines[:80])
         query_preview = re.sub(r"\s+", " ", query).strip()[:280]
 
-        def _log_rerank(status: str, raw_output: str, ordered: Optional[List[str]] = None) -> None:
+        def _log_rerank(
+            status: str, raw_output: str, ordered: Optional[List[str]] = None
+        ) -> None:
             if not self.cfg.ranking_llm_rerank_log_output:
                 return
-            raw_clipped = (raw_output or "")[: self.cfg.ranking_llm_rerank_log_max_chars]
+            raw_clipped = (raw_output or "")[
+                : self.cfg.ranking_llm_rerank_log_max_chars
+            ]
             escaped_raw = raw_clipped.replace("```", "` ` `")
             escaped_index = index_preview.replace("```", "` ` `")
             ordered_str = ", ".join(ordered or []) if ordered else "(none)"
@@ -1638,7 +1797,7 @@ class LLMWikiEngine:
             "You are a retrieval planner for a wiki search system.\n"
             "Use the full index file to choose which wiki pages should be read to answer the query.\n"
             "Return strict JSON only with this exact schema:\n"
-            "{\"ordered_pages\": [\"path/file.md\", ...]}\n\n"
+            '{"ordered_pages": ["path/file.md", ...]}\n\n'
             "Rules:\n"
             "- Read the entire INDEX_FILE content before selecting pages.\n"
             "- Use only paths from ALLOWED_PAGES.\n"
@@ -1734,7 +1893,7 @@ class LLMWikiEngine:
             score = overlap + (3 if phrase_match else 0)
             scored.append((score, normalized))
 
-        scored.sort(key=lambda item: (-item[0], item[1]))
+        scored.sort(key = lambda item: (-item[0], item[1]))
         selected: List[str] = []
         for _score, link in scored:
             if link in selected:
@@ -1773,7 +1932,9 @@ class LLMWikiEngine:
         cleaned = leading_pattern.sub("", cleaned)
         return cleaned
 
-    def _upsert_top_section(self, text: str, section_title: str, section_body: str) -> str:
+    def _upsert_top_section(
+        self, text: str, section_title: str, section_body: str
+    ) -> str:
         cleaned = self._remove_markdown_section(text, section_title).lstrip("\n")
         section_block = f"## {section_title}\n{section_body.rstrip()}\n\n"
 
@@ -1801,7 +1962,7 @@ class LLMWikiEngine:
         broken: List[Dict[str, str]] = []
 
         for rel in pages:
-            txt = (self.wiki_dir / rel).read_text(encoding="utf-8", errors="ignore")
+            txt = (self.wiki_dir / rel).read_text(encoding = "utf-8", errors = "ignore")
             links = re.findall(r"\[\[([^\]]+)\]\]", txt)
             for l in links:
                 target_rel = f"{l}.md"
@@ -1812,7 +1973,9 @@ class LLMWikiEngine:
                     broken.append({"source": rel, "target": target_rel})
         return {"inbound": inbound, "outbound": outbound, "broken": broken}
 
-    def _rank_pages_by_recency(self, pages: Optional[List[str]] = None) -> List[Tuple[str, float]]:
+    def _rank_pages_by_recency(
+        self, pages: Optional[List[str]] = None
+    ) -> List[Tuple[str, float]]:
         candidate_pages = self._all_wiki_pages() if pages is None else pages
         scored: List[Tuple[str, float]] = []
         for rel in candidate_pages:
@@ -1823,7 +1986,7 @@ class LLMWikiEngine:
             except OSError:
                 continue
             scored.append((rel, mtime))
-        scored.sort(key=lambda item: item[1], reverse=True)
+        scored.sort(key = lambda item: item[1], reverse = True)
         return [(rel, 1.0 / (1.0 + idx)) for idx, (rel, _mtime) in enumerate(scored)]
 
     def _entity_query_focus(self, query: str) -> Tuple[Set[str], str]:
@@ -1891,8 +2054,12 @@ class LLMWikiEngine:
             if rel in {"index.md", "log.md"}:
                 continue
 
-            text = (self.wiki_dir / rel).read_text(encoding="utf-8", errors="ignore")
-            text_for_ranking = text if self.cfg.ranking_max_chars <= 0 else text[: self.cfg.ranking_max_chars]
+            text = (self.wiki_dir / rel).read_text(encoding = "utf-8", errors = "ignore")
+            text_for_ranking = (
+                text
+                if self.cfg.ranking_max_chars <= 0
+                else text[: self.cfg.ranking_max_chars]
+            )
             term_counts = self._term_counter(text_for_ranking)
             page_terms = set(term_counts.keys())
             if not page_terms and not text_for_ranking.strip():
@@ -1965,8 +2132,8 @@ class LLMWikiEngine:
         if not scores:
             return self._rank_pages_by_recency(all_pages)
 
-        ranked = sorted(scores, key=lambda x: x[1], reverse=True)
-        ranked = self._expand_ranked_pages_by_links(ranked, query_terms=q_terms)
+        ranked = sorted(scores, key = lambda x: x[1], reverse = True)
+        ranked = self._expand_ranked_pages_by_links(ranked, query_terms = q_terms)
         return ranked
 
     def _expand_ranked_pages_by_links(
@@ -2000,18 +2167,20 @@ class LLMWikiEngine:
 
             linked_pages = links_cache.get(rel)
             if linked_pages is None:
-                text = (self.wiki_dir / rel).read_text(encoding="utf-8", errors="ignore")
+                text = (self.wiki_dir / rel).read_text(
+                    encoding = "utf-8", errors = "ignore"
+                )
                 linked_pages = self._extract_existing_links(text, all_pages)
                 # Prefer links that are already ranked and/or path-relevant to query terms.
                 linked_pages.sort(
-                    key=lambda p: (
+                    key = lambda p: (
                         ranked_map.get(p, 0.0),
                         self._overlap_ratio(
                             query_terms or set(),
                             set(self._tokenize_terms(p)),
                         ),
                     ),
-                    reverse=True,
+                    reverse = True,
                 )
                 linked_pages = linked_pages[: self.cfg.ranking_link_fanout]
                 links_cache[rel] = linked_pages
@@ -2033,7 +2202,7 @@ class LLMWikiEngine:
                     seen_depth[target] = next_depth
                     queue.append((target, target_score, next_depth))
 
-        return sorted(expanded_scores.items(), key=lambda x: x[1], reverse=True)
+        return sorted(expanded_scores.items(), key = lambda x: x[1], reverse = True)
 
     def _extract_existing_links(self, text: str, all_pages: Set[str]) -> List[str]:
         links = re.findall(r"\[\[([^\]]+)\]\]", text)
@@ -2051,14 +2220,25 @@ class LLMWikiEngine:
                 out.append(target)
         return out
 
-    def _render_source_page(self, title: str, source_ref: str, extracted: Dict, source_text: str, ingested_at: str) -> str:
+    def _render_source_page(
+        self,
+        title: str,
+        source_ref: str,
+        extracted: Dict,
+        source_text: str,
+        ingested_at: str,
+    ) -> str:
         entities = extracted.get("entities", [])
         concepts = extracted.get("concepts", [])
-        meta = extracted.get("_meta", {}) if isinstance(extracted.get("_meta", {}), dict) else {}
+        meta = (
+            extracted.get("_meta", {})
+            if isinstance(extracted.get("_meta", {}), dict)
+            else {}
+        )
 
         excerpt = self._source_excerpt(
             source_text,
-            max_chars=self.cfg.source_excerpt_max_chars,
+            max_chars = self.cfg.source_excerpt_max_chars,
         )
         diagnostics = [
             f"- status: {meta.get('status', 'unknown')}",
@@ -2088,11 +2268,29 @@ class LLMWikiEngine:
             f"# {title}\n\n"
             "## Summary\n"
             f"{extracted.get('summary', '')}\n\n"
-            "## Entities Mentioned\n" +
-            ("\n".join([f"- [[entities/{self._slug(e.get('name', 'unknown'))}]]" for e in entities]) if entities else "- none")
+            "## Entities Mentioned\n"
+            + (
+                "\n".join(
+                    [
+                        f"- [[entities/{self._slug(e.get('name', 'unknown'))}]]"
+                        for e in entities
+                    ]
+                )
+                if entities
+                else "- none"
+            )
             + "\n\n"
-            "## Concepts Mentioned\n" +
-            ("\n".join([f"- [[concepts/{self._slug(c.get('name', 'unknown'))}]]" for c in concepts]) if concepts else "- none")
+            "## Concepts Mentioned\n"
+            + (
+                "\n".join(
+                    [
+                        f"- [[concepts/{self._slug(c.get('name', 'unknown'))}]]"
+                        for c in concepts
+                    ]
+                )
+                if concepts
+                else "- none"
+            )
             + "\n\n"
             "## Source Excerpt\n"
             "```text\n"
@@ -2105,7 +2303,9 @@ class LLMWikiEngine:
     def _safe_json(self, text: str) -> Optional[Dict]:
         text = text.strip()
 
-        fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags=re.IGNORECASE)
+        fenced = re.search(
+            r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags = re.IGNORECASE
+        )
         if fenced:
             try:
                 return json.loads(fenced.group(1))
@@ -2124,7 +2324,7 @@ class LLMWikiEngine:
             except Exception:
                 pass
 
-        m = re.search(r"\{[\s\S]*\}", text, flags=re.S)
+        m = re.search(r"\{[\s\S]*\}", text, flags = re.S)
         if not m:
             return None
         try:
@@ -2218,7 +2418,7 @@ class LLMWikiEngine:
                 continue
             counts[candidate] = counts.get(candidate, 0) + 1
 
-        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ranked = sorted(counts.items(), key = lambda item: (-item[1], item[0]))
         return [name for name, _ in ranked[:limit]]
 
     def _top_concepts(self, text: str, limit: int) -> List[str]:
@@ -2227,9 +2427,37 @@ class LLMWikiEngine:
 
         words = re.findall(r"\b[a-z][a-z0-9_\-]{4,}\b", text.lower())
         stopwords = {
-            "about", "after", "before", "being", "could", "first", "there", "their", "these", "those",
-            "which", "while", "would", "using", "used", "user", "users", "have", "with", "from", "into",
-            "were", "this", "that", "your", "ours", "ourselves", "summary", "source", "mention", "mentioned",
+            "about",
+            "after",
+            "before",
+            "being",
+            "could",
+            "first",
+            "there",
+            "their",
+            "these",
+            "those",
+            "which",
+            "while",
+            "would",
+            "using",
+            "used",
+            "user",
+            "users",
+            "have",
+            "with",
+            "from",
+            "into",
+            "were",
+            "this",
+            "that",
+            "your",
+            "ours",
+            "ourselves",
+            "summary",
+            "source",
+            "mention",
+            "mentioned",
         }
 
         counts: Dict[str, int] = {}
@@ -2238,7 +2466,7 @@ class LLMWikiEngine:
                 continue
             counts[word] = counts.get(word, 0) + 1
 
-        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ranked = sorted(counts.items(), key = lambda item: (-item[1], item[0]))
         return [name.replace("-", " ") for name, _ in ranked[:limit]]
 
     def _source_excerpt(self, source_text: str, max_chars: int) -> str:
@@ -2256,14 +2484,16 @@ class LLMWikiEngine:
             return md
         front = parts[1]
         body = parts[2]
-        if re.search(r"^updated_at:\s*", front, flags=re.M):
-            front = re.sub(r"^updated_at:\s*.*$", f"updated_at: {updated_at}", front, flags=re.M)
+        if re.search(r"^updated_at:\s*", front, flags = re.M):
+            front = re.sub(
+                r"^updated_at:\s*.*$", f"updated_at: {updated_at}", front, flags = re.M
+            )
         else:
             front = front.rstrip() + f"\nupdated_at: {updated_at}\n"
         return f"---\n{front}---\n{body}"
 
     def _extract_updated_at(self, md: str) -> Optional[datetime]:
-        m = re.search(r"^updated_at:\s*(.+)$", md, flags=re.M)
+        m = re.search(r"^updated_at:\s*(.+)$", md, flags = re.M)
         if not m:
             return None
         v = m.group(1).strip()
@@ -2277,7 +2507,12 @@ class LLMWikiEngine:
     def _first_nonempty_content_line(self, text: str) -> str:
         for ln in text.splitlines():
             s = ln.strip()
-            if s and not s.startswith("#") and not s.startswith("---") and not s.startswith("type:"):
+            if (
+                s
+                and not s.startswith("#")
+                and not s.startswith("---")
+                and not s.startswith("type:")
+            ):
                 return s
         return ""
 
@@ -2290,9 +2525,17 @@ class LLMWikiEngine:
         term = token.lower().strip()
         if len(term) > 4 and term.endswith("ies"):
             term = term[:-3] + "y"
-        elif len(term) > 4 and term.endswith("es") and not term.endswith(("aes", "ees", "oes")):
+        elif (
+            len(term) > 4
+            and term.endswith("es")
+            and not term.endswith(("aes", "ees", "oes"))
+        ):
             term = term[:-2]
-        elif len(term) > 3 and term.endswith("s") and not term.endswith(("ss", "us", "is")):
+        elif (
+            len(term) > 3
+            and term.endswith("s")
+            and not term.endswith(("ss", "us", "is"))
+        ):
             term = term[:-1]
         return term
 

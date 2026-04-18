@@ -47,6 +47,7 @@ def _html_to_markdown(html: str, url: str) -> str:
     """Convert HTML to clean markdown. Uses html2text if available, else basic strip."""
     try:
         import html2text
+
         h = html2text.HTML2Text()
         h.ignore_links = False
         h.ignore_images = True
@@ -54,21 +55,27 @@ def _html_to_markdown(html: str, url: str) -> str:
         return h.handle(html)
     except ImportError:
         # Fallback: strip tags
-        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(
+            r"<script[^>]*>.*?</script>", "", html, flags = re.DOTALL | re.IGNORECASE
+        )
+        text = re.sub(
+            r"<style[^>]*>.*?</style>", "", text, flags = re.DOTALL | re.IGNORECASE
+        )
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:8000]
 
 
-def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
+def _fetch_tweet(
+    url: str, author: str | None, contributor: str | None
+) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
     # Normalize to twitter.com for oEmbed
     oembed_url = url.replace("x.com", "twitter.com")
     oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     try:
-        req = urllib.request.Request(oembed_api, headers={"User-Agent": "graphify/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        req = urllib.request.Request(oembed_api, headers = {"User-Agent": "graphify/1.0"})
+        with urllib.request.urlopen(req, timeout = 10) as resp:
             data = json.loads(resp.read())
         tweet_text = re.sub(r"<[^>]+>", "", data.get("html", "")).strip()
         tweet_author = data.get("author_name", "unknown")
@@ -96,11 +103,15 @@ Source: {url}
     return content, filename
 
 
-def _fetch_webpage(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
+def _fetch_webpage(
+    url: str, author: str | None, contributor: str | None
+) -> tuple[str, str]:
     """Fetch a generic webpage and convert to markdown."""
     html = _fetch_html(url)
     # Extract title
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    title_match = re.search(
+        r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL
+    )
     title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else url
 
     markdown = _html_to_markdown(html, url)
@@ -125,7 +136,9 @@ Source: {url}
     return content, filename
 
 
-def _fetch_arxiv(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
+def _fetch_arxiv(
+    url: str, author: str | None, contributor: str | None
+) -> tuple[str, str]:
     """Fetch arXiv abstract page."""
     # Convert /abs/ or /pdf/ to abs for the API
     arxiv_id = re.search(r"(\d{4}\.\d{4,5})", url)
@@ -133,12 +146,32 @@ def _fetch_arxiv(url: str, author: str | None, contributor: str | None) -> tuple
         api_url = f"https://export.arxiv.org/abs/{arxiv_id.group(1)}"
         try:
             html = _fetch_html(api_url)
-            abstract_match = re.search(r'class="abstract[^"]*"[^>]*>(.*?)</blockquote>', html, re.DOTALL | re.IGNORECASE)
-            abstract = re.sub(r"<[^>]+>", "", abstract_match.group(1)).strip() if abstract_match else ""
-            title_match = re.search(r'class="title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
-            title = re.sub(r"<[^>]+>", " ", title_match.group(1)).strip() if title_match else arxiv_id.group(1)
-            authors_match = re.search(r'class="authors"[^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
-            paper_authors = re.sub(r"<[^>]+>", "", authors_match.group(1)).strip() if authors_match else ""
+            abstract_match = re.search(
+                r'class="abstract[^"]*"[^>]*>(.*?)</blockquote>',
+                html,
+                re.DOTALL | re.IGNORECASE,
+            )
+            abstract = (
+                re.sub(r"<[^>]+>", "", abstract_match.group(1)).strip()
+                if abstract_match
+                else ""
+            )
+            title_match = re.search(
+                r'class="title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE
+            )
+            title = (
+                re.sub(r"<[^>]+>", " ", title_match.group(1)).strip()
+                if title_match
+                else arxiv_id.group(1)
+            )
+            authors_match = re.search(
+                r'class="authors"[^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE
+            )
+            paper_authors = (
+                re.sub(r"<[^>]+>", "", authors_match.group(1)).strip()
+                if authors_match
+                else ""
+            )
         except Exception:
             title, abstract, paper_authors = arxiv_id.group(1), "", ""
     else:
@@ -166,7 +199,11 @@ contributor: {contributor or author or 'unknown'}
 
 Source: {url}
 """
-    filename = f"arxiv_{arxiv_id.group(1).replace('.', '_')}.md" if arxiv_id else _safe_filename(url, ".md")
+    filename = (
+        f"arxiv_{arxiv_id.group(1).replace('.', '_')}.md"
+        if arxiv_id
+        else _safe_filename(url, ".md")
+    )
     return content, filename
 
 
@@ -178,13 +215,18 @@ def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
     return out_path
 
 
-def ingest(url: str, target_dir: Path, author: str | None = None, contributor: str | None = None) -> Path:
+def ingest(
+    url: str,
+    target_dir: Path,
+    author: str | None = None,
+    contributor: str | None = None,
+) -> Path:
     """
     Fetch a URL and save it into target_dir as a graphify-ready file.
 
     Returns the path of the saved file.
     """
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir(parents = True, exist_ok = True)
     url_type = _detect_url_type(url)
 
     try:
@@ -221,7 +263,7 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
         out_path = target_dir / f"{stem}_{counter}.md"
         counter += 1
 
-    out_path.write_text(content, encoding="utf-8")
+    out_path.write_text(content, encoding = "utf-8")
     print(f"Saved {url_type}: {out_path.name}")
     return out_path
 
@@ -240,7 +282,7 @@ def save_query_result(
     the system grows smarter from both what you add AND what you ask.
     """
     memory_dir = Path(memory_dir)
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    memory_dir.mkdir(parents = True, exist_ok = True)
 
     now = datetime.now(timezone.utc)
     slug = re.sub(r"[^\w]", "_", question.lower())[:50].strip("_")
@@ -272,17 +314,30 @@ def save_query_result(
 
     content = "\n".join(frontmatter_lines + body_lines)
     out_path = memory_dir / filename
-    out_path.write_text(content, encoding="utf-8")
+    out_path.write_text(content, encoding = "utf-8")
     return out_path
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Fetch a URL into a graphify /raw folder")
-    parser.add_argument("url", help="URL to fetch")
-    parser.add_argument("target_dir", nargs="?", default="./raw", help="Target directory (default: ./raw)")
-    parser.add_argument("--author", help="Your name (stored as node metadata)")
-    parser.add_argument("--contributor", help="Contributor name for team graphs")
+
+    parser = argparse.ArgumentParser(
+        description = "Fetch a URL into a graphify /raw folder"
+    )
+    parser.add_argument("url", help = "URL to fetch")
+    parser.add_argument(
+        "target_dir",
+        nargs = "?",
+        default = "./raw",
+        help = "Target directory (default: ./raw)",
+    )
+    parser.add_argument("--author", help = "Your name (stored as node metadata)")
+    parser.add_argument("--contributor", help = "Contributor name for team graphs")
     args = parser.parse_args()
-    out = ingest(args.url, Path(args.target_dir), author=args.author, contributor=args.contributor)
+    out = ingest(
+        args.url,
+        Path(args.target_dir),
+        author = args.author,
+        contributor = args.contributor,
+    )
     print(f"Ready for graphify: {out}")

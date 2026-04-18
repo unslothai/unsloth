@@ -3,6 +3,7 @@ Transport layer: connection management and low-level HTTP sending.
 HTTPTransport wraps a connection pool. ProxyTransport sits in front of it.
 MockTransport is used in tests.
 """
+
 from models import Request, Response
 from exceptions import TransportError, ConnectError, TimeoutException
 
@@ -33,7 +34,7 @@ class ConnectionPool:
     Keys connections by (scheme, host, port).
     """
 
-    def __init__(self, max_connections=100, max_keepalive_connections=20):
+    def __init__(self, max_connections = 100, max_keepalive_connections = 20):
         self.max_connections = max_connections
         self.max_keepalive_connections = max_keepalive_connections
         self._pool = {}
@@ -62,7 +63,7 @@ class HTTPTransport(BaseTransport):
     Uses a ConnectionPool for connection reuse.
     """
 
-    def __init__(self, verify=True, cert=None, limits=None):
+    def __init__(self, verify = True, cert = None, limits = None):
         self.verify = verify
         self.cert = cert
         self._pool = ConnectionPool()
@@ -80,7 +81,7 @@ class HTTPTransport(BaseTransport):
 
     def _send(self, request: Request, conn) -> Response:
         # Simplified: in real httpx this does the actual socket I/O
-        return Response(200, headers={}, content=b"", request=request)
+        return Response(200, headers = {}, content = b"", request = request)
 
     def close(self) -> None:
         self._pool.close()
@@ -89,12 +90,12 @@ class HTTPTransport(BaseTransport):
 class AsyncHTTPTransport(AsyncBaseTransport):
     """The async variant of HTTPTransport."""
 
-    def __init__(self, verify=True, cert=None):
+    def __init__(self, verify = True, cert = None):
         self.verify = verify
         self.cert = cert
 
     async def handle_async_request(self, request: Request) -> Response:
-        return Response(200, headers={}, content=b"", request=request)
+        return Response(200, headers = {}, content = b"", request = request)
 
     async def aclose(self) -> None:
         pass

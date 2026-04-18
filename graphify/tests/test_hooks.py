@@ -1,4 +1,5 @@
 """Tests for hooks.py - git hook install/uninstall."""
+
 import subprocess
 from pathlib import Path
 import pytest
@@ -6,7 +7,7 @@ from graphify.hooks import install, uninstall, status, _HOOK_MARKER, _CHECKOUT_M
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "init", str(tmp_path)], check = True, capture_output = True)
     return tmp_path
 
 
@@ -76,7 +77,7 @@ def test_status_not_installed(tmp_path):
 
 
 def test_no_git_repo_raises(tmp_path):
-    with pytest.raises(RuntimeError, match="No git repository"):
+    with pytest.raises(RuntimeError, match = "No git repository"):
         install(tmp_path / "not_a_repo")
 
 

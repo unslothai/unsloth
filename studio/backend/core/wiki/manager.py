@@ -29,6 +29,7 @@ from .engine import (
 # llm_fn receives a prompt and returns model text.
 LLMFn = Callable[[str], str]
 
+
 @dataclass
 class WikiManager:
     engine: LLMWikiEngine
@@ -37,8 +38,8 @@ class WikiManager:
 
     @classmethod
     def create(cls, vault_root: Path, llm_fn: LLMFn) -> "WikiManager":
-        cfg = WikiConfig(vault_root=vault_root)
-        return cls(engine=LLMWikiEngine(cfg=cfg, llm_fn=llm_fn))
+        cfg = WikiConfig(vault_root = vault_root)
+        return cls(engine = LLMWikiEngine(cfg = cfg, llm_fn = llm_fn))
 
     def query_rag(
         self,
@@ -51,12 +52,12 @@ class WikiManager:
     ) -> Dict:
         """Perform RAG using the wiki engine."""
         return self.engine.query(
-            question=question,
-            save_answer=save_answer,
-            query_context_max_chars_override=query_context_max_chars_override,
-            preferred_context_page=preferred_context_page,
-            keep_preferred_context_full=keep_preferred_context_full,
-            preferred_context_only=preferred_context_only,
+            question = question,
+            save_answer = save_answer,
+            query_context_max_chars_override = query_context_max_chars_override,
+            preferred_context_page = preferred_context_page,
+            keep_preferred_context_full = keep_preferred_context_full,
+            preferred_context_only = preferred_context_only,
         )
 
     def retrieve_context(
@@ -67,18 +68,28 @@ class WikiManager:
     ) -> Dict:
         """Retrieve top wiki pages and text snippets for prompt injection."""
         ranked = self.engine._rank_pages(question)
-        pages_limit = self.engine.cfg.max_context_pages if max_pages is None else max_pages
-        chars_limit = self.engine.cfg.max_chars_per_page if max_chars_per_page is None else max_chars_per_page
+        pages_limit = (
+            self.engine.cfg.max_context_pages if max_pages is None else max_pages
+        )
+        chars_limit = (
+            self.engine.cfg.max_chars_per_page
+            if max_chars_per_page is None
+            else max_chars_per_page
+        )
 
         top_pages = ranked if pages_limit <= 0 else ranked[:pages_limit]
         blocks: List[Dict] = []
         for rel_path, score in top_pages:
-            page_text = (self.engine.wiki_dir / rel_path).read_text(encoding="utf-8", errors="ignore")
+            page_text = (self.engine.wiki_dir / rel_path).read_text(
+                encoding = "utf-8", errors = "ignore"
+            )
             blocks.append(
                 {
                     "page": rel_path,
                     "score": score,
-                    "content": page_text if chars_limit <= 0 else page_text[:chars_limit],
+                    "content": page_text
+                    if chars_limit <= 0
+                    else page_text[:chars_limit],
                 }
             )
 
@@ -89,12 +100,12 @@ class WikiManager:
             "context_blocks": blocks,
         }
 
-    def ingest_content(self, title: str, content: str, reference: Optional[str] = None) -> Dict:
+    def ingest_content(
+        self, title: str, content: str, reference: Optional[str] = None
+    ) -> Dict:
         """Ingest new content into the wiki."""
         return self.engine.ingest_source(
-            source_title=title,
-            source_text=content,
-            source_ref=reference
+            source_title = title, source_text = content, source_ref = reference
         )
 
     def get_health(self) -> Dict:
@@ -110,10 +121,10 @@ class WikiManager:
     ) -> Dict:
         """Enrich analysis pages using index-driven link suggestions."""
         return self.engine.enrich_analysis_pages(
-            dry_run=dry_run,
-            max_analysis_pages=max_analysis_pages,
-            fill_gaps_from_web=fill_gaps_from_web,
-            max_web_gap_queries=max_web_gap_queries,
+            dry_run = dry_run,
+            max_analysis_pages = max_analysis_pages,
+            fill_gaps_from_web = fill_gaps_from_web,
+            max_web_gap_queries = max_web_gap_queries,
         )
 
     def retry_fallback_analysis_pages(
@@ -123,6 +134,6 @@ class WikiManager:
     ) -> Dict:
         """Retry analysis questions for pages that were previously fallback-generated."""
         return self.engine.retry_fallback_analysis_pages(
-            dry_run=dry_run,
-            max_analysis_pages=max_analysis_pages,
+            dry_run = dry_run,
+            max_analysis_pages = max_analysis_pages,
         )

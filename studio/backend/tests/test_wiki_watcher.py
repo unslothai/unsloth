@@ -17,19 +17,22 @@ class _FakeEngine:
 
 
 class _FakeWikiManager:
-    def __init__(self, probe_sequence=None, wiki_dir: Path | None = None):
-        self.engine = _FakeEngine(wiki_dir=wiki_dir)
+    def __init__(self, probe_sequence = None, wiki_dir: Path | None = None):
+        self.engine = _FakeEngine(wiki_dir = wiki_dir)
         self.calls = []
         self.health_calls = 0
         self.retry_fallback_calls = 0
         self.enrich_calls = 0
-        self._probe_sequence = list(probe_sequence or [{"used_extractive_fallback": False, "fallback_reason": None}])
+        self._probe_sequence = list(
+            probe_sequence
+            or [{"used_extractive_fallback": False, "fallback_reason": None}]
+        )
         self._probe_index = 0
 
     def query_rag(
         self,
         question: str,
-        query_context_max_chars_override=None,
+        query_context_max_chars_override = None,
         save_answer: bool = True,
         preferred_context_page: str | None = None,
         keep_preferred_context_full: bool = False,
@@ -47,12 +50,16 @@ class _FakeWikiManager:
         )
 
         if not save_answer:
-            probe = self._probe_sequence[min(self._probe_index, len(self._probe_sequence) - 1)]
+            probe = self._probe_sequence[
+                min(self._probe_index, len(self._probe_sequence) - 1)
+            ]
             self._probe_index += 1
             return {
                 "status": "ok",
                 "answer_page": None,
-                "used_extractive_fallback": bool(probe.get("used_extractive_fallback", False)),
+                "used_extractive_fallback": bool(
+                    probe.get("used_extractive_fallback", False)
+                ),
                 "fallback_reason": probe.get("fallback_reason"),
             }
 
@@ -71,7 +78,9 @@ class _FakeWikiManager:
             "broken_links": [],
         }
 
-    def enrich_analysis_pages(self, dry_run: bool = False, max_analysis_pages: int = 64):
+    def enrich_analysis_pages(
+        self, dry_run: bool = False, max_analysis_pages: int = 64
+    ):
         self.enrich_calls += 1
         return {
             "status": "ok",
@@ -81,7 +90,9 @@ class _FakeWikiManager:
             "changes": [],
         }
 
-    def retry_fallback_analysis_pages(self, dry_run: bool = False, max_analysis_pages: int = 24):
+    def retry_fallback_analysis_pages(
+        self, dry_run: bool = False, max_analysis_pages: int = 24
+    ):
         self.retry_fallback_calls += 1
         return {
             "status": "ok",
@@ -104,19 +115,19 @@ class _FakeIngestor:
     def should_skip_local_file(self, _file_path: Path) -> bool:
         return False
 
-    def ingest_file(self, _file_path: Path, contributor=None):
+    def ingest_file(self, _file_path: Path, contributor = None):
         return "Sample Source"
 
 
 def test_manager_query_rag_passes_context_override(tmp_path: Path, monkeypatch):
-    manager = WikiManager.create(vault_root=tmp_path, llm_fn=lambda _: "ok")
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "ok")
 
     captured = {}
 
     def _fake_query(
         question: str,
         save_answer: bool = True,
-        query_context_max_chars_override=None,
+        query_context_max_chars_override = None,
         preferred_context_page: str | None = None,
         keep_preferred_context_full: bool = False,
         preferred_context_only: bool = False,
@@ -131,7 +142,7 @@ def test_manager_query_rag_passes_context_override(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(manager.engine, "query", _fake_query)
 
-    result = manager.query_rag("hello", query_context_max_chars_override=4321)
+    result = manager.query_rag("hello", query_context_max_chars_override = 4321)
 
     assert result["status"] == "ok"
     assert captured["question"] == "hello"
@@ -144,26 +155,26 @@ def test_manager_query_rag_passes_context_override(tmp_path: Path, monkeypatch):
 
 def test_watcher_applies_fraction_of_model_context(tmp_path: Path, monkeypatch):
     sources_dir = tmp_path / "wiki" / "sources"
-    sources_dir.mkdir(parents=True)
-    (sources_dir / "source-slug.md").write_text("X" * 1000, encoding="utf-8")
+    sources_dir.mkdir(parents = True)
+    (sources_dir / "source-slug.md").write_text("X" * 1000, encoding = "utf-8")
 
-    wiki_manager = _FakeWikiManager(wiki_dir=tmp_path / "wiki")
+    wiki_manager = _FakeWikiManager(wiki_dir = tmp_path / "wiki")
     ingestor = _FakeIngestor(wiki_manager)
 
     handler = WikiFileEventHandler(
-        ingestor=ingestor,
-        contributor="tester",
-        auto_analyze=True,
-        llm_available_fn=lambda: True,
-        llm_context_window_tokens_fn=lambda: 8192,
-        analysis_context_fraction=0.70,
-        analysis_chars_per_token=4,
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = True,
+        llm_available_fn = lambda: True,
+        llm_context_window_tokens_fn = lambda: 8192,
+        analysis_context_fraction = 0.70,
+        analysis_chars_per_token = 4,
     )
 
     monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
 
     raw_file = tmp_path / "paper.txt"
-    raw_file.write_text("content", encoding="utf-8")
+    raw_file.write_text("content", encoding = "utf-8")
 
     handler._process_file(raw_file)
 
@@ -181,23 +192,23 @@ def test_watcher_applies_fraction_of_model_context(tmp_path: Path, monkeypatch):
 
 
 def test_watcher_uses_default_context_when_window_unknown(tmp_path: Path, monkeypatch):
-    wiki_manager = _FakeWikiManager(wiki_dir=tmp_path / "wiki")
+    wiki_manager = _FakeWikiManager(wiki_dir = tmp_path / "wiki")
     ingestor = _FakeIngestor(wiki_manager)
 
     handler = WikiFileEventHandler(
-        ingestor=ingestor,
-        contributor="tester",
-        auto_analyze=True,
-        llm_available_fn=lambda: True,
-        llm_context_window_tokens_fn=lambda: None,
-        analysis_context_fraction=0.70,
-        analysis_chars_per_token=4,
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = True,
+        llm_available_fn = lambda: True,
+        llm_context_window_tokens_fn = lambda: None,
+        analysis_context_fraction = 0.70,
+        analysis_chars_per_token = 4,
     )
 
     monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
 
     raw_file = tmp_path / "paper-2.txt"
-    raw_file.write_text("content", encoding="utf-8")
+    raw_file.write_text("content", encoding = "utf-8")
 
     handler._process_file(raw_file)
 
@@ -212,37 +223,37 @@ def test_watcher_uses_default_context_when_window_unknown(tmp_path: Path, monkey
 
 def test_watcher_retries_on_fallback_with_reduced_context(tmp_path: Path, monkeypatch):
     sources_dir = tmp_path / "wiki" / "sources"
-    sources_dir.mkdir(parents=True)
+    sources_dir.mkdir(parents = True)
     # Keep source page small so retries can still reduce below initial context.
-    (sources_dir / "source-slug.md").write_text("X" * 4000, encoding="utf-8")
+    (sources_dir / "source-slug.md").write_text("X" * 4000, encoding = "utf-8")
 
     wiki_manager = _FakeWikiManager(
-        probe_sequence=[
+        probe_sequence = [
             {"used_extractive_fallback": True, "fallback_reason": "repetition"},
             {"used_extractive_fallback": False, "fallback_reason": None},
         ],
-        wiki_dir=tmp_path / "wiki",
+        wiki_dir = tmp_path / "wiki",
     )
     ingestor = _FakeIngestor(wiki_manager)
 
     handler = WikiFileEventHandler(
-        ingestor=ingestor,
-        contributor="tester",
-        auto_analyze=True,
-        llm_available_fn=lambda: True,
-        llm_context_window_tokens_fn=lambda: 8192,
-        analysis_context_fraction=0.70,
-        analysis_chars_per_token=4,
-        analysis_retry_on_fallback=True,
-        analysis_max_retries=3,
-        analysis_retry_reduction=0.5,
-        analysis_min_context_chars=8000,
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = True,
+        llm_available_fn = lambda: True,
+        llm_context_window_tokens_fn = lambda: 8192,
+        analysis_context_fraction = 0.70,
+        analysis_chars_per_token = 4,
+        analysis_retry_on_fallback = True,
+        analysis_max_retries = 3,
+        analysis_retry_reduction = 0.5,
+        analysis_min_context_chars = 8000,
     )
 
     monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
 
     raw_file = tmp_path / "paper-3.txt"
-    raw_file.write_text("content", encoding="utf-8")
+    raw_file.write_text("content", encoding = "utf-8")
 
     handler._process_file(raw_file)
 
@@ -257,35 +268,35 @@ def test_watcher_retries_on_fallback_with_reduced_context(tmp_path: Path, monkey
 
 def test_watcher_final_retry_can_switch_to_source_only(tmp_path: Path, monkeypatch):
     sources_dir = tmp_path / "wiki" / "sources"
-    sources_dir.mkdir(parents=True)
-    (sources_dir / "source-slug.md").write_text("X" * 20000, encoding="utf-8")
+    sources_dir.mkdir(parents = True)
+    (sources_dir / "source-slug.md").write_text("X" * 20000, encoding = "utf-8")
 
     wiki_manager = _FakeWikiManager(
-        probe_sequence=[
+        probe_sequence = [
             {"used_extractive_fallback": True, "fallback_reason": "repetition"},
             {"used_extractive_fallback": True, "fallback_reason": "repetition"},
         ],
-        wiki_dir=tmp_path / "wiki",
+        wiki_dir = tmp_path / "wiki",
     )
     ingestor = _FakeIngestor(wiki_manager)
 
     handler = WikiFileEventHandler(
-        ingestor=ingestor,
-        contributor="tester",
-        auto_analyze=True,
-        llm_available_fn=lambda: True,
-        llm_context_window_tokens_fn=lambda: 8192,
-        analysis_context_fraction=0.70,
-        analysis_chars_per_token=4,
-        analysis_retry_on_fallback=True,
-        analysis_max_retries=0,
-        analysis_source_only_final_retry=True,
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = True,
+        llm_available_fn = lambda: True,
+        llm_context_window_tokens_fn = lambda: 8192,
+        analysis_context_fraction = 0.70,
+        analysis_chars_per_token = 4,
+        analysis_retry_on_fallback = True,
+        analysis_max_retries = 0,
+        analysis_source_only_final_retry = True,
     )
 
     monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
 
     raw_file = tmp_path / "paper-4.txt"
-    raw_file.write_text("content", encoding="utf-8")
+    raw_file.write_text("content", encoding = "utf-8")
 
     handler._process_file(raw_file)
 
@@ -300,27 +311,27 @@ def test_watcher_final_retry_can_switch_to_source_only(tmp_path: Path, monkeypat
 
 def test_watcher_can_force_source_only_mode(tmp_path: Path, monkeypatch):
     sources_dir = tmp_path / "wiki" / "sources"
-    sources_dir.mkdir(parents=True)
-    (sources_dir / "source-slug.md").write_text("X" * 4000, encoding="utf-8")
+    sources_dir.mkdir(parents = True)
+    (sources_dir / "source-slug.md").write_text("X" * 4000, encoding = "utf-8")
 
-    wiki_manager = _FakeWikiManager(wiki_dir=tmp_path / "wiki")
+    wiki_manager = _FakeWikiManager(wiki_dir = tmp_path / "wiki")
     ingestor = _FakeIngestor(wiki_manager)
 
     handler = WikiFileEventHandler(
-        ingestor=ingestor,
-        contributor="tester",
-        auto_analyze=True,
-        llm_available_fn=lambda: True,
-        llm_context_window_tokens_fn=lambda: 8192,
-        analysis_context_fraction=0.70,
-        analysis_chars_per_token=4,
-        analysis_source_only=True,
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = True,
+        llm_available_fn = lambda: True,
+        llm_context_window_tokens_fn = lambda: 8192,
+        analysis_context_fraction = 0.70,
+        analysis_chars_per_token = 4,
+        analysis_source_only = True,
     )
 
     monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
 
     raw_file = tmp_path / "paper-source-only.txt"
-    raw_file.write_text("content", encoding="utf-8")
+    raw_file.write_text("content", encoding = "utf-8")
 
     handler._process_file(raw_file)
 
@@ -333,27 +344,27 @@ def test_watcher_can_force_source_only_mode(tmp_path: Path, monkeypatch):
 
 def test_watcher_runs_enrichment_on_same_schedule_as_lint(tmp_path: Path, monkeypatch):
     sources_dir = tmp_path / "wiki" / "sources"
-    sources_dir.mkdir(parents=True)
-    (sources_dir / "source-slug.md").write_text("X" * 1000, encoding="utf-8")
+    sources_dir.mkdir(parents = True)
+    (sources_dir / "source-slug.md").write_text("X" * 1000, encoding = "utf-8")
 
-    wiki_manager = _FakeWikiManager(wiki_dir=tmp_path / "wiki")
+    wiki_manager = _FakeWikiManager(wiki_dir = tmp_path / "wiki")
     ingestor = _FakeIngestor(wiki_manager)
 
     handler = WikiFileEventHandler(
-        ingestor=ingestor,
-        contributor="tester",
-        auto_analyze=True,
-        lint_every=1,
-        llm_available_fn=lambda: True,
-        llm_context_window_tokens_fn=lambda: 8192,
-        analysis_context_fraction=0.70,
-        analysis_chars_per_token=4,
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = True,
+        lint_every = 1,
+        llm_available_fn = lambda: True,
+        llm_context_window_tokens_fn = lambda: 8192,
+        analysis_context_fraction = 0.70,
+        analysis_chars_per_token = 4,
     )
 
     monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
 
     raw_file = tmp_path / "paper-maintenance.txt"
-    raw_file.write_text("content", encoding="utf-8")
+    raw_file.write_text("content", encoding = "utf-8")
 
     handler._process_file(raw_file)
 

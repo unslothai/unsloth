@@ -10,7 +10,9 @@ def _safe_filename(name: str) -> str:
     return name.replace("/", "-").replace(" ", "_").replace(":", "-")
 
 
-def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str]) -> list[tuple[str, int]]:
+def _cross_community_links(
+    G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str]
+) -> list[tuple[str, int]]:
     """Return (community_label, edge_count) pairs for cross-community connections, sorted descending."""
     counts: dict[str, int] = Counter()
     for nid in nodes:
@@ -19,7 +21,7 @@ def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: 
             ncid = nd.get("community")
             if ncid is not None and ncid != own_cid:
                 counts[labels.get(ncid, f"Community {ncid}")] += 1
-    return sorted(counts.items(), key=lambda x: -x[1])
+    return sorted(counts.items(), key = lambda x: -x[1])
 
 
 def _community_article(
@@ -30,7 +32,7 @@ def _community_article(
     labels: dict[int, str],
     cohesion: float | None,
 ) -> str:
-    top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
+    top_nodes = sorted(nodes, key = lambda n: G.degree(n), reverse = True)[:25]
     cross = _cross_community_links(G, nodes, cid, labels)
 
     # Edge confidence breakdown
@@ -85,7 +87,11 @@ def _community_article(
         lines.append(f"- {conf}: {n} ({pct}%)")
     lines.append("")
 
-    lines += ["---", "", "*Part of the graphify knowledge wiki. See [[index]] to navigate.*"]
+    lines += [
+        "---",
+        "",
+        "*Part of the graphify knowledge wiki. See [[index]] to navigate.*",
+    ]
     return "\n".join(lines)
 
 
@@ -105,7 +111,7 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str]) -> str:
 
     # Group neighbors by relation type
     by_relation: dict[str, list[str]] = {}
-    for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
+    for neighbor in sorted(G.neighbors(nid), key = lambda n: G.degree(n), reverse = True):
         nd = G.nodes[neighbor]
         ed = G.edges[nid, neighbor]
         rel = ed.get("relation", "related")
@@ -121,7 +127,11 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str]) -> str:
             lines.append(f"- {t}")
         lines.append("")
 
-    lines += ["---", "", "*Part of the graphify knowledge wiki. See [[index]] to navigate.*"]
+    lines += [
+        "---",
+        "",
+        "*Part of the graphify knowledge wiki. See [[index]] to navigate.*",
+    ]
     return "\n".join(lines)
 
 
@@ -146,13 +156,17 @@ def _index_md(
         "",
     ]
 
-    for cid, nodes in sorted(communities.items(), key=lambda x: -len(x[1])):
+    for cid, nodes in sorted(communities.items(), key = lambda x: -len(x[1])):
         label = labels.get(cid, f"Community {cid}")
         lines.append(f"- [[{label}]] — {len(nodes)} nodes")
     lines.append("")
 
     if god_nodes_data:
-        lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
+        lines += [
+            "## God Nodes",
+            "(most connected concepts — the load-bearing abstractions)",
+            "",
+        ]
         for node in god_nodes_data:
             lines.append(f"- [[{node['label']}]] — {node['edges']} connections")
         lines.append("")
@@ -183,7 +197,7 @@ def to_wiki(
     Returns the number of articles written (excluding index.md).
     """
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents = True, exist_ok = True)
 
     labels = community_labels or {cid: f"Community {cid}" for cid in communities}
     cohesion = cohesion or {}
@@ -208,7 +222,13 @@ def to_wiki(
 
     # Index
     (out / "index.md").write_text(
-        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges())
+        _index_md(
+            communities,
+            labels,
+            god_nodes_data,
+            G.number_of_nodes(),
+            G.number_of_edges(),
+        )
     )
 
     return count

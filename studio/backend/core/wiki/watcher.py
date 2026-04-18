@@ -16,10 +16,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
 class WikiFileEventHandler(FileSystemEventHandler):
     """
     Handles file system events in the wiki raw directory.
     """
+
     def __init__(
         self,
         ingestor: WikiIngestor,
@@ -46,13 +48,19 @@ class WikiFileEventHandler(FileSystemEventHandler):
         self.llm_available_fn = llm_available_fn
         self.llm_context_window_tokens_fn = llm_context_window_tokens_fn
         self.analyze_chat_history = analyze_chat_history
-        self.analysis_context_fraction = min(max(float(analysis_context_fraction), 0.0), 1.0)
+        self.analysis_context_fraction = min(
+            max(float(analysis_context_fraction), 0.0), 1.0
+        )
         self.analysis_chars_per_token = max(1, int(analysis_chars_per_token))
         self.analysis_retry_on_fallback = bool(analysis_retry_on_fallback)
         self.analysis_max_retries = max(0, int(analysis_max_retries))
-        self.analysis_retry_reduction = min(max(float(analysis_retry_reduction), 0.1), 0.95)
+        self.analysis_retry_reduction = min(
+            max(float(analysis_retry_reduction), 0.1), 0.95
+        )
         self.analysis_min_context_chars = max(500, int(analysis_min_context_chars))
-        self.maintenance_retry_fallback_max_pages = max(0, int(maintenance_retry_fallback_max_pages))
+        self.maintenance_retry_fallback_max_pages = max(
+            0, int(maintenance_retry_fallback_max_pages)
+        )
         self.analysis_source_only = bool(analysis_source_only)
         self.analysis_source_only_final_retry = bool(analysis_source_only_final_retry)
         self._analysis_runs = 0
@@ -61,7 +69,10 @@ class WikiFileEventHandler(FileSystemEventHandler):
         self._processed_hash: dict[str, str] = {}
 
     def _analysis_context_override_chars(self) -> Optional[int]:
-        if self.llm_context_window_tokens_fn is None or self.analysis_context_fraction <= 0.0:
+        if (
+            self.llm_context_window_tokens_fn is None
+            or self.analysis_context_fraction <= 0.0
+        ):
             return None
 
         try:
@@ -82,7 +93,9 @@ class WikiFileEventHandler(FileSystemEventHandler):
 
         return max(
             500,
-            int(tokens * self.analysis_context_fraction * self.analysis_chars_per_token),
+            int(
+                tokens * self.analysis_context_fraction * self.analysis_chars_per_token
+            ),
         )
 
     def _reduced_context_override(self, current_chars: Optional[int]) -> Optional[int]:
@@ -105,7 +118,7 @@ class WikiFileEventHandler(FileSystemEventHandler):
             source_page = Path(wiki_dir) / "sources" / f"{source_slug}.md"
             if not source_page.exists():
                 return None
-            return len(source_page.read_text(encoding="utf-8", errors="ignore"))
+            return len(source_page.read_text(encoding = "utf-8", errors = "ignore"))
         except Exception:
             return None
 
@@ -153,16 +166,15 @@ class WikiFileEventHandler(FileSystemEventHandler):
                 self._processed_hash[resolved] = file_hash
 
             logger.info(f"New file detected in wiki raw directory: {file_path}")
-            title = self.ingestor.ingest_file(file_path, contributor=self.contributor)
+            title = self.ingestor.ingest_file(file_path, contributor = self.contributor)
             if not title:
                 return
 
             if not self.auto_analyze:
                 return
 
-            if (
-                not self.analyze_chat_history
-                and file_path.stem.lower().startswith("chat_history_")
+            if not self.analyze_chat_history and file_path.stem.lower().startswith(
+                "chat_history_"
             ):
                 return
 
@@ -194,7 +206,6 @@ class WikiFileEventHandler(FileSystemEventHandler):
                 "- Section F: Any assumptions (bullets)\n"
                 "- Section G: Is this a source or a conversation?\n"
                 "- Section H: Any potential disputable claims?\n\n"
-
                 "Requirements:\n"
                 "- Cite claims inline with wiki links like [[sources/...]] [[entities/...]] [[concepts/...]]\n"
                 "- Keep the response specific and avoid generic filler\n"
@@ -210,16 +221,20 @@ class WikiFileEventHandler(FileSystemEventHandler):
                 reductions_done = 0
                 source_only_mode = self.analysis_source_only
                 if source_only_mode and source_chars is not None:
-                    attempt_override = source_chars if attempt_override is None else max(attempt_override, source_chars)
+                    attempt_override = (
+                        source_chars
+                        if attempt_override is None
+                        else max(attempt_override, source_chars)
+                    )
 
                 while True:
                     probe_result = self.ingestor.wiki_manager.query_rag(
                         question,
-                        query_context_max_chars_override=attempt_override,
-                        save_answer=False,
-                        preferred_context_page=source_page_rel,
-                        keep_preferred_context_full=True,
-                        preferred_context_only=source_only_mode,
+                        query_context_max_chars_override = attempt_override,
+                        save_answer = False,
+                        preferred_context_page = source_page_rel,
+                        keep_preferred_context_full = True,
+                        preferred_context_only = source_only_mode,
                     )
 
                     if not probe_result.get("used_extractive_fallback"):
@@ -254,7 +269,11 @@ class WikiFileEventHandler(FileSystemEventHandler):
                         and not source_only_mode
                     ):
                         source_only_mode = True
-                        attempt_override = source_chars if attempt_override is None else max(attempt_override, source_chars)
+                        attempt_override = (
+                            source_chars
+                            if attempt_override is None
+                            else max(attempt_override, source_chars)
+                        )
                         logger.info(
                             "Auto wiki analysis fallback for %s (reason=%s). "
                             "Final retry with source-only context.",
@@ -267,11 +286,11 @@ class WikiFileEventHandler(FileSystemEventHandler):
 
                 result = self.ingestor.wiki_manager.query_rag(
                     question,
-                    query_context_max_chars_override=attempt_override,
-                    save_answer=True,
-                    preferred_context_page=source_page_rel,
-                    keep_preferred_context_full=True,
-                    preferred_context_only=source_only_mode,
+                    query_context_max_chars_override = attempt_override,
+                    save_answer = True,
+                    preferred_context_page = source_page_rel,
+                    keep_preferred_context_full = True,
+                    preferred_context_only = source_only_mode,
                 )
                 answer_page = result.get("answer_page")
 
@@ -311,8 +330,8 @@ class WikiFileEventHandler(FileSystemEventHandler):
                     if self.maintenance_retry_fallback_max_pages > 0:
                         try:
                             retry_report = self.ingestor.wiki_manager.retry_fallback_analysis_pages(
-                                dry_run=False,
-                                max_analysis_pages=self.maintenance_retry_fallback_max_pages,
+                                dry_run = False,
+                                max_analysis_pages = self.maintenance_retry_fallback_max_pages,
                             )
                             logger.info(
                                 "Auto wiki fallback-retry complete after %d analyses: scanned=%d fallback_found=%d regenerated=%d still_fallback=%d",
@@ -330,7 +349,11 @@ class WikiFileEventHandler(FileSystemEventHandler):
                             )
 
                     try:
-                        enrich_report = self.ingestor.wiki_manager.enrich_analysis_pages(dry_run=False)
+                        enrich_report = (
+                            self.ingestor.wiki_manager.enrich_analysis_pages(
+                                dry_run = False
+                            )
+                        )
                         logger.info(
                             "Auto wiki enrichment complete after %d analyses: scanned=%d updated=%d",
                             run_count,
@@ -346,10 +369,12 @@ class WikiFileEventHandler(FileSystemEventHandler):
             except Exception as exc:
                 logger.warning("Auto wiki analysis failed for %s: %s", file_path, exc)
 
+
 class WikiIngestionWatcher:
     """
     Monitors the wiki raw directory for new files and triggers ingestion.
     """
+
     def __init__(
         self,
         ingestor: WikiIngestor,
@@ -379,12 +404,9 @@ class WikiIngestionWatcher:
         except ValueError:
             analysis_chars_per_token = 4
 
-        analysis_retry_on_fallback = (
-            os.getenv("UNSLOTH_WIKI_AUTO_ANALYSIS_RETRY_ON_FALLBACK", "true")
-            .strip()
-            .lower()
-            not in {"0", "false", "no", "off"}
-        )
+        analysis_retry_on_fallback = os.getenv(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_RETRY_ON_FALLBACK", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
 
         try:
             analysis_max_retries = int(
@@ -414,42 +436,36 @@ class WikiIngestionWatcher:
         except ValueError:
             maintenance_retry_fallback_max_pages = 24
 
-        analysis_source_only = (
-            os.getenv("UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY", "false")
-            .strip()
-            .lower()
-            not in {"0", "false", "no", "off"}
-        )
+        analysis_source_only = os.getenv(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY", "false"
+        ).strip().lower() not in {"0", "false", "no", "off"}
 
-        analysis_source_only_final_retry = (
-            os.getenv("UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY_FINAL_RETRY", "true")
-            .strip()
-            .lower()
-            not in {"0", "false", "no", "off"}
-        )
+        analysis_source_only_final_retry = os.getenv(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY_FINAL_RETRY", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
 
         self.event_handler = WikiFileEventHandler(
             ingestor,
             contributor,
-            auto_analyze=auto_analyze,
-            lint_every=lint_every,
-            llm_available_fn=llm_available_fn,
-            llm_context_window_tokens_fn=llm_context_window_tokens_fn,
-            analyze_chat_history=analyze_chat_history,
-            analysis_context_fraction=analysis_context_fraction,
-            analysis_chars_per_token=analysis_chars_per_token,
-            analysis_retry_on_fallback=analysis_retry_on_fallback,
-            analysis_max_retries=analysis_max_retries,
-            analysis_retry_reduction=analysis_retry_reduction,
-            analysis_min_context_chars=analysis_min_context_chars,
-            maintenance_retry_fallback_max_pages=maintenance_retry_fallback_max_pages,
-            analysis_source_only=analysis_source_only,
-            analysis_source_only_final_retry=analysis_source_only_final_retry,
+            auto_analyze = auto_analyze,
+            lint_every = lint_every,
+            llm_available_fn = llm_available_fn,
+            llm_context_window_tokens_fn = llm_context_window_tokens_fn,
+            analyze_chat_history = analyze_chat_history,
+            analysis_context_fraction = analysis_context_fraction,
+            analysis_chars_per_token = analysis_chars_per_token,
+            analysis_retry_on_fallback = analysis_retry_on_fallback,
+            analysis_max_retries = analysis_max_retries,
+            analysis_retry_reduction = analysis_retry_reduction,
+            analysis_min_context_chars = analysis_min_context_chars,
+            maintenance_retry_fallback_max_pages = maintenance_retry_fallback_max_pages,
+            analysis_source_only = analysis_source_only,
+            analysis_source_only_final_retry = analysis_source_only_final_retry,
         )
 
     def start(self):
         """Starts the background observer."""
-        self.observer.schedule(self.event_handler, str(self.raw_dir), recursive=False)
+        self.observer.schedule(self.event_handler, str(self.raw_dir), recursive = False)
         self.observer.start()
         logger.info(f"Started WikiIngestionWatcher monitoring: {self.raw_dir}")
 

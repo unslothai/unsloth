@@ -3,6 +3,7 @@ End-to-end pipeline test: detect → extract → build → cluster → analyze �
 Uses the existing test fixtures (code + markdown). No LLM calls - AST extraction only.
 Catches regressions in how modules connect, not just individual module behaviour.
 """
+
 import json
 import tempfile
 from pathlib import Path
@@ -62,7 +63,18 @@ def run_pipeline(tmp_path: Path) -> dict:
 
     # Step 6: report
     tokens = {"input": 0, "output": 0}
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, str(FIXTURES), suggested_questions=questions)
+    report = generate(
+        G,
+        communities,
+        cohesion,
+        labels,
+        gods,
+        surprises,
+        detection,
+        tokens,
+        str(FIXTURES),
+        suggested_questions = questions,
+    )
     assert "God Nodes" in report
     assert "Communities" in report
     assert len(report) > 100
@@ -77,7 +89,7 @@ def run_pipeline(tmp_path: Path) -> dict:
 
     # Step 8: export - HTML
     html_path = tmp_path / "graph.html"
-    to_html(G, communities, str(html_path), community_labels=labels)
+    to_html(G, communities, str(html_path), community_labels = labels)
     assert html_path.exists()
     html = html_path.read_text()
     assert "vis-network" in html
@@ -85,7 +97,9 @@ def run_pipeline(tmp_path: Path) -> dict:
 
     # Step 9: export - Obsidian vault
     vault_path = tmp_path / "obsidian"
-    n_notes = to_obsidian(G, communities, str(vault_path), community_labels=labels, cohesion=cohesion)
+    n_notes = to_obsidian(
+        G, communities, str(vault_path), community_labels = labels, cohesion = cohesion
+    )
     assert n_notes > 0
     assert (vault_path / ".obsidian" / "graph.json").exists()
     md_files = list(vault_path.glob("*.md"))
