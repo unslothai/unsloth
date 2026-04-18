@@ -55,31 +55,52 @@ def test_chat_completion_request_has_cancel_id_field():
     )
 
 
-def test_cancel_route_accepts_cancel_id_as_first_key():
-    # The cancel endpoint must try cancel_id first; session_id/completion_id
-    # are broader / fallback keys.
+def test_cancel_route_matches_cancel_id_exclusively_when_present():
+    # A stale cancel POST carrying cancel_id AND session_id must not
+    # cancel a later run on the same thread via the shared session_id.
+    # Enforce this by requiring the handler to early-return through an
+    # exclusive-cancel_id path -- either an atomic helper or a keys
+    # list containing ONLY cancel_id (never session_id).
     for node in ast.walk(ast.parse(ROUTES_SRC)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
             break
     else:
         raise AssertionError("cancel_inference handler missing")
 
-    # Find `for k in (...)` tuple with string literals.
-    found_cancel_id_first = False
+    cancel_id_exclusive_branch = False
     for sub in ast.walk(node):
-        if not isinstance(sub, ast.For):
+        if not isinstance(sub, ast.If):
             continue
-        it = sub.iter
-        if not isinstance(it, ast.Tuple):
+        test_src = ast.unparse(sub.test)
+        if "cancel_id" not in test_src or "isinstance" not in test_src:
             continue
-        vals = [e.value for e in it.elts if isinstance(e, ast.Constant)]
-        if vals and vals[0] == "cancel_id":
-            found_cancel_id_first = True
-            assert "session_id" in vals or "completion_id" in vals
+        branch_src = "\n".join(ast.unparse(s) for s in sub.body)
+        before_return = branch_src.split("return", 1)[0]
+        matches_cancel_id_only = (
+            "_cancel_by_cancel_id_or_stash(cancel_id)" in branch_src
+            or "_cancel_by_keys([cancel_id])" in branch_src
+        )
+        if matches_cancel_id_only and "session_id" not in before_return:
+            cancel_id_exclusive_branch = True
             break
-    assert found_cancel_id_first, (
-        "cancel_inference must iterate ('cancel_id', ...) so a per-run "
-        "cancel id takes precedence over thread-scoped keys"
+    assert cancel_id_exclusive_branch, (
+        "cancel_inference must early-return with an exclusive cancel_id "
+        "match when a cancel_id is supplied, so a stale stop POST "
+        "cannot cancel a later run on the same thread via session_id"
+    )
+
+
+def test_cancel_route_falls_back_to_session_or_completion_when_no_cancel_id():
+    for node in ast.walk(ast.parse(ROUTES_SRC)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
+            break
+    else:
+        raise AssertionError("cancel_inference handler missing")
+
+    src = ast.unparse(node)
+    assert "session_id" in src and "completion_id" in src, (
+        "cancel_inference must still accept session_id / completion_id as "
+        "fallback keys when cancel_id is absent"
     )
 
 
