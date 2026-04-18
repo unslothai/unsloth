@@ -193,10 +193,9 @@ _CHAT_HISTORY_FLUSH_SECONDS = max(
     0,
     int(os.getenv("UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS", "600")),
 )
-_WIKI_WATCHER_ENABLED = (
-    os.getenv("UNSLOTH_WIKI_WATCHER", "true").strip().lower()
-    not in {"0", "false", "no", "off"}
-)
+_WIKI_WATCHER_ENABLED = os.getenv(
+    "UNSLOTH_WIKI_WATCHER", "true"
+).strip().lower() not in {"0", "false", "no", "off"}
 _CHAT_HISTORY_PENDING_BLOCKS: list[str] = []
 _CHAT_HISTORY_BUFFER_STARTED_AT: Optional[_datetime.datetime] = None
 _CHAT_HISTORY_LOCK = threading.Lock()
@@ -789,7 +788,7 @@ def _save_chat_history_to_route_wiki(messages: list[dict]) -> None:
         )
 
         try:
-            file_path.write_text(payload, encoding="utf-8")
+            file_path.write_text(payload, encoding = "utf-8")
             if _WIKI_WATCHER_ENABLED:
                 logger.debug(
                     "Chat history batch written to raw/ and left for watcher ingest: %s",
@@ -797,7 +796,7 @@ def _save_chat_history_to_route_wiki(messages: list[dict]) -> None:
                 )
             else:
                 _, ingestor = _get_route_wiki_components()
-                ingestor.ingest_file(file_path, contributor="Unsloth Studio")
+                ingestor.ingest_file(file_path, contributor = "Unsloth Studio")
             _CHAT_HISTORY_PENDING_BLOCKS.clear()
             _CHAT_HISTORY_BUFFER_STARTED_AT = None
         except Exception as exc:

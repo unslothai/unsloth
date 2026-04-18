@@ -227,6 +227,7 @@ class InferenceBackend:
         from core.wiki.manager import WikiManager
         from core.wiki.ingestor import WikiIngestor
         from pathlib import Path
+
         self.vault_root = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
         self.wiki_manager = WikiManager.create(self.vault_root, self._wiki_llm_fn)
         self.wiki_ingestor = WikiIngestor(self.wiki_manager, self.vault_root / "raw")
