@@ -28,6 +28,7 @@ import shutil
 import warnings
 from contextlib import asynccontextmanager
 from typing import Optional
+from importlib.metadata import PackageNotFoundError, version as package_version
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -96,6 +97,25 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
     except ValueError:
         return default
     return max(minimum, value)
+def get_unsloth_version() -> str:
+    try:
+        return package_version("unsloth")
+    except PackageNotFoundError:
+        pass
+
+    version_file = (
+        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    )
+    try:
+        for line in version_file.read_text(encoding = "utf-8").splitlines():
+            if line.startswith("__version__ = "):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return "dev"
+
+
+UNSLOTH_VERSION = get_unsloth_version()
 
 
 @asynccontextmanager
@@ -245,7 +265,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title = "Unsloth UI Backend",
-    version = "1.0.0",
+    version = UNSLOTH_VERSION,
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
 )
@@ -303,6 +323,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
+        "version": UNSLOTH_VERSION,
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
     }
@@ -342,6 +363,7 @@ async def get_system_info():
     import platform
     import psutil
     from utils.hardware import get_device
+    from utils.hardware.hardware import _backend_label
 
     visibility_info = get_backend_visible_gpu_info()
     gpu_info = {
@@ -355,7 +377,10 @@ async def get_system_info():
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        "device_backend": get_device().value,
+        # Use the centralized _backend_label helper so the /api/system
+        # endpoint reports "rocm" on AMD hosts instead of "cuda", matching
+        # the /api/hardware and /api/gpu-visibility endpoints.
+        "device_backend": _backend_label(get_device()),
         "cpu_count": psutil.cpu_count(),
         "memory": {
             "total_gb": round(memory.total / 1e9, 2),
@@ -454,7 +479,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        if full_path.startswith("api"):
+        if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             return {"error": "API endpoint not found"}
 
         file_path = (build_path / full_path).resolve()

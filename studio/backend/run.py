@@ -252,6 +252,7 @@ def run_server(
     wiki_auto_query: bool | None = None,
     wiki_lint_every: int | None = None,
     wiki_auto_query_chat_history: bool | None = None,
+    llama_parallel_slots: int = 1,
 ):
     """
     Start the FastAPI server.
@@ -261,6 +262,7 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
+        llama_parallel_slots: Number of parallel slots for llama-server
 
     Note:
         Signal handlers are NOT registered here so that embedders
@@ -342,6 +344,15 @@ def run_server(
     )
     _server = uvicorn.Server(config)
     _shutdown_event = Event()
+
+    # Expose the actual bound port so request-handling code can build
+    # loopback URLs that point at the real backend, not whatever port a
+    # reverse proxy or tunnel exposed in the request URL. Only publish
+    # an explicit value when we know the concrete port; for ephemeral
+    # binds (port==0) leave it unset and let request handlers fall back
+    # to the ASGI request scope or request.base_url.
+    app.state.server_port = port if port and port > 0 else None
+    app.state.llama_parallel_slots = llama_parallel_slots
 
     # Run server in a daemon thread
     def _run():

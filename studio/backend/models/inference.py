@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
 
 class LoadRequest(BaseModel):
@@ -94,6 +94,10 @@ class ValidateModelResponse(BaseModel):
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -136,6 +140,10 @@ class LoadResponse(BaseModel):
     )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
         None, description = "Model's native context length (from GGUF metadata)"
@@ -180,6 +188,39 @@ class UnloadResponse(BaseModel):
     model: str = Field(..., description = "Model identifier that was unloaded")
 
 
+class LoadProgressResponse(BaseModel):
+    """Progress of the active GGUF load, sampled on demand.
+
+    Used by the UI to show a real progress bar during the
+    post-download warmup window (mmap + CUDA upload), rather than a
+    generic "Starting model..." spinner that freezes for minutes on
+    large MoE models.
+    """
+
+    phase: Optional[str] = Field(
+        None,
+        description = (
+            "Load phase: 'mmap' (weights paging into RAM via mmap), "
+            "'ready' (llama-server reported healthy), or null when no "
+            "load is in flight."
+        ),
+    )
+    bytes_loaded: int = Field(
+        0,
+        description = (
+            "Bytes of the model already resident in the llama-server "
+            "process (VmRSS on Linux)."
+        ),
+    )
+    bytes_total: int = Field(
+        0,
+        description = "Total bytes across all GGUF shards for the active model.",
+    )
+    fraction: float = Field(
+        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
+    )
+
+
 class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
@@ -212,6 +253,10 @@ class InferenceStatusResponse(BaseModel):
     )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the active model requires trust_remote_code to be enabled for loading.",
     )
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
@@ -293,14 +338,68 @@ class ChatMessage(BaseModel):
 
     ``content`` may be a plain string (text-only) or a list of
     content parts for multimodal messages (OpenAI vision format).
+    Assistant messages that only contain tool calls may set ``content``
+    to ``None`` with ``tool_calls`` populated. ``role="tool"`` messages
+    carry the result of a client-executed tool call and require
+    ``tool_call_id`` per the OpenAI spec.
     """
 
-    role: Literal["system", "user", "assistant"] = Field(
+    role: Literal["system", "user", "assistant", "tool"] = Field(
         ..., description = "Message role"
     )
-    content: Union[str, list[ContentPart]] = Field(
-        ..., description = "Message content (string or multimodal parts)"
+    content: Optional[Union[str, list[ContentPart]]] = Field(
+        None, description = "Message content (string or multimodal parts)"
     )
+    tool_call_id: Optional[str] = Field(
+        None,
+        description = "OpenAI tool-result messages: id of the tool call this result belongs to.",
+    )
+    tool_calls: Optional[list[dict]] = Field(
+        None,
+        description = "OpenAI assistant messages: structured tool calls the model decided to make.",
+    )
+    name: Optional[str] = Field(
+        None,
+        description = "OpenAI tool-result messages: name of the tool whose result this is.",
+    )
+
+    @model_validator(mode = "after")
+    def _validate_role_shape(self) -> "ChatMessage":
+        # Enforce the per-role OpenAI spec shape at the request boundary.
+        # Without this, malformed messages (e.g. user entries with no
+        # content, tool_calls on a user/system role, role="tool" without
+        # tool_call_id) would be silently forwarded to llama-server via
+        # the passthrough path, surfacing as opaque upstream errors or
+        # broken tool-call reconciliation downstream.
+
+        # Tool-call metadata must appear only on the appropriate role.
+        if self.tool_calls is not None and self.role != "assistant":
+            raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
+        if self.tool_call_id is not None and self.role != "tool":
+            raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
+        if self.name is not None and self.role != "tool":
+            raise ValueError('"name" is only valid on role="tool" messages.')
+
+        # Per-role content requirements.
+        if self.role == "tool":
+            if not self.tool_call_id:
+                raise ValueError(
+                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
+                )
+            if not self.content:
+                raise ValueError('role="tool" messages require non-empty "content".')
+        elif self.role == "assistant":
+            # Assistant messages may omit content when tool_calls is set.
+            if not self.content and not self.tool_calls:
+                raise ValueError(
+                    'role="assistant" messages require either "content" or "tool_calls".'
+                )
+        else:  # "user" | "system"
+            if not self.content:
+                raise ValueError(
+                    f'role="{self.role}" messages require non-empty "content".'
+                )
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -310,18 +409,49 @@ class ChatCompletionRequest(BaseModel):
     Extensions (non-OpenAI fields) are marked with 'x-unsloth'.
     """
 
+    # Accept unknown fields defensively so future OpenAI fields (seed,
+    # response_format, logprobs, frequency_penalty, etc.) don't get
+    # silently dropped by Pydantic before route code runs. Mirrors
+    # AnthropicMessagesRequest and ResponsesRequest.
+    model_config = {"extra": "allow"}
+
     model: str = Field(
         "default",
         description = "Model identifier (informational; the active model is used)",
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
-    stream: bool = Field(True, description = "Whether to stream the response via SSE")
+    stream: bool = Field(
+        False,
+        description = (
+            "Whether to stream the response via SSE. Default matches OpenAI's "
+            "spec (`false`); opt into streaming by sending `stream: true`."
+        ),
+    )
     temperature: float = Field(0.6, ge = 0.0, le = 2.0)
     top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    stop: Optional[Union[str, list[str]]] = Field(
+        None,
+        description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = (
+            "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
+            "Studio forwards the tools to the backend so the model returns structured "
+            "tool_calls for the client to execute (standard OpenAI function calling)."
+        ),
+    )
+    tool_choice: Optional[Union[str, dict]] = Field(
+        None,
+        description = (
+            "OpenAI tool choice: 'auto' | 'required' | 'none' | "
+            "{'type': 'function', 'function': {'name': ...}}"
+        ),
+    )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
@@ -646,3 +776,239 @@ class WikiLintResponse(BaseModel):
     missing_concepts: list[str]
     low_coverage_sources: list[str]
     total_pages: int
+# =====================================================================
+# OpenAI Responses API Models  (/v1/responses)
+# =====================================================================
+
+
+# ── Request models ──────────────────────────────────────────────
+
+
+class ResponsesInputTextPart(BaseModel):
+    """Text content part in a Responses API message (type=input_text)."""
+
+    type: Literal["input_text"]
+    text: str
+
+
+class ResponsesInputImagePart(BaseModel):
+    """Image content part in a Responses API message (type=input_image)."""
+
+    type: Literal["input_image"]
+    image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
+    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+
+
+ResponsesContentPart = Union[ResponsesInputTextPart, ResponsesInputImagePart]
+
+
+class ResponsesInputMessage(BaseModel):
+    """A single message in the Responses API input array."""
+
+    role: Literal["system", "user", "assistant", "developer"]
+    content: Union[str, list[ResponsesContentPart]]
+
+
+class ResponsesRequest(BaseModel):
+    """OpenAI Responses API request."""
+
+    model: str = Field("default", description = "Model identifier")
+    input: Union[str, list[ResponsesInputMessage]] = Field(
+        default = [],
+        description = "Input text or message list",
+    )
+    instructions: Optional[str] = Field(
+        None, description = "System / developer instructions"
+    )
+    temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
+    top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    max_output_tokens: Optional[int] = Field(None, ge = 1)
+    stream: bool = Field(False, description = "Whether to stream the response via SSE")
+
+    # Accepted but ignored -- keeps SDK clients from failing on unsupported fields
+    tools: Optional[list] = None
+    tool_choice: Optional[Any] = None
+    previous_response_id: Optional[str] = None
+    store: Optional[bool] = None
+    metadata: Optional[dict] = None
+    truncation: Optional[Any] = None
+    user: Optional[str] = None
+    text: Optional[Any] = None
+    reasoning: Optional[Any] = None
+
+    model_config = {"extra": "allow"}
+
+
+# ── Response models ─────────────────────────────────────────────
+
+
+class ResponsesOutputTextContent(BaseModel):
+    """A text content block inside an output message."""
+
+    type: Literal["output_text"] = "output_text"
+    text: str
+    annotations: list = Field(default_factory = list)
+
+
+class ResponsesOutputMessage(BaseModel):
+    """An output message in the Responses API response."""
+
+    type: Literal["message"] = "message"
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress"] = "completed"
+    role: Literal["assistant"] = "assistant"
+    content: list[ResponsesOutputTextContent] = Field(default_factory = list)
+
+
+class ResponsesUsage(BaseModel):
+    """Token usage for a Responses API response (input_tokens, not prompt_tokens)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+class ResponsesResponse(BaseModel):
+    """Top-level Responses API response object."""
+
+    id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
+    object: Literal["response"] = "response"
+    created_at: int = Field(default_factory = lambda: int(time.time()))
+    status: Literal["completed", "in_progress", "failed"] = "completed"
+    model: str = "default"
+    output: list[ResponsesOutputMessage] = Field(default_factory = list)
+    usage: ResponsesUsage = Field(default_factory = ResponsesUsage)
+    error: Optional[Any] = None
+    incomplete_details: Optional[Any] = None
+    instructions: Optional[str] = None
+    metadata: dict = Field(default_factory = dict)
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_output_tokens: Optional[int] = None
+    previous_response_id: Optional[str] = None
+    text: Optional[Any] = None
+    tool_choice: Optional[Any] = None
+    tools: list = Field(default_factory = list)
+    truncation: Optional[Any] = None
+
+
+# =====================================================================
+# Anthropic Messages API Models  (/v1/messages)
+# =====================================================================
+
+
+# ── Request models ─────────────────────────────────────────────
+
+
+class AnthropicTextBlock(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class AnthropicImageSource(BaseModel):
+    type: Literal["base64", "url"]
+    media_type: Optional[str] = None
+    data: Optional[str] = None
+    url: Optional[str] = None
+
+
+class AnthropicImageBlock(BaseModel):
+    type: Literal["image"]
+    source: AnthropicImageSource
+
+
+class AnthropicToolUseBlock(BaseModel):
+    type: Literal["tool_use"]
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicToolResultBlock(BaseModel):
+    type: Literal["tool_result"]
+    tool_use_id: str
+    content: Union[str, list] = ""
+
+
+AnthropicContentBlock = Union[
+    AnthropicTextBlock,
+    AnthropicImageBlock,
+    AnthropicToolUseBlock,
+    AnthropicToolResultBlock,
+]
+
+
+class AnthropicMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: Union[str, list[AnthropicContentBlock]]
+
+
+class AnthropicTool(BaseModel):
+    name: str
+    description: Optional[str] = None
+    input_schema: dict
+
+
+class AnthropicMessagesRequest(BaseModel):
+    model: str = "default"
+    max_tokens: Optional[int] = None
+    messages: list[AnthropicMessage]
+    system: Optional[Union[str, list]] = None
+    tools: Optional[list[AnthropicTool]] = None
+    tool_choice: Optional[Any] = None
+    stream: bool = False
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    stop_sequences: Optional[list[str]] = None
+    metadata: Optional[dict] = None
+    # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    min_p: Optional[float] = Field(
+        None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+    )
+    repetition_penalty: Optional[float] = Field(
+        None, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+    )
+    presence_penalty: Optional[float] = Field(
+        None, ge = 0.0, le = 2.0, description = "[x-unsloth] Presence penalty"
+    )
+    enable_tools: Optional[bool] = None
+    enabled_tools: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    model_config = {"extra": "allow"}
+
+
+# ── Response models ────────────────────────────────────────────
+
+
+class AnthropicUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class AnthropicResponseTextBlock(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class AnthropicResponseToolUseBlock(BaseModel):
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
+]
+
+
+class AnthropicMessagesResponse(BaseModel):
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:24]}")
+    type: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
+    content: list[AnthropicResponseBlock] = Field(default_factory = list)
+    model: str = "default"
+    stop_reason: Optional[str] = None
+    stop_sequence: Optional[str] = None
+    usage: AnthropicUsage = Field(default_factory = AnthropicUsage)

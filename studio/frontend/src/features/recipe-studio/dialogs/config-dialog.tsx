@@ -18,6 +18,7 @@ type ConfigDialogProps = {
   categoryOptions: SamplerConfig[];
   modelConfigAliases: string[];
   modelProviderOptions: string[];
+  localProviderNames: Set<string>;
   toolProfileAliases: string[];
   datetimeOptions: string[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
@@ -32,6 +33,7 @@ export function ConfigDialog({
   categoryOptions,
   modelConfigAliases,
   modelProviderOptions,
+  localProviderNames,
   toolProfileAliases,
   datetimeOptions,
   onUpdate,
@@ -101,6 +103,7 @@ export function ConfigDialog({
                 categoryOptions,
                 modelConfigAliases,
                 modelProviderOptions,
+                localProviderNames,
                 toolProfileAliases,
                 datetimeOptions,
                 onUpdate,
