@@ -21,6 +21,14 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from backend.utils.wheel_utils import (
+    flash_attn_package_version,
+    flash_attn_wheel_url,
+    install_wheel,
+    probe_torch_wheel_env,
+    url_exists,
+)
+
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
@@ -41,7 +49,9 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (6, 1): "rocm6.1",
     (6, 0): "rocm6.0",
 }
-_PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
+_PYTORCH_WHL_BASE = (
+    os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
+).rstrip("/")
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
@@ -173,8 +183,14 @@ def _has_rocm_gpu() -> bool:
     import re
 
     for cmd, check_fn in (
-        # rocminfo: look for "Name: gfxNNNN" with nonzero first digit (gfx000 is the CPU agent)
-        (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
+        # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
+        # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
+        # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
+        # the dash and must not be treated as a real GPU.
+        (
+            ["rocminfo"],
+            lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
+        ),
         # amd-smi list: require "GPU: <number>" data rows, not just a header
         (
             ["amd-smi", "list"],
@@ -368,7 +384,6 @@ NO_TORCH = _infer_no_torch()
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
 # Progress bar state -- updated by _progress() as each install step runs.
-# _TOTAL counts: pip-upgrade + 7 shared steps + triton (non-Windows) + local-plugin + finalize
 # Update _TOTAL here if you add or remove install steps in install_python_stack().
 _STEP: int = 0
 _TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
@@ -534,6 +549,66 @@ NO_TORCH_SKIP_PACKAGES = {
     "openai-whisper",
     "transformers-cfg",
 }
+
+
+def _select_flash_attn_version(torch_mm: str) -> str | None:
+    return flash_attn_package_version(torch_mm)
+
+
+def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
+    return flash_attn_wheel_url(env)
+
+
+def _print_optional_install_failure(
+    label: str, result: subprocess.CompletedProcess[str]
+) -> None:
+    _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
+    if result.stdout:
+        print(result.stdout.strip())
+
+
+def _flash_attn_install_disabled() -> bool:
+    return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
+
+
+def _ensure_flash_attn() -> None:
+    if NO_TORCH or IS_WINDOWS or IS_MACOS:
+        return
+    if _flash_attn_install_disabled():
+        return
+    if (
+        subprocess.run(
+            [sys.executable, "-c", "import flash_attn"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        ).returncode
+        == 0
+    ):
+        return
+
+    env = probe_torch_wheel_env()
+    wheel_url = _build_flash_attn_wheel_url(env) if env else None
+    if wheel_url and url_exists(wheel_url):
+        for installer, wheel_result in install_wheel(
+            wheel_url,
+            python_executable = sys.executable,
+            use_uv = USE_UV,
+            uv_needs_system = UV_NEEDS_SYSTEM,
+        ):
+            if wheel_result.returncode == 0:
+                return
+            _print_optional_install_failure(
+                f"Installing flash-attn prebuilt wheel with {installer}",
+                wheel_result,
+            )
+        _step("warning", "Continuing without flash-attn", _cyan)
+        return
+
+    if wheel_url is None:
+        _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+    else:
+        _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+
 
 # -- uv bootstrap ------------------------------------------------------
 
@@ -762,10 +837,8 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
-    # ROCm torch check steps (Linux only, non-macOS, non-no-torch):
-    # one early check (step 2b) and one final repair (step 13).
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        base_total += 2
+        base_total += 3
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -978,6 +1051,10 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "triton-kernels.txt",
             constrain = False,
         )
+
+    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+        _progress("flash-attn")
+        _ensure_flash_attn()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(

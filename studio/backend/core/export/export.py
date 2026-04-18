@@ -310,7 +310,7 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """
         Export merged model (for PEFT models).
 
@@ -323,14 +323,21 @@ class ExportBackend:
             private: Whether to make the repo private
 
         Returns:
-            Tuple of (success: bool, message: str)
+            Tuple of (success, message, output_path). output_path is the
+            resolved absolute on-disk directory of the saved model when
+            ``save_directory`` was set, else None.
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         if not self.is_peft:
-            return False, "This is not a PEFT model. Use 'Export Base Model' instead."
+            return (
+                False,
+                "This is not a PEFT model. Use 'Export Base Model' instead.",
+                None,
+            )
 
+        output_path: Optional[str] = None
         try:
             # Determine save method
             if format_type == "4-bit (FP4)":
@@ -354,6 +361,7 @@ class ExportBackend:
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
+                output_path = str(Path(save_directory).resolve())
 
             # Push to hub if requested
             if push_to_hub:
@@ -361,6 +369,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
@@ -378,14 +387,14 @@ class ExportBackend:
                 )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
-            return True, "Model exported successfully"
+            return True, "Model exported successfully", output_path
 
         except Exception as e:
             logger.error(f"Error exporting merged model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Export failed: {str(e)}"
+            return False, f"Export failed: {str(e)}", None
 
     def export_base_model(
         self,
@@ -395,22 +404,26 @@ class ExportBackend:
         hf_token: Optional[str] = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """
         Export base model (for non-PEFT models).
 
         Returns:
-            Tuple of (success: bool, message: str)
+            Tuple of (success, message, output_path). output_path is the
+            resolved absolute on-disk directory of the saved model when
+            ``save_directory`` was set, else None.
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         if self.is_peft:
             return (
                 False,
                 "This is a PEFT model. Use 'Merged Model' export type instead.",
+                None,
             )
 
+        output_path: Optional[str] = None
         try:
             # Save locally if requested
             if save_directory:
@@ -424,6 +437,7 @@ class ExportBackend:
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
+                output_path = str(Path(save_directory).resolve())
 
             # Push to hub if requested
             if push_to_hub:
@@ -431,6 +445,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing base model to Hub: {repo_id}")
@@ -472,16 +487,16 @@ class ExportBackend:
                     )
                     logger.info(f"Model pushed successfully to {repo_id}")
                 else:
-                    return False, "Local save directory required for Hub upload"
+                    return False, "Local save directory required for Hub upload", None
 
-            return True, "Model exported successfully"
+            return True, "Model exported successfully", output_path
 
         except Exception as e:
             logger.error(f"Error exporting base model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Export failed: {str(e)}"
+            return False, f"Export failed: {str(e)}", None
 
     def export_gguf(
         self,
@@ -490,7 +505,7 @@ class ExportBackend:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
 
@@ -502,11 +517,14 @@ class ExportBackend:
             hf_token: Hugging Face token
 
         Returns:
-            Tuple of (success: bool, message: str)
+            Tuple of (success, message, output_path). output_path is the
+            resolved absolute on-disk directory containing the .gguf
+            files when ``save_directory`` was set, else None.
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
+        output_path: Optional[str] = None
         try:
             # Convert quantization method to lowercase for unsloth
             quant_method = quantization_method.lower()
@@ -601,6 +619,7 @@ class ExportBackend:
                     abs_save_dir,
                     "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
                 )
+                output_path = str(Path(abs_save_dir).resolve())
 
             # Push to hub if requested
             if push_to_hub:
@@ -608,6 +627,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
@@ -620,14 +640,18 @@ class ExportBackend:
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
-            return True, f"GGUF model exported successfully ({quantization_method})"
+            return (
+                True,
+                f"GGUF model exported successfully ({quantization_method})",
+                output_path,
+            )
 
         except Exception as e:
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"GGUF export failed: {str(e)}"
+            return False, f"GGUF export failed: {str(e)}", None
 
     def export_lora_adapter(
         self,
@@ -636,19 +660,22 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """
         Export LoRA adapter only (not merged).
 
         Returns:
-            Tuple of (success: bool, message: str)
+            Tuple of (success, message, output_path). output_path is the
+            resolved absolute on-disk directory of the saved adapter
+            when ``save_directory`` was set, else None.
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         if not self.is_peft:
-            return False, "This is not a PEFT model. No adapter to export."
+            return False, "This is not a PEFT model. No adapter to export.", None
 
+        output_path: Optional[str] = None
         try:
             # Save locally if requested
             if save_directory:
@@ -659,6 +686,7 @@ class ExportBackend:
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
+                output_path = str(Path(save_directory).resolve())
 
             # Push to hub if requested
             if push_to_hub:
@@ -666,6 +694,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
@@ -676,14 +705,14 @@ class ExportBackend:
                 )
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
-            return True, "LoRA adapter exported successfully"
+            return True, "LoRA adapter exported successfully", output_path
 
         except Exception as e:
             logger.error(f"Error exporting LoRA adapter: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Adapter export failed: {str(e)}"
+            return False, f"Adapter export failed: {str(e)}", None
 
     def export_autoround_4bit(
         self,

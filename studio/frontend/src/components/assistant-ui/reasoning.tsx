@@ -6,7 +6,6 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
-import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import {
   Collapsible,
   CollapsibleContent,
@@ -151,34 +150,6 @@ function ReasoningRoot({
   );
 }
 
-function ReasoningFade({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="reasoning-fade"
-      className={cn(
-        "aui-reasoning-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8",
-        "bg-gradient-to-t from-background to-transparent",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-function ReasoningFadeTop({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="reasoning-fade-top"
-      className={cn(
-        "aui-reasoning-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-8",
-        "bg-gradient-to-b from-background to-transparent",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
 function ReasoningTrigger({
   active,
   duration,
@@ -206,7 +177,7 @@ function ReasoningTrigger({
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
       >
         {active ? (
-          <AnimatedShinyText className="text-sm">Thinking...</AnimatedShinyText>
+          <span className="text-sm">Thinking...</span>
         ) : (
           <span>Thought for {duration ?? 0} seconds</span>
         )}
@@ -234,7 +205,7 @@ function ReasoningContent({
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-muted-foreground text-sm outline-none",
+        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-[13.5px] outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -246,9 +217,7 @@ function ReasoningContent({
       )}
       {...props}
     >
-      {streaming && <ReasoningFadeTop />}
       {children}
-      <ReasoningFade />
     </CollapsibleContent>
   );
 }
@@ -481,8 +450,6 @@ const Reasoning = memo(
   Trigger: typeof ReasoningTrigger;
   Content: typeof ReasoningContent;
   Text: typeof ReasoningText;
-  Fade: typeof ReasoningFade;
-  FadeTop: typeof ReasoningFadeTop;
 };
 
 Reasoning.displayName = "Reasoning";
@@ -490,8 +457,6 @@ Reasoning.Root = ReasoningRoot;
 Reasoning.Trigger = ReasoningTrigger;
 Reasoning.Content = ReasoningContent;
 Reasoning.Text = ReasoningText;
-Reasoning.Fade = ReasoningFade;
-Reasoning.FadeTop = ReasoningFadeTop;
 
 const ReasoningGroup = memo(ReasoningGroupImpl);
 ReasoningGroup.displayName = "ReasoningGroup";
@@ -503,6 +468,4 @@ export {
   ReasoningTrigger,
   ReasoningContent,
   ReasoningText,
-  ReasoningFade,
-  ReasoningFadeTop,
 };

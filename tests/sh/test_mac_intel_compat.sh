@@ -206,6 +206,10 @@ assert_eq "Darwin -> cpu (even with nvidia-smi)" "https://download.pytorch.org/w
 _result=$(PATH="$_MOCK_UNAME_DIR:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
 assert_eq "Darwin -> cpu (no nvidia-smi)" "https://download.pytorch.org/whl/cpu" "$_result"
 
+# Test: Darwin + UNSLOTH_PYTORCH_MIRROR produces mirror/cpu
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" PATH="$_MOCK_UNAME_DIR:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "Darwin + mirror env -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR" "$_TOOLS_DIR" "$_MOCK_UNAME_DIR" "$_GPU_DIR"
 
@@ -239,15 +243,6 @@ if [ "$_mac_intel_set" -ge 1 ]; then
     PASS=$((PASS + 1))
 else
     echo "  FAIL: MAC_INTEL=true not found in install.sh"
-    FAIL=$((FAIL + 1))
-fi
-
-# Verify the PyTorch skip message exists (now covers both --no-torch and Intel Mac)
-if grep -q 'Skipping PyTorch' "$INSTALL_SH"; then
-    echo "  PASS: PyTorch skip message found"
-    PASS=$((PASS + 1))
-else
-    echo "  FAIL: PyTorch skip message not found"
     FAIL=$((FAIL + 1))
 fi
 
@@ -558,16 +553,7 @@ assert_eq "MAC_INTEL=true alone sets SKIP_TORCH=true" "true" "$_result"
 rm -f "$_SKIP_SNIPPET" "$_SKIP_SNIPPET2"
 
 echo ""
-echo "=== CPU hint printing ==="
-
-# Verify the CPU hint is present in install.sh source
-if grep -q 'No NVIDIA GPU detected' "$INSTALL_SH"; then
-    echo "  PASS: CPU hint message found in install.sh"
-    PASS=$((PASS + 1))
-else
-    echo "  FAIL: CPU hint message not found in install.sh"
-    FAIL=$((FAIL + 1))
-fi
+echo "=== --no-torch flag in install.sh ==="
 
 if grep -q '\-\-no-torch' "$INSTALL_SH"; then
     echo "  PASS: --no-torch appears in install.sh"

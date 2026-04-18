@@ -203,11 +203,22 @@ export function ModelSelector({
         ? lora.name.split("/")[0].trim()
         : lora.name;
       // Show type tag instead of base model name
+      const isLocal = lora.source === "local";
+      const isTraining = lora.source === "training";
       const isExported = lora.source === "exported";
       const isMerged = lora.exportType === "merged";
-      const tag = isExported
-        ? isMerged ? "Merged · Exported" : "LoRA"
-        : "LoRA";
+      const isGguf = lora.exportType === "gguf";
+      const tag = isLocal
+        ? isGguf
+          ? "GGUF"
+          : "Local"
+        : isTraining && isMerged
+          ? "Full finetune"
+          : isExported
+            ? isMerged
+              ? "Merged · Exported"
+              : "LoRA · Exported"
+            : "LoRA";
       all.set(lora.id, {
         ...lora,
         name: displayName,
