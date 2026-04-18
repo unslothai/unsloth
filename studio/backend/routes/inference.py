@@ -118,6 +118,8 @@ import numpy as np
 from datetime import date as _date
 
 router = APIRouter()
+# Studio-only router (not mounted on /v1 OpenAI-compat).
+studio_router = APIRouter()
 
 
 # ── Cancel registry ──────────────────────────────────────────
@@ -141,28 +143,33 @@ class _TrackedCancel:
     def __enter__(self):
         with _CANCEL_LOCK:
             for k in self.keys:
-                _CANCEL_REGISTRY[k] = self.event
+                _CANCEL_REGISTRY.setdefault(k, set()).add(self.event)
         return self.event
 
     def __exit__(self, *exc):
         with _CANCEL_LOCK:
             for k in self.keys:
-                if _CANCEL_REGISTRY.get(k) is self.event:
+                bucket = _CANCEL_REGISTRY.get(k)
+                if bucket is None:
+                    continue
+                bucket.discard(self.event)
+                if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
         return False
 
 
 def _cancel_by_keys(keys) -> int:
     """Set cancel_event for matching registry entries. Returns count set."""
-    events = []
+    events: set = set()
     with _CANCEL_LOCK:
         if keys:
             for k in keys:
-                ev = _CANCEL_REGISTRY.get(k)
-                if ev is not None:
-                    events.append(ev)
+                bucket = _CANCEL_REGISTRY.get(k)
+                if bucket:
+                    events.update(bucket)
         else:
-            events.extend(_CANCEL_REGISTRY.values())
+            for bucket in _CANCEL_REGISTRY.values():
+                events.update(bucket)
     for ev in events:
         ev.set()
     return len(events)
@@ -645,7 +652,7 @@ async def unload_model(
         raise HTTPException(status_code = 500, detail = f"Failed to unload model: {str(e)}")
 
 
-@router.post("/cancel")
+@studio_router.post("/cancel")
 async def cancel_inference(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -653,10 +660,10 @@ async def cancel_inference(
     """
     Cancel in-flight inference requests.
 
-    Body (optional JSON): {"session_id": str, "completion_id": str}
-    Cancels matching entries if provided, otherwise cancels ALL in-flight
-    requests. Returns {"cancelled": N} where N is the number of requests
-    signalled. Safe to call when nothing is running (returns 0).
+    Body (JSON): {"session_id": str, "completion_id": str}
+    At least one identifier is required; missing identifiers return
+    {"cancelled": 0} without touching the registry. Returns
+    {"cancelled": N} where N is the number of unique requests signalled.
 
     This exists because some proxies (Colab, etc.) do not propagate
     client-side fetch aborts to the backend, so relying solely on
@@ -672,8 +679,11 @@ async def cancel_inference(
     keys = []
     for k in ("session_id", "completion_id"):
         v = body.get(k)
-        if v:
+        if isinstance(v, str) and v:
             keys.append(v)
+
+    if not keys:
+        return {"cancelled": 0}
 
     n = _cancel_by_keys(keys)
     return {"cancelled": n}
@@ -1748,8 +1758,11 @@ async def openai_chat_completions(
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
+        _cancel_keys_std = (payload.session_id, completion_id)
 
         async def stream_chunks():
+            _tracker_std = _TrackedCancel(cancel_event, *_cancel_keys_std)
+            _tracker_std.__enter__()
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -1830,6 +1843,8 @@ async def openai_chat_completions(
                     },
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
+            finally:
+                _tracker_std.__exit__(None, None, None)
 
         return StreamingResponse(
             stream_chunks(),
