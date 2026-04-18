@@ -162,19 +162,6 @@ def _remember_pending_cancel(cancel_id: str) -> None:
         _PENDING_CANCELS[cancel_id] = now
 
 
-def _consume_pending_cancel(keys) -> bool:
-    if not keys:
-        return False
-    now = time.monotonic()
-    with _CANCEL_LOCK:
-        _prune_pending(now)
-        hit = False
-        for k in keys:
-            if k and _PENDING_CANCELS.pop(k, None) is not None:
-                hit = True
-        return hit
-
-
 class _TrackedCancel:
     """Context manager: register cancel_event in _CANCEL_REGISTRY for the
     duration of the block so external POST /inference/cancel can reach it."""
@@ -184,10 +171,21 @@ class _TrackedCancel:
         self.keys = tuple(k for k in keys if k)
 
     def __enter__(self):
+        # Register and consume-pending MUST happen atomically under a
+        # single lock acquisition, or a concurrent cancel POST that
+        # already missed the registry (returning 0) can stash its
+        # pending entry AFTER we finish consuming nothing -- silently
+        # dropping the cancel.
+        should_cancel = False
         with _CANCEL_LOCK:
             for k in self.keys:
                 _CANCEL_REGISTRY.setdefault(k, set()).add(self.event)
-        if _consume_pending_cancel(self.keys):
+            now = time.monotonic()
+            _prune_pending(now)
+            for k in self.keys:
+                if k and _PENDING_CANCELS.pop(k, None) is not None:
+                    should_cancel = True
+        if should_cancel:
             self.event.set()
         return self.event
 
@@ -209,10 +207,30 @@ def _cancel_by_keys(keys) -> int:
         return 0
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
+        _prune_pending(time.monotonic())
         for k in keys:
             bucket = _CANCEL_REGISTRY.get(k)
             if bucket:
                 events.update(bucket)
+    for ev in events:
+        ev.set()
+    return len(events)
+
+
+def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
+    """Atomic: set events for the cancel_id bucket, or stash if not yet
+    registered. Closes the TOCTOU window where a separate _cancel_by_keys
+    + _remember_pending_cancel pair can be interleaved by _TrackedCancel.
+    __enter__ such that the cancel is silently dropped."""
+    now = time.monotonic()
+    events: set[threading.Event] = set()
+    with _CANCEL_LOCK:
+        _prune_pending(now)
+        bucket = _CANCEL_REGISTRY.get(cancel_id)
+        if bucket:
+            events.update(bucket)
+        else:
+            _PENDING_CANCELS[cancel_id] = now
     for ev in events:
         ev.set()
     return len(events)
@@ -730,10 +748,9 @@ async def cancel_inference(
     if isinstance(cancel_id, str) and cancel_id:
         # Per-run key takes precedence. Do NOT widen to session_id here,
         # or a stale cancel POST will match a later run on the same thread
-        # via the shared session_id.
-        n = _cancel_by_keys([cancel_id])
-        if n == 0:
-            _remember_pending_cancel(cancel_id)
+        # via the shared session_id. Registry lookup and pending-stash
+        # happen atomically to close the TOCTOU race against __enter__.
+        n = _cancel_by_cancel_id_or_stash(cancel_id)
         return {"cancelled": n}
 
     keys = []

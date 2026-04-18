@@ -53,7 +53,7 @@ _MAX_REPROMPTS = 3
 # (up to 262144 tokens for Qwen3.5), producing many-minute "zombie" decodes
 # that ignore stop-button requests. Override per-call with explicit kwargs.
 _DEFAULT_MAX_TOKENS = 4096
-_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 minutes wall-clock per request
+_DEFAULT_T_MAX_PREDICT_MS = 3_600_000  # 1 hour wall-clock per request
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -2346,8 +2346,7 @@ class LlamaCppBackend:
         payload["max_tokens"] = (
             max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
         )
-        if max_tokens is None:
-            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -2566,8 +2565,7 @@ class LlamaCppBackend:
             payload["max_tokens"] = (
                 max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
             )
-            if max_tokens is None:
-                payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -3224,8 +3222,7 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = (
             max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
         )
-        if max_tokens is None:
-            stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
