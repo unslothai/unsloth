@@ -29,7 +29,10 @@ _TREE = ast.parse(_SRC)
 
 def _find_function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in ast.walk(_TREE):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
             return node
     raise AssertionError(f"function {name!r} not found")
 
@@ -167,13 +170,16 @@ def test_parallel_cancel_vs_register_never_drops():
             start.wait()
             tracker.__enter__()
 
-        threads = [threading.Thread(target=do_cancel), threading.Thread(target=do_enter)]
+        threads = [
+            threading.Thread(target = do_cancel),
+            threading.Thread(target = do_enter),
+        ]
         random.shuffle(threads)
         for t in threads:
             t.start()
         start.set()
         for t in threads:
-            t.join(timeout=5.0)
+            t.join(timeout = 5.0)
             assert not t.is_alive()
 
         if not ev.is_set():

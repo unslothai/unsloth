@@ -148,7 +148,9 @@ _PENDING_CANCEL_TTL_S = 30.0
 
 
 def _prune_pending(now: float) -> None:
-    for k in [k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S]:
+    for k in [
+        k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S
+    ]:
         _PENDING_CANCELS.pop(k, None)
 
 
