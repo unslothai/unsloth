@@ -1469,7 +1469,7 @@ class LlamaCppBackend:
             # existing text (code refactoring, summarization, reasoning).
             # For general chat with low repetition, overhead is ~5 ms.
             #
-            # Benchmarks from llama.cpp PRs #18471, #19164:
+            # Benchmarks from upstream llama.cpp speculative-decoding PRs:
             #   Scenario                        | Without | With    | Speedup
             #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
             #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
