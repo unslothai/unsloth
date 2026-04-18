@@ -227,8 +227,7 @@ class InferenceBackend:
         from core.wiki.manager import WikiManager
         from core.wiki.ingestor import WikiIngestor
         from pathlib import Path
-
-        self.vault_root = Path("/tmp/unsloth_wiki")
+        self.vault_root = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
         self.wiki_manager = WikiManager.create(self.vault_root, self._wiki_llm_fn)
         self.wiki_ingestor = WikiIngestor(self.wiki_manager, self.vault_root / "raw")
         # Wiki watcher lifecycle is owned by FastAPI app lifespan in main.py.
@@ -985,12 +984,9 @@ class InferenceBackend:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
+        template_messages = list(messages)
         if system_prompt:
-            template_messages = [
-                {"role": "system", "content": system_prompt}
-            ] + messages
-        else:
-            template_messages = messages
+            template_messages.insert(0, {"role": "system", "content": system_prompt})
 
         # --- RAG Injection ---
         rag_context = self._get_rag_context(messages[-1]["content"] if messages else "")
