@@ -1,28 +1,11 @@
 """
-Regression guards for the TOCTOU race that existed between the cancel
-handler and _TrackedCancel.__enter__ before the atomic refactor.
+TOCTOU atomicity guards for the cancel path.
 
-The original mechanism split registry-lookup and pending-stash across
-TWO lock acquisitions in cancel_inference, and registry-insertion and
-consume-pending across TWO acquisitions in __enter__. Under contention
-an interleaving like this drops the cancel silently:
+Structural: cancel_inference, _cancel_by_cancel_id_or_stash, and
+_TrackedCancel.__enter__ must each use a single _CANCEL_LOCK critical
+section over lookup + stash / register + consume-pending.
 
-  [cancel thread]    acquire lock
-                     bucket empty, release
-                     (no stash yet)
-  [handler thread]   acquire lock, register, release
-  [handler thread]   acquire lock, consume-pending (empty), release
-  [cancel thread]    acquire lock, stash (TOO LATE), release
-  [handler thread]   stream runs without ever seeing the cancel
-
-The fix folds each side into a single _CANCEL_LOCK critical section:
-  - cancel_inference calls _cancel_by_cancel_id_or_stash() which does
-    lookup + stash atomically.
-  - _TrackedCancel.__enter__ does register + consume-pending atomically.
-
-This file guards both invariants structurally (AST) and behaviorally
-(parallel stress) so a future refactor cannot reintroduce the race
-silently.
+Behavioral: parallel cancel-POST vs __enter__ must never drop a cancel.
 """
 
 from __future__ import annotations
@@ -72,9 +55,6 @@ def _count_with_cancel_lock_blocks(node: ast.AST) -> int:
 
 
 def test_cancel_by_cancel_id_or_stash_is_single_lock_critical_section():
-    # The helper MUST acquire _CANCEL_LOCK exactly once and perform both
-    # the bucket lookup and the pending-stash inside that block. Two
-    # acquisitions reintroduce the TOCTOU race.
     fn = _find_function("_cancel_by_cancel_id_or_stash")
     assert _count_with_cancel_lock_blocks(fn) == 1, (
         "_cancel_by_cancel_id_or_stash must use exactly one `with "
@@ -82,14 +62,8 @@ def test_cancel_by_cancel_id_or_stash_is_single_lock_critical_section():
         "the TOCTOU race with _TrackedCancel.__enter__"
     )
     src = ast.unparse(fn)
-    assert "_CANCEL_REGISTRY.get(cancel_id)" in src, (
-        "_cancel_by_cancel_id_or_stash must look up the registry bucket "
-        "for the supplied cancel_id under the lock"
-    )
-    assert "_PENDING_CANCELS[cancel_id]" in src, (
-        "_cancel_by_cancel_id_or_stash must stash into _PENDING_CANCELS "
-        "when the registry miss path is taken"
-    )
+    assert "_CANCEL_REGISTRY.get(cancel_id)" in src
+    assert "_PENDING_CANCELS[cancel_id]" in src
 
 
 def test_tracked_cancel_enter_registers_and_consumes_pending_under_one_lock():
@@ -99,16 +73,13 @@ def test_tracked_cancel_enter_registers_and_consumes_pending_under_one_lock():
         if isinstance(n, ast.FunctionDef) and n.name == "__enter__":
             enter = n
             break
-    assert enter is not None, "_TrackedCancel.__enter__ missing"
-    # Exactly one `with _CANCEL_LOCK:` block inside __enter__.
+    assert enter is not None
     assert _count_with_cancel_lock_blocks(enter) == 1, (
         "_TrackedCancel.__enter__ must acquire _CANCEL_LOCK exactly once. "
-        "A second acquisition for the pending-consume step lets a "
-        "concurrent cancel POST stash after consume sees an empty map, "
-        "silently dropping the cancel"
+        "A second acquisition for consume-pending lets a concurrent "
+        "cancel POST stash after consume sees an empty map, silently "
+        "dropping the cancel"
     )
-    # The single critical section must both insert into the registry
-    # AND pop from _PENDING_CANCELS.
     with_block = None
     for sub in ast.walk(enter):
         if isinstance(sub, ast.With) and any(
@@ -119,32 +90,22 @@ def test_tracked_cancel_enter_registers_and_consumes_pending_under_one_lock():
             break
     assert with_block is not None
     block_src = "\n".join(ast.unparse(s) for s in with_block.body)
-    assert "_CANCEL_REGISTRY.setdefault" in block_src, (
-        "__enter__ critical section must insert into _CANCEL_REGISTRY"
-    )
+    assert "_CANCEL_REGISTRY.setdefault" in block_src
     assert "_PENDING_CANCELS.pop" in block_src, (
         "__enter__ critical section must consume from _PENDING_CANCELS "
-        "(pop) inside the same lock, not in a later re-acquisition"
+        "inside the same lock, not a later re-acquisition"
     )
 
 
 def test_cancel_inference_uses_atomic_helper_for_cancel_id_path():
     fn = _find_function("cancel_inference")
     src = ast.unparse(fn)
-    # The cancel_id branch should route through the atomic helper.
-    assert "_cancel_by_cancel_id_or_stash" in src, (
-        "cancel_inference must route the cancel_id branch through "
-        "_cancel_by_cancel_id_or_stash so lookup + stash are atomic"
-    )
-    # The pre-fix idiom must be gone.
+    assert "_cancel_by_cancel_id_or_stash" in src
+    # The pre-fix two-step idiom must be gone.
     assert "_remember_pending_cancel(cancel_id)" not in src, (
-        "cancel_inference must not call _remember_pending_cancel after a "
-        "separate _cancel_by_keys([cancel_id]) lookup; that is the "
-        "two-step pattern that produced the TOCTOU race"
+        "two-step _cancel_by_keys + _remember_pending_cancel produced "
+        "the TOCTOU race and must not return"
     )
-
-
-# ── Runtime parallel stress ─────────────────────────────────────────
 
 
 _WANTED = {
@@ -187,9 +148,6 @@ def _load_registry_module():
 
 
 def test_parallel_cancel_vs_register_never_drops():
-    # Race cancel_by_cancel_id_or_stash against _TrackedCancel.__enter__
-    # in separate threads with randomized start order. A dropped event
-    # means the TOCTOU race is reintroduced.
     m = _load_registry_module()
     trials = 500
     dropped = 0
@@ -209,9 +167,7 @@ def test_parallel_cancel_vs_register_never_drops():
             start.wait()
             tracker.__enter__()
 
-        t1 = threading.Thread(target=do_cancel)
-        t2 = threading.Thread(target=do_enter)
-        threads = [t1, t2]
+        threads = [threading.Thread(target=do_cancel), threading.Thread(target=do_enter)]
         random.shuffle(threads)
         for t in threads:
             t.start()
@@ -226,44 +182,33 @@ def test_parallel_cancel_vs_register_never_drops():
 
     assert dropped == 0, (
         f"TOCTOU regression: {dropped}/{trials} parallel trials silently "
-        f"dropped the cancel -- atomic helper may have been split again"
+        f"dropped the cancel"
     )
 
 
 def test_cancel_before_register_replays_atomically():
-    # Sequential scenario that MUST be handled by the atomic helper:
-    # the cancel arrives first, registers a pending entry, and the
-    # subsequent __enter__ replays it.
     m = _load_registry_module()
     cid = "early-cid"
     ev = threading.Event()
     tracker = m["_TrackedCancel"](ev, cid, "thread-x")
 
-    n = m["_cancel_by_cancel_id_or_stash"](cid)
-    assert n == 0, "cancel before registration should return 0 (nothing to signal)"
-    assert cid in m["_PENDING_CANCELS"], "helper must stash the cancel_id"
+    assert m["_cancel_by_cancel_id_or_stash"](cid) == 0
+    assert cid in m["_PENDING_CANCELS"]
 
     tracker.__enter__()
-    assert ev.is_set(), "subsequent __enter__ must replay the pending cancel"
-    assert cid not in m["_PENDING_CANCELS"], (
-        "pending entry must be consumed by __enter__ (one-shot replay)"
-    )
+    assert ev.is_set()
+    assert cid not in m["_PENDING_CANCELS"]
     tracker.__exit__(None, None, None)
 
 
 def test_cancel_after_register_signals_without_stash():
-    # Converse: cancel arriving after registration must signal the
-    # registered event and must NOT leave a pending entry behind.
     m = _load_registry_module()
     cid = "post-cid"
     ev = threading.Event()
     tracker = m["_TrackedCancel"](ev, cid, "thread-y")
     tracker.__enter__()
 
-    n = m["_cancel_by_cancel_id_or_stash"](cid)
-    assert n == 1
+    assert m["_cancel_by_cancel_id_or_stash"](cid) == 1
     assert ev.is_set()
-    assert cid not in m["_PENDING_CANCELS"], (
-        "post-registration cancel must signal directly, not stash"
-    )
+    assert cid not in m["_PENDING_CANCELS"]
     tracker.__exit__(None, None, None)
