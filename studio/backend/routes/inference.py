@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+from starlette.background import BackgroundTask
 from typing import Optional
 import json
 import httpx
@@ -128,7 +129,7 @@ studio_router = APIRouter()
 # Routed separately from request.is_disconnected() polling because
 # some proxies (e.g. Colab's) do not propagate client-side fetch
 # aborts, so the backend never observes disconnect.
-_CANCEL_REGISTRY: dict = {}
+_CANCEL_REGISTRY: dict[str, set[threading.Event]] = {}
 _CANCEL_LOCK = threading.Lock()
 
 
@@ -160,15 +161,13 @@ class _TrackedCancel:
 
 def _cancel_by_keys(keys) -> int:
     """Set cancel_event for matching registry entries. Returns count set."""
-    events: set = set()
+    if not keys:
+        return 0
+    events: set[threading.Event] = set()
     with _CANCEL_LOCK:
-        if keys:
-            for k in keys:
-                bucket = _CANCEL_REGISTRY.get(k)
-                if bucket:
-                    events.update(bucket)
-        else:
-            for bucket in _CANCEL_REGISTRY.values():
+        for k in keys:
+            bucket = _CANCEL_REGISTRY.get(k)
+            if bucket:
                 events.update(bucket)
     for ev in events:
         ev.set()
@@ -677,7 +676,7 @@ async def cancel_inference(
         body = {}
 
     keys = []
-    for k in ("session_id", "completion_id"):
+    for k in ("cancel_id", "session_id", "completion_id"):
         v = body.get(k)
         if isinstance(v, str) and v:
             keys.append(v)
@@ -1381,11 +1380,11 @@ async def openai_chat_completions(
 
             _tool_sentinel = object()
 
-            _cancel_keys = (payload.session_id, completion_id)
+            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker.__enter__()
 
             async def gguf_tool_stream():
-                _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
-                _tracker.__enter__()
                 try:
                     first_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -1514,8 +1513,6 @@ async def openai_chat_completions(
                         },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
-                finally:
-                    _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
                 gguf_tool_stream(),
@@ -1525,6 +1522,7 @@ async def openai_chat_completions(
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
                 },
+                background = BackgroundTask(_tracker.__exit__, None, None, None),
             )
 
         # ── Standard GGUF path (no tools) ─────────────────────
@@ -1547,11 +1545,11 @@ async def openai_chat_completions(
         _gguf_sentinel = object()
 
         if payload.stream:
-            _cancel_keys_nt = (payload.session_id, completion_id)
+            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker.__enter__()
 
             async def gguf_stream_chunks():
-                _tracker_nt = _TrackedCancel(cancel_event, *_cancel_keys_nt)
-                _tracker_nt.__enter__()
                 try:
                     # First chunk: role
                     first_chunk = ChatCompletionChunk(
@@ -1657,8 +1655,6 @@ async def openai_chat_completions(
                         },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
-                finally:
-                    _tracker_nt.__exit__(None, None, None)
 
             return StreamingResponse(
                 gguf_stream_chunks(),
@@ -1668,6 +1664,7 @@ async def openai_chat_completions(
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
                 },
+                background = BackgroundTask(_tracker.__exit__, None, None, None),
             )
         else:
             try:
@@ -1758,11 +1755,11 @@ async def openai_chat_completions(
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
-        _cancel_keys_std = (payload.session_id, completion_id)
+        _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+        _tracker.__enter__()
 
         async def stream_chunks():
-            _tracker_std = _TrackedCancel(cancel_event, *_cancel_keys_std)
-            _tracker_std.__enter__()
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -1843,8 +1840,6 @@ async def openai_chat_completions(
                     },
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
-            finally:
-                _tracker_std.__exit__(None, None, None)
 
         return StreamingResponse(
             stream_chunks(),
@@ -1854,6 +1849,7 @@ async def openai_chat_completions(
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
             },
+            background = BackgroundTask(_tracker.__exit__, None, None, None),
         )
 
     # ── Non-streaming response ────────────────────────────────────

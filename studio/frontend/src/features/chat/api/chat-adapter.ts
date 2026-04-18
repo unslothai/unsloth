@@ -696,18 +696,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const toolCallParts: ToolCallMessagePart[] = [];
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
+      // Per-run cancellation token. Scoped to this single generation so a
+      // delayed stop POST cannot match the next run on the same thread.
+      const cancelId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
       // Some proxies (e.g. Colab) do not propagate fetch aborts to the
       // backend, so request.is_disconnected() never fires server-side
       // and the tool-loop keeps running. Explicitly POST /inference/cancel
       // on abort so the backend can signal its cancel_event.
       const onAbortCancel = () => {
-        // Missing thread id must not be interpreted as "cancel everything"
-        // on the backend. Skip the POST rather than sending an empty body.
-        if (!resolvedThreadId) return;
+        const body: Record<string, string> = { cancel_id: cancelId };
+        if (resolvedThreadId) body.session_id = resolvedThreadId;
         authFetch("/api/inference/cancel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: resolvedThreadId }),
+          body: JSON.stringify(body),
           keepalive: true,
         }).catch(() => {});
       };
@@ -733,6 +739,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            cancel_id: cancelId,
             ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
