@@ -146,10 +146,7 @@ def test_background_task_is_imported():
     tree = ast.parse(SRC)
     imported = False
     for node in tree.body:
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "starlette.background"
-        ):
+        if isinstance(node, ast.ImportFrom) and node.module == "starlette.background":
             for alias in node.names:
                 if alias.name == "BackgroundTask":
                     imported = True

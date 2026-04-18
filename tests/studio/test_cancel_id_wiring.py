@@ -59,10 +59,7 @@ def test_cancel_route_accepts_cancel_id_as_first_key():
     # The cancel endpoint must try cancel_id first; session_id/completion_id
     # are broader / fallback keys.
     for node in ast.walk(ast.parse(ROUTES_SRC)):
-        if (
-            isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "cancel_inference"
-        ):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
             break
     else:
         raise AssertionError("cancel_inference handler missing")
@@ -87,9 +84,9 @@ def test_cancel_route_accepts_cancel_id_as_first_key():
 
 
 def test_frontend_request_type_has_cancel_id():
-    assert re.search(r"cancel_id\?\s*:\s*string\s*;", API_TYPES_SRC), (
-        "OpenAIChatCompletionsRequest must expose an optional cancel_id"
-    )
+    assert re.search(
+        r"cancel_id\?\s*:\s*string\s*;", API_TYPES_SRC
+    ), "OpenAIChatCompletionsRequest must expose an optional cancel_id"
 
 
 def test_chat_adapter_generates_cancel_id_per_run():
@@ -99,9 +96,9 @@ def test_chat_adapter_generates_cancel_id_per_run():
     )
     assert m, "chat-adapter.ts must declare a per-run `cancelId` constant"
     rhs = m.group(1)
-    assert "randomUUID" in rhs, (
-        "cancelId should prefer crypto.randomUUID() for uniqueness"
-    )
+    assert (
+        "randomUUID" in rhs
+    ), "cancelId should prefer crypto.randomUUID() for uniqueness"
 
 
 def test_chat_adapter_sends_cancel_id_in_completion_payload():
