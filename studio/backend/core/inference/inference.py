@@ -11,7 +11,9 @@ from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import json
+import os
 import sys
+import time
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
@@ -222,6 +224,21 @@ class InferenceBackend:
         self.default_models = get_default_models()
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
+        from core.wiki.manager import WikiManager
+        from core.wiki.ingestor import WikiIngestor
+        from pathlib import Path
+        self.vault_root = Path("/tmp/unsloth_wiki")
+        self.wiki_manager = WikiManager.create(self.vault_root, self._wiki_llm_fn)
+        self.wiki_ingestor = WikiIngestor(self.wiki_manager, self.vault_root / "raw")
+        # Wiki watcher lifecycle is owned by FastAPI app lifespan in main.py.
+        # Keeping it centralized prevents duplicate ingestion from multiple observers.
+        self.wiki_watcher = None
+        self._chat_history_flush_seconds = max(
+            0,
+            int(os.getenv("UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS", "600")),
+        )
+        self._pending_chat_history_blocks: list[str] = []
+        self._chat_history_buffer_started_at: Optional[float] = None
 
         # Thread safety — _generation_lock serializes model.generate() calls.
         # Must be a regular Lock (NOT RLock) because in async FastAPI, multiple
@@ -232,6 +249,7 @@ class InferenceBackend:
 
         self._generation_lock = threading.Lock()
         self._model_state_lock = threading.Lock()
+        self._chat_history_lock = threading.Lock()
 
         logger.info(f"InferenceBackend initialized on {self.device}")
 
@@ -968,6 +986,25 @@ class InferenceBackend:
             ] + messages
         else:
             template_messages = messages
+
+        # --- RAG Injection ---
+        rag_context = self._get_rag_context(messages[-1]["content"] if messages else "")
+        if rag_context:
+            logger.info("Injecting RAG context into prompt")
+            context_message = {
+                "role": "system",
+                "content": f"Use the following context to help answer the user's request:\n\n{rag_context}"
+            }
+            # Insert context after system prompt if it exists, or at the beginning
+            if system_prompt:
+                template_messages.insert(1, context_message)
+            else:
+                template_messages.insert(0, context_message)
+
+        # Save history for future RAG
+        self._save_chat_history_to_wiki(messages)
+        # ---------------------
+
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -2104,9 +2141,88 @@ class InferenceBackend:
                 f"No built-in chat template for {model_name}, will use generic formatting"
             )
 
-    def get_current_model(self) -> Optional[str]:
-        """Get currently active model name"""
-        return self.active_model_name
+    def _get_rag_context(self, query: str) -> str:
+        """
+        Retrieves relevant wiki snippets for the user query.
+        This path is retrieval-first and does not depend on the wiki LLM answer path.
+        """
+        if not self.wiki_manager:
+            return ""
+        try:
+            result = self.wiki_manager.retrieve_context(query)
+            blocks = result.get("context_blocks", [])
+            if not blocks:
+                return ""
+
+            context_parts = []
+            for block in blocks:
+                page = block.get("page", "unknown")
+                score = block.get("score", 0.0)
+                content = block.get("content", "")
+                context_parts.append(
+                    f"PAGE: {page}\n"
+                    f"SCORE: {score:.4f}\n"
+                    f"CONTENT:\n{content}"
+                )
+
+            return "\n\n---\n\n".join(context_parts)
+        except Exception as e:
+            logger.error(f"Error querying RAG context: {e}")
+            return ""
+
+    def _wiki_llm_fn(self, prompt: str) -> str:
+        """
+        Fallback LLM function for WikiManager to summarize/process content.
+        In a real implementation, this would call a model.
+        For now, we return the prompt itself or a placeholder.
+        """
+        logger.info(f"Wiki LLM function called with prompt: {prompt[:100]}...")
+        return prompt
+
+    def _save_chat_history_to_wiki(self, messages: list) -> None:
+        """
+        Buffers chat snapshots and flushes to disk on a cadence (default 10 minutes).
+        """
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            lines = [f"## Chat Snapshot - {timestamp}\n"]
+            for msg in messages:
+                role = msg.get("role", "unknown").capitalize()
+                content = msg.get("content", "").strip()
+                if content:
+                    lines.append(f"### {role}\n{content}\n")
+            block = "\n".join(lines).strip()
+
+            now = time.time()
+            with self._chat_history_lock:
+                self._pending_chat_history_blocks.append(block)
+                if self._chat_history_buffer_started_at is None:
+                    self._chat_history_buffer_started_at = now
+
+                should_flush = self._chat_history_flush_seconds == 0
+                if (
+                    self._chat_history_buffer_started_at is not None
+                    and not should_flush
+                    and (now - self._chat_history_buffer_started_at)
+                    >= self._chat_history_flush_seconds
+                ):
+                    should_flush = True
+
+                if not should_flush:
+                    return
+
+                filename = f"chat_history_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                file_path = self.vault_root / "raw" / filename
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                content = "# Chat History Batch\n\n" + "\n\n---\n\n".join(self._pending_chat_history_blocks)
+                file_path.write_text(content, encoding="utf-8")
+                self._pending_chat_history_blocks.clear()
+                self._chat_history_buffer_started_at = None
+                logger.info(f"Saved buffered chat history to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save chat history to wiki: {e}")
+
 
     def is_model_loading(self) -> bool:
         """Check if any model is currently loading"""

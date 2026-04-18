@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: ["v1", "v2", "v3", "main"]
+  pull_request:
+    branches: ["v1", "v2", "v3", "main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[mcp,pdf,watch]"
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -q --tb=short
+
+      - name: Verify install works end-to-end
+        run: |
+          graphify --help
+          graphify install

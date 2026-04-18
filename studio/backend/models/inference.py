@@ -444,3 +444,205 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+
+
+class RagContextDebugRequest(BaseModel):
+    """Request payload for previewing wiki/RAG context selection."""
+
+    query: str = Field(..., min_length = 1, description = "User query to inspect")
+    include_pending_raw: bool = Field(
+        True,
+        description = "Ingest pending files from raw/ before retrieval",
+    )
+    max_pages: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 32,
+        description = "Optional override for max context pages",
+    )
+    max_chars_per_page: Optional[int] = Field(
+        None,
+        ge = 200,
+        le = 12000,
+        description = "Optional override for max chars per selected page",
+    )
+    max_total_chars: Optional[int] = Field(
+        None,
+        ge = 500,
+        le = 30000,
+        description = "Optional override for max total context characters",
+    )
+
+
+class RagContextSnippet(BaseModel):
+    """One selected page/snippet in a debug context response."""
+
+    page: str
+    score: float
+    snippet: str
+
+
+class RagContextDebugResponse(BaseModel):
+    """Debug details for selected wiki/RAG context."""
+
+    query: str
+    source: Literal["live-query", "last-request"]
+    wants_history: bool
+    context: str
+    context_characters: int
+    pages_considered: int
+    selected: list[RagContextSnippet]
+    applied_limits: Dict[str, int]
+    generated_at: str
+
+
+class WikiArchiveRequest(BaseModel):
+    """Archive stale wiki source pages while keeping recent canonical pages."""
+
+    dry_run: bool = Field(
+        False,
+        description = "If true, only report files that would be moved",
+    )
+    keep_recent_chat: int = Field(
+        16,
+        ge = 0,
+        le = 500,
+        description = "How many latest chat-history pages to keep",
+    )
+    keep_recent_per_source: int = Field(
+        1,
+        ge = 1,
+        le = 10,
+        description = "How many newest pages to keep per source_ref bucket",
+    )
+
+
+class WikiArchiveResponse(BaseModel):
+    """Result of a stale wiki source archival operation."""
+
+    dry_run: bool
+    archive_dir: str
+    moved_count: int
+    moved_sources: list[str]
+    moved_raw: list[str]
+    errors: list[str]
+
+
+class WikiIngestRequest(BaseModel):
+    """Request payload for manual wiki ingestion operations."""
+
+    source_path: Optional[str] = Field(
+        None,
+        description = "Optional local file path to ingest",
+    )
+    max_pending_raw_files: int = Field(
+        8,
+        ge = 1,
+        le = 128,
+        description = "How many pending files to ingest from raw/ when source_path is not set",
+    )
+
+
+class WikiIngestResponse(BaseModel):
+    """Result of a manual wiki ingestion operation."""
+
+    status: str
+    processed_files: int
+    results: list[Dict[str, Any]]
+
+
+class WikiEnrichRequest(BaseModel):
+    """Request payload for index-driven enrichment of analysis pages."""
+
+    dry_run: bool = Field(
+        False,
+        description = "If true, report changes without writing files",
+    )
+    max_analysis_pages: int = Field(
+        64,
+        ge = 1,
+        le = 1000,
+        description = "Maximum number of analysis pages to scan",
+    )
+    fill_gaps_from_web: bool = Field(
+        False,
+        description = "If true, use lint missing-concept gaps and web search to draft concept pages before enrichment",
+    )
+    max_web_gap_queries: int = Field(
+        4,
+        ge = 1,
+        le = 100,
+        description = "Maximum number of lint gaps to search on the web during one enrich run",
+    )
+
+
+class WikiEnrichResponse(BaseModel):
+    """Result of enriching wiki analysis pages."""
+
+    status: str
+    dry_run: bool
+    scanned_pages: int
+    updated_pages: int
+    changes: list[Dict[str, Any]]
+    web_gap_fill: Dict[str, Any]
+
+
+class WikiRetryFallbackRequest(BaseModel):
+    """Request payload for retrying fallback-generated analysis pages."""
+
+    dry_run: bool = Field(
+        False,
+        description = "If true, report retry outcomes without writing new analysis pages",
+    )
+    max_analysis_pages: int = Field(
+        24,
+        ge = 1,
+        le = 1000,
+        description = "Maximum number of recent analysis pages to inspect for fallback retries",
+    )
+
+
+class WikiRetryFallbackResponse(BaseModel):
+    """Result of retrying fallback-generated analysis pages."""
+
+    status: str
+    dry_run: bool
+    scanned_pages: int
+    fallback_pages_found: int
+    retried_pages: int
+    regenerated_pages: int
+    fallback_still: int
+    skipped_no_question: int
+    errors: list[str]
+    results: list[Dict[str, Any]]
+
+
+class WikiQueryRequest(BaseModel):
+    """Request payload for querying the maintained wiki."""
+
+    question: str = Field(..., min_length = 1)
+    save_answer: bool = Field(
+        True,
+        description = "Whether to file the answer into wiki/analysis",
+    )
+
+
+class WikiQueryResponse(BaseModel):
+    """Result of a wiki query operation."""
+
+    status: str
+    answer: str
+    answer_page: Optional[str]
+    context_pages: list[str]
+
+
+class WikiLintResponse(BaseModel):
+    """Health report for the maintained wiki."""
+
+    status: str
+    orphans: list[str]
+    stale_pages: list[Dict[str, Any]]
+    broken_links: list[Dict[str, str]]
+    missing_concepts: list[str]
+    low_coverage_sources: list[str]
+    total_pages: int

@@ -248,6 +248,10 @@ def run_server(
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
+    wiki_watcher: bool | None = None,
+    wiki_auto_query: bool | None = None,
+    wiki_lint_every: int | None = None,
+    wiki_auto_query_chat_history: bool | None = None,
 ):
     """
     Start the FastAPI server.
@@ -281,6 +285,21 @@ def run_server(
     from threading import Thread, Event
     import time
     import uvicorn
+
+    # Allow CLI to override wiki watcher startup behavior.
+    # If not provided, main.py uses its own default.
+    if wiki_watcher is not None:
+        os.environ["UNSLOTH_WIKI_WATCHER"] = "true" if wiki_watcher else "false"
+    if wiki_auto_query is not None:
+        os.environ["UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST"] = (
+            "true" if wiki_auto_query else "false"
+        )
+    if wiki_auto_query_chat_history is not None:
+        os.environ["UNSLOTH_WIKI_AUTO_QUERY_CHAT_HISTORY"] = (
+            "true" if wiki_auto_query_chat_history else "false"
+        )
+    if wiki_lint_every is not None:
+        os.environ["UNSLOTH_WIKI_AUTO_LINT_EVERY"] = str(max(0, int(wiki_lint_every)))
 
     from main import app, setup_frontend
     from utils.paths import ensure_studio_directories
@@ -380,10 +399,70 @@ if __name__ == "__main__":
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    watcher_group = parser.add_mutually_exclusive_group()
+    watcher_group.add_argument(
+        "--wiki-watcher",
+        dest = "wiki_watcher",
+        action = "store_true",
+        help = "Enable wiki raw-folder watcher at startup",
+    )
+    watcher_group.add_argument(
+        "--no-wiki-watcher",
+        dest = "wiki_watcher",
+        action = "store_false",
+        help = "Disable wiki raw-folder watcher at startup",
+    )
+
+    auto_query_group = parser.add_mutually_exclusive_group()
+    auto_query_group.add_argument(
+        "--wiki-auto-query",
+        dest = "wiki_auto_query",
+        action = "store_true",
+        help = "Run wiki analysis query automatically after each ingested raw file",
+    )
+    auto_query_group.add_argument(
+        "--no-wiki-auto-query",
+        dest = "wiki_auto_query",
+        action = "store_false",
+        help = "Disable auto wiki analysis queries after ingest",
+    )
+
+    auto_query_chat_group = parser.add_mutually_exclusive_group()
+    auto_query_chat_group.add_argument(
+        "--wiki-auto-query-chat-history",
+        dest = "wiki_auto_query_chat_history",
+        action = "store_true",
+        help = "Include chat_history_* raw files in auto wiki analysis queries",
+    )
+    auto_query_chat_group.add_argument(
+        "--no-wiki-auto-query-chat-history",
+        dest = "wiki_auto_query_chat_history",
+        action = "store_false",
+        help = "Exclude chat_history_* raw files from auto wiki analysis queries",
+    )
+
+    parser.add_argument(
+        "--wiki-lint-every",
+        type = int,
+        default = None,
+        help = "Run wiki lint after this many auto analyses/queries (0 disables auto lint)",
+    )
+
+    parser.set_defaults(wiki_watcher = None)
+    parser.set_defaults(wiki_auto_query = None)
+    parser.set_defaults(wiki_auto_query_chat_history = None)
 
     args = parser.parse_args()
 
-    kwargs = dict(host = args.host, port = args.port, silent = args.silent)
+    kwargs = dict(
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        wiki_watcher = args.wiki_watcher,
+        wiki_auto_query = args.wiki_auto_query,
+        wiki_lint_every = args.wiki_lint_every,
+        wiki_auto_query_chat_history = args.wiki_auto_query_chat_history,
+    )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
 

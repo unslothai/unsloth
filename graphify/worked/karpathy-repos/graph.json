@@ -1,0 +1,3999 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "__init__.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/__init__.py",
+      "source_location": "L1",
+      "community": 10,
+      "id": "init"
+    },
+    {
+      "label": "engine.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L1",
+      "community": 5,
+      "id": "engine"
+    },
+    {
+      "label": "Value",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L2",
+      "community": 5,
+      "id": "engine_value"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L5",
+      "community": 5,
+      "id": "engine_value_init"
+    },
+    {
+      "label": ".__add__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L13",
+      "community": 5,
+      "id": "engine_value_add"
+    },
+    {
+      "label": ".__mul__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L24",
+      "community": 5,
+      "id": "engine_value_mul"
+    },
+    {
+      "label": ".__pow__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L35",
+      "community": 5,
+      "id": "engine_value_pow"
+    },
+    {
+      "label": ".relu()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L45",
+      "community": 5,
+      "id": "engine_value_relu"
+    },
+    {
+      "label": ".backward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L54",
+      "community": 5,
+      "id": "engine_value_backward"
+    },
+    {
+      "label": ".__neg__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L72",
+      "community": 5,
+      "id": "engine_value_neg"
+    },
+    {
+      "label": ".__radd__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L75",
+      "community": 5,
+      "id": "engine_value_radd"
+    },
+    {
+      "label": ".__sub__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L78",
+      "community": 5,
+      "id": "engine_value_sub"
+    },
+    {
+      "label": ".__rsub__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L81",
+      "community": 5,
+      "id": "engine_value_rsub"
+    },
+    {
+      "label": ".__rmul__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L84",
+      "community": 5,
+      "id": "engine_value_rmul"
+    },
+    {
+      "label": ".__truediv__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L87",
+      "community": 5,
+      "id": "engine_value_truediv"
+    },
+    {
+      "label": ".__rtruediv__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L90",
+      "community": 5,
+      "id": "engine_value_rtruediv"
+    },
+    {
+      "label": ".__repr__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L93",
+      "community": 5,
+      "id": "engine_value_repr"
+    },
+    {
+      "label": "nn.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L1",
+      "community": 3,
+      "id": "nn"
+    },
+    {
+      "label": "Module",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L4",
+      "community": 3,
+      "id": "nn_module"
+    },
+    {
+      "label": ".zero_grad()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L6",
+      "community": 3,
+      "id": "nn_module_zero_grad"
+    },
+    {
+      "label": ".parameters()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L10",
+      "community": 3,
+      "id": "nn_module_parameters"
+    },
+    {
+      "label": "Neuron",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L13",
+      "community": 3,
+      "id": "nn_neuron"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L15",
+      "community": 3,
+      "id": "nn_neuron_init"
+    },
+    {
+      "label": ".__call__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L20",
+      "community": 3,
+      "id": "nn_neuron_call"
+    },
+    {
+      "label": ".parameters()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L24",
+      "community": 3,
+      "id": "nn_neuron_parameters"
+    },
+    {
+      "label": ".__repr__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L27",
+      "community": 3,
+      "id": "nn_neuron_repr"
+    },
+    {
+      "label": "Layer",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L30",
+      "community": 3,
+      "id": "nn_layer"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L32",
+      "community": 3,
+      "id": "nn_layer_init"
+    },
+    {
+      "label": ".__call__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L35",
+      "community": 3,
+      "id": "nn_layer_call"
+    },
+    {
+      "label": ".parameters()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L39",
+      "community": 3,
+      "id": "nn_layer_parameters"
+    },
+    {
+      "label": ".__repr__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L42",
+      "community": 3,
+      "id": "nn_layer_repr"
+    },
+    {
+      "label": "MLP",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L45",
+      "community": 3,
+      "id": "nn_mlp"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L47",
+      "community": 3,
+      "id": "nn_mlp_init"
+    },
+    {
+      "label": ".__call__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L51",
+      "community": 3,
+      "id": "nn_mlp_call"
+    },
+    {
+      "label": ".parameters()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L56",
+      "community": 3,
+      "id": "nn_mlp_parameters"
+    },
+    {
+      "label": ".__repr__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L59",
+      "community": 3,
+      "id": "nn_mlp_repr"
+    },
+    {
+      "community": 3,
+      "id": "random"
+    },
+    {
+      "community": 3,
+      "id": "micrograd_engine"
+    },
+    {
+      "label": "setup.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/setup.py",
+      "source_location": "L1",
+      "community": 9,
+      "id": "setup"
+    },
+    {
+      "community": 9,
+      "id": "setuptools"
+    },
+    {
+      "label": "test_engine.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L1",
+      "community": 1,
+      "id": "test_engine"
+    },
+    {
+      "label": "test_sanity_check()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L4",
+      "community": 1,
+      "id": "test_engine_test_sanity_check"
+    },
+    {
+      "label": "test_more_ops()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L28",
+      "community": 1,
+      "id": "test_engine_test_more_ops"
+    },
+    {
+      "community": 1,
+      "id": "torch"
+    },
+    {
+      "label": "bpe.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L1",
+      "community": 4,
+      "id": "bpe"
+    },
+    {
+      "label": "bytes_to_unicode()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L20",
+      "community": 4,
+      "id": "bpe_bytes_to_unicode"
+    },
+    {
+      "label": "get_pairs()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L51",
+      "community": 4,
+      "id": "bpe_get_pairs"
+    },
+    {
+      "label": "Encoder",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L62",
+      "community": 4,
+      "id": "bpe_encoder"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L64",
+      "community": 4,
+      "id": "bpe_encoder_init"
+    },
+    {
+      "label": ".bpe()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L95",
+      "community": 4,
+      "id": "bpe_encoder_bpe"
+    },
+    {
+      "label": ".encode()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L161",
+      "community": 4,
+      "id": "bpe_encoder_encode"
+    },
+    {
+      "label": ".encode_and_show_work()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L180",
+      "community": 4,
+      "id": "bpe_encoder_encode_and_show_work"
+    },
+    {
+      "label": ".decode()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L205",
+      "community": 4,
+      "id": "bpe_encoder_decode"
+    },
+    {
+      "label": "get_file()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L216",
+      "community": 4,
+      "id": "bpe_get_file"
+    },
+    {
+      "label": "get_encoder()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L223",
+      "community": 4,
+      "id": "bpe_get_encoder"
+    },
+    {
+      "label": "BPETokenizer",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L257",
+      "community": 4,
+      "id": "bpe_bpetokenizer"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L260",
+      "community": 4,
+      "id": "bpe_bpetokenizer_init"
+    },
+    {
+      "label": ".__call__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L263",
+      "community": 4,
+      "id": "bpe_bpetokenizer_call"
+    },
+    {
+      "label": ".decode()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L274",
+      "community": 4,
+      "id": "bpe_bpetokenizer_decode"
+    },
+    {
+      "community": 2,
+      "id": "os"
+    },
+    {
+      "community": 6,
+      "id": "json"
+    },
+    {
+      "community": 4,
+      "id": "regex"
+    },
+    {
+      "community": 2,
+      "id": "requests"
+    },
+    {
+      "label": "model.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L1",
+      "community": 0,
+      "id": "model"
+    },
+    {
+      "label": "NewGELU",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L21",
+      "community": 0,
+      "id": "model_newgelu"
+    },
+    {
+      "label": ".forward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L26",
+      "community": 0,
+      "id": "model_newgelu_forward"
+    },
+    {
+      "label": "CausalSelfAttention",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L29",
+      "community": 0,
+      "id": "model_causalselfattention"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L31",
+      "community": 0,
+      "id": "model_causalselfattention_init"
+    },
+    {
+      "label": ".forward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L52",
+      "community": 0,
+      "id": "model_causalselfattention_forward"
+    },
+    {
+      "label": "Block",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L94",
+      "community": 0,
+      "id": "model_block"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L96",
+      "community": 0,
+      "id": "model_block_init"
+    },
+    {
+      "label": ".forward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L103",
+      "community": 0,
+      "id": "model_block_forward"
+    },
+    {
+      "label": "GPT",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L118",
+      "community": 0,
+      "id": "model_gpt"
+    },
+    {
+      "label": "get_default_config()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L99",
+      "community": 0,
+      "id": "model_get_default_config"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L120",
+      "community": 0,
+      "id": "model_gpt_init"
+    },
+    {
+      "label": "._init_weights()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L162",
+      "community": 0,
+      "id": "model_gpt_init_weights"
+    },
+    {
+      "label": "from_pretrained()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L207",
+      "community": 0,
+      "id": "model_from_pretrained"
+    },
+    {
+      "label": ".configure_optimizers()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L263",
+      "community": 0,
+      "id": "model_gpt_configure_optimizers"
+    },
+    {
+      "label": ".forward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L170",
+      "community": 0,
+      "id": "model_gpt_forward"
+    },
+    {
+      "label": "generate()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L306",
+      "community": 0,
+      "id": "model_generate"
+    },
+    {
+      "community": 2,
+      "id": "math"
+    },
+    {
+      "community": 0,
+      "id": "torch_nn"
+    },
+    {
+      "community": 1,
+      "id": "mingpt_utils"
+    },
+    {
+      "label": "trainer.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L1",
+      "community": 1,
+      "id": "trainer"
+    },
+    {
+      "label": "Trainer",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L13",
+      "community": 8,
+      "id": "trainer_trainer"
+    },
+    {
+      "label": "get_default_config()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L16",
+      "community": 1,
+      "id": "trainer_get_default_config"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L31",
+      "community": 8,
+      "id": "trainer_trainer_init"
+    },
+    {
+      "label": ".add_callback()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L51",
+      "community": 8,
+      "id": "trainer_trainer_add_callback"
+    },
+    {
+      "label": ".set_callback()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L54",
+      "community": 8,
+      "id": "trainer_trainer_set_callback"
+    },
+    {
+      "label": ".trigger_callbacks()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L57",
+      "community": 8,
+      "id": "trainer_trainer_trigger_callbacks"
+    },
+    {
+      "label": ".run()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L61",
+      "community": 8,
+      "id": "trainer_trainer_run"
+    },
+    {
+      "community": 2,
+      "id": "time"
+    },
+    {
+      "community": 1,
+      "id": "collections"
+    },
+    {
+      "community": 1,
+      "id": "torch_utils_data_dataloader"
+    },
+    {
+      "label": "utils.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L1",
+      "community": 6,
+      "id": "utils"
+    },
+    {
+      "label": "set_seed()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L13",
+      "community": 6,
+      "id": "utils_set_seed"
+    },
+    {
+      "label": "setup_logging()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L19",
+      "community": 6,
+      "id": "utils_setup_logging"
+    },
+    {
+      "label": "CfgNode",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L31",
+      "community": 6,
+      "id": "utils_cfgnode"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L37",
+      "community": 6,
+      "id": "utils_cfgnode_init"
+    },
+    {
+      "label": ".__str__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L40",
+      "community": 6,
+      "id": "utils_cfgnode_str"
+    },
+    {
+      "label": "._str_helper()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L43",
+      "community": 6,
+      "id": "utils_cfgnode_str_helper"
+    },
+    {
+      "label": ".to_dict()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L55",
+      "community": 6,
+      "id": "utils_cfgnode_to_dict"
+    },
+    {
+      "label": ".merge_from_dict()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L59",
+      "community": 6,
+      "id": "utils_cfgnode_merge_from_dict"
+    },
+    {
+      "label": ".merge_from_args()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L62",
+      "community": 6,
+      "id": "utils_cfgnode_merge_from_args"
+    },
+    {
+      "community": 6,
+      "id": "sys"
+    },
+    {
+      "community": 6,
+      "id": "ast"
+    },
+    {
+      "community": 6,
+      "id": "numpy"
+    },
+    {
+      "label": "adder.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L1",
+      "community": 1,
+      "id": "adder"
+    },
+    {
+      "label": "get_config()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L19",
+      "community": 1,
+      "id": "adder_get_config"
+    },
+    {
+      "label": "AdditionDataset",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L43",
+      "community": 7,
+      "id": "adder_additiondataset"
+    },
+    {
+      "label": "Dataset",
+      "file_type": "code",
+      "source_file": "",
+      "source_location": "",
+      "community": 7,
+      "id": "dataset"
+    },
+    {
+      "label": "get_default_config()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L69",
+      "community": 1,
+      "id": "adder_get_default_config"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L74",
+      "community": 7,
+      "id": "adder_additiondataset_init"
+    },
+    {
+      "label": ".get_vocab_size()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L88",
+      "community": 7,
+      "id": "adder_additiondataset_get_vocab_size"
+    },
+    {
+      "label": ".get_block_size()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L91",
+      "community": 7,
+      "id": "adder_additiondataset_get_block_size"
+    },
+    {
+      "label": ".__len__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L97",
+      "community": 7,
+      "id": "adder_additiondataset_len"
+    },
+    {
+      "label": ".__getitem__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L100",
+      "community": 7,
+      "id": "adder_additiondataset_getitem"
+    },
+    {
+      "label": "eval_split()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L145",
+      "community": 1,
+      "id": "adder_eval_split"
+    },
+    {
+      "label": "batch_end_callback()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L181",
+      "community": 1,
+      "id": "adder_batch_end_callback"
+    },
+    {
+      "community": 1,
+      "id": "torch_utils_data"
+    },
+    {
+      "community": 1,
+      "id": "mingpt_model"
+    },
+    {
+      "community": 1,
+      "id": "mingpt_trainer"
+    },
+    {
+      "label": "chargpt.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L1",
+      "community": 1,
+      "id": "chargpt"
+    },
+    {
+      "label": "get_config()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L18",
+      "community": 1,
+      "id": "chargpt_get_config"
+    },
+    {
+      "label": "CharDataset",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L42",
+      "community": 7,
+      "id": "chargpt_chardataset"
+    },
+    {
+      "label": "get_default_config()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L48",
+      "community": 1,
+      "id": "chargpt_get_default_config"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L53",
+      "community": 7,
+      "id": "chargpt_chardataset_init"
+    },
+    {
+      "label": ".get_vocab_size()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L65",
+      "community": 7,
+      "id": "chargpt_chardataset_get_vocab_size"
+    },
+    {
+      "label": ".get_block_size()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L68",
+      "community": 7,
+      "id": "chargpt_chardataset_get_block_size"
+    },
+    {
+      "label": ".__len__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L71",
+      "community": 7,
+      "id": "chargpt_chardataset_len"
+    },
+    {
+      "label": ".__getitem__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L74",
+      "community": 7,
+      "id": "chargpt_chardataset_getitem"
+    },
+    {
+      "label": "batch_end_callback()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L108",
+      "community": 1,
+      "id": "chargpt_batch_end_callback"
+    },
+    {
+      "label": "test_huggingface_import.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L1",
+      "community": 1,
+      "id": "test_huggingface_import"
+    },
+    {
+      "label": "TestHuggingFaceImport",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L12",
+      "community": 1,
+      "id": "test_huggingface_import_testhuggingfaceimport"
+    },
+    {
+      "label": ".test_gpt2()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L14",
+      "community": 1,
+      "id": "test_huggingface_import_testhuggingfaceimport_test_gpt2"
+    },
+    {
+      "community": 1,
+      "id": "unittest"
+    },
+    {
+      "community": 1,
+      "id": "transformers"
+    },
+    {
+      "community": 1,
+      "id": "mingpt_bpe"
+    },
+    {
+      "label": "bench.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L1",
+      "community": 2,
+      "id": "bench"
+    },
+    {
+      "label": "get_batch()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L37",
+      "community": 2,
+      "id": "bench_get_batch"
+    },
+    {
+      "community": 2,
+      "id": "contextlib"
+    },
+    {
+      "label": "eval_gpt2.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/eval_gpt2.py",
+      "source_location": "L1",
+      "community": 11,
+      "id": "eval_gpt2"
+    },
+    {
+      "label": "eval_gpt2_large.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/eval_gpt2_large.py",
+      "source_location": "L1",
+      "community": 12,
+      "id": "eval_gpt2_large"
+    },
+    {
+      "label": "eval_gpt2_medium.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/eval_gpt2_medium.py",
+      "source_location": "L1",
+      "community": 13,
+      "id": "eval_gpt2_medium"
+    },
+    {
+      "label": "eval_gpt2_xl.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/eval_gpt2_xl.py",
+      "source_location": "L1",
+      "community": 14,
+      "id": "eval_gpt2_xl"
+    },
+    {
+      "label": "finetune_shakespeare.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/finetune_shakespeare.py",
+      "source_location": "L1",
+      "community": 2,
+      "id": "finetune_shakespeare"
+    },
+    {
+      "label": "train_gpt2.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/train_gpt2.py",
+      "source_location": "L1",
+      "community": 15,
+      "id": "train_gpt2"
+    },
+    {
+      "label": "train_shakespeare_char.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/train_shakespeare_char.py",
+      "source_location": "L1",
+      "community": 16,
+      "id": "train_shakespeare_char"
+    },
+    {
+      "label": "configurator.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/configurator.py",
+      "source_location": "L1",
+      "community": 6,
+      "id": "configurator"
+    },
+    {
+      "label": "prepare.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L1",
+      "community": 2,
+      "id": "prepare"
+    },
+    {
+      "label": "process()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/openwebtext/prepare.py",
+      "source_location": "L43",
+      "community": 2,
+      "id": "prepare_process"
+    },
+    {
+      "community": 2,
+      "id": "tqdm"
+    },
+    {
+      "community": 2,
+      "id": "tiktoken"
+    },
+    {
+      "community": 2,
+      "id": "datasets"
+    },
+    {
+      "label": "encode()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L32",
+      "community": 2,
+      "id": "prepare_encode"
+    },
+    {
+      "label": "decode()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L34",
+      "community": 2,
+      "id": "prepare_decode"
+    },
+    {
+      "community": 2,
+      "id": "pickle"
+    },
+    {
+      "label": "LayerNorm",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L18",
+      "community": 0,
+      "id": "model_layernorm"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L21",
+      "community": 0,
+      "id": "model_layernorm_init"
+    },
+    {
+      "label": ".forward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L26",
+      "community": 0,
+      "id": "model_layernorm_forward"
+    },
+    {
+      "label": "MLP",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L78",
+      "community": 0,
+      "id": "model_mlp"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L80",
+      "community": 0,
+      "id": "model_mlp_init"
+    },
+    {
+      "label": ".forward()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L87",
+      "community": 0,
+      "id": "model_mlp_forward"
+    },
+    {
+      "label": "GPTConfig",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L109",
+      "community": 0,
+      "id": "model_gptconfig"
+    },
+    {
+      "label": ".get_num_params()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L150",
+      "community": 0,
+      "id": "model_gpt_get_num_params"
+    },
+    {
+      "label": ".crop_block_size()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L195",
+      "community": 0,
+      "id": "model_gpt_crop_block_size"
+    },
+    {
+      "label": ".estimate_mfu()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L289",
+      "community": 0,
+      "id": "model_gpt_estimate_mfu"
+    },
+    {
+      "community": 0,
+      "id": "inspect"
+    },
+    {
+      "community": 0,
+      "id": "dataclasses"
+    },
+    {
+      "label": "sample.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L1",
+      "community": 2,
+      "id": "sample"
+    },
+    {
+      "label": "train.py",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L1",
+      "community": 2,
+      "id": "train"
+    },
+    {
+      "label": "get_batch()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L116",
+      "community": 2,
+      "id": "train_get_batch"
+    },
+    {
+      "label": "estimate_loss()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L216",
+      "community": 2,
+      "id": "train_estimate_loss"
+    },
+    {
+      "label": "get_lr()",
+      "file_type": "code",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L231",
+      "community": 2,
+      "id": "train_get_lr"
+    },
+    {
+      "community": 2,
+      "id": "torch_nn_parallel"
+    },
+    {
+      "community": 2,
+      "id": "torch_distributed"
+    },
+    {
+      "community": 2,
+      "id": "wandb"
+    }
+  ],
+  "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_src": "engine",
+      "_tgt": "engine_value",
+      "source": "engine",
+      "target": "engine_value"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_init",
+      "source": "engine_value",
+      "target": "engine_value_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L14",
+      "weight": 0.8,
+      "_src": "engine_value_add",
+      "_tgt": "engine_value",
+      "source": "engine_value",
+      "target": "engine_value_add"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L25",
+      "weight": 0.8,
+      "_src": "engine_value_mul",
+      "_tgt": "engine_value",
+      "source": "engine_value",
+      "target": "engine_value_mul"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L37",
+      "weight": 0.8,
+      "_src": "engine_value_pow",
+      "_tgt": "engine_value",
+      "source": "engine_value",
+      "target": "engine_value_pow"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L46",
+      "weight": 0.8,
+      "_src": "engine_value_relu",
+      "_tgt": "engine_value",
+      "source": "engine_value",
+      "target": "engine_value_relu"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L54",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_backward",
+      "source": "engine_value",
+      "target": "engine_value_backward"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L72",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_neg",
+      "source": "engine_value",
+      "target": "engine_value_neg"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L75",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_radd",
+      "source": "engine_value",
+      "target": "engine_value_radd"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L78",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_sub",
+      "source": "engine_value",
+      "target": "engine_value_sub"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L81",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_rsub",
+      "source": "engine_value",
+      "target": "engine_value_rsub"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L84",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_rmul",
+      "source": "engine_value",
+      "target": "engine_value_rmul"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L87",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_truediv",
+      "source": "engine_value",
+      "target": "engine_value_truediv"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L90",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_rtruediv",
+      "source": "engine_value",
+      "target": "engine_value_rtruediv"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/engine.py",
+      "source_location": "L93",
+      "weight": 1.0,
+      "_src": "engine_value",
+      "_tgt": "engine_value_repr",
+      "source": "engine_value",
+      "target": "engine_value_repr"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_src": "nn",
+      "_tgt": "random",
+      "source": "nn",
+      "target": "random"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_src": "nn",
+      "_tgt": "micrograd_engine",
+      "source": "nn",
+      "target": "micrograd_engine"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_src": "nn",
+      "_tgt": "nn_module",
+      "source": "nn",
+      "target": "nn_module"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "nn",
+      "_tgt": "nn_neuron",
+      "source": "nn",
+      "target": "nn_neuron"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L30",
+      "weight": 1.0,
+      "_src": "nn",
+      "_tgt": "nn_layer",
+      "source": "nn",
+      "target": "nn_layer"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L45",
+      "weight": 1.0,
+      "_src": "nn",
+      "_tgt": "nn_mlp",
+      "source": "nn",
+      "target": "nn_mlp"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "nn_module",
+      "_tgt": "nn_module_zero_grad",
+      "source": "nn_module",
+      "target": "nn_module_zero_grad"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "nn_module",
+      "_tgt": "nn_module_parameters",
+      "source": "nn_module",
+      "target": "nn_module_parameters"
+    },
+    {
+      "relation": "inherits",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "nn_neuron",
+      "_tgt": "nn_module",
+      "source": "nn_module",
+      "target": "nn_neuron"
+    },
+    {
+      "relation": "inherits",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L30",
+      "weight": 1.0,
+      "_src": "nn_layer",
+      "_tgt": "nn_module",
+      "source": "nn_module",
+      "target": "nn_layer"
+    },
+    {
+      "relation": "inherits",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L45",
+      "weight": 1.0,
+      "_src": "nn_mlp",
+      "_tgt": "nn_module",
+      "source": "nn_module",
+      "target": "nn_mlp"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "nn_module_zero_grad",
+      "_tgt": "nn_mlp_parameters",
+      "source": "nn_module_zero_grad",
+      "target": "nn_mlp_parameters"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_src": "nn_neuron",
+      "_tgt": "nn_neuron_init",
+      "source": "nn_neuron",
+      "target": "nn_neuron_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L20",
+      "weight": 1.0,
+      "_src": "nn_neuron",
+      "_tgt": "nn_neuron_call",
+      "source": "nn_neuron",
+      "target": "nn_neuron_call"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_src": "nn_neuron",
+      "_tgt": "nn_neuron_parameters",
+      "source": "nn_neuron",
+      "target": "nn_neuron_parameters"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_src": "nn_neuron",
+      "_tgt": "nn_neuron_repr",
+      "source": "nn_neuron",
+      "target": "nn_neuron_repr"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L33",
+      "weight": 0.8,
+      "_src": "nn_layer_init",
+      "_tgt": "nn_neuron",
+      "source": "nn_neuron",
+      "target": "nn_layer_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L32",
+      "weight": 1.0,
+      "_src": "nn_layer",
+      "_tgt": "nn_layer_init",
+      "source": "nn_layer",
+      "target": "nn_layer_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L35",
+      "weight": 1.0,
+      "_src": "nn_layer",
+      "_tgt": "nn_layer_call",
+      "source": "nn_layer",
+      "target": "nn_layer_call"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L39",
+      "weight": 1.0,
+      "_src": "nn_layer",
+      "_tgt": "nn_layer_parameters",
+      "source": "nn_layer",
+      "target": "nn_layer_parameters"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L42",
+      "weight": 1.0,
+      "_src": "nn_layer",
+      "_tgt": "nn_layer_repr",
+      "source": "nn_layer",
+      "target": "nn_layer_repr"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L49",
+      "weight": 0.8,
+      "_src": "nn_mlp_init",
+      "_tgt": "nn_layer",
+      "source": "nn_layer",
+      "target": "nn_mlp_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L53",
+      "weight": 0.8,
+      "_src": "nn_mlp_call",
+      "_tgt": "nn_layer",
+      "source": "nn_layer",
+      "target": "nn_mlp_call"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L40",
+      "weight": 0.8,
+      "_src": "nn_layer_parameters",
+      "_tgt": "nn_mlp_parameters",
+      "source": "nn_layer_parameters",
+      "target": "nn_mlp_parameters"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L47",
+      "weight": 1.0,
+      "_src": "nn_mlp",
+      "_tgt": "nn_mlp_init",
+      "source": "nn_mlp",
+      "target": "nn_mlp_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L51",
+      "weight": 1.0,
+      "_src": "nn_mlp",
+      "_tgt": "nn_mlp_call",
+      "source": "nn_mlp",
+      "target": "nn_mlp_call"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L56",
+      "weight": 1.0,
+      "_src": "nn_mlp",
+      "_tgt": "nn_mlp_parameters",
+      "source": "nn_mlp",
+      "target": "nn_mlp_parameters"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/micrograd/nn.py",
+      "source_location": "L59",
+      "weight": 1.0,
+      "_src": "nn_mlp",
+      "_tgt": "nn_mlp_repr",
+      "source": "nn_mlp",
+      "target": "nn_mlp_repr"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "random",
+      "source": "random",
+      "target": "utils"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_src": "test_engine",
+      "_tgt": "micrograd_engine",
+      "source": "micrograd_engine",
+      "target": "test_engine"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/setup.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_src": "setup",
+      "_tgt": "setuptools",
+      "source": "setup",
+      "target": "setuptools"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_src": "test_engine",
+      "_tgt": "torch",
+      "source": "test_engine",
+      "target": "torch"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_src": "test_engine",
+      "_tgt": "test_engine_test_sanity_check",
+      "source": "test_engine",
+      "target": "test_engine_test_sanity_check"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/micrograd/test/test_engine.py",
+      "source_location": "L28",
+      "weight": 1.0,
+      "_src": "test_engine",
+      "_tgt": "test_engine_test_more_ops",
+      "source": "test_engine",
+      "target": "test_engine_test_more_ops"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L16",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "bpe"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L14",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "model"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "trainer"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "utils"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "adder"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "test_huggingface_import",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "test_huggingface_import"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "bench"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_src": "sample",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "sample"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "torch",
+      "source": "torch",
+      "target": "train"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "os",
+      "source": "bpe",
+      "target": "os"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L12",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "json",
+      "source": "bpe",
+      "target": "json"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "regex",
+      "source": "bpe",
+      "target": "regex"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L14",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "requests",
+      "source": "bpe",
+      "target": "requests"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L20",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "bpe_bytes_to_unicode",
+      "source": "bpe",
+      "target": "bpe_bytes_to_unicode"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L51",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "bpe_get_pairs",
+      "source": "bpe",
+      "target": "bpe_get_pairs"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L62",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "bpe_encoder",
+      "source": "bpe",
+      "target": "bpe_encoder"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L216",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "bpe_get_file",
+      "source": "bpe",
+      "target": "bpe_get_file"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L223",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "bpe_get_encoder",
+      "source": "bpe",
+      "target": "bpe_get_encoder"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L257",
+      "weight": 1.0,
+      "_src": "bpe",
+      "_tgt": "bpe_bpetokenizer",
+      "source": "bpe",
+      "target": "bpe_bpetokenizer"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L66",
+      "weight": 0.8,
+      "_src": "bpe_encoder_init",
+      "_tgt": "bpe_bytes_to_unicode",
+      "source": "bpe_bytes_to_unicode",
+      "target": "bpe_encoder_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L108",
+      "weight": 0.8,
+      "_src": "bpe_encoder_bpe",
+      "_tgt": "bpe_get_pairs",
+      "source": "bpe_get_pairs",
+      "target": "bpe_encoder_bpe"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L64",
+      "weight": 1.0,
+      "_src": "bpe_encoder",
+      "_tgt": "bpe_encoder_init",
+      "source": "bpe_encoder",
+      "target": "bpe_encoder_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L95",
+      "weight": 1.0,
+      "_src": "bpe_encoder",
+      "_tgt": "bpe_encoder_bpe",
+      "source": "bpe_encoder",
+      "target": "bpe_encoder_bpe"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L161",
+      "weight": 1.0,
+      "_src": "bpe_encoder",
+      "_tgt": "bpe_encoder_encode",
+      "source": "bpe_encoder",
+      "target": "bpe_encoder_encode"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L180",
+      "weight": 1.0,
+      "_src": "bpe_encoder",
+      "_tgt": "bpe_encoder_encode_and_show_work",
+      "source": "bpe_encoder",
+      "target": "bpe_encoder_encode_and_show_work"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L205",
+      "weight": 1.0,
+      "_src": "bpe_encoder",
+      "_tgt": "bpe_encoder_decode",
+      "source": "bpe_encoder",
+      "target": "bpe_encoder_decode"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L252",
+      "weight": 0.8,
+      "_src": "bpe_get_encoder",
+      "_tgt": "bpe_encoder",
+      "source": "bpe_encoder",
+      "target": "bpe_get_encoder"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L173",
+      "weight": 0.8,
+      "_src": "bpe_encoder_encode",
+      "_tgt": "bpe_encoder_bpe",
+      "source": "bpe_encoder_bpe",
+      "target": "bpe_encoder_encode"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L188",
+      "weight": 0.8,
+      "_src": "bpe_encoder_encode_and_show_work",
+      "_tgt": "bpe_encoder_bpe",
+      "source": "bpe_encoder_bpe",
+      "target": "bpe_encoder_encode_and_show_work"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L186",
+      "weight": 0.8,
+      "_src": "bpe_encoder_encode_and_show_work",
+      "_tgt": "bpe_encoder_encode",
+      "source": "bpe_encoder_encode",
+      "target": "bpe_encoder_encode_and_show_work"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L269",
+      "weight": 0.8,
+      "_src": "bpe_bpetokenizer_call",
+      "_tgt": "bpe_encoder_encode",
+      "source": "bpe_encoder_encode",
+      "target": "bpe_bpetokenizer_call"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L213",
+      "weight": 0.8,
+      "_src": "bpe_encoder_decode",
+      "_tgt": "bpe_bpetokenizer_decode",
+      "source": "bpe_encoder_decode",
+      "target": "bpe_bpetokenizer_decode"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L235",
+      "weight": 0.8,
+      "_src": "bpe_get_encoder",
+      "_tgt": "bpe_get_file",
+      "source": "bpe_get_file",
+      "target": "bpe_get_encoder"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L261",
+      "weight": 0.8,
+      "_src": "bpe_bpetokenizer_init",
+      "_tgt": "bpe_get_encoder",
+      "source": "bpe_get_encoder",
+      "target": "bpe_bpetokenizer_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L260",
+      "weight": 1.0,
+      "_src": "bpe_bpetokenizer",
+      "_tgt": "bpe_bpetokenizer_init",
+      "source": "bpe_bpetokenizer",
+      "target": "bpe_bpetokenizer_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L263",
+      "weight": 1.0,
+      "_src": "bpe_bpetokenizer",
+      "_tgt": "bpe_bpetokenizer_call",
+      "source": "bpe_bpetokenizer",
+      "target": "bpe_bpetokenizer_call"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/bpe.py",
+      "source_location": "L274",
+      "weight": 1.0,
+      "_src": "bpe_bpetokenizer",
+      "_tgt": "bpe_bpetokenizer_decode",
+      "source": "bpe_bpetokenizer",
+      "target": "bpe_bpetokenizer_decode"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "os",
+      "source": "os",
+      "target": "utils"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "os",
+      "source": "os",
+      "target": "adder"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "os",
+      "source": "os",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "os",
+      "source": "os",
+      "target": "bench"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "os",
+      "source": "os",
+      "target": "prepare"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_src": "sample",
+      "_tgt": "os",
+      "source": "os",
+      "target": "sample"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L19",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "os",
+      "source": "os",
+      "target": "train"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "json",
+      "source": "json",
+      "target": "utils"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "json",
+      "source": "json",
+      "target": "adder"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "requests",
+      "source": "requests",
+      "target": "prepare"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "math",
+      "source": "model",
+      "target": "math"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L16",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "torch_nn",
+      "source": "model",
+      "target": "torch_nn"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L17",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "mingpt_utils",
+      "source": "model",
+      "target": "mingpt_utils"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L21",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_newgelu",
+      "source": "model",
+      "target": "model_newgelu"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L29",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_causalselfattention",
+      "source": "model",
+      "target": "model_causalselfattention"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L94",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_block",
+      "source": "model",
+      "target": "model_block"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L118",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_gpt",
+      "source": "model",
+      "target": "model_gpt"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L99",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_get_default_config",
+      "source": "model",
+      "target": "model_get_default_config"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L207",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_from_pretrained",
+      "source": "model",
+      "target": "model_from_pretrained"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L306",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_generate",
+      "source": "model",
+      "target": "model_generate"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "model",
+      "source": "model",
+      "target": "bench"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "inspect",
+      "source": "model",
+      "target": "inspect"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L12",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "dataclasses",
+      "source": "model",
+      "target": "dataclasses"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L18",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_layernorm",
+      "source": "model",
+      "target": "model_layernorm"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L78",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_mlp",
+      "source": "model",
+      "target": "model_mlp"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L109",
+      "weight": 1.0,
+      "_src": "model",
+      "_tgt": "model_gptconfig",
+      "source": "model",
+      "target": "model_gptconfig"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "sample",
+      "_tgt": "model",
+      "source": "model",
+      "target": "sample"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L30",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "model",
+      "source": "model",
+      "target": "train"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_src": "model_newgelu",
+      "_tgt": "model_newgelu_forward",
+      "source": "model_newgelu",
+      "target": "model_newgelu_forward"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L84",
+      "weight": 0.8,
+      "_src": "model_block_init",
+      "_tgt": "model_newgelu",
+      "source": "model_newgelu",
+      "target": "model_block_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_src": "model_causalselfattention",
+      "_tgt": "model_causalselfattention_init",
+      "source": "model_causalselfattention",
+      "target": "model_causalselfattention_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L52",
+      "weight": 1.0,
+      "_src": "model_causalselfattention",
+      "_tgt": "model_causalselfattention_forward",
+      "source": "model_causalselfattention",
+      "target": "model_causalselfattention_forward"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L99",
+      "weight": 0.8,
+      "_src": "model_block_init",
+      "_tgt": "model_causalselfattention",
+      "source": "model_causalselfattention",
+      "target": "model_block_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L32",
+      "weight": 0.8,
+      "_src": "model_causalselfattention_init",
+      "_tgt": "model_gpt_init",
+      "source": "model_causalselfattention_init",
+      "target": "model_gpt_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L96",
+      "weight": 1.0,
+      "_src": "model_block",
+      "_tgt": "model_block_init",
+      "source": "model_block",
+      "target": "model_block_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L103",
+      "weight": 1.0,
+      "_src": "model_block",
+      "_tgt": "model_block_forward",
+      "source": "model_block",
+      "target": "model_block_forward"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L130",
+      "weight": 0.8,
+      "_src": "model_gpt_init",
+      "_tgt": "model_block",
+      "source": "model_block",
+      "target": "model_gpt_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L181",
+      "weight": 0.8,
+      "_src": "model_gpt_forward",
+      "_tgt": "model_block",
+      "source": "model_block",
+      "target": "model_gpt_forward"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L97",
+      "weight": 0.8,
+      "_src": "model_block_init",
+      "_tgt": "model_gpt_init",
+      "source": "model_block_init",
+      "target": "model_gpt_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L98",
+      "weight": 0.8,
+      "_src": "model_block_init",
+      "_tgt": "model_layernorm",
+      "source": "model_block_init",
+      "target": "model_layernorm"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L101",
+      "weight": 0.8,
+      "_src": "model_block_init",
+      "_tgt": "model_mlp",
+      "source": "model_block_init",
+      "target": "model_mlp"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L105",
+      "weight": 0.8,
+      "_src": "model_block_forward",
+      "_tgt": "model_mlp",
+      "source": "model_block_forward",
+      "target": "model_mlp"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L120",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_init",
+      "source": "model_gpt",
+      "target": "model_gpt_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L162",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_init_weights",
+      "source": "model_gpt",
+      "target": "model_gpt_init_weights"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L263",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_configure_optimizers",
+      "source": "model_gpt",
+      "target": "model_gpt_configure_optimizers"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L170",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_forward",
+      "source": "model_gpt",
+      "target": "model_gpt_forward"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L232",
+      "weight": 0.8,
+      "_src": "model_from_pretrained",
+      "_tgt": "model_gpt",
+      "source": "model_gpt",
+      "target": "model_from_pretrained"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L150",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_get_num_params",
+      "source": "model_gpt",
+      "target": "model_gpt_get_num_params"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L195",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_crop_block_size",
+      "source": "model_gpt",
+      "target": "model_gpt_crop_block_size"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L289",
+      "weight": 1.0,
+      "_src": "model_gpt",
+      "_tgt": "model_gpt_estimate_mfu",
+      "source": "model_gpt",
+      "target": "model_gpt_estimate_mfu"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/model.py",
+      "source_location": "L184",
+      "weight": 0.8,
+      "_src": "model_from_pretrained",
+      "_tgt": "model_get_default_config",
+      "source": "model_get_default_config",
+      "target": "model_from_pretrained"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L131",
+      "weight": 0.8,
+      "_src": "model_gpt_init",
+      "_tgt": "model_layernorm",
+      "source": "model_gpt_init",
+      "target": "model_layernorm"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L22",
+      "weight": 0.8,
+      "_src": "model_layernorm_init",
+      "_tgt": "model_gpt_init",
+      "source": "model_gpt_init",
+      "target": "model_layernorm_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L81",
+      "weight": 0.8,
+      "_src": "model_mlp_init",
+      "_tgt": "model_gpt_init",
+      "source": "model_gpt_init",
+      "target": "model_mlp_init"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L148",
+      "weight": 0.8,
+      "_src": "model_gpt_init",
+      "_tgt": "model_gpt_get_num_params",
+      "source": "model_gpt_init",
+      "target": "model_gpt_get_num_params"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L231",
+      "weight": 0.8,
+      "_src": "model_from_pretrained",
+      "_tgt": "model_gptconfig",
+      "source": "model_from_pretrained",
+      "target": "model_gptconfig"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L21",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "math",
+      "source": "math",
+      "target": "train"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "mingpt_utils",
+      "source": "mingpt_utils",
+      "target": "trainer"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "mingpt_utils",
+      "source": "mingpt_utils",
+      "target": "adder"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L14",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "mingpt_utils",
+      "source": "mingpt_utils",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "time",
+      "source": "trainer",
+      "target": "time"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "collections",
+      "source": "trainer",
+      "target": "collections"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "torch_utils_data_dataloader",
+      "source": "trainer",
+      "target": "torch_utils_data_dataloader"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "trainer_trainer",
+      "source": "trainer",
+      "target": "trainer_trainer"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L16",
+      "weight": 1.0,
+      "_src": "trainer",
+      "_tgt": "trainer_get_default_config",
+      "source": "trainer",
+      "target": "trainer_get_default_config"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_src": "trainer_trainer",
+      "_tgt": "trainer_trainer_init",
+      "source": "trainer_trainer",
+      "target": "trainer_trainer_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L51",
+      "weight": 1.0,
+      "_src": "trainer_trainer",
+      "_tgt": "trainer_trainer_add_callback",
+      "source": "trainer_trainer",
+      "target": "trainer_trainer_add_callback"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L54",
+      "weight": 1.0,
+      "_src": "trainer_trainer",
+      "_tgt": "trainer_trainer_set_callback",
+      "source": "trainer_trainer",
+      "target": "trainer_trainer_set_callback"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L57",
+      "weight": 1.0,
+      "_src": "trainer_trainer",
+      "_tgt": "trainer_trainer_trigger_callbacks",
+      "source": "trainer_trainer",
+      "target": "trainer_trainer_trigger_callbacks"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L61",
+      "weight": 1.0,
+      "_src": "trainer_trainer",
+      "_tgt": "trainer_trainer_run",
+      "source": "trainer_trainer",
+      "target": "trainer_trainer_run"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/trainer.py",
+      "source_location": "L101",
+      "weight": 0.8,
+      "_src": "trainer_trainer_run",
+      "_tgt": "trainer_trainer_trigger_callbacks",
+      "source": "trainer_trainer_trigger_callbacks",
+      "target": "trainer_trainer_run"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "time",
+      "source": "time",
+      "target": "bench"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/config/finetune_shakespeare.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_src": "finetune_shakespeare",
+      "_tgt": "time",
+      "source": "time",
+      "target": "finetune_shakespeare"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L20",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "time",
+      "source": "time",
+      "target": "train"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "torch_utils_data_dataloader",
+      "source": "torch_utils_data_dataloader",
+      "target": "adder"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "torch_utils_data_dataloader",
+      "source": "torch_utils_data_dataloader",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "sys",
+      "source": "utils",
+      "target": "sys"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "ast",
+      "source": "utils",
+      "target": "ast"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "numpy",
+      "source": "utils",
+      "target": "numpy"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "utils_set_seed",
+      "source": "utils",
+      "target": "utils_set_seed"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L19",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "utils_setup_logging",
+      "source": "utils",
+      "target": "utils_setup_logging"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_src": "utils",
+      "_tgt": "utils_cfgnode",
+      "source": "utils",
+      "target": "utils_cfgnode"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L29",
+      "weight": 0.8,
+      "_src": "utils_setup_logging",
+      "_tgt": "utils_cfgnode_to_dict",
+      "source": "utils_setup_logging",
+      "target": "utils_cfgnode_to_dict"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L37",
+      "weight": 1.0,
+      "_src": "utils_cfgnode",
+      "_tgt": "utils_cfgnode_init",
+      "source": "utils_cfgnode",
+      "target": "utils_cfgnode_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L40",
+      "weight": 1.0,
+      "_src": "utils_cfgnode",
+      "_tgt": "utils_cfgnode_str",
+      "source": "utils_cfgnode",
+      "target": "utils_cfgnode_str"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L43",
+      "weight": 1.0,
+      "_src": "utils_cfgnode",
+      "_tgt": "utils_cfgnode_str_helper",
+      "source": "utils_cfgnode",
+      "target": "utils_cfgnode_str_helper"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L55",
+      "weight": 1.0,
+      "_src": "utils_cfgnode",
+      "_tgt": "utils_cfgnode_to_dict",
+      "source": "utils_cfgnode",
+      "target": "utils_cfgnode_to_dict"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L59",
+      "weight": 1.0,
+      "_src": "utils_cfgnode",
+      "_tgt": "utils_cfgnode_merge_from_dict",
+      "source": "utils_cfgnode",
+      "target": "utils_cfgnode_merge_from_dict"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L62",
+      "weight": 1.0,
+      "_src": "utils_cfgnode",
+      "_tgt": "utils_cfgnode_merge_from_args",
+      "source": "utils_cfgnode",
+      "target": "utils_cfgnode_merge_from_args"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/mingpt/utils.py",
+      "source_location": "L41",
+      "weight": 0.8,
+      "_src": "utils_cfgnode_str",
+      "_tgt": "utils_cfgnode_str_helper",
+      "source": "utils_cfgnode_str",
+      "target": "utils_cfgnode_str_helper"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "sys",
+      "source": "sys",
+      "target": "adder"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "sys",
+      "source": "sys",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/configurator.py",
+      "source_location": "L17",
+      "weight": 1.0,
+      "_src": "configurator",
+      "_tgt": "sys",
+      "source": "sys",
+      "target": "configurator"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/configurator.py",
+      "source_location": "L18",
+      "weight": 1.0,
+      "_src": "configurator",
+      "_tgt": "ast",
+      "source": "ast",
+      "target": "configurator"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "numpy",
+      "source": "numpy",
+      "target": "bench"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "numpy",
+      "source": "numpy",
+      "target": "prepare"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "numpy",
+      "source": "numpy",
+      "target": "train"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "torch_utils_data",
+      "source": "adder",
+      "target": "torch_utils_data"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "mingpt_model",
+      "source": "adder",
+      "target": "mingpt_model"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L14",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "mingpt_trainer",
+      "source": "adder",
+      "target": "mingpt_trainer"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L19",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "adder_get_config",
+      "source": "adder",
+      "target": "adder_get_config"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L43",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "adder_additiondataset",
+      "source": "adder",
+      "target": "adder_additiondataset"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L69",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "adder_get_default_config",
+      "source": "adder",
+      "target": "adder_get_default_config"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L145",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "adder_eval_split",
+      "source": "adder",
+      "target": "adder_eval_split"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L181",
+      "weight": 1.0,
+      "_src": "adder",
+      "_tgt": "adder_batch_end_callback",
+      "source": "adder",
+      "target": "adder_batch_end_callback"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L29",
+      "weight": 0.8,
+      "_src": "adder_get_config",
+      "_tgt": "adder_get_default_config",
+      "source": "adder_get_config",
+      "target": "adder_get_default_config"
+    },
+    {
+      "relation": "inherits",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L43",
+      "weight": 1.0,
+      "_src": "adder_additiondataset",
+      "_tgt": "dataset",
+      "source": "adder_additiondataset",
+      "target": "dataset"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L74",
+      "weight": 1.0,
+      "_src": "adder_additiondataset",
+      "_tgt": "adder_additiondataset_init",
+      "source": "adder_additiondataset",
+      "target": "adder_additiondataset_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L88",
+      "weight": 1.0,
+      "_src": "adder_additiondataset",
+      "_tgt": "adder_additiondataset_get_vocab_size",
+      "source": "adder_additiondataset",
+      "target": "adder_additiondataset_get_vocab_size"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L91",
+      "weight": 1.0,
+      "_src": "adder_additiondataset",
+      "_tgt": "adder_additiondataset_get_block_size",
+      "source": "adder_additiondataset",
+      "target": "adder_additiondataset_get_block_size"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L97",
+      "weight": 1.0,
+      "_src": "adder_additiondataset",
+      "_tgt": "adder_additiondataset_len",
+      "source": "adder_additiondataset",
+      "target": "adder_additiondataset_len"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L100",
+      "weight": 1.0,
+      "_src": "adder_additiondataset",
+      "_tgt": "adder_additiondataset_getitem",
+      "source": "adder_additiondataset",
+      "target": "adder_additiondataset_getitem"
+    },
+    {
+      "relation": "inherits",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L42",
+      "weight": 1.0,
+      "_src": "chargpt_chardataset",
+      "_tgt": "dataset",
+      "source": "dataset",
+      "target": "chargpt_chardataset"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/adder/adder.py",
+      "source_location": "L192",
+      "weight": 0.8,
+      "_src": "adder_batch_end_callback",
+      "_tgt": "adder_eval_split",
+      "source": "adder_eval_split",
+      "target": "adder_batch_end_callback"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "torch_utils_data",
+      "source": "torch_utils_data",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L12",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "mingpt_model",
+      "source": "mingpt_model",
+      "target": "chargpt"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "test_huggingface_import",
+      "_tgt": "mingpt_model",
+      "source": "mingpt_model",
+      "target": "test_huggingface_import"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "mingpt_trainer",
+      "source": "mingpt_trainer",
+      "target": "chargpt"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L18",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "chargpt_get_config",
+      "source": "chargpt",
+      "target": "chargpt_get_config"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L42",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "chargpt_chardataset",
+      "source": "chargpt",
+      "target": "chargpt_chardataset"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L48",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "chargpt_get_default_config",
+      "source": "chargpt",
+      "target": "chargpt_get_default_config"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L108",
+      "weight": 1.0,
+      "_src": "chargpt",
+      "_tgt": "chargpt_batch_end_callback",
+      "source": "chargpt",
+      "target": "chargpt_batch_end_callback"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L28",
+      "weight": 0.8,
+      "_src": "chargpt_get_config",
+      "_tgt": "chargpt_get_default_config",
+      "source": "chargpt_get_config",
+      "target": "chargpt_get_default_config"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L53",
+      "weight": 1.0,
+      "_src": "chargpt_chardataset",
+      "_tgt": "chargpt_chardataset_init",
+      "source": "chargpt_chardataset",
+      "target": "chargpt_chardataset_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L65",
+      "weight": 1.0,
+      "_src": "chargpt_chardataset",
+      "_tgt": "chargpt_chardataset_get_vocab_size",
+      "source": "chargpt_chardataset",
+      "target": "chargpt_chardataset_get_vocab_size"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L68",
+      "weight": 1.0,
+      "_src": "chargpt_chardataset",
+      "_tgt": "chargpt_chardataset_get_block_size",
+      "source": "chargpt_chardataset",
+      "target": "chargpt_chardataset_get_block_size"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L71",
+      "weight": 1.0,
+      "_src": "chargpt_chardataset",
+      "_tgt": "chargpt_chardataset_len",
+      "source": "chargpt_chardataset",
+      "target": "chargpt_chardataset_len"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/projects/chargpt/chargpt.py",
+      "source_location": "L74",
+      "weight": 1.0,
+      "_src": "chargpt_chardataset",
+      "_tgt": "chargpt_chardataset_getitem",
+      "source": "chargpt_chardataset",
+      "target": "chargpt_chardataset_getitem"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "test_huggingface_import",
+      "_tgt": "unittest",
+      "source": "test_huggingface_import",
+      "target": "unittest"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_src": "test_huggingface_import",
+      "_tgt": "transformers",
+      "source": "test_huggingface_import",
+      "target": "transformers"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "test_huggingface_import",
+      "_tgt": "mingpt_bpe",
+      "source": "test_huggingface_import",
+      "target": "mingpt_bpe"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L12",
+      "weight": 1.0,
+      "_src": "test_huggingface_import",
+      "_tgt": "test_huggingface_import_testhuggingfaceimport",
+      "source": "test_huggingface_import",
+      "target": "test_huggingface_import_testhuggingfaceimport"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/minGPT/tests/test_huggingface_import.py",
+      "source_location": "L14",
+      "weight": 1.0,
+      "_src": "test_huggingface_import_testhuggingfaceimport",
+      "_tgt": "test_huggingface_import_testhuggingfaceimport_test_gpt2",
+      "source": "test_huggingface_import_testhuggingfaceimport",
+      "target": "test_huggingface_import_testhuggingfaceimport_test_gpt2"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "contextlib",
+      "source": "bench",
+      "target": "contextlib"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/bench.py",
+      "source_location": "L37",
+      "weight": 1.0,
+      "_src": "bench",
+      "_tgt": "bench_get_batch",
+      "source": "bench",
+      "target": "bench_get_batch"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "sample",
+      "_tgt": "contextlib",
+      "source": "contextlib",
+      "target": "sample"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L23",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "contextlib",
+      "source": "contextlib",
+      "target": "train"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/openwebtext/prepare.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "tqdm",
+      "source": "prepare",
+      "target": "tqdm"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare/prepare.py",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "tiktoken",
+      "source": "prepare",
+      "target": "tiktoken"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/openwebtext/prepare.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "datasets",
+      "source": "prepare",
+      "target": "datasets"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/openwebtext/prepare.py",
+      "source_location": "L43",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "prepare_process",
+      "source": "prepare",
+      "target": "prepare_process"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "pickle",
+      "source": "prepare",
+      "target": "pickle"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L32",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "prepare_encode",
+      "source": "prepare",
+      "target": "prepare_encode"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/data/shakespeare_char/prepare.py",
+      "source_location": "L34",
+      "weight": 1.0,
+      "_src": "prepare",
+      "_tgt": "prepare_decode",
+      "source": "prepare",
+      "target": "prepare_decode"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "sample",
+      "_tgt": "tiktoken",
+      "source": "tiktoken",
+      "target": "sample"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/sample.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_src": "sample",
+      "_tgt": "pickle",
+      "source": "pickle",
+      "target": "sample"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L22",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "pickle",
+      "source": "pickle",
+      "target": "train"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L21",
+      "weight": 1.0,
+      "_src": "model_layernorm",
+      "_tgt": "model_layernorm_init",
+      "source": "model_layernorm",
+      "target": "model_layernorm_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_src": "model_layernorm",
+      "_tgt": "model_layernorm_forward",
+      "source": "model_layernorm",
+      "target": "model_layernorm_forward"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L80",
+      "weight": 1.0,
+      "_src": "model_mlp",
+      "_tgt": "model_mlp_init",
+      "source": "model_mlp",
+      "target": "model_mlp_init"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L87",
+      "weight": 1.0,
+      "_src": "model_mlp",
+      "_tgt": "model_mlp_forward",
+      "source": "model_mlp",
+      "target": "model_mlp_forward"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/model.py",
+      "source_location": "L293",
+      "weight": 0.8,
+      "_src": "model_gpt_estimate_mfu",
+      "_tgt": "model_gpt_get_num_params",
+      "source": "model_gpt_get_num_params",
+      "target": "model_gpt_estimate_mfu"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "torch_nn_parallel",
+      "source": "train",
+      "target": "torch_nn_parallel"
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L28",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "torch_distributed",
+      "source": "train",
+      "target": "torch_distributed"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L116",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "train_get_batch",
+      "source": "train",
+      "target": "train_get_batch"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L216",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "train_estimate_loss",
+      "source": "train",
+      "target": "train_estimate_loss"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L231",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "train_get_lr",
+      "source": "train",
+      "target": "train_get_lr"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L246",
+      "weight": 1.0,
+      "_src": "train",
+      "_tgt": "wandb",
+      "source": "train",
+      "target": "wandb"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "/home/safi/graphify-benchmark/repos/nanoGPT/train.py",
+      "source_location": "L222",
+      "weight": 0.8,
+      "_src": "train_estimate_loss",
+      "_tgt": "train_get_batch",
+      "source": "train_get_batch",
+      "target": "train_estimate_loss"
+    }
+  ]
+}

@@ -27,6 +27,7 @@ import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
+from typing import Optional
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -78,6 +79,25 @@ import utils.hardware.hardware as _hw_module
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse common truthy/falsey env var values."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -118,6 +138,83 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
+    app.state.wiki_watcher = None
+    enable_wiki_watcher = _env_flag("UNSLOTH_WIKI_WATCHER", default = True)
+    if enable_wiki_watcher:
+        try:
+            from core.wiki.manager import WikiManager
+            from core.wiki.ingestor import WikiIngestor
+            from core.wiki.watcher import WikiIngestionWatcher
+            from core.inference import get_inference_backend
+            from routes.inference import get_llama_cpp_backend, _route_wiki_llm_stub
+
+            vault_root = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
+            raw_dir = vault_root / "raw"
+            raw_dir.mkdir(parents = True, exist_ok = True)
+
+            auto_query_on_ingest = _env_flag("UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST", default = True)
+            auto_query_chat_history = _env_flag(
+                "UNSLOTH_WIKI_AUTO_QUERY_CHAT_HISTORY",
+                default = False,
+            )
+            auto_lint_every = _env_int("UNSLOTH_WIKI_AUTO_LINT_EVERY", default = 10, minimum = 0)
+
+            def _wiki_llm_fn(prompt: str) -> str:
+                return _route_wiki_llm_stub(prompt)
+
+            def _wiki_llm_available() -> bool:
+                try:
+                    if get_llama_cpp_backend().is_loaded:
+                        return True
+                except Exception:
+                    pass
+                try:
+                    backend = get_inference_backend()
+                    return bool(getattr(backend, "active_model_name", None))
+                except Exception:
+                    return False
+
+            def _wiki_context_window_tokens() -> Optional[int]:
+                try:
+                    llama_backend = get_llama_cpp_backend()
+                    if llama_backend.is_loaded:
+                        for candidate in (
+                            llama_backend.context_length,
+                            llama_backend.max_context_length,
+                            llama_backend.native_context_length,
+                        ):
+                            if candidate is not None and int(candidate) > 0:
+                                return int(candidate)
+                except Exception:
+                    return None
+                return None
+
+            wiki_manager = WikiManager.create(vault_root, _wiki_llm_fn)
+            wiki_ingestor = WikiIngestor(wiki_manager, raw_dir)
+            wiki_watcher = WikiIngestionWatcher(
+                wiki_ingestor,
+                raw_dir,
+                contributor = "Unsloth Studio",
+                auto_analyze = auto_query_on_ingest,
+                lint_every = auto_lint_every,
+                llm_available_fn = _wiki_llm_available,
+                llm_context_window_tokens_fn = _wiki_context_window_tokens,
+                analyze_chat_history = auto_query_chat_history,
+            )
+            wiki_watcher.start()
+            app.state.wiki_watcher = wiki_watcher
+            logger.info(
+                "Wiki watcher enabled at startup: %s (auto_query=%s lint_every=%d chat_history=%s)",
+                raw_dir,
+                auto_query_on_ingest,
+                auto_lint_every,
+                auto_query_chat_history,
+            )
+        except Exception as exc:
+            logger.warning("Failed to start wiki watcher at startup: %s", exc)
+    else:
+        logger.info("Wiki watcher disabled by UNSLOTH_WIKI_WATCHER")
+
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
@@ -133,6 +230,14 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
+    try:
+        wiki_watcher = getattr(app.state, "wiki_watcher", None)
+        if wiki_watcher is not None:
+            wiki_watcher.stop()
+            logger.info("Wiki watcher stopped")
+    except Exception as exc:
+        logger.warning("Failed to stop wiki watcher cleanly: %s", exc)
+
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 

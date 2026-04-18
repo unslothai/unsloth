@@ -265,6 +265,43 @@ def _get_shell_cmd(command: str) -> list[str]:
 _workdirs: dict[str, str] = {}
 
 
+def _safe_link_directory(target_dir: str, link_path: str):
+    """Best-effort symlink creation for directory shortcuts in tool sandboxes."""
+    if not os.path.isdir(target_dir):
+        return
+
+    # If a non-link path already exists, do not clobber it.
+    if os.path.lexists(link_path) and not os.path.islink(link_path):
+        return
+
+    try:
+        if os.path.islink(link_path):
+            current_target = os.path.realpath(link_path)
+            desired_target = os.path.realpath(target_dir)
+            if current_target == desired_target:
+                return
+            os.unlink(link_path)
+        os.symlink(target_dir, link_path, target_is_directory = True)
+    except OSError:
+        # Symlink creation can fail on restricted environments; continue silently.
+        return
+
+
+def _ensure_wiki_shortcuts(workdir: str):
+    """Expose wiki vault directories as short paths inside the sandbox workdir."""
+    vault_root = os.path.realpath(
+        os.path.expanduser(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
+    )
+    wiki_root = os.path.join(vault_root, "wiki")
+
+    _safe_link_directory(wiki_root, os.path.join(workdir, "wiki"))
+    _safe_link_directory(os.path.join(wiki_root, "sources"), os.path.join(workdir, "sources"))
+    _safe_link_directory(os.path.join(wiki_root, "entities"), os.path.join(workdir, "entities"))
+    _safe_link_directory(os.path.join(wiki_root, "concepts"), os.path.join(workdir, "concepts"))
+    _safe_link_directory(os.path.join(wiki_root, "analysis"), os.path.join(workdir, "analysis"))
+    _safe_link_directory(os.path.join(vault_root, "raw"), os.path.join(workdir, "raw"))
+
+
 def _get_workdir(session_id: str | None = None) -> str:
     """Return (and lazily create) a persistent working directory for tool execution."""
     global _workdirs
@@ -285,6 +322,7 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = os.path.join(sandbox_root, "_default")
         os.makedirs(workdir, exist_ok = True)
         _workdirs[key] = workdir
+    _ensure_wiki_shortcuts(_workdirs[key])
     return _workdirs[key]
 
 

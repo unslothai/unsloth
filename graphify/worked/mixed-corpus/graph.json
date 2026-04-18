@@ -1,0 +1,603 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "analyze.py",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L1",
+      "id": "analyze",
+      "community": 1
+    },
+    {
+      "label": "_node_community_map()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L6",
+      "id": "analyze_node_community_map",
+      "community": 3
+    },
+    {
+      "label": "_is_file_node()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L11",
+      "id": "analyze_is_file_node",
+      "community": 2
+    },
+    {
+      "label": "god_nodes()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L35",
+      "id": "analyze_god_nodes",
+      "community": 2
+    },
+    {
+      "label": "surprising_connections()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L57",
+      "id": "analyze_surprising_connections",
+      "community": 3
+    },
+    {
+      "label": "_is_concept_node()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L89",
+      "id": "analyze_is_concept_node",
+      "community": 2
+    },
+    {
+      "label": "_file_category()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L114",
+      "id": "analyze_file_category",
+      "community": 1
+    },
+    {
+      "label": "_top_level_dir()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L125",
+      "id": "analyze_top_level_dir",
+      "community": 1
+    },
+    {
+      "label": "_surprise_score()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L130",
+      "id": "analyze_surprise_score",
+      "community": 1
+    },
+    {
+      "label": "_cross_file_surprises()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L181",
+      "id": "analyze_cross_file_surprises",
+      "community": 3
+    },
+    {
+      "label": "_cross_community_surprises()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L239",
+      "id": "analyze_cross_community_surprises",
+      "community": 3
+    },
+    {
+      "label": "suggest_questions()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L321",
+      "id": "analyze_suggest_questions",
+      "community": 2
+    },
+    {
+      "label": "graph_diff()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L438",
+      "id": "analyze_graph_diff",
+      "community": 1
+    },
+    {
+      "label": "build.py",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/build.py",
+      "source_location": "L1",
+      "id": "build",
+      "community": 4
+    },
+    {
+      "label": "build_from_json()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/build.py",
+      "source_location": "L8",
+      "id": "build_build_from_json",
+      "community": 4
+    },
+    {
+      "label": "build()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/build.py",
+      "source_location": "L31",
+      "id": "build_build",
+      "community": 4
+    },
+    {
+      "label": "cluster.py",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L1",
+      "id": "cluster",
+      "community": 0
+    },
+    {
+      "label": "build_graph()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L6",
+      "id": "cluster_build_graph",
+      "community": 0
+    },
+    {
+      "label": "cluster()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L27",
+      "id": "cluster_cluster",
+      "community": 0
+    },
+    {
+      "label": "_split_community()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L72",
+      "id": "cluster_split_community",
+      "community": 0
+    },
+    {
+      "label": "cohesion_score()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L92",
+      "id": "cluster_cohesion_score",
+      "community": 0
+    },
+    {
+      "label": "score_all()",
+      "file_type": "code",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L103",
+      "id": "cluster_score_all",
+      "community": 0
+    }
+  ],
+  "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_node_community_map",
+      "source": "analyze",
+      "target": "analyze_node_community_map"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_is_file_node",
+      "source": "analyze",
+      "target": "analyze_is_file_node"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L35",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_god_nodes",
+      "source": "analyze",
+      "target": "analyze_god_nodes"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L57",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_surprising_connections",
+      "source": "analyze",
+      "target": "analyze_surprising_connections"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L89",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_is_concept_node",
+      "source": "analyze",
+      "target": "analyze_is_concept_node"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L114",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_file_category",
+      "source": "analyze",
+      "target": "analyze_file_category"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L125",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_top_level_dir",
+      "source": "analyze",
+      "target": "analyze_top_level_dir"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L130",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_surprise_score",
+      "source": "analyze",
+      "target": "analyze_surprise_score"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L181",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_cross_file_surprises",
+      "source": "analyze",
+      "target": "analyze_cross_file_surprises"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L239",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_cross_community_surprises",
+      "source": "analyze",
+      "target": "analyze_cross_community_surprises"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L321",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_suggest_questions",
+      "source": "analyze",
+      "target": "analyze_suggest_questions"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L438",
+      "weight": 1.0,
+      "_src": "analyze",
+      "_tgt": "analyze_graph_diff",
+      "source": "analyze",
+      "target": "analyze_graph_diff"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L195",
+      "weight": 0.8,
+      "_src": "analyze_cross_file_surprises",
+      "_tgt": "analyze_node_community_map",
+      "source": "analyze_node_community_map",
+      "target": "analyze_cross_file_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L274",
+      "weight": 0.8,
+      "_src": "analyze_cross_community_surprises",
+      "_tgt": "analyze_node_community_map",
+      "source": "analyze_node_community_map",
+      "target": "analyze_cross_community_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L333",
+      "weight": 0.8,
+      "_src": "analyze_suggest_questions",
+      "_tgt": "analyze_node_community_map",
+      "source": "analyze_node_community_map",
+      "target": "analyze_suggest_questions"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L45",
+      "weight": 0.8,
+      "_src": "analyze_god_nodes",
+      "_tgt": "analyze_is_file_node",
+      "source": "analyze_is_file_node",
+      "target": "analyze_god_nodes"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L204",
+      "weight": 0.8,
+      "_src": "analyze_cross_file_surprises",
+      "_tgt": "analyze_is_file_node",
+      "source": "analyze_is_file_node",
+      "target": "analyze_cross_file_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L283",
+      "weight": 0.8,
+      "_src": "analyze_cross_community_surprises",
+      "_tgt": "analyze_is_file_node",
+      "source": "analyze_is_file_node",
+      "target": "analyze_cross_community_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L353",
+      "weight": 0.8,
+      "_src": "analyze_suggest_questions",
+      "_tgt": "analyze_is_file_node",
+      "source": "analyze_is_file_node",
+      "target": "analyze_suggest_questions"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L45",
+      "weight": 0.8,
+      "_src": "analyze_god_nodes",
+      "_tgt": "analyze_is_concept_node",
+      "source": "analyze_god_nodes",
+      "target": "analyze_is_concept_node"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L84",
+      "weight": 0.8,
+      "_src": "analyze_surprising_connections",
+      "_tgt": "analyze_cross_file_surprises",
+      "source": "analyze_surprising_connections",
+      "target": "analyze_cross_file_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L86",
+      "weight": 0.8,
+      "_src": "analyze_surprising_connections",
+      "_tgt": "analyze_cross_community_surprises",
+      "source": "analyze_surprising_connections",
+      "target": "analyze_cross_community_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L202",
+      "weight": 0.8,
+      "_src": "analyze_cross_file_surprises",
+      "_tgt": "analyze_is_concept_node",
+      "source": "analyze_is_concept_node",
+      "target": "analyze_cross_file_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L353",
+      "weight": 0.8,
+      "_src": "analyze_suggest_questions",
+      "_tgt": "analyze_is_concept_node",
+      "source": "analyze_is_concept_node",
+      "target": "analyze_suggest_questions"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L151",
+      "weight": 0.8,
+      "_src": "analyze_surprise_score",
+      "_tgt": "analyze_file_category",
+      "source": "analyze_file_category",
+      "target": "analyze_surprise_score"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L158",
+      "weight": 0.8,
+      "_src": "analyze_surprise_score",
+      "_tgt": "analyze_top_level_dir",
+      "source": "analyze_top_level_dir",
+      "target": "analyze_surprise_score"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L213",
+      "weight": 0.8,
+      "_src": "analyze_cross_file_surprises",
+      "_tgt": "analyze_surprise_score",
+      "source": "analyze_surprise_score",
+      "target": "analyze_cross_file_surprises"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/analyze.py",
+      "source_location": "L236",
+      "weight": 0.8,
+      "_src": "analyze_cross_file_surprises",
+      "_tgt": "analyze_cross_community_surprises",
+      "source": "analyze_cross_file_surprises",
+      "target": "analyze_cross_community_surprises"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/build.py",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_src": "build",
+      "_tgt": "build_build_from_json",
+      "source": "build",
+      "target": "build_build_from_json"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/build.py",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_src": "build",
+      "_tgt": "build_build",
+      "source": "build",
+      "target": "build_build"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/build.py",
+      "source_location": "L39",
+      "weight": 0.8,
+      "_src": "build_build",
+      "_tgt": "build_build_from_json",
+      "source": "build_build_from_json",
+      "target": "build_build"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_src": "cluster",
+      "_tgt": "cluster_build_graph",
+      "source": "cluster",
+      "target": "cluster_build_graph"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_src": "cluster",
+      "_tgt": "cluster_cluster",
+      "source": "cluster",
+      "target": "cluster_cluster"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L72",
+      "weight": 1.0,
+      "_src": "cluster",
+      "_tgt": "cluster_split_community",
+      "source": "cluster",
+      "target": "cluster_split_community"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L92",
+      "weight": 1.0,
+      "_src": "cluster",
+      "_tgt": "cluster_cohesion_score",
+      "source": "cluster",
+      "target": "cluster_cohesion_score"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L103",
+      "weight": 1.0,
+      "_src": "cluster",
+      "_tgt": "cluster_score_all",
+      "source": "cluster",
+      "target": "cluster_score_all"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L63",
+      "weight": 0.8,
+      "_src": "cluster_cluster",
+      "_tgt": "cluster_split_community",
+      "source": "cluster_cluster",
+      "target": "cluster_split_community"
+    },
+    {
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "source_file": "worked/mixed-corpus/raw/cluster.py",
+      "source_location": "L104",
+      "weight": 0.8,
+      "_src": "cluster_score_all",
+      "_tgt": "cluster_cohesion_score",
+      "source": "cluster_cohesion_score",
+      "target": "cluster_score_all"
+    }
+  ]
+}

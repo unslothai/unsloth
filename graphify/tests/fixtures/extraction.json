@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    {"id": "n_transformer", "label": "Transformer", "file_type": "code", "source_file": "model.py", "source_location": "L1"},
+    {"id": "n_attention",   "label": "MultiHeadAttention", "file_type": "code", "source_file": "model.py", "source_location": "L10"},
+    {"id": "n_layernorm",   "label": "LayerNorm", "file_type": "code", "source_file": "model.py", "source_location": "L20"},
+    {"id": "n_concept_attn","label": "attention mechanism", "file_type": "document", "source_file": "paper.md", "source_location": "§3.1"}
+  ],
+  "edges": [
+    {"source": "n_transformer", "target": "n_attention",    "relation": "contains",   "confidence": "EXTRACTED", "source_file": "model.py", "weight": 1.0},
+    {"source": "n_transformer", "target": "n_layernorm",    "relation": "contains",   "confidence": "EXTRACTED", "source_file": "model.py", "weight": 1.0},
+    {"source": "n_attention",   "target": "n_concept_attn", "relation": "implements", "confidence": "INFERRED",  "source_file": "model.py", "weight": 0.8},
+    {"source": "n_layernorm",   "target": "n_concept_attn", "relation": "referenced", "confidence": "AMBIGUOUS", "source_file": "paper.md", "weight": 0.5}
+  ],
+  "input_tokens": 1200,
+  "output_tokens": 340
+}
