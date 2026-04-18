@@ -141,6 +141,39 @@ studio_router = APIRouter()
 _CANCEL_REGISTRY: dict[str, set[threading.Event]] = {}
 _CANCEL_LOCK = threading.Lock()
 
+# Cancel POSTs can lose the race against _TrackedCancel registration:
+# user clicks Stop during prefill/warmup/proxy buffering, /cancel runs
+# before the streaming handler reaches __enter__, the registry is empty,
+# and the cancel is dropped. We stash the cancel_id here for a short
+# TTL; the next __enter__ whose keys intersect replays set().
+_PENDING_CANCELS: dict[str, float] = {}
+_PENDING_CANCEL_TTL_S = 30.0
+
+
+def _prune_pending(now: float) -> None:
+    for k in [k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S]:
+        _PENDING_CANCELS.pop(k, None)
+
+
+def _remember_pending_cancel(cancel_id: str) -> None:
+    now = time.monotonic()
+    with _CANCEL_LOCK:
+        _prune_pending(now)
+        _PENDING_CANCELS[cancel_id] = now
+
+
+def _consume_pending_cancel(keys) -> bool:
+    if not keys:
+        return False
+    now = time.monotonic()
+    with _CANCEL_LOCK:
+        _prune_pending(now)
+        hit = False
+        for k in keys:
+            if k and _PENDING_CANCELS.pop(k, None) is not None:
+                hit = True
+        return hit
+
 
 class _TrackedCancel:
     """Context manager: register cancel_event in _CANCEL_REGISTRY for the
@@ -154,6 +187,8 @@ class _TrackedCancel:
         with _CANCEL_LOCK:
             for k in self.keys:
                 _CANCEL_REGISTRY.setdefault(k, set()).add(self.event)
+        if _consume_pending_cancel(self.keys):
+            self.event.set()
         return self.event
 
     def __exit__(self, *exc):
@@ -668,10 +703,17 @@ async def cancel_inference(
     """
     Cancel in-flight inference requests.
 
-    Body (JSON): {"session_id": str, "completion_id": str}
-    At least one identifier is required; missing identifiers return
-    {"cancelled": 0} without touching the registry. Returns
-    {"cancelled": N} where N is the number of unique requests signalled.
+    Body (JSON, at least one key required):
+      {"cancel_id":    str,   # preferred: per-run UUID, matched exclusively
+       "session_id":   str,   # fallback: only used when cancel_id absent
+       "completion_id": str}  # fallback: only used when cancel_id absent
+    A stale cancel POST carrying only `cancel_id` will NOT affect a later
+    run on the same thread, because cancel_id is matched exclusively
+    when supplied; `session_id` is a last-resort fallback used only when
+    `cancel_id` is absent. Returns {"cancelled": N} where N is the number
+    of unique requests signalled. If a cancel_id arrives before its
+    matching stream has registered, it is stashed for a short TTL so the
+    later registration replays the cancel.
 
     This exists because some proxies (Colab, etc.) do not propagate
     client-side fetch aborts to the backend, so relying solely on
@@ -684,8 +726,18 @@ async def cancel_inference(
     except Exception:
         body = {}
 
+    cancel_id = body.get("cancel_id")
+    if isinstance(cancel_id, str) and cancel_id:
+        # Per-run key takes precedence. Do NOT widen to session_id here,
+        # or a stale cancel POST will match a later run on the same thread
+        # via the shared session_id.
+        n = _cancel_by_keys([cancel_id])
+        if n == 0:
+            _remember_pending_cancel(cancel_id)
+        return {"cancelled": n}
+
     keys = []
-    for k in ("cancel_id", "session_id", "completion_id"):
+    for k in ("completion_id", "session_id"):
         v = body.get(k)
         if isinstance(v, str) and v:
             keys.append(v)
@@ -1575,16 +1627,20 @@ async def openai_chat_completions(
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
 
-            return StreamingResponse(
-                gguf_tool_stream(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-                background = BackgroundTask(_tracker.__exit__, None, None, None),
-            )
+            try:
+                return StreamingResponse(
+                    gguf_tool_stream(),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                    background = BackgroundTask(_tracker.__exit__, None, None, None),
+                )
+            except BaseException:
+                _tracker.__exit__(None, None, None)
+                raise
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
@@ -1717,16 +1773,20 @@ async def openai_chat_completions(
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
 
-            return StreamingResponse(
-                gguf_stream_chunks(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-                background = BackgroundTask(_tracker.__exit__, None, None, None),
-            )
+            try:
+                return StreamingResponse(
+                    gguf_stream_chunks(),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                    background = BackgroundTask(_tracker.__exit__, None, None, None),
+                )
+            except BaseException:
+                _tracker.__exit__(None, None, None)
+                raise
         else:
             try:
                 full_text = ""
@@ -1902,16 +1962,20 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
 
-        return StreamingResponse(
-            stream_chunks(),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-            background = BackgroundTask(_tracker.__exit__, None, None, None),
-        )
+        try:
+            return StreamingResponse(
+                stream_chunks(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+                background = BackgroundTask(_tracker.__exit__, None, None, None),
+            )
+        except BaseException:
+            _tracker.__exit__(None, None, None)
+            raise
 
     # ── Non-streaming response ────────────────────────────────────
     else:

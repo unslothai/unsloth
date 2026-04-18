@@ -2346,7 +2346,8 @@ class LlamaCppBackend:
         payload["max_tokens"] = (
             max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
         )
-        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+        if max_tokens is None:
+            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -2565,7 +2566,8 @@ class LlamaCppBackend:
             payload["max_tokens"] = (
                 max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
             )
-            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+            if max_tokens is None:
+                payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -3222,7 +3224,8 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = (
             max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
         )
-        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+        if max_tokens is None:
+            stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
