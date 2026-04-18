@@ -1210,9 +1210,11 @@ async def openai_chat_completions(
                 from PIL import Image as _Image
 
                 raw = _b64.b64decode(image_b64)
-                img = _Image.open(_BytesIO(raw))
-                if img.mode == "RGBA":
-                    img = img.convert("RGB")
+                # Normalize to RGB so PNG encoding succeeds regardless of
+                # source mode (RGBA, P, L, CMYK, I, F, ...). Previously
+                # we only converted RGBA, which left CMYK/I/F to raise at
+                # img.save(PNG).
+                img = _Image.open(_BytesIO(raw)).convert("RGB")
                 buf = _BytesIO()
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
@@ -3080,9 +3082,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         from PIL import Image as _Image
 
         raw = _b64.b64decode(payload.image_base64)
-        img = _Image.open(_BytesIO(raw))
-        if img.mode == "RGBA":
-            img = img.convert("RGB")
+        img = _Image.open(_BytesIO(raw)).convert("RGB")
         buf = _BytesIO()
         img.save(buf, format = "PNG")
         png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
@@ -3305,4 +3305,8 @@ async def _openai_passthrough_non_streaming(
             detail = f"llama-server error: {resp.text[:500]}",
         )
 
-    return JSONResponse(content = resp.json())
+    # Pass the upstream body through as raw bytes — skips a redundant
+    # parse+re-serialize round-trip and keeps the response truly
+    # verbatim (matches the docstring). Status is guaranteed 200 by
+    # the check above.
+    return Response(content = resp.content, media_type = "application/json")
