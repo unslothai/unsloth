@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
 
 class LoadRequest(BaseModel):
@@ -338,14 +338,68 @@ class ChatMessage(BaseModel):
 
     ``content`` may be a plain string (text-only) or a list of
     content parts for multimodal messages (OpenAI vision format).
+    Assistant messages that only contain tool calls may set ``content``
+    to ``None`` with ``tool_calls`` populated. ``role="tool"`` messages
+    carry the result of a client-executed tool call and require
+    ``tool_call_id`` per the OpenAI spec.
     """
 
-    role: Literal["system", "user", "assistant"] = Field(
+    role: Literal["system", "user", "assistant", "tool"] = Field(
         ..., description = "Message role"
     )
-    content: Union[str, list[ContentPart]] = Field(
-        ..., description = "Message content (string or multimodal parts)"
+    content: Optional[Union[str, list[ContentPart]]] = Field(
+        None, description = "Message content (string or multimodal parts)"
     )
+    tool_call_id: Optional[str] = Field(
+        None,
+        description = "OpenAI tool-result messages: id of the tool call this result belongs to.",
+    )
+    tool_calls: Optional[list[dict]] = Field(
+        None,
+        description = "OpenAI assistant messages: structured tool calls the model decided to make.",
+    )
+    name: Optional[str] = Field(
+        None,
+        description = "OpenAI tool-result messages: name of the tool whose result this is.",
+    )
+
+    @model_validator(mode = "after")
+    def _validate_role_shape(self) -> "ChatMessage":
+        # Enforce the per-role OpenAI spec shape at the request boundary.
+        # Without this, malformed messages (e.g. user entries with no
+        # content, tool_calls on a user/system role, role="tool" without
+        # tool_call_id) would be silently forwarded to llama-server via
+        # the passthrough path, surfacing as opaque upstream errors or
+        # broken tool-call reconciliation downstream.
+
+        # Tool-call metadata must appear only on the appropriate role.
+        if self.tool_calls is not None and self.role != "assistant":
+            raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
+        if self.tool_call_id is not None and self.role != "tool":
+            raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
+        if self.name is not None and self.role != "tool":
+            raise ValueError('"name" is only valid on role="tool" messages.')
+
+        # Per-role content requirements.
+        if self.role == "tool":
+            if not self.tool_call_id:
+                raise ValueError(
+                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
+                )
+            if not self.content:
+                raise ValueError('role="tool" messages require non-empty "content".')
+        elif self.role == "assistant":
+            # Assistant messages may omit content when tool_calls is set.
+            if not self.content and not self.tool_calls:
+                raise ValueError(
+                    'role="assistant" messages require either "content" or "tool_calls".'
+                )
+        else:  # "user" | "system"
+            if not self.content:
+                raise ValueError(
+                    f'role="{self.role}" messages require non-empty "content".'
+                )
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -355,18 +409,49 @@ class ChatCompletionRequest(BaseModel):
     Extensions (non-OpenAI fields) are marked with 'x-unsloth'.
     """
 
+    # Accept unknown fields defensively so future OpenAI fields (seed,
+    # response_format, logprobs, frequency_penalty, etc.) don't get
+    # silently dropped by Pydantic before route code runs. Mirrors
+    # AnthropicMessagesRequest and ResponsesRequest.
+    model_config = {"extra": "allow"}
+
     model: str = Field(
         "default",
         description = "Model identifier (informational; the active model is used)",
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
-    stream: bool = Field(True, description = "Whether to stream the response via SSE")
+    stream: bool = Field(
+        False,
+        description = (
+            "Whether to stream the response via SSE. Default matches OpenAI's "
+            "spec (`false`); opt into streaming by sending `stream: true`."
+        ),
+    )
     temperature: float = Field(0.6, ge = 0.0, le = 2.0)
     top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    stop: Optional[Union[str, list[str]]] = Field(
+        None,
+        description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = (
+            "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
+            "Studio forwards the tools to the backend so the model returns structured "
+            "tool_calls for the client to execute (standard OpenAI function calling)."
+        ),
+    )
+    tool_choice: Optional[Union[str, dict]] = Field(
+        None,
+        description = (
+            "OpenAI tool choice: 'auto' | 'required' | 'none' | "
+            "{'type': 'function', 'function': {'name': ...}}"
+        ),
+    )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
