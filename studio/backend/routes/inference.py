@@ -141,11 +141,8 @@ studio_router = APIRouter()
 _CANCEL_REGISTRY: dict[str, set[threading.Event]] = {}
 _CANCEL_LOCK = threading.Lock()
 
-# Cancel POSTs can lose the race against _TrackedCancel registration:
-# user clicks Stop during prefill/warmup/proxy buffering, /cancel runs
-# before the streaming handler reaches __enter__, the registry is empty,
-# and the cancel is dropped. We stash the cancel_id here for a short
-# TTL; the next __enter__ whose keys intersect replays set().
+# Stash for cancel POSTs that arrive before their stream registers;
+# the next matching __enter__ replays set() within the TTL.
 _PENDING_CANCELS: dict[str, float] = {}
 _PENDING_CANCEL_TTL_S = 30.0
 
@@ -171,11 +168,8 @@ class _TrackedCancel:
         self.keys = tuple(k for k in keys if k)
 
     def __enter__(self):
-        # Register and consume-pending MUST happen atomically under a
-        # single lock acquisition, or a concurrent cancel POST that
-        # already missed the registry (returning 0) can stash its
-        # pending entry AFTER we finish consuming nothing -- silently
-        # dropping the cancel.
+        # Register + consume-pending must be one critical section to
+        # close the TOCTOU race against a concurrent cancel POST.
         should_cancel = False
         with _CANCEL_LOCK:
             for k in self.keys:
@@ -218,10 +212,8 @@ def _cancel_by_keys(keys) -> int:
 
 
 def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
-    """Atomic: set events for the cancel_id bucket, or stash if not yet
-    registered. Closes the TOCTOU window where a separate _cancel_by_keys
-    + _remember_pending_cancel pair can be interleaved by _TrackedCancel.
-    __enter__ such that the cancel is silently dropped."""
+    """Atomic lookup-or-stash; pairs with _TrackedCancel.__enter__ to
+    close the TOCTOU race."""
     now = time.monotonic()
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
@@ -722,20 +714,16 @@ async def cancel_inference(
     Cancel in-flight inference requests.
 
     Body (JSON, at least one key required):
-      {"cancel_id":    str,   # preferred: per-run UUID, matched exclusively
-       "session_id":   str,   # fallback: only used when cancel_id absent
-       "completion_id": str}  # fallback: only used when cancel_id absent
-    A stale cancel POST carrying only `cancel_id` will NOT affect a later
-    run on the same thread, because cancel_id is matched exclusively
-    when supplied; `session_id` is a last-resort fallback used only when
-    `cancel_id` is absent. Returns {"cancelled": N} where N is the number
-    of unique requests signalled. If a cancel_id arrives before its
-    matching stream has registered, it is stashed for a short TTL so the
-    later registration replays the cancel.
+      cancel_id    - preferred: per-run UUID, matched exclusively so a
+                     stale POST cannot hit a later run on the same thread.
+      session_id   - fallback when cancel_id is absent.
+      completion_id - fallback when cancel_id is absent.
 
-    This exists because some proxies (Colab, etc.) do not propagate
-    client-side fetch aborts to the backend, so relying solely on
-    request.is_disconnected() is insufficient for the UI stop button.
+    Returns {"cancelled": N}. A cancel_id arriving before its stream has
+    registered is stashed for a short TTL and replayed on registration.
+
+    Exists because some proxies (Colab, etc.) do not propagate client
+    aborts, so request.is_disconnected() is not sufficient.
     """
     try:
         body = await request.json()
@@ -746,12 +734,7 @@ async def cancel_inference(
 
     cancel_id = body.get("cancel_id")
     if isinstance(cancel_id, str) and cancel_id:
-        # Per-run key takes precedence. Do NOT widen to session_id here,
-        # or a stale cancel POST will match a later run on the same thread
-        # via the shared session_id. Registry lookup and pending-stash
-        # happen atomically to close the TOCTOU race against __enter__.
-        n = _cancel_by_cancel_id_or_stash(cancel_id)
-        return {"cancelled": n}
+        return {"cancelled": _cancel_by_cancel_id_or_stash(cancel_id)}
 
     keys = []
     for k in ("completion_id", "session_id"):
