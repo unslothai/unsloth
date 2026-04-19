@@ -61,7 +61,7 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend, _DEFAULT_T_MAX_PREDICT_MS
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -70,7 +70,7 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend, _DEFAULT_T_MAX_PREDICT_MS
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -190,17 +190,22 @@ class _TrackedCancel:
         return False
 
 
-def _cancel_by_keys(keys) -> int:
-    """Set cancel_event for matching registry entries. Returns count set."""
+def _cancel_by_keys_or_stash(keys) -> int:
+    """Set cancel_event for matching registry entries; stash unmatched keys
+    so a later _TrackedCancel.__enter__ can replay the cancel. Returns count
+    set now (stashed entries return 0 but fire on registration)."""
     if not keys:
         return 0
+    now = time.monotonic()
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
-        _prune_pending(time.monotonic())
+        _prune_pending(now)
         for k in keys:
             bucket = _CANCEL_REGISTRY.get(k)
             if bucket:
                 events.update(bucket)
+            else:
+                _PENDING_CANCELS[k] = now
     for ev in events:
         ev.set()
     return len(events)
@@ -740,7 +745,7 @@ async def cancel_inference(
     if not keys:
         return {"cancelled": 0}
 
-    n = _cancel_by_keys(keys)
+    n = _cancel_by_keys_or_stash(keys)
     return {"cancelled": n}
 
 
@@ -1258,19 +1263,15 @@ async def openai_chat_completions(
                     finally:
                         _tracker.__exit__(None, None, None)
 
-                try:
-                    return StreamingResponse(
-                        audio_input_stream(),
-                        media_type = "text/event-stream",
-                        headers = {
-                            "Cache-Control": "no-cache",
-                            "Connection": "keep-alive",
-                            "X-Accel-Buffering": "no",
-                        },
-                    )
-                except BaseException:
-                    _tracker.__exit__(None, None, None)
-                    raise
+                return StreamingResponse(
+                    audio_input_stream(),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
             else:
                 full_text = "".join(audio_input_generate())
                 response = ChatCompletion(
@@ -1642,19 +1643,15 @@ async def openai_chat_completions(
                 finally:
                     _tracker.__exit__(None, None, None)
 
-            try:
-                return StreamingResponse(
-                    gguf_tool_stream(),
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
-                )
-            except BaseException:
-                _tracker.__exit__(None, None, None)
-                raise
+            return StreamingResponse(
+                gguf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
@@ -1791,19 +1788,15 @@ async def openai_chat_completions(
                 finally:
                     _tracker.__exit__(None, None, None)
 
-            try:
-                return StreamingResponse(
-                    gguf_stream_chunks(),
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
-                )
-            except BaseException:
-                _tracker.__exit__(None, None, None)
-                raise
+            return StreamingResponse(
+                gguf_stream_chunks(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
         else:
             try:
                 full_text = ""
@@ -1984,19 +1977,15 @@ async def openai_chat_completions(
             finally:
                 _tracker.__exit__(None, None, None)
 
-        try:
-            return StreamingResponse(
-                stream_chunks(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-        except BaseException:
-            _tracker.__exit__(None, None, None)
-            raise
+        return StreamingResponse(
+            stream_chunks(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # ── Non-streaming response ────────────────────────────────────
     else:
@@ -2641,6 +2630,7 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
+                session_id = payload.session_id,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -3015,6 +3005,7 @@ def _build_passthrough_payload(
         body["stream_options"] = {"include_usage": True}
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
+    body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     if stop:
         body["stop"] = stop
     if min_p is not None:
@@ -3044,6 +3035,7 @@ async def _anthropic_passthrough_stream(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    session_id = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -3062,6 +3054,9 @@ async def _anthropic_passthrough_stream(
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
     )
+
+    _tracker = _TrackedCancel(cancel_event, session_id, message_id)
+    _tracker.__enter__()
 
     async def _stream():
         emitter = AnthropicPassthroughEmitter()
@@ -3095,7 +3090,10 @@ async def _anthropic_passthrough_stream(
         # has anything orphaned to finalize. Each aclose is wrapped in
         # `try: ... except Exception: pass` so anyio cleanup noise from
         # nested aclose paths can't bubble out.
-        client = httpx.AsyncClient(timeout = 600)
+        client = httpx.AsyncClient(
+            timeout = 600,
+            limits = httpx.Limits(max_keepalive_connections = 0),
+        )
         resp = None
         lines_iter = None
         try:
@@ -3104,6 +3102,8 @@ async def _anthropic_passthrough_stream(
 
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
+                if cancel_event.is_set():
+                    break
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
@@ -3135,6 +3135,7 @@ async def _anthropic_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
+            _tracker.__exit__(None, None, None)
 
         for line in emitter.finish():
             yield line
@@ -3346,12 +3347,19 @@ async def _openai_passthrough_stream(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(payload)
 
+    _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+    _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+    _tracker.__enter__()
+
     # Dispatch the upstream request BEFORE returning StreamingResponse so
     # transport errors and non-200 upstream statuses surface as real HTTP
     # errors to the client. OpenAI SDKs rely on status codes to raise
     # ``APIError``/``BadRequestError``/...; burying the failure inside a
     # 200 SSE ``error`` frame silently breaks their error handling.
-    client = httpx.AsyncClient(timeout = 600)
+    client = httpx.AsyncClient(
+        timeout = 600,
+        limits = httpx.Limits(max_keepalive_connections = 0),
+    )
     resp = None
     try:
         req = client.build_request("POST", target_url, json = body)
@@ -3368,6 +3376,7 @@ async def _openai_passthrough_stream(
             await client.aclose()
         except Exception:
             pass
+        _tracker.__exit__(None, None, None)
         raise HTTPException(
             status_code = 502,
             detail = _friendly_error(e),
@@ -3390,6 +3399,7 @@ async def _openai_passthrough_stream(
             await client.aclose()
         except Exception:
             pass
+        _tracker.__exit__(None, None, None)
         raise HTTPException(
             status_code = upstream_status,
             detail = f"llama-server error: {err_text[:500]}",
@@ -3410,6 +3420,8 @@ async def _openai_passthrough_stream(
         try:
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
+                if cancel_event.is_set():
+                    break
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
@@ -3449,6 +3461,7 @@ async def _openai_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
+            _tracker.__exit__(None, None, None)
 
     return StreamingResponse(
         _stream(),
