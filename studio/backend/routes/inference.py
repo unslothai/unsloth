@@ -1212,12 +1212,17 @@ async def openai_chat_completions(
                         )
                         yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                        for chunk_text in audio_input_generate():
+                        gen = audio_input_generate()
+                        _DONE = object()
+                        while True:
                             if cancel_event.is_set():
                                 break
                             if await request.is_disconnected():
                                 cancel_event.set()
                                 return
+                            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+                            if chunk_text is _DONE:
+                                break
                             if chunk_text:
                                 chunk = ChatCompletionChunk(
                                     id = completion_id,
@@ -1918,6 +1923,9 @@ async def openai_chat_completions(
                 loop = asyncio.get_event_loop()
                 gen = generate()
                 while True:
+                    if cancel_event.is_set():
+                        backend.reset_generation_state()
+                        break
                     # next(gen, _DONE) returns _DONE instead of raising
                     # StopIteration — StopIteration cannot propagate
                     # through asyncio futures (Python limitation).
