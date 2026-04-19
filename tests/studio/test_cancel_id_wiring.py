@@ -141,3 +141,29 @@ def test_chat_adapter_sends_cancel_id_in_abort_cancel_post():
         "onAbortCancel must include cancel_id in the /inference/cancel body "
         "so a stop POST matches the specific run, not the whole thread"
     )
+
+
+def test_abort_cancel_post_uses_plain_fetch_with_manual_auth_header():
+    # authFetch redirects to login on 401, which would kick the user to
+    # the login page mid-stop if the access token expired during a long
+    # stream. Use plain fetch + manual Authorization header for a
+    # best-effort cancel that never triggers the refresh/redirect flow.
+    start = ADAPTER_SRC.find("const onAbortCancel")
+    assert start >= 0, "onAbortCancel handler missing"
+    rest = ADAPTER_SRC[start:]
+    end = rest.find("\n      try {")
+    body = rest if end < 0 else rest[:end]
+    assert "/api/inference/cancel" in body
+    assert "authFetch(" not in body, (
+        "onAbortCancel must NOT call authFetch; a 401 from it would "
+        "redirect the user to the login page during a stop click"
+    )
+    assert "fetch(" in body, "onAbortCancel must use plain fetch(...)"
+    assert "getAuthToken" in body, (
+        "onAbortCancel must read the bearer token via getAuthToken() "
+        "rather than relying on authFetch's 401 flow"
+    )
+    assert "Authorization" in body
+    assert "keepalive: true" in body, (
+        "keepalive is required so the fetch survives page unload during stop"
+    )
