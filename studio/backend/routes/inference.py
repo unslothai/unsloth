@@ -133,7 +133,8 @@ studio_router = APIRouter()
 
 # ── Cancel registry ──────────────────────────────────────────
 # Tracks every in-flight cancel_event so POST /inference/cancel
-# can reach them. Keyed by session_id (preferred) or completion_id.
+# can reach them. Keyed by cancel_id (preferred, exclusive per-run),
+# session_id (thread fallback), and completion_id (internal fallback).
 # Routed separately from request.is_disconnected() polling because
 # some proxies (e.g. Colab's) do not propagate client-side fetch
 # aborts, so the backend never observes disconnect.
@@ -1192,6 +1193,9 @@ async def openai_chat_completions(
                 )
 
             if payload.stream:
+                _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+                _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+                _tracker.__enter__()
 
                 async def audio_input_stream():
                     try:
@@ -1209,6 +1213,8 @@ async def openai_chat_completions(
                         yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
                         for chunk_text in audio_input_generate():
+                            if cancel_event.is_set():
+                                break
                             if await request.is_disconnected():
                                 cancel_event.set()
                                 return
@@ -1244,16 +1250,22 @@ async def openai_chat_completions(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
+                    finally:
+                        _tracker.__exit__(None, None, None)
 
-                return StreamingResponse(
-                    audio_input_stream(),
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
-                )
+                try:
+                    return StreamingResponse(
+                        audio_input_stream(),
+                        media_type = "text/event-stream",
+                        headers = {
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "X-Accel-Buffering": "no",
+                        },
+                    )
+                except BaseException:
+                    _tracker.__exit__(None, None, None)
+                    raise
             else:
                 full_text = "".join(audio_input_generate())
                 response = ChatCompletion(
