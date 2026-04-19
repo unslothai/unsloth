@@ -45,6 +45,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import threading
+import time
 from pathlib import Path
 
 
@@ -383,3 +384,337 @@ def test_cancel_during_streaming_stops_iteration_promptly():
     assert "cumulative-2" not in seen
     assert "final_chunk" in seen
     assert "[DONE]" in seen
+
+
+# ── Cancel-event responsiveness in the streaming loops ───────
+
+
+def _loop_has_cancel_event_check(fn) -> bool:
+    # An `if cancel_event.is_set():` statement anywhere inside a
+    # `while`/`for` loop body is sufficient -- without it, a cancel POST
+    # cannot interrupt the loop because Colab-style proxies do not
+    # propagate request.is_disconnected().
+    for sub in ast.walk(fn):
+        if not isinstance(sub, (ast.While, ast.For, ast.AsyncFor)):
+            continue
+        for stmt in ast.walk(sub):
+            if not isinstance(stmt, ast.If):
+                continue
+            t = stmt.test
+            if (
+                isinstance(t, ast.Call)
+                and isinstance(t.func, ast.Attribute)
+                and t.func.attr == "is_set"
+                and isinstance(t.func.value, ast.Name)
+                and t.func.value.id == "cancel_event"
+            ):
+                return True
+    return False
+
+
+def test_streaming_generators_check_cancel_event_in_loop():
+    required = {
+        "gguf_tool_stream",
+        "gguf_stream_chunks",
+        "stream_chunks",
+        "audio_input_stream",
+    }
+    missing = []
+    for fn in [n for n in ast.walk(_TREE) if isinstance(n, ast.AsyncFunctionDef)]:
+        if fn.name not in required:
+            continue
+        if not _loop_has_cancel_event_check(fn):
+            missing.append(fn.name)
+    assert not missing, (
+        f"Each streaming generator must check `cancel_event.is_set()` inside "
+        f"its main loop so `POST /api/inference/cancel` can interrupt the "
+        f"stream through proxies that do not forward fetch aborts. "
+        f"Missing in: {sorted(missing)}"
+    )
+
+
+def test_audio_input_stream_offloads_blocking_next_to_thread():
+    # Guards against regression back to `for chunk_text in
+    # audio_input_generate():` -- which blocks the event loop on each
+    # whisper chunk and prevents POST /api/inference/cancel from being
+    # serviced until the chunk yields.
+    audio = None
+    for fn in ast.walk(_TREE):
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "audio_input_stream":
+            audio = fn
+            break
+    assert audio is not None, "audio_input_stream generator missing"
+
+    for sub in ast.walk(audio):
+        if isinstance(sub, (ast.For, ast.AsyncFor)):
+            it_src = ast.unparse(sub.iter)
+            assert "audio_input_generate" not in it_src, (
+                "audio_input_stream must not iterate audio_input_generate() "
+                "directly -- that blocks the event loop. Use "
+                "`await asyncio.to_thread(next, gen, _DONE)` inside a "
+                "`while True` loop instead"
+            )
+
+    found_to_thread_next = False
+    for sub in ast.walk(audio):
+        if not isinstance(sub, ast.Call):
+            continue
+        fn_expr = sub.func
+        if not (
+            isinstance(fn_expr, ast.Attribute)
+            and fn_expr.attr == "to_thread"
+            and isinstance(fn_expr.value, ast.Name)
+            and fn_expr.value.id == "asyncio"
+        ):
+            continue
+        if sub.args and isinstance(sub.args[0], ast.Name) and sub.args[0].id == "next":
+            found_to_thread_next = True
+            break
+    assert found_to_thread_next, (
+        "audio_input_stream must call `asyncio.to_thread(next, gen, ...)` "
+        "to keep the event loop free while whisper yields the next chunk"
+    )
+
+
+def test_stream_chunks_cancel_branch_resets_backend_state():
+    # The Unsloth path's cancel branch must flush GPU / KV-cache state
+    # via `backend.reset_generation_state()` -- the orchestrator's
+    # internal cancel path does not do this, so a cancel-via-POST that
+    # only broke the loop would leave the subprocess in a dirty state
+    # for the next request.
+    fn = None
+    top = None
+    for n in ast.walk(_TREE):
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
+            top = n
+            break
+    assert top is not None
+    for n in ast.walk(top):
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "stream_chunks":
+            fn = n
+            break
+    assert fn is not None, "stream_chunks generator missing"
+
+    for sub in ast.walk(fn):
+        if not isinstance(sub, ast.If):
+            continue
+        t = sub.test
+        if not (
+            isinstance(t, ast.Call)
+            and isinstance(t.func, ast.Attribute)
+            and t.func.attr == "is_set"
+            and isinstance(t.func.value, ast.Name)
+            and t.func.value.id == "cancel_event"
+        ):
+            continue
+        body_src = "\n".join(ast.unparse(s) for s in sub.body)
+        if "backend.reset_generation_state()" in body_src:
+            return
+    raise AssertionError(
+        "stream_chunks `if cancel_event.is_set():` branch must call "
+        "backend.reset_generation_state() -- matches the existing "
+        "request.is_disconnected() / CancelledError cleanup paths and "
+        "prevents KV-cache drift after cancel-via-POST"
+    )
+
+
+# ── Behavioral simulations for the iter-1 fixes ──────────────
+
+
+def test_unsloth_stream_loop_breaks_on_external_cancel_event():
+    cancel_event = threading.Event()
+    reset_calls = [0]
+
+    class _Backend:
+        def reset_generation_state(self):
+            reset_calls[0] += 1
+
+    backend = _Backend()
+
+    def _generate():
+        for i in range(200):
+            time.sleep(0.005)
+            yield f"cum-{i}"
+
+    async def _loop():
+        _DONE = object()
+        loop = asyncio.get_event_loop()
+        gen = _generate()
+        seen = []
+        while True:
+            if cancel_event.is_set():
+                backend.reset_generation_state()
+                break
+            cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+            if cumulative is _DONE:
+                break
+            seen.append(cumulative)
+        return seen
+
+    async def _fire():
+        await asyncio.sleep(0.05)
+        cancel_event.set()
+
+    async def _main():
+        return await asyncio.gather(_loop(), _fire())
+
+    seen, _ = asyncio.run(_main())
+    assert len(seen) < 200, (
+        f"loop must not drain the generator after cancel; got {len(seen)} tokens"
+    )
+    assert reset_calls[0] == 1, (
+        f"backend.reset_generation_state() must be called exactly once on "
+        f"cancel-via-POST, got {reset_calls[0]}"
+    )
+
+
+def test_audio_stream_stays_responsive_under_blocking_next():
+    # Regression guard: replace the post-fix loop with the pre-fix
+    # `for chunk in audio_input_generate()` pattern and assert it blocks
+    # the event loop; then confirm the post-fix pattern exits promptly.
+    cancel_event = threading.Event()
+
+    def _audio_gen():
+        for i in range(8):
+            time.sleep(0.15)
+            yield f"chunk-{i}"
+
+    async def _prefix_loop():
+        seen = []
+        for chunk_text in _audio_gen():
+            if cancel_event.is_set():
+                break
+            seen.append(chunk_text)
+        return seen
+
+    async def _postfix_loop():
+        _DONE = object()
+        gen = _audio_gen()
+        seen = []
+        while True:
+            if cancel_event.is_set():
+                break
+            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+            if chunk_text is _DONE:
+                break
+            seen.append(chunk_text)
+        return seen
+
+    async def _fire_early():
+        await asyncio.sleep(0.05)
+        cancel_event.set()
+
+    async def _run(loop_coro):
+        return await asyncio.gather(loop_coro, _fire_early())
+
+    cancel_event.clear()
+    t0 = time.monotonic()
+    prefix_seen, _ = asyncio.run(_run(_prefix_loop()))
+    prefix_elapsed = time.monotonic() - t0
+    assert prefix_elapsed >= 0.13, (
+        f"pre-fix pattern should block event loop for >=1 chunk time "
+        f"(~150ms); got {prefix_elapsed:.3f}s, {len(prefix_seen)} chunks"
+    )
+
+    cancel_event.clear()
+    t0 = time.monotonic()
+    postfix_seen, _ = asyncio.run(_run(_postfix_loop()))
+    postfix_elapsed = time.monotonic() - t0
+    assert postfix_elapsed < prefix_elapsed, (
+        f"post-fix pattern must exit faster than pre-fix (blocking) "
+        f"pattern; post={postfix_elapsed:.3f}s vs pre={prefix_elapsed:.3f}s"
+    )
+    assert len(postfix_seen) < 8, (
+        f"post-fix loop must not drain all chunks; got {len(postfix_seen)}"
+    )
+
+
+def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
+    # Pending-cancel replay: _TrackedCancel.__enter__ already set
+    # cancel_event before the generator body starts iterating. The
+    # top-of-loop check must short-circuit the very first iteration so
+    # no token is emitted. Catches a regression that moves the check
+    # below `next()` -- the mid-loop test would still pass but this
+    # test would observe one extra token leak.
+    cancel_event = threading.Event()
+    cancel_event.set()
+    reset_calls = [0]
+
+    class _Backend:
+        def reset_generation_state(self):
+            reset_calls[0] += 1
+
+    backend = _Backend()
+
+    next_calls = [0]
+
+    def _generate():
+        while True:
+            next_calls[0] += 1
+            yield f"cum-{next_calls[0]}"
+
+    async def _loop():
+        _DONE = object()
+        loop = asyncio.get_event_loop()
+        gen = _generate()
+        seen = []
+        while True:
+            if cancel_event.is_set():
+                backend.reset_generation_state()
+                break
+            cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+            if cumulative is _DONE:
+                break
+            seen.append(cumulative)
+        return seen
+
+    seen = asyncio.run(_loop())
+    assert seen == [], (
+        f"loop must emit zero tokens when cancel_event is pre-set "
+        f"(pending-replay path); got {seen}"
+    )
+    assert next_calls[0] == 0, (
+        f"loop must not call next() at all on pre-set cancel; got "
+        f"{next_calls[0]} calls"
+    )
+    assert reset_calls[0] == 1, (
+        f"backend.reset_generation_state() must still fire exactly once "
+        f"on pre-set cancel; got {reset_calls[0]}"
+    )
+
+
+def test_audio_stream_emits_zero_chunks_on_preset_cancel():
+    # Symmetric to the Unsloth pre-set test: the audio loop's top-of-loop
+    # cancel check must skip the asyncio.to_thread(next, ...) call when
+    # cancel_event was already set via pending-replay.
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    next_calls = [0]
+
+    def _audio_gen():
+        while True:
+            next_calls[0] += 1
+            yield f"chunk-{next_calls[0]}"
+
+    async def _loop():
+        _DONE = object()
+        gen = _audio_gen()
+        seen = []
+        while True:
+            if cancel_event.is_set():
+                break
+            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+            if chunk_text is _DONE:
+                break
+            seen.append(chunk_text)
+        return seen
+
+    seen = asyncio.run(_loop())
+    assert seen == [], (
+        f"audio loop must emit zero chunks on pre-set cancel; got {seen}"
+    )
+    assert next_calls[0] == 0, (
+        f"audio loop must not call next() on pre-set cancel; got "
+        f"{next_calls[0]} calls"
+    )
