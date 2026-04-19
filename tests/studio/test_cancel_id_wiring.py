@@ -164,6 +164,6 @@ def test_abort_cancel_post_uses_plain_fetch_with_manual_auth_header():
         "rather than relying on authFetch's 401 flow"
     )
     assert "Authorization" in body
-    assert "keepalive: true" in body, (
-        "keepalive is required so the fetch survives page unload during stop"
-    )
+    assert (
+        "keepalive: true" in body
+    ), "keepalive is required so the fetch survives page unload during stop"
