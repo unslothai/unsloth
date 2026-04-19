@@ -12,6 +12,7 @@ from datasets import Dataset
 from core.training.training import TrainingBackend
 from models.training import TrainingStartRequest
 from utils.datasets import format_dataset, format_and_template_dataset
+from utils.datasets.raw_text import prepare_raw_text_dataset
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
@@ -155,6 +156,27 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["final_format"], "raw_text")
         self.assertEqual(result["dataset"][0]["text"], "hello raw world")
+
+    def test_prepare_raw_text_dataset_drops_null_rows_before_appending_eos(self):
+        dataset = Dataset.from_dict({"text": ["hello", None, "world"]})
+
+        result = prepare_raw_text_dataset(
+            dataset,
+            mode_label = "CPT",
+            split_name = "train",
+            eos_token = "<eos>",
+            append_eos = True,
+        )
+
+        self.assertEqual(len(result.dataset), 2)
+        self.assertEqual(result.dataset[0]["text"], "hello<eos>")
+        self.assertEqual(result.dataset[1]["text"], "world<eos>")
+        self.assertTrue(
+            any(
+                "null or non-string 'text' values" in notice.message
+                for notice in result.notices
+            )
+        )
 
 
 if __name__ == "__main__":

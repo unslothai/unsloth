@@ -39,6 +39,35 @@ def _split_scope(split_name: str | None) -> str:
     return f"the {split_name} split" if split_name else "this dataset"
 
 
+def _drop_invalid_text_rows(
+    dataset: Dataset,
+    *,
+    mode_title: str,
+    split_scope: str,
+) -> tuple[Dataset, list[RawTextNotice]]:
+    filtered_dataset = dataset.filter(lambda ex: isinstance(ex["text"], str))
+    dropped_rows = len(dataset) - len(filtered_dataset)
+    if not dropped_rows:
+        return filtered_dataset, []
+
+    if len(filtered_dataset) == 0:
+        raise ValueError(
+            f"{mode_title} training requires at least one string 'text' value "
+            f"in {split_scope}; all {dropped_rows} rows were null or non-string."
+        )
+
+    return filtered_dataset, [
+        RawTextNotice(
+            message = (
+                f"{mode_title}: dropped {dropped_rows:,} row(s) with null or "
+                f"non-string 'text' values from {split_scope}"
+            ),
+            level = "warning",
+            update_status = True,
+        )
+    ]
+
+
 def prepare_raw_text_dataset(
     dataset: Dataset,
     *,
@@ -83,6 +112,13 @@ def prepare_raw_text_dataset(
             )
         )
         dataset = dataset.rename_column(renamed_col, "text")
+
+    dataset, invalid_row_notices = _drop_invalid_text_rows(
+        dataset,
+        mode_title = mode_title,
+        split_scope = split_scope,
+    )
+    notices.extend(invalid_row_notices)
 
     if append_eos:
         if not eos_token:
