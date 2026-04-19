@@ -18,10 +18,11 @@ import {
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
-import type {
-  ChatLoraSummary,
-  ChatModelSummary,
-  InferenceParams,
+import {
+  DEFAULT_INFERENCE_PARAMS,
+  type ChatLoraSummary,
+  type ChatModelSummary,
+  type InferenceParams,
 } from "../types/runtime";
 
 type SelectedModelInput = {
@@ -408,10 +409,14 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
-          const paramsBeforeLoad = useChatRuntimeStore.getState().params;
-          const trustRemoteCode = paramsBeforeLoad.trustRemoteCode ?? false;
-          const maxSeqLength = paramsBeforeLoad.maxSeqLength;
-          const hfToken = useChatRuntimeStore.getState().hfToken || null;
+          const stateBeforeUnload = useChatRuntimeStore.getState();
+          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          const maxSeqLength = previousModel?.isGguf ? 
+              stateBeforeUnload.customContextLength 
+              ?? stateBeforeUnload.ggufContextLength 
+              ?? DEFAULT_INFERENCE_PARAMS.maxSeqLength 
+            : stateBeforeUnload.params.maxSeqLength;
+          const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             useChatRuntimeStore.getState().modelRequiresTrustRemoteCode;
           try {
