@@ -716,8 +716,13 @@ def run_training_process(
             cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
             if not cpt_target_modules:
                 cpt_target_modules = [
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
                     "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
