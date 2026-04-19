@@ -36,8 +36,8 @@ def build_prompts(tokenizer, n_prompts):
     from datasets import load_dataset
 
     apply_chat_template_to_tokenizer(tokenizer)
-    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
-    ds = ds.shuffle(seed=3407).select(range(n_prompts))
+    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
+    ds = ds.shuffle(seed = 3407).select(range(n_prompts))
     messages = [
         [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -46,11 +46,11 @@ def build_prompts(tokenizer, n_prompts):
         for x in ds
     ]
     prompts_text = [
-        tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        tokenizer.apply_chat_template(m, add_generation_prompt = True, tokenize = False)
         for m in messages
     ]
     prompt_ids = [
-        tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=True)
+        tokenizer.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
         for m in messages
     ]
     return prompts_text, prompt_ids
@@ -58,30 +58,36 @@ def build_prompts(tokenizer, n_prompts):
 
 def run_vllm(args):
     import os as _os
+
     _os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
     from unsloth import FastLanguageModel
+
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=False,
-        fast_inference=True,
-        max_lora_rank=32,
-        gpu_memory_utilization=args.gpu_memory_utilization,
+        model_name = args.model_name,
+        max_seq_length = args.max_seq_length,
+        load_in_4bit = False,
+        fast_inference = True,
+        max_lora_rank = 32,
+        gpu_memory_utilization = args.gpu_memory_utilization,
     )
     prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
 
     from vllm import SamplingParams
+
     sp = SamplingParams(
-        temperature=1.0, min_p=0.1, top_p=1.0, top_k=-1,
-        seed=3407,
-        max_tokens=args.max_new_tokens,
-        stop=[tokenizer.eos_token],
-        include_stop_str_in_output=True,
+        temperature = 1.0,
+        min_p = 0.1,
+        top_p = 1.0,
+        top_k = -1,
+        seed = 3407,
+        max_tokens = args.max_new_tokens,
+        stop = [tokenizer.eos_token],
+        include_stop_str_in_output = True,
     )
 
     # Warmup on 16 prompts then discard.
     warmup_text = prompts_text[:16]
-    _ = model.fast_generate(warmup_text, sampling_params=sp, lora_request=None)
+    _ = model.fast_generate(warmup_text, sampling_params = sp, lora_request = None)
     torch.cuda.synchronize()
 
     # Three measured rounds on the full batch.
@@ -91,7 +97,9 @@ def run_vllm(args):
     for _ in range(args.n_rounds):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        outputs = model.fast_generate(prompts_text, sampling_params=sp, lora_request=None)
+        outputs = model.fast_generate(
+            prompts_text, sampling_params = sp, lora_request = None
+        )
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
         decoded = sum(len(o.outputs[0].token_ids) for o in outputs)
@@ -121,22 +129,22 @@ def run_tpaged(args):
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        dtype=torch.bfloat16,
-        attn_implementation=args.attn_impl,
+        dtype = torch.bfloat16,
+        attn_implementation = args.attn_impl,
     ).to("cuda")
     model.eval()
     prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
 
     gen_config = GenerationConfig(
-        max_new_tokens=args.max_new_tokens,
-        do_sample=True,
-        temperature=1.0,
-        top_p=1.0,
-        min_p=0.1,
-        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        use_cache=True,
+        max_new_tokens = args.max_new_tokens,
+        do_sample = True,
+        temperature = 1.0,
+        top_p = 1.0,
+        min_p = 0.1,
+        pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id,
+        bos_token_id = tokenizer.bos_token_id,
+        eos_token_id = tokenizer.eos_token_id,
+        use_cache = True,
     )
     # Raise the paged-cache upper bounds; defaults (256 / 4096) throttle CB.
     gen_config.max_batch_tokens = args.max_batch_tokens
@@ -145,7 +153,9 @@ def run_tpaged(args):
     # Warmup on 16 prompts.
     warmup_ids = prompt_ids[:16]
     with torch.inference_mode():
-        _ = model.generate_batch(warmup_ids, generation_config=gen_config, progress_bar=False)
+        _ = model.generate_batch(
+            warmup_ids, generation_config = gen_config, progress_bar = False
+        )
     torch.cuda.synchronize()
 
     n_prompt_tokens = sum(len(p) for p in prompt_ids)
@@ -156,7 +166,7 @@ def run_tpaged(args):
         t0 = time.perf_counter()
         with torch.inference_mode():
             outputs = model.generate_batch(
-                prompt_ids, generation_config=gen_config, progress_bar=False
+                prompt_ids, generation_config = gen_config, progress_bar = False
             )
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
@@ -180,23 +190,23 @@ def run_tpaged(args):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--backend", choices=["vllm", "tpaged"], required=True)
-    p.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
-    p.add_argument("--max_seq_length", type=int, default=2048)
-    p.add_argument("--n_prompts", type=int, default=64)
-    p.add_argument("--n_rounds", type=int, default=3)
-    p.add_argument("--max_new_tokens", type=int, default=1024)
-    p.add_argument("--gpu_memory_utilization", type=float, default=0.8)
-    p.add_argument("--attn_impl", default="sdpa")
-    p.add_argument("--max_batch_tokens", type=int, default=8192)
-    p.add_argument("--num_blocks", type=int, default=16384)
-    p.add_argument("--stats_path", required=True)
+    p.add_argument("--backend", choices = ["vllm", "tpaged"], required = True)
+    p.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
+    p.add_argument("--max_seq_length", type = int, default = 2048)
+    p.add_argument("--n_prompts", type = int, default = 64)
+    p.add_argument("--n_rounds", type = int, default = 3)
+    p.add_argument("--max_new_tokens", type = int, default = 1024)
+    p.add_argument("--gpu_memory_utilization", type = float, default = 0.8)
+    p.add_argument("--attn_impl", default = "sdpa")
+    p.add_argument("--max_batch_tokens", type = int, default = 8192)
+    p.add_argument("--num_blocks", type = int, default = 16384)
+    p.add_argument("--stats_path", required = True)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
 
     torch.cuda.reset_peak_memory_stats()
     if args.backend == "vllm":
@@ -206,8 +216,8 @@ def main():
 
     out["peak_memory_gb"] = torch.cuda.max_memory_allocated() / 1024**3
     with open(args.stats_path, "w") as f:
-        json.dump(out, f, indent=2)
-    print(json.dumps(out, indent=2))
+        json.dump(out, f, indent = 2)
+    print(json.dumps(out, indent = 2))
 
 
 if __name__ == "__main__":

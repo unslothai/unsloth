@@ -63,7 +63,7 @@ def build_dataset(tokenizer, *, max_seq_length: int = 2048):
     """Build the DAPO-Math-17k GRPO dataset with the prompt formatting from the
     notebook. Returns `(dataset, maximum_prompt_length)`.
     """
-    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
+    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
 
     def _map_row(x):
         return {
@@ -81,12 +81,12 @@ def build_dataset(tokenizer, *, max_seq_length: int = 2048):
         return {
             "tokens": tokenizer.apply_chat_template(
                 batch["prompt"],
-                add_generation_prompt=True,
-                tokenize=True,
+                add_generation_prompt = True,
+                tokenize = True,
             )
         }
 
-    tokenized = ds.map(_tokenize, batched=True)
+    tokenized = ds.map(_tokenize, batched = True)
     tokenized = tokenized.map(lambda x: {"L": len(x["tokens"])})
     lengths = np.array(tokenized["L"])
     maximum_length = int(np.quantile(lengths, 0.9))
@@ -97,18 +97,17 @@ def build_dataset(tokenizer, *, max_seq_length: int = 2048):
 def build_reward_funcs(tokenizer):
     """Return the 4 reward functions used in the notebook, wired to `tokenizer`."""
     solution_end_regex = (
-        r"</SOLUTION>[\s]{0,}"
-        + "(?:" + re.escape(tokenizer.eos_token) + ")?"
+        r"</SOLUTION>[\s]{0,}" + "(?:" + re.escape(tokenizer.eos_token) + ")?"
     )
     match_format = re.compile(
         rf"{REASONING_END}.*?"
         rf"{SOLUTION_START}(.+?){solution_end_regex}"
         rf"[\s]{{0,}}$",
-        flags=re.MULTILINE | re.DOTALL,
+        flags = re.MULTILINE | re.DOTALL,
     )
     match_numbers = re.compile(
         SOLUTION_START + r".*?[\s]{0,}([-]?[\d\.\,]{1,})",
-        flags=re.MULTILINE | re.DOTALL,
+        flags = re.MULTILINE | re.DOTALL,
     )
 
     def match_format_exactly(completions, **kwargs):
@@ -193,7 +192,12 @@ def build_reward_funcs(tokenizer):
                 scores.append(0.0)
         return scores
 
-    return [match_format_exactly, match_format_approximately, check_answer, check_numbers]
+    return [
+        match_format_exactly,
+        match_format_approximately,
+        check_answer,
+        check_numbers,
+    ]
 
 
 def build_grpo_kwargs(
@@ -215,24 +219,24 @@ def build_grpo_kwargs(
     max_completion_length = max_seq_length - max_prompt_length
 
     return dict(
-        temperature=1.0,
-        top_p=1.0,
-        top_k=-1,
-        min_p=0.1,
-        learning_rate=5e-6,
-        weight_decay=0.001,
-        warmup_ratio=0.1,
-        lr_scheduler_type="linear",
-        optim="adamw_8bit",
-        logging_steps=1,
-        per_device_train_batch_size=per_device_train_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        num_generations=num_generations,
-        max_prompt_length=max_prompt_length,
-        max_completion_length=max_completion_length,
-        max_steps=max_steps,
-        save_steps=max_steps,
-        report_to="none",
-        output_dir=output_dir,
-        seed=3407,
+        temperature = 1.0,
+        top_p = 1.0,
+        top_k = -1,
+        min_p = 0.1,
+        learning_rate = 5e-6,
+        weight_decay = 0.001,
+        warmup_ratio = 0.1,
+        lr_scheduler_type = "linear",
+        optim = "adamw_8bit",
+        logging_steps = 1,
+        per_device_train_batch_size = per_device_train_batch_size,
+        gradient_accumulation_steps = gradient_accumulation_steps,
+        num_generations = num_generations,
+        max_prompt_length = max_prompt_length,
+        max_completion_length = max_completion_length,
+        max_steps = max_steps,
+        save_steps = max_steps,
+        report_to = "none",
+        output_dir = output_dir,
+        seed = 3407,
     )

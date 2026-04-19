@@ -31,10 +31,13 @@ sys.path.insert(0, str(HERE))
 # `for_inference()` hooks, which a vanilla HF model does not.
 try:
     import vllm.sampling_params as _vllm_sp
+
     if not hasattr(_vllm_sp, "GuidedDecodingParams"):
+
         class _GuidedDecodingParamsShim:  # pragma: no cover - used only if TRL asks
             def __init__(self, *a, **kw):
                 pass
+
         _vllm_sp.GuidedDecodingParams = _GuidedDecodingParamsShim
 except ImportError:
     pass
@@ -53,28 +56,39 @@ from unsloth_grpo_common import (  # noqa: E402
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
-    p.add_argument("--max_seq_length", type=int, default=2048)
-    p.add_argument("--lora_rank", type=int, default=32)
-    p.add_argument("--max_steps", type=int, default=61)
-    p.add_argument("--num_generations", type=int, default=4)
-    p.add_argument("--per_device_train_batch_size", type=int, default=1)
-    p.add_argument("--gradient_accumulation_steps", type=int, default=1)
-    p.add_argument("--attn_impl", default="sdpa",
-                   help="Base attention impl to compose with paged. 'sdpa' or 'flash_attention_2'.")
-    p.add_argument("--max_batch_tokens", type=int, default=8192,
-                   help="PagedAttentionCache.max_batch_tokens. Default upper bound is 256 which is far too small.")
-    p.add_argument("--num_blocks", type=int, default=8192,
-                   help="PagedAttentionCache.num_blocks (block_size=32). 8192*32 tokens of KV capacity.")
-    p.add_argument("--output_dir", default="outputs/grpo_tpaged")
-    p.add_argument("--stats_path", default="logs/tpaged_stats.json")
+    p.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
+    p.add_argument("--max_seq_length", type = int, default = 2048)
+    p.add_argument("--lora_rank", type = int, default = 32)
+    p.add_argument("--max_steps", type = int, default = 61)
+    p.add_argument("--num_generations", type = int, default = 4)
+    p.add_argument("--per_device_train_batch_size", type = int, default = 1)
+    p.add_argument("--gradient_accumulation_steps", type = int, default = 1)
+    p.add_argument(
+        "--attn_impl",
+        default = "sdpa",
+        help = "Base attention impl to compose with paged. 'sdpa' or 'flash_attention_2'.",
+    )
+    p.add_argument(
+        "--max_batch_tokens",
+        type = int,
+        default = 8192,
+        help = "PagedAttentionCache.max_batch_tokens. Default upper bound is 256 which is far too small.",
+    )
+    p.add_argument(
+        "--num_blocks",
+        type = int,
+        default = 8192,
+        help = "PagedAttentionCache.num_blocks (block_size=32). 8192*32 tokens of KV capacity.",
+    )
+    p.add_argument("--output_dir", default = "outputs/grpo_tpaged")
+    p.add_argument("--stats_path", default = "logs/tpaged_stats.json")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok = True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
 
     # 1. Vanilla HF load (no Unsloth patches on the attention forward).
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -82,24 +96,31 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        dtype=torch.bfloat16,
-        attn_implementation=args.attn_impl,
+        dtype = torch.bfloat16,
+        attn_implementation = args.attn_impl,
     )
     model.to("cuda")
 
     lora = LoraConfig(
-        r=args.lora_rank,
-        lora_alpha=args.lora_rank * 2,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
+        r = args.lora_rank,
+        lora_alpha = args.lora_rank * 2,
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
         ],
-        bias="none",
-        task_type="CAUSAL_LM",
+        bias = "none",
+        task_type = "CAUSAL_LM",
     )
     model = get_peft_model(model, lora)
     try:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = {"use_reentrant": False}
+        )
     except TypeError:
         model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
@@ -107,21 +128,24 @@ def main():
     apply_chat_template_to_tokenizer(tokenizer)
 
     # 2. Dataset + rewards (identical to the vLLM script).
-    dataset, maximum_length = build_dataset(tokenizer, max_seq_length=args.max_seq_length)
+    dataset, maximum_length = build_dataset(
+        tokenizer, max_seq_length = args.max_seq_length
+    )
     print(f"[tpaged] Max prompt length (p90): {maximum_length}")
     reward_funcs = build_reward_funcs(tokenizer)
 
     # 3. Build GRPOConfig with transformers continuous batching enabled.
     from trl import GRPOConfig, GRPOTrainer
+
     shared = build_grpo_kwargs(
         tokenizer,
         maximum_length,
-        max_seq_length=args.max_seq_length,
-        max_steps=args.max_steps,
-        num_generations=args.num_generations,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        output_dir=args.output_dir,
+        max_seq_length = args.max_seq_length,
+        max_steps = args.max_steps,
+        num_generations = args.num_generations,
+        per_device_train_batch_size = args.per_device_train_batch_size,
+        gradient_accumulation_steps = args.gradient_accumulation_steps,
+        output_dir = args.output_dir,
     )
     # transformers `TopKLogitsWarper` rejects -1. None skips the warper entirely.
     shared["top_k"] = None
@@ -131,10 +155,10 @@ def main():
     # `generation_kwargs`, which TRL forwards to `GenerationConfig`, which the
     # CB manager then reads off when sizing the paged cache.
     training_args = GRPOConfig(
-        use_vllm=False,
-        use_transformers_paged=True,
-        bf16=True,
-        generation_kwargs={
+        use_vllm = False,
+        use_transformers_paged = True,
+        bf16 = True,
+        generation_kwargs = {
             "max_batch_tokens": args.max_batch_tokens,
             "num_blocks": args.num_blocks,
         },
@@ -154,7 +178,7 @@ def main():
             torch.cuda.synchronize()
             self.t0 = time.perf_counter()
 
-        def on_log(self, _args, state, control, logs=None, **kwargs):
+        def on_log(self, _args, state, control, logs = None, **kwargs):
             if logs is None:
                 return
             if "loss" in logs:
@@ -168,12 +192,12 @@ def main():
                 timings["step_wall"].append(time.perf_counter() - self.t0)
 
     trainer = GRPOTrainer(
-        model=model,
-        processing_class=tokenizer,
-        reward_funcs=reward_funcs,
-        args=training_args,
-        train_dataset=dataset,
-        callbacks=[StepTimer()],
+        model = model,
+        processing_class = tokenizer,
+        reward_funcs = reward_funcs,
+        args = training_args,
+        train_dataset = dataset,
+        callbacks = [StepTimer()],
     )
 
     torch.cuda.reset_peak_memory_stats()
@@ -197,7 +221,7 @@ def main():
         "max_steps": args.max_steps,
     }
     with open(args.stats_path, "w") as f:
-        json.dump(stats, f, indent=2)
+        json.dump(stats, f, indent = 2)
     print(f"[tpaged] Wrote stats to {args.stats_path}")
     print(f"[tpaged] Total train wall: {t_train:.1f}s   Peak mem: {peak:.2f} GB")
 
