@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { copyToClipboardAsync } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/shared/toast";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
@@ -17,11 +18,14 @@ export function KeyRevealCard({
 }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    if (copyToClipboard(rawKey)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
+  const handleCopy = async () => {
+    const ok = await copyToClipboardAsync(rawKey);
+    if (!ok) {
+      toastError("Copy failed", "Could not copy the API key.");
+      return;
     }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
   };
 
   return (
