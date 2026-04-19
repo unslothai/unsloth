@@ -4,6 +4,7 @@
 import { useCallback } from "react";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { buildTrainingStartPayload } from "../api/mappers";
+import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { startTraining, stopTraining, resetTraining } from "../api/train-api";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
@@ -78,7 +79,10 @@ export function useTrainingActions() {
           });
         }
 
-        const needsReview = check.requires_manual_mapping || check.detected_format === "custom_heuristic";
+        const isRawFormat = isRawTextDatasetFormat(config.datasetFormat);
+        const needsReview =
+          !isRawFormat &&
+          (check.requires_manual_mapping || check.detected_format === "custom_heuristic");
         if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};

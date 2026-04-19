@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
+import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
 import { Database02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -90,10 +91,11 @@ export function DatasetPreviewDialog({
   const effectiveIsAudio = !!data?.is_audio;
   const effectiveIsVlm = isVlm || !!data?.is_image;
 
+  const isRawFormat = isRawTextDatasetFormat(datasetFormat);
   const hasHeuristicMapping = !data?.requires_manual_mapping && !!data?.suggested_mapping;
-  const mappingEnabled = !!data?.requires_manual_mapping || hasHeuristicMapping;
+  const mappingEnabled = !isRawFormat && (!!data?.requires_manual_mapping || hasHeuristicMapping);
   const showMappingFooter = mode === "mapping" && mappingEnabled;
-  const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
+  const mappingOk = isRawFormat || isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = datasetSource === "huggingface";
 
@@ -413,7 +415,7 @@ export function DatasetPreviewDialog({
                 <MetaRow label="Source" value={sourceLabel} />
                 <MetaRow
                   label="Format"
-                  value={data.detected_format || "--"}
+                  value={isRawFormat ? "Raw Text" : (data.detected_format || "--")}
                 />
                 <MetaRow
                   label="Total Rows"
@@ -441,7 +443,7 @@ export function DatasetPreviewDialog({
                 />
               </div>
 
-              {data.warning && (
+              {data.warning && !isRawFormat && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
                   <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0 mt-0.5" />
                   <span>{data.warning}</span>

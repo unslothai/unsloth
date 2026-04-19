@@ -551,26 +551,6 @@ export function ModelSection() {
             </div>
           </div>
 
-          <div data-tour="studio-method" className="flex min-w-0 flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Method
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs">
-                QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses 16-bit.
-                Full updates all weights. CPT (Continued Pretraining) trains on
-                raw text to adapt the model to a new domain without chat
-                formatting.{" "}
           <div
             data-tour="studio-method"
             className="flex min-w-0 flex-col gap-2"
@@ -591,7 +571,9 @@ export function ModelSection() {
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
                   QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
-                  16-bit. Full updates all weights.{" "}
+                  16-bit. Full updates all weights. CPT (Continued Pretraining)
+                  trains on raw text to adapt the model to a new domain without
+                  chat formatting.{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
@@ -638,6 +620,14 @@ export function ModelSection() {
                     Full Fine-tune
                   </span>
                 </SelectItem>
+                <SelectItem value="cpt">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.cpt}`}
+                    />
+                    Continued Pretraining
+                  </span>
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -671,91 +661,6 @@ export function ModelSection() {
                 >
                   Get or update token
                 </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <Select
-            value={trainingMethod}
-            onValueChange={(v) => setTrainingMethod(v as TrainingMethod)}
-          >
-            <SelectTrigger className={DARK_TRIGGER}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent
-              position="popper"
-              className={`${DARK_CONTENT} w-[var(--radix-select-trigger-width)]`}
-            >
-              <SelectItem value="qlora">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.qlora}`}
-                  />
-                  QLoRA (4-bit)
-                </span>
-              </SelectItem>
-              <SelectItem value="lora">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.lora}`}
-                  />
-                  LoRA (16-bit)
-                </span>
-              </SelectItem>
-              <SelectItem value="full">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
-                  />
-                  Full Fine-tune
-                </span>
-              </SelectItem>
-              <SelectItem value="cpt">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.cpt}`}
-                  />
-                  Continued Pretraining
-                </span>
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex min-w-0 flex-col gap-2">
-          <span className="text-xs font-medium text-muted-foreground">
-            Hugging Face Token (Optional)
-          </span>
-          <InputGroup>
-            <InputGroupAddon>
-              <HugeiconsIcon icon={Key01Icon} className="size-4" />
-            </InputGroupAddon>
-            <InputGroupInput
-              type="password"
-              autoComplete="new-password"
-              name="hf-token"
-              placeholder="hf_..."
-              value={hfToken}
-              onChange={(e) => setHfToken(e.target.value)}
-            />
-          </InputGroup>
-          {(tokenValidationError ?? hfSearchError) && (
-            <p className="text-xs text-destructive">
-              {tokenValidationError ?? hfSearchError}
-              {" — "}
-              <a
-                href="https://huggingface.co/settings/tokens"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline"
-              >
-                Get or update token
-              </a>
-            </p>
-          )}
-          {isCheckingToken && (
-            <p className="text-xs text-muted-foreground">Checking token…</p>
-          )}
-        </div>
               </p>
             )}
             {isCheckingToken && (

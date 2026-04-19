@@ -41,6 +41,7 @@ from .chat_templates import (
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
 )
+from .raw_text import prepare_raw_text_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
@@ -436,6 +437,20 @@ def format_dataset(
 
     # Detect multimodal first (needed for all flows)
     multimodal_info = detect_multimodal_dataset(dataset)
+
+    if format_type == "raw":
+        raw_result = prepare_raw_text_dataset(dataset)
+        return {
+            "dataset": raw_result.dataset,
+            "detected_format": "raw_text",
+            "final_format": "raw_text",
+            "chat_column": "text",
+            "is_standardized": True,
+            "requires_manual_mapping": False,
+            "is_image": multimodal_info["is_image"],
+            "multimodal_info": multimodal_info,
+            "warnings": [notice.message for notice in raw_result.notices],
+        }
 
     # If user provided explicit mapping, skip detection and apply in the requested format
     if custom_format_mapping:
@@ -1104,6 +1119,21 @@ def format_and_template_dataset(
             batch_size = batch_size,
             num_proc = num_proc,
         )
+
+        if dataset_info["final_format"] == "raw_text":
+            summary = get_dataset_info_summary(dataset_info)
+            return {
+                "dataset": dataset_info["dataset"],
+                "detected_format": dataset_info["detected_format"],
+                "final_format": dataset_info["final_format"],
+                "chat_column": dataset_info.get("chat_column"),
+                "is_vlm": False,
+                "success": True,
+                "requires_manual_mapping": False,
+                "warnings": dataset_info.get("warnings", []),
+                "errors": [],
+                "summary": summary,
+            }
 
         # Step 2: Apply chat template
         detected = dataset_info.get("detected_format", "unknown")
