@@ -137,9 +137,9 @@ Updated watcher ownership and event handling:
 
 ## RAG Context Size Guidance
 Route-level controls (environment variables):
-- `UNSLOTH_WIKI_RAG_MAX_PAGES` (default: `3`)
-- `UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE` (default: `900`)
-- `UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS` (default: `4500`)
+- `UNSLOTH_WIKI_RAG_MAX_PAGES` (default: `8`)
+- `UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE` (default: `1800`)
+- `UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS` (default: `12000`)
 - `UNSLOTH_WIKI_LOG_INJECTED_CONTEXT` (default: `true`)
 - `UNSLOTH_WIKI_LOG_INJECTED_CONTEXT_MAX_CHARS` (default: `12000`, `0` = no truncation)
 
@@ -286,8 +286,8 @@ UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS=160000
 UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES=10
 UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE=20000
 
-# Include prior analysis pages when answering wiki queries (default false)
-UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY=false
+# Include prior analysis pages when answering wiki queries (default true)
+UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY=true
 ```
 
 Why `wiki/analysis` can be empty:
@@ -306,7 +306,7 @@ Extraction reliability hardening:
 - Additional extraction reasons now distinguish prompt echo vs garbled model output (`llm_prompt_echo`, `llm_garbled_output`).
 
 Analysis quality + chat history persistence hardening:
-- Wiki query ranking now excludes `index.md` and `log.md` and excludes `analysis/*` by default, which reduces recursive low-quality analysis loops.
+- Wiki query ranking now excludes `index.md` and `log.md`; `analysis/*` pages are included in query retrieval by default (configurable) to improve source-following and cross-page grounding.
 - If a query answer looks low quality/garbled, the engine writes an extractive fallback answer from cited context instead of persisting gibberish.
 - Chat history snapshots are buffered in memory and flushed to disk/wiki on a cadence (default 10 minutes) rather than every request.
 - Index entries for fallback-generated analysis pages are explicitly marked (for example `[fallback: repetition]`) so retrieval and maintenance flows can de-prioritize low-confidence analysis.
@@ -378,12 +378,12 @@ To reduce low-quality persisted answers and make failures debuggable:
 
 ### Context control updates
 
-#### 1) Recursive retrieval expansion (optional)
+#### 1) Recursive retrieval expansion (enabled by default)
 Wiki ranking can expand through wiki links to configurable depth/fanout:
 - `UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH`
 - `UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT`
 
-Default depth remains `0` (disabled), so recursion is opt-in.
+Default depth is `2` and default fanout is `8`, so source-following works out-of-the-box.
 
 #### 1b) Hybrid ranking signals (now default)
 `_rank_pages` now combines multiple signals instead of relying only on lexical overlap:
@@ -397,12 +397,12 @@ If lexical scoring produces no candidates, ranking now falls back to recency ord
 
 This improves robustness for sparse corpora, new entities, and short biography-style prompts.
 
-#### 1c) Optional LLM reranking stage (same backend/model path)
-An optional reranker can now reorder top retrieval candidates using the same `llm_fn` path already used by the wiki engine (so it uses the same model server/backend currently active).
+#### 1c) LLM reranking stage (same backend/model path)
+The reranker can reorder top retrieval candidates using the same `llm_fn` path already used by the wiki engine (so it uses the same model server/backend currently active).
 
 Controls:
-- `UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED` (default: `false`)
-- `UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES` (default: `24`)
+- `UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED` (default: `true`)
+- `UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES` (default: `32`)
 - `UNSLOTH_WIKI_ENGINE_LLM_RERANK_TOP_N` (default: `12`)
 - `UNSLOTH_WIKI_ENGINE_LLM_RERANK_PREVIEW_CHARS` (default: `420`)
 
@@ -487,15 +487,18 @@ UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE=0
 UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS=0
 UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS=0
 
-# Optional: recursive link expansion (off by default)
-UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH=0
-UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT=4
+# Recursive link expansion defaults
+UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH=2
+UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT=8
 
-# Optional: LLM reranking (same wiki llm_fn backend)
-UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED=false
-UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES=24
+# LLM reranking defaults (same wiki llm_fn backend)
+UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED=true
+UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES=32
 UNSLOTH_WIKI_ENGINE_LLM_RERANK_TOP_N=12
 UNSLOTH_WIKI_ENGINE_LLM_RERANK_PREVIEW_CHARS=420
+
+# Include analysis pages in query retrieval by default
+UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY=true
 
 # Optional: lint-driven web gap fill during /wiki/enrich
 UNSLOTH_WIKI_ENGINE_ENRICH_FILL_GAPS_FROM_WEB=false

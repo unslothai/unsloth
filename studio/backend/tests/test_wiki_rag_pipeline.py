@@ -283,7 +283,7 @@ def test_rank_pages_llm_rerank_reorders_candidates(tmp_path: Path):
     assert ranked_paths[:2] == ["sources/beta.md", "sources/alpha.md"]
 
 
-def test_rank_pages_llm_rerank_invalid_output_returns_no_pages(tmp_path: Path):
+def test_rank_pages_llm_rerank_invalid_output_falls_back_to_deterministic_ranking(tmp_path: Path):
     def _llm(prompt: str) -> str:
         if "ordered_pages" in prompt and "INDEX_FILE:" in prompt:
             return "not valid json and no usable page ids"
@@ -310,7 +310,11 @@ def test_rank_pages_llm_rerank_invalid_output_returns_no_pages(tmp_path: Path):
     )
 
     ranked = engine._rank_pages("alpha retrieval")
-    assert ranked == []
+    ranked_paths = [rel for rel, _ in ranked]
+
+    assert ranked_paths
+    assert ranked_paths[0] == "sources/alpha.md"
+    assert "sources/beta.md" in ranked_paths
 
 
 def test_rank_pages_does_not_promote_unrelated_entity_on_person_query(tmp_path: Path):

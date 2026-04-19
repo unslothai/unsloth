@@ -167,9 +167,9 @@ logger = get_logger(__name__)
 _WIKI_VAULT_ROOT = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
 _ROUTE_WIKI_MANAGER: Optional[WikiManager] = None
 _ROUTE_WIKI_INGESTOR: Optional[WikiIngestor] = None
-_RAG_MAX_PAGES = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_PAGES", "3"))
-_RAG_MAX_CHARS_PER_PAGE = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE", "900"))
-_RAG_MAX_TOTAL_CHARS = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS", "4500"))
+_RAG_MAX_PAGES = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_PAGES", "8"))
+_RAG_MAX_CHARS_PER_PAGE = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE", "1800"))
+_RAG_MAX_TOTAL_CHARS = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS", "12000"))
 _RAG_LOG_INJECTED_CONTEXT = os.getenv(
     "UNSLOTH_WIKI_LOG_INJECTED_CONTEXT", "true"
 ).strip().lower() not in {"0", "false", "no", "off"}

@@ -384,20 +384,20 @@ class WikiConfig:
     )
     ranking_link_depth: int = field(
         default_factory = lambda: _env_int(
-            "UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH", 0, minimum = 0
+            "UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH", 2, minimum = 0
         )
     )
     ranking_link_fanout: int = field(
-        default_factory = lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT", 4)
+        default_factory = lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT", 8)
     )
     ranking_llm_rerank_enabled: bool = field(
         default_factory = lambda: _env_flag(
-            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED", False
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED", True
         )
     )
     ranking_llm_rerank_candidates: int = field(
         default_factory = lambda: _env_int(
-            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES", 24, minimum = 3
+            "UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES", 32, minimum = 3
         )
     )
     ranking_llm_rerank_top_n: int = field(
@@ -427,7 +427,7 @@ class WikiConfig:
     )
     include_analysis_pages_in_query: bool = field(
         default_factory = lambda: _env_flag(
-            "UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY", False
+            "UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY", True
         )
     )
     low_unique_ratio_min_tokens: int = field(
@@ -2251,15 +2251,14 @@ class LLMWikiEngine:
 
     def _rank_pages(self, query: str) -> List[Tuple[str, float]]:
         all_pages = self._all_wiki_pages()
-        if self.cfg.ranking_llm_rerank_enabled:
-            ranked = self._rank_pages_by_recency(all_pages)
-            if len(ranked) <= 1:
-                return ranked
-            return self._llm_rerank_candidates(query, ranked)
-
         q_terms = self._terms(query)
         if not q_terms:
-            return self._rank_pages_by_recency(all_pages)
+            ranked = self._rank_pages_by_recency(all_pages)
+            if self.cfg.ranking_llm_rerank_enabled and len(ranked) > 1:
+                reranked = self._llm_rerank_candidates(query, ranked)
+                if reranked:
+                    return reranked
+            return ranked
 
         entity_focus_terms, entity_focus_slug = self._entity_query_focus(query)
 
@@ -2367,10 +2366,18 @@ class LLMWikiEngine:
             scores.append((rel, score))
 
         if not scores:
-            return self._rank_pages_by_recency(all_pages)
+            ranked = self._rank_pages_by_recency(all_pages)
+        else:
+            ranked = sorted(scores, key = lambda x: x[1], reverse = True)
+            ranked = self._expand_ranked_pages_by_links(ranked, query_terms = q_terms)
 
-        ranked = sorted(scores, key = lambda x: x[1], reverse = True)
-        ranked = self._expand_ranked_pages_by_links(ranked, query_terms = q_terms)
+        if self.cfg.ranking_llm_rerank_enabled and len(ranked) > 1:
+            reranked = self._llm_rerank_candidates(query, ranked)
+            if reranked:
+                return reranked
+            # Keep retrieval robust when planner output is invalid/empty.
+            return ranked
+
         return ranked
 
     def _expand_ranked_pages_by_links(
