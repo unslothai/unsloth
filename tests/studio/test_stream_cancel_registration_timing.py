@@ -61,6 +61,7 @@ _TREE = ast.parse(SRC)
 
 # ── Structural (AST) helpers ─────────────────────────────────
 
+
 def _collect_async_functions(tree: ast.AST):
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
 
@@ -98,6 +99,7 @@ def _finalbody_has_tracker_exit(finalbody) -> bool:
 
 
 # ── Structural tests ─────────────────────────────────────────
+
 
 def test_no_tracker_enter_inside_async_generators():
     offenders = []
@@ -279,6 +281,7 @@ async def _post_fix_gguf_loop(cancel_event):
 
 
 # ── Behavioral tests ─────────────────────────────────────────
+
 
 def test_finally_cleanup_on_normal_completion():
     m = _load_registry_module()
