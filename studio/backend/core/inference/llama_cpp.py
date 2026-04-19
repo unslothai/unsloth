@@ -48,15 +48,11 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 
-# Default generation caps sent to llama-server. Prevents the runaway where
-# a user-unset max_tokens makes llama-server default to n_predict = n_ctx
-# (up to 262144 tokens for Qwen3.5), producing many-minute "zombie" decodes
-# that ignore stop-button requests. Override max_tokens per-call with an
-# explicit kwarg; t_max_predict_ms is applied unconditionally as a
-# wall-clock backstop so callers that set a large max_tokens are still
-# bounded if cancel signaling fails.
+# Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
+# 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
+# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally.
 _DEFAULT_MAX_TOKENS = 4096
-_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 minutes wall-clock per request
+_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────

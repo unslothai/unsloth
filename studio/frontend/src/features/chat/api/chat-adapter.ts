@@ -4,7 +4,6 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
-import { authFetch } from "@/features/auth";
 import { getAuthToken } from "@/features/auth/session";
 import {
   generateAudio,
@@ -697,25 +696,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const toolCallParts: ToolCallMessagePart[] = [];
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
-      // Per-run cancellation token. Scoped to this single generation so a
-      // delayed stop POST cannot match the next run on the same thread.
+      // Per-run cancellation token so a delayed stop POST cannot match
+      // the next run on the same thread.
       const cancelId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      // Some proxies (e.g. Colab) do not propagate fetch aborts to the
-      // backend, so request.is_disconnected() never fires server-side
-      // and the tool-loop keeps running. Explicitly POST /inference/cancel
-      // on abort so the backend can signal its cancel_event.
+      // Colab-style proxies can swallow fetch aborts, so also POST
+      // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
         const body: Record<string, string> = { cancel_id: cancelId };
         if (resolvedThreadId) body.session_id = resolvedThreadId;
-        // Use plain fetch (+ manual Authorization) instead of authFetch.
-        // authFetch redirects to login on 401; that would kick the user
-        // out mid-stop if the access token expired during a long stream.
-        // The cancel POST is best-effort and the server accepts a bare
-        // Authorization header with keepalive: true.
+        // Plain fetch, not authFetch: authFetch redirects to login on
+        // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
         void fetch("/api/inference/cancel", {
           method: "POST",
