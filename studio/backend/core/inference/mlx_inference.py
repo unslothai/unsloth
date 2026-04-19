@@ -44,24 +44,55 @@ class MLXInferenceBackend:
         if mx.metal.is_available():
             mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
 
-        logger.info("Loading %s via %s", model_name, "mlx-vlm" if is_vision else "mlx-lm")
+        is_lora = getattr(config, "is_lora", False)
+        base_model = getattr(config, "base_model", None)
+
+        logger.info("Loading %s via %s (is_lora=%s)", model_name,
+                     "mlx-vlm" if is_vision else "mlx-lm", is_lora)
 
         if is_vision:
             from mlx_vlm import load as vlm_load
-            model, processor = vlm_load(model_name)
+            if is_lora and base_model:
+                # mlx-vlm's apply_lora_layers passes **config to get_peft_model,
+                # which breaks on our extra fields (num_layers, lora_parameters, etc.).
+                # Temporarily write a clean config with only the fields mlx-vlm expects.
+                import json, shutil
+                from pathlib import Path
+                adapter_dir = Path(model_name)
+                cfg_path = adapter_dir / "adapter_config.json"
+                backup_path = adapter_dir / "adapter_config.json.bak"
+                with open(cfg_path) as f:
+                    full_cfg = json.load(f)
+                # mlx-vlm get_peft_model accepts: rank, alpha, dropout, freeze, verbose
+                clean_cfg = {
+                    "rank": full_cfg.get("rank", full_cfg.get("lora_parameters", {}).get("rank", 8)),
+                    "alpha": full_cfg.get("scale", full_cfg.get("lora_parameters", {}).get("scale", 1.0)),
+                    "dropout": full_cfg.get("dropout", full_cfg.get("lora_parameters", {}).get("dropout", 0.0)),
+                }
+                shutil.copy(str(cfg_path), str(backup_path))
+                with open(cfg_path, "w") as f:
+                    json.dump(clean_cfg, f, indent=2)
+                try:
+                    logger.info("Loading VLM base '%s' with adapter '%s'", base_model, model_name)
+                    model, processor = vlm_load(base_model, adapter_path=model_name)
+                finally:
+                    # Restore original config
+                    shutil.move(str(backup_path), str(cfg_path))
+            else:
+                model, processor = vlm_load(model_name)
             self._model = model
             self._processor = processor
             self._tokenizer = getattr(processor, "tokenizer", processor)
             self._is_vlm = True
         else:
-            from mlx_lm import load as mlx_load
-            tokenizer_config = {}
-            if trust_remote_code:
-                tokenizer_config["trust_remote_code"] = True
-            model, tokenizer = mlx_load(
-                model_name,
-                tokenizer_config=tokenizer_config if tokenizer_config else None,
-            )
+            from unsloth_zoo.mlx_loader import FastMLXModel
+            try:
+                model, tokenizer = FastMLXModel.from_pretrained(
+                    model_name, text_only=True,
+                )
+            except TypeError:
+                from mlx_lm import load as mlx_load
+                model, tokenizer = mlx_load(model_name)
             self._model = model
             self._tokenizer = tokenizer
             self._processor = None
@@ -162,7 +193,7 @@ class MLXInferenceBackend:
 
         sampler = make_sampler(temp=temperature, top_p=top_p, min_tokens_to_keep=1)
 
-        cumulative = ""
+        token_ids = []
         logger.info("Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
                      len(prompt), max_new_tokens, type(self._model).__name__, type(self._tokenizer).__name__)
         with self._generation_lock:
@@ -174,8 +205,11 @@ class MLXInferenceBackend:
                     max_tokens=max_new_tokens,
                     sampler=sampler,
                 ):
-                    token_text = response.text if hasattr(response, "text") else str(response)
-                    cumulative += token_text
+                    token_ids.append(response.token)
+                    # Decode full sequence with skip_special_tokens — same as GPU
+                    cumulative = self._tokenizer.decode(
+                        token_ids, skip_special_tokens=True,
+                    )
                     yield cumulative
 
                     if cancel_event and cancel_event.is_set():

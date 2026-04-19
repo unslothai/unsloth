@@ -406,12 +406,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
 
-    # Map gradient_checkpointing string to bool
-    gc_setting = config.get("gradient_checkpointing", "unsloth")
+    # Pass gradient_checkpointing as string ("mlx"/"unsloth"/"none"/etc.)
+    # get_peft_model and MLXTrainer both accept strings and handle them.
+    gc_setting = config.get("gradient_checkpointing", "mlx")
     if isinstance(gc_setting, str):
-        use_grad_checkpoint = gc_setting.lower() not in ("false", "none", "")
+        use_grad_checkpoint = gc_setting if gc_setting.lower() not in ("false", "") else False
     else:
-        use_grad_checkpoint = bool(gc_setting)
+        use_grad_checkpoint = gc_setting
 
     if use_lora:
         _send("status", status_message="Configuring LoRA adapters...")
@@ -576,7 +577,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     output_dir = config.get("output_dir", "")
     if not output_dir:
         output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Resolve to ~/.unsloth/studio/outputs/ so the export page can find it
+    from utils.paths import resolve_output_dir, ensure_dir
+    output_dir = str(resolve_output_dir(output_dir))
+    ensure_dir(Path(output_dir))
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0

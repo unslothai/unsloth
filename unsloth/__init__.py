@@ -43,6 +43,7 @@ if _IS_MLX:
             raise NotImplementedError("Unsloth: for_inference not yet supported on MLX.")
 
     FastModel = FastLanguageModel
+    FastVisionModel = FastLanguageModel
 
 else:
     # GPU path: load everything from _gpu_init

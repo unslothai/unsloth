@@ -8,23 +8,28 @@ Export backend - handles model exporting in various formats
 
 import glob
 import json
+import platform
 import structlog
 from loggers import get_logger
 import os
 import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
-from peft import PeftModel, PeftModelForCausalLM
 from unsloth import FastLanguageModel, FastVisionModel
 from huggingface_hub import HfApi, ModelCard
-from transformers.modeling_utils import PushToHubMixin
-import torch
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
 from utils.paths import ensure_dir, outputs_root, resolve_export_dir, resolve_output_dir
 from core.inference import get_inference_backend
+
+# GPU-only imports — guarded for Apple Silicon where these aren't needed
+_IS_MLX = platform.system() == "Darwin" and platform.machine() == "arm64"
+if not _IS_MLX:
+    from peft import PeftModel, PeftModelForCausalLM
+    from transformers.modeling_utils import PushToHubMixin
+    import torch
 
 logger = get_logger(__name__)
 
@@ -223,7 +228,7 @@ class ExportBackend:
                 model, tokenizer = FastModel.from_pretrained(
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
-                    dtype = torch.float32,
+                    dtype = None if _IS_MLX else torch.float32,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                 )
@@ -260,8 +265,12 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                 )
 
-            # Check if PEFT model
-            self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+            # Check if PEFT / LoRA model
+            if _IS_MLX:
+                # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
+                self.is_peft = adapter_config.exists()
+            else:
+                self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
 
             # Store loaded model
             self.current_model = model
@@ -332,24 +341,30 @@ class ExportBackend:
             return False, "This is not a PEFT model. Use 'Export Base Model' instead."
 
         try:
-            # Determine save method
-            if format_type == "4-bit (FP4)":
-                save_method = "merged_4bit_forced"
-            elif self._audio_type == "whisper":
-                # Whisper uses save_method=None for local 16-bit merged save
-                save_method = None
-            else:  # 16-bit (FP16)
-                save_method = "merged_16bit"
-
             # Save locally if requested
             if save_directory:
                 save_directory = str(resolve_export_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
-                self.current_model.save_pretrained_merged(
-                    save_directory, self.current_tokenizer, save_method = save_method
-                )
+                if _IS_MLX:
+                    # MLX: save_pretrained_merged fuses LoRA and saves HF-compatible
+                    # safetensors. format_type / save_method are GPU-only concepts.
+                    self.current_model.save_pretrained_merged(
+                        save_directory, self.current_tokenizer,
+                    )
+                else:
+                    # GPU: determine save method from format_type
+                    if format_type == "4-bit (FP4)":
+                        save_method = "merged_4bit_forced"
+                    elif self._audio_type == "whisper":
+                        save_method = None
+                    else:
+                        save_method = "merged_16bit"
+
+                    self.current_model.save_pretrained_merged(
+                        save_directory, self.current_tokenizer, save_method = save_method
+                    )
 
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(save_directory)
@@ -365,17 +380,23 @@ class ExportBackend:
 
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
 
-                # Whisper uses save_method=None for local but "merged_16bit" for hub push
-                hub_save_method = (
-                    save_method if save_method is not None else "merged_16bit"
-                )
-                self.current_model.push_to_hub_merged(
-                    repo_id,
-                    self.current_tokenizer,
-                    save_method = hub_save_method,
-                    token = hf_token,
-                    private = private,
-                )
+                if _IS_MLX:
+                    self.current_model.push_to_hub_merged(
+                        repo_id,
+                        self.current_tokenizer,
+                        token = hf_token,
+                    )
+                else:
+                    hub_save_method = (
+                        save_method if save_method is not None else "merged_16bit"
+                    )
+                    self.current_model.push_to_hub_merged(
+                        repo_id,
+                        self.current_tokenizer,
+                        save_method = hub_save_method,
+                        token = hf_token,
+                        private = private,
+                    )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
             return True, "Model exported successfully"
@@ -418,8 +439,15 @@ class ExportBackend:
                 logger.info(f"Saving base model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
-                self.current_model.save_pretrained(save_directory)
-                self.current_tokenizer.save_pretrained(save_directory)
+                if _IS_MLX:
+                    # MLX: save_pretrained_merged handles non-LoRA models too
+                    # (fuse() is a no-op when there are no LoRA layers)
+                    self.current_model.save_pretrained_merged(
+                        save_directory, self.current_tokenizer,
+                    )
+                else:
+                    self.current_model.save_pretrained(save_directory)
+                    self.current_tokenizer.save_pretrained(save_directory)
 
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(save_directory)
@@ -435,44 +463,51 @@ class ExportBackend:
 
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
-                # Get base model name from request or model config
-                base_model = (
-                    base_model_id
-                    or self.current_model.config._name_or_path
-                    or "unknown"
-                )
-
-                # Create repo
-                hf_api = HfApi(token = hf_token)
-                repo_id = PushToHubMixin._create_repo(
-                    PushToHubMixin,
-                    repo_id = repo_id,
-                    private = private,
-                    token = hf_token,
-                )
-                username = repo_id.split("/")[0]
-
-                # Create and push model card
-                content = MODEL_CARD.format(
-                    username = username,
-                    base_model = base_model,
-                    model_type = self.current_model.config.model_type,
-                    method = "",
-                    extra = "unsloth",
-                )
-                card = ModelCard(content)
-                card.push_to_hub(
-                    repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                )
-
-                # Upload model files
-                if save_directory:
-                    hf_api.upload_folder(
-                        folder_path = save_directory, repo_id = repo_id, repo_type = "model"
+                if _IS_MLX:
+                    self.current_model.push_to_hub_merged(
+                        repo_id,
+                        self.current_tokenizer,
+                        token = hf_token,
                     )
-                    logger.info(f"Model pushed successfully to {repo_id}")
                 else:
-                    return False, "Local save directory required for Hub upload"
+                    # Get base model name from request or model config
+                    base_model = (
+                        base_model_id
+                        or self.current_model.config._name_or_path
+                        or "unknown"
+                    )
+
+                    # Create repo
+                    hf_api = HfApi(token = hf_token)
+                    repo_id = PushToHubMixin._create_repo(
+                        PushToHubMixin,
+                        repo_id = repo_id,
+                        private = private,
+                        token = hf_token,
+                    )
+                    username = repo_id.split("/")[0]
+
+                    # Create and push model card
+                    content = MODEL_CARD.format(
+                        username = username,
+                        base_model = base_model,
+                        model_type = self.current_model.config.model_type,
+                        method = "",
+                        extra = "unsloth",
+                    )
+                    card = ModelCard(content)
+                    card.push_to_hub(
+                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                    )
+
+                    # Upload model files
+                    if save_directory:
+                        hf_api.upload_folder(
+                            folder_path = save_directory, repo_id = repo_id, repo_type = "model"
+                        )
+                        logger.info(f"Model pushed successfully to {repo_id}")
+                    else:
+                        return False, "Local save directory required for Hub upload"
 
             return True, "Model exported successfully"
 
@@ -656,8 +691,13 @@ class ExportBackend:
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
-                self.current_model.save_pretrained(save_directory)
-                self.current_tokenizer.save_pretrained(save_directory)
+                if _IS_MLX:
+                    # MLX: save adapters.safetensors + tokenizer files
+                    self.current_model.save_lora_adapters(save_directory)
+                    self.current_tokenizer.save_pretrained(save_directory)
+                else:
+                    self.current_model.save_pretrained(save_directory)
+                    self.current_tokenizer.save_pretrained(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
 
             # Push to hub if requested
@@ -670,10 +710,22 @@ class ExportBackend:
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
-                self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
-                self.current_tokenizer.push_to_hub(
-                    repo_id, token = hf_token, private = private
-                )
+                if _IS_MLX:
+                    # Save locally first, then upload folder
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        self.current_model.save_lora_adapters(tmp_dir)
+                        self.current_tokenizer.save_pretrained(tmp_dir)
+                        hf_api = HfApi(token = hf_token)
+                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        hf_api.upload_folder(
+                            folder_path = tmp_dir, repo_id = repo_id, repo_type = "model",
+                        )
+                else:
+                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
+                    self.current_tokenizer.push_to_hub(
+                        repo_id, token = hf_token, private = private
+                    )
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully"

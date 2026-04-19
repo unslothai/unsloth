@@ -10,7 +10,7 @@ export function isAdapterMethod(method: TrainingMethod): boolean {
 export type StepNumber = 1 | 2 | 3 | 4 | 5;
 export type DatasetSource = "huggingface" | "upload";
 export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt";
-export type GradientCheckpointing = "none" | "true" | "unsloth";
+export type GradientCheckpointing = "none" | "true" | "unsloth" | "mlx";
 
 export interface WizardState {
   currentStep: StepNumber;
