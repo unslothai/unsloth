@@ -27,9 +27,7 @@ if _IS_MLX:
     import unsloth_zoo
     from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
     from unsloth_zoo.mlx_loader import FastMLXModel
-    from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
     __version__ = unsloth_zoo.__version__
-    DEVICE_TYPE = "mlx"
 
     class FastLanguageModel:
         @staticmethod
@@ -42,40 +40,10 @@ if _IS_MLX:
 
         @staticmethod
         def for_inference(*args, **kwargs):
-            return args[0] if args else None
+            raise NotImplementedError("Unsloth: for_inference not yet supported on MLX.")
 
-    class FastVisionModel(FastLanguageModel):
-        @staticmethod
-        def for_training(*args, **kwargs):
-            return args[0] if args else None
-
-    FastTextModel = FastLanguageModel
     FastModel = FastLanguageModel
-
-    class FastSentenceTransformer:
-        @staticmethod
-        def from_pretrained(*args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: FastSentenceTransformer is not yet supported on MLX."
-            )
-
-        @staticmethod
-        def get_peft_model(*args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: FastSentenceTransformer is not yet supported on MLX."
-            )
-
-    def is_bfloat16_supported():
-        return True
-
-    is_bf16_supported = is_bfloat16_supported
-
-    class UnslothVisionDataCollator:
-        def __init__(self, *args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: UnslothVisionDataCollator is not used on MLX. "
-                "Use the MLX trainer/data path instead."
-            )
+    FastVisionModel = FastLanguageModel
 
 else:
     # GPU path: load everything from _gpu_init
