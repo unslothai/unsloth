@@ -87,7 +87,7 @@ unsloth train \
 - `--weight-decay` (default: 0.01), `--random-seed` (default: 3407)
 - `--packing`, `--train-on-completions`, `--gradient-checkpointing` unsloth | true | none
 - `--lora-dropout` (default: 0.0), `--target-modules` (default: q/k/v/o/gate/up/down_proj)
-- `--vision-all-linear`, `--finetune-vision-layers`, `--finetune-language-layers`
+- `--vision-all-linear`, `--finetune-vision-layers`, `--finetune-language-layers`, `--finetune-attention-modules`, `--finetune-mlp-modules`
 - `--enable-wandb`, `--wandb-project`, `--enable-tensorboard`, `--tensorboard-dir`
 
 ## Inference
@@ -125,6 +125,7 @@ unsloth export ./outputs/checkpoint-100 ./exported \
 - `--quantization` q4_k_m | q5_k_m | q8_0 | f16 (gguf only)
 - `--push-to-hub` requires `--repo-id`
 - `--max-seq-length` (default: 2048), `--load-in-4bit` / `--no-load-in-4bit`
+- On success, prints `Saved to: <path>` with the output file/directory location
 
 ## Studio Server
 
@@ -132,9 +133,30 @@ unsloth export ./outputs/checkpoint-100 ./exported \
 unsloth studio update
 unsloth studio -H 0.0.0.0 -p 8000
 unsloth studio --silent
+unsloth studio --api-only
 unsloth studio stop
 unsloth studio reset-password
 ```
+
+- `--api-only` — run API server only, no frontend (for desktop app integration)
+
+### One-liner API server (`studio run`)
+
+Start Studio, load a model, and get an API key — one command:
+
+```bash
+unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
+```
+
+Prints ready-to-use curl examples for OpenAI, Anthropic, and Responses endpoints at `http://<host>:<port>/v1/`.
+
+- `--model` / `-m` (required) — HF repo or local path
+- `--gguf-variant` — GGUF quantization variant (e.g. `UD-Q4_K_XL`)
+- `--max-seq-length` (default: 0 = model default)
+- `--load-in-4bit` / `--no-load-in-4bit` (default: on)
+- `--api-key-name` (default: "cli") — label for the auto-generated API key
+- `--port` / `-p` (default: 8888), `--host` / `-H` (default: 0.0.0.0)
+- `--silent` / `-q` — suppress banner output
 
 ## References
 
