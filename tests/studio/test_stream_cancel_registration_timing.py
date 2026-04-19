@@ -559,9 +559,9 @@ def test_unsloth_stream_loop_breaks_on_external_cancel_event():
         return await asyncio.gather(_loop(), _fire())
 
     seen, _ = asyncio.run(_main())
-    assert len(seen) < 200, (
-        f"loop must not drain the generator after cancel; got {len(seen)} tokens"
-    )
+    assert (
+        len(seen) < 200
+    ), f"loop must not drain the generator after cancel; got {len(seen)} tokens"
     assert reset_calls[0] == 1, (
         f"backend.reset_generation_state() must be called exactly once on "
         f"cancel-via-POST, got {reset_calls[0]}"
@@ -624,9 +624,9 @@ def test_audio_stream_stays_responsive_under_blocking_next():
         f"post-fix pattern must exit faster than pre-fix (blocking) "
         f"pattern; post={postfix_elapsed:.3f}s vs pre={prefix_elapsed:.3f}s"
     )
-    assert len(postfix_seen) < 8, (
-        f"post-fix loop must not drain all chunks; got {len(postfix_seen)}"
-    )
+    assert (
+        len(postfix_seen) < 8
+    ), f"post-fix loop must not drain all chunks; got {len(postfix_seen)}"
 
 
 def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
@@ -711,9 +711,7 @@ def test_audio_stream_emits_zero_chunks_on_preset_cancel():
         return seen
 
     seen = asyncio.run(_loop())
-    assert seen == [], (
-        f"audio loop must emit zero chunks on pre-set cancel; got {seen}"
-    )
+    assert seen == [], f"audio loop must emit zero chunks on pre-set cancel; got {seen}"
     assert next_calls[0] == 0, (
         f"audio loop must not call next() on pre-set cancel; got "
         f"{next_calls[0]} calls"
