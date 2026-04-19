@@ -218,3 +218,72 @@ def test_cancel_after_register_signals_without_stash():
     assert ev.is_set()
     assert cid not in m["_PENDING_CANCELS"]
     tracker.__exit__(None, None, None)
+
+
+def test_cancel_by_keys_tolerates_empty_and_falsy_keys():
+    m = _load_registry_module()
+    m["_CANCEL_REGISTRY"].clear()
+    m["_PENDING_CANCELS"].clear()
+    assert m["_cancel_by_keys"]([]) == 0
+    assert m["_cancel_by_keys"](["", None, "unknown"]) == 0
+    # Non-stashing fallback must never leak into _PENDING_CANCELS.
+    assert m["_PENDING_CANCELS"] == {}
+
+
+def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
+    # Compare mode and other flows launch concurrent streams under a
+    # shared session_id; a single session cancel POST must hit all of them.
+    m = _load_registry_module()
+    m["_CANCEL_REGISTRY"].clear()
+    m["_PENDING_CANCELS"].clear()
+    session = "shared-thread"
+    ev_a = threading.Event()
+    ev_b = threading.Event()
+    tracker_a = m["_TrackedCancel"](ev_a, "cancel-a", session, "chatcmpl-a")
+    tracker_b = m["_TrackedCancel"](ev_b, "cancel-b", session, "chatcmpl-b")
+    tracker_a.__enter__()
+    tracker_b.__enter__()
+    try:
+        assert m["_cancel_by_keys"]([session]) == 2
+        assert ev_a.is_set() and ev_b.is_set()
+    finally:
+        tracker_a.__exit__(None, None, None)
+        tracker_b.__exit__(None, None, None)
+    assert session not in m["_CANCEL_REGISTRY"]
+
+
+def test_cancel_by_cancel_id_is_exclusive_to_single_run():
+    # cancel_id is per-run unique; cancelling run A must not touch run B
+    # even when both share a session_id.
+    m = _load_registry_module()
+    m["_CANCEL_REGISTRY"].clear()
+    m["_PENDING_CANCELS"].clear()
+    session = "shared-thread-2"
+    ev_a = threading.Event()
+    ev_b = threading.Event()
+    tracker_a = m["_TrackedCancel"](ev_a, "cancel-only-a", session, "chatcmpl-a")
+    tracker_b = m["_TrackedCancel"](ev_b, "cancel-only-b", session, "chatcmpl-b")
+    tracker_a.__enter__()
+    tracker_b.__enter__()
+    try:
+        assert m["_cancel_by_cancel_id_or_stash"]("cancel-only-a") == 1
+        assert ev_a.is_set()
+        assert not ev_b.is_set()
+    finally:
+        tracker_a.__exit__(None, None, None)
+        tracker_b.__exit__(None, None, None)
+
+
+def test_tracked_cancel_exit_is_idempotent():
+    # Outer except BaseException + the generator's finally may both call
+    # __exit__ under certain race combos; must not raise.
+    m = _load_registry_module()
+    m["_CANCEL_REGISTRY"].clear()
+    m["_PENDING_CANCELS"].clear()
+    ev = threading.Event()
+    tracker = m["_TrackedCancel"](ev, "cid", "sess", "chatcmpl-x")
+    tracker.__enter__()
+    tracker.__exit__(None, None, None)
+    tracker.__exit__(None, None, None)
+    tracker.__exit__(None, None, None)
+    assert not m["_CANCEL_REGISTRY"]
