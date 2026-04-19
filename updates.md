@@ -509,3 +509,108 @@ Passing tests now include:
 - `studio/backend/tests/test_wiki_rag_pipeline.py`
 - `studio/backend/tests/test_inference_tools_workdir.py`
 - `studio/backend/tests/test_wiki_watcher.py`
+
+## April 2026 Addendum (Graphify Reuse Expansion)
+
+This pass increases direct graphify reuse in Studio wiki maintenance flows and removes duplicate lower-feature logic where graphify already provides stronger behavior.
+
+### Additional changed files
+- `studio/backend/core/wiki/ingestor.py`
+- `studio/backend/core/wiki/engine.py`
+- `studio/backend/routes/inference.py`
+- `studio/backend/models/inference.py`
+- `studio/backend/tests/test_wiki_rag_pipeline.py`
+- `updates.md`
+
+### 1) Pending raw ingest now uses graphify-style detection + classification
+Route-level pending ingestion (`/wiki/ingest` without `source_path`, plus any path that triggers pending-raw sweep) now delegates to a new ingestor service method:
+
+- `WikiIngestor.ingest_pending_raw_files(...)`
+
+What changed:
+- Candidate detection now prefers graphify detect (`graphify.detect.detect`) when available.
+- Classification now prefers graphify file typing (`classify_file`) instead of a hard-coded extension subset.
+- Sensitive file candidates skipped by graphify detect are now excluded from ingestion sweeps.
+- Fallback behavior still exists if graphify detect/cache modules are unavailable.
+
+Practical impact:
+- Better file-type coverage and filtering quality.
+- Reduced accidental ingestion of risky/sensitive raw files.
+- Less custom duplicate filtering logic in route code.
+
+### 2) Persistent incremental ingest state for unchanged-file skipping
+Pending raw ingestion now stores a persistent hash map in:
+
+- `UNSLOTH_WIKI_VAULT/raw/.ingest_state.json`
+
+Behavior:
+- Successfully ingested files are tracked by content hash.
+- Unchanged files are skipped across backend restarts.
+- If a raw file changes, it is re-ingested even when a prior source page exists.
+
+Hashing uses graphify cache hashing when available (`graphify.cache.file_hash`) with a local SHA256 fallback.
+
+### 3) Lint now includes graphify structural insights
+`WikiEngine.lint()` now returns an additional payload:
+
+- `graphify_insights`
+
+This is surfaced by:
+- `GET /api/inference/wiki/lint`
+- `WikiLintResponse.graphify_insights`
+
+Payload includes:
+- `available` (bool)
+- `reason` (string status/failure reason)
+- `god_nodes`
+- `surprising_connections`
+- `community_count`
+
+Implementation details:
+- Graphify analyze is loaded dynamically (`graphify.analyze`) with monorepo import fallback.
+- If graphify/networkx is unavailable, lint remains successful and returns `available: false` with a reason.
+
+### 4) Replaced lower-feature duplicate logic
+Removed/avoided duplicated route-level pending ingest filtering logic in favor of the richer ingestor + graphify-backed path.
+
+Net effect:
+- Better feature set with fewer hard-coded filters.
+- Centralized ingest candidate decisions in one service.
+
+### 5) New graphify wiki export endpoint
+Added endpoint:
+
+- `POST /api/inference/wiki/export/graphify-wiki`
+
+Request:
+- `output_subdir` (default: `graphify-wiki`)
+
+Behavior:
+- Projects current wiki pages/links into a lightweight graph model.
+- Uses graphify analysis for god-node selection.
+- Uses graphify wiki exporter to write a browsable markdown wiki (`index.md` + community articles + god-node articles).
+- Writes output under `wiki/<output_subdir>`.
+
+Response shape:
+- `status` (`ok`, `unavailable`, or `error`)
+- `reason`
+- `output_dir`
+- `index_file`
+- `articles_written`
+- `communities`
+- `god_nodes`
+
+If graphify/networkx modules are unavailable, export returns `status: unavailable` with a reason while keeping the rest of wiki APIs functional.
+
+### 6) Chat latency guard for pending raw ingest
+To keep `/v1/chat/completions` responsive, pending raw ingestion in the GGUF chat path is now throttled and capped.
+
+New env knobs:
+- `UNSLOTH_WIKI_PENDING_INGEST_INTERVAL_SECONDS` (default: `45`)
+  - Minimum time between automatic pending-ingest sweeps triggered by chat requests.
+- `UNSLOTH_WIKI_PENDING_INGEST_MAX_FILES_PER_CHAT` (default: `1`)
+  - Maximum pending files ingested synchronously per chat request.
+  - Set to `0` to disable chat-triggered pending ingestion entirely.
+
+Notes:
+- Explicit maintenance calls (`/wiki/ingest`, debug context with `include_pending_raw=true`) bypass interval throttling so manual/diagnostic operations remain immediate.

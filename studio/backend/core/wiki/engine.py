@@ -7,6 +7,7 @@ import os
 import re
 import logging
 import importlib
+import sys
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -814,6 +815,8 @@ class LLMWikiEngine:
             ]
         )
 
+        graphify_insights = self._graphify_lint_insights(pages, graph)
+
         report = {
             "status": "ok",
             "orphans": orphans,
@@ -822,6 +825,7 @@ class LLMWikiEngine:
             "missing_concepts": missing_concepts,
             "low_coverage_sources": sorted(set(low_coverage_sources)),
             "total_pages": len(pages),
+            "graphify_insights": graphify_insights,
         }
 
         self._append_log(
@@ -831,6 +835,7 @@ class LLMWikiEngine:
             f"- Broken links: {len(report['broken_links'])}\n"
             f"- Missing concepts: {len(missing_concepts)}\n"
             f"- Low-coverage sources: {len(report['low_coverage_sources'])}\n"
+            f"- Graphify insights available: {bool(graphify_insights.get('available'))}\n"
         )
         return report
 
@@ -1954,6 +1959,238 @@ class LLMWikiEngine:
             rel = str(p.relative_to(self.wiki_dir)).replace("\\", "/")
             out.append(rel)
         return sorted(out)
+
+    def _import_graphify_module(self, module_name: str):
+        try:
+            return importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            graphify_root = Path(__file__).resolve().parents[4] / "graphify"
+            if str(graphify_root) not in sys.path:
+                sys.path.insert(0, str(graphify_root))
+            if "graphify" in sys.modules:
+                del sys.modules["graphify"]
+            importlib.invalidate_caches()
+            try:
+                return importlib.import_module(module_name)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _graphify_lint_insights(
+        self,
+        pages: List[str],
+        link_graph: Dict[str, Dict[str, List[str]]],
+    ) -> Dict[str, Any]:
+        analyze_module = self._import_graphify_module("graphify.analyze")
+        if analyze_module is None:
+            return {
+                "available": False,
+                "reason": "graphify_analyze_unavailable",
+                "god_nodes": [],
+                "surprising_connections": [],
+                "community_count": 0,
+            }
+
+        try:
+            nx = importlib.import_module("networkx")
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"networkx_unavailable: {exc}",
+                "god_nodes": [],
+                "surprising_connections": [],
+                "community_count": 0,
+            }
+
+        try:
+            graph, communities = self._build_graphify_projection_graph(
+                nx = nx,
+                pages = pages,
+                link_graph = link_graph,
+            )
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"graphify_projection_failed: {exc}",
+                "god_nodes": [],
+                "surprising_connections": [],
+                "community_count": 0,
+            }
+
+        try:
+            god_nodes = analyze_module.god_nodes(graph, top_n = 8)
+            surprises = analyze_module.surprising_connections(
+                graph,
+                communities = communities,
+                top_n = 5,
+            )
+
+            return {
+                "available": True,
+                "reason": "ok",
+                "god_nodes": god_nodes,
+                "surprising_connections": surprises,
+                "community_count": len(communities),
+            }
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"graphify_analysis_failed: {exc}",
+                "god_nodes": [],
+                "surprising_connections": [],
+                "community_count": 0,
+            }
+
+    def _build_graphify_projection_graph(
+        self,
+        *,
+        nx,
+        pages: List[str],
+        link_graph: Dict[str, Dict[str, List[str]]],
+    ) -> Tuple[Any, Dict[int, List[str]]]:
+        graph = nx.Graph()
+        for rel in pages:
+            label = rel[:-3] if rel.endswith(".md") else rel
+            graph.add_node(
+                rel,
+                label = label,
+                source_file = rel,
+                source_location = "",
+            )
+
+        for source, targets in link_graph.get("outbound", {}).items():
+            if source not in graph:
+                continue
+            for target in targets:
+                if target not in graph:
+                    continue
+
+                if graph.has_edge(source, target):
+                    edge_data = graph.edges[source, target]
+                    edge_data["weight"] = float(edge_data.get("weight", 1.0)) + 1.0
+                    continue
+
+                graph.add_edge(
+                    source,
+                    target,
+                    relation = "references",
+                    confidence = "EXTRACTED",
+                    source_file = source,
+                    weight = 1.0,
+                    _src = source,
+                    _tgt = target,
+                )
+
+        communities: Dict[int, List[str]] = {}
+        for idx, component in enumerate(nx.connected_components(graph)):
+            nodes = sorted(component)
+            communities[idx] = nodes
+            for node in nodes:
+                graph.nodes[node]["community"] = idx
+
+        return graph, communities
+
+    def export_graphify_wiki(self, output_subdir: str = "graphify-wiki") -> Dict[str, Any]:
+        requested_subdir = str(output_subdir or "graphify-wiki").strip().strip("/")
+        if not requested_subdir:
+            requested_subdir = "graphify-wiki"
+
+        output_dir = (self.wiki_dir / requested_subdir).resolve()
+        try:
+            output_dir.relative_to(self.wiki_dir.resolve())
+        except ValueError:
+            return {
+                "status": "error",
+                "reason": "output_subdir_outside_wiki_dir",
+                "output_dir": None,
+                "index_file": None,
+                "articles_written": 0,
+                "communities": 0,
+                "god_nodes": 0,
+            }
+
+        analyze_module = self._import_graphify_module("graphify.analyze")
+        wiki_module = self._import_graphify_module("graphify.wiki")
+        if analyze_module is None or wiki_module is None:
+            return {
+                "status": "unavailable",
+                "reason": "graphify_modules_unavailable",
+                "output_dir": None,
+                "index_file": None,
+                "articles_written": 0,
+                "communities": 0,
+                "god_nodes": 0,
+            }
+
+        try:
+            nx = importlib.import_module("networkx")
+        except Exception as exc:
+            return {
+                "status": "unavailable",
+                "reason": f"networkx_unavailable: {exc}",
+                "output_dir": None,
+                "index_file": None,
+                "articles_written": 0,
+                "communities": 0,
+                "god_nodes": 0,
+            }
+
+        try:
+            pages = self._all_wiki_pages()
+            link_graph = self._build_link_graph(pages)
+
+            graph, communities = self._build_graphify_projection_graph(
+                nx = nx,
+                pages = pages,
+                link_graph = link_graph,
+            )
+            god_nodes = analyze_module.god_nodes(graph, top_n = 10)
+
+            labels: Dict[int, str] = {}
+            for cid, nodes in communities.items():
+                prefixes: Dict[str, int] = {}
+                for node in nodes:
+                    prefix = node.split("/", 1)[0] if "/" in node else "wiki"
+                    prefixes[prefix] = prefixes.get(prefix, 0) + 1
+                dominant = max(prefixes.items(), key = lambda item: item[1])[0]
+                labels[cid] = f"{dominant.title()} Cluster {cid}"
+
+            articles_written = wiki_module.to_wiki(
+                graph,
+                communities,
+                output_dir,
+                community_labels = labels,
+                cohesion = {},
+                god_nodes_data = god_nodes,
+            )
+
+            self._append_log(
+                f"## [{self._today()}] export | graphify-wiki\n"
+                f"- Output: {output_dir}\n"
+                f"- Articles written: {articles_written}\n"
+                f"- Communities: {len(communities)}\n"
+            )
+
+            return {
+                "status": "ok",
+                "reason": "ok",
+                "output_dir": str(output_dir),
+                "index_file": str(output_dir / "index.md"),
+                "articles_written": int(articles_written),
+                "communities": int(len(communities)),
+                "god_nodes": int(len(god_nodes)),
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "reason": f"graphify_export_failed: {exc}",
+                "output_dir": None,
+                "index_file": None,
+                "articles_written": 0,
+                "communities": 0,
+                "god_nodes": 0,
+            }
 
     def _build_link_graph(self, pages: List[str]) -> Dict[str, Dict[str, List[str]]]:
         page_set = set([p[:-3] for p in pages if p.endswith(".md")])

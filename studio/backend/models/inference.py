@@ -776,6 +776,30 @@ class WikiLintResponse(BaseModel):
     missing_concepts: list[str]
     low_coverage_sources: list[str]
     total_pages: int
+    graphify_insights: Dict[str, Any]
+
+
+class WikiGraphifyExportRequest(BaseModel):
+    """Request payload for exporting graphify-style wiki articles."""
+
+    output_subdir: str = Field(
+        "graphify-wiki",
+        min_length = 1,
+        max_length = 120,
+        description = "Subdirectory under wiki/ where graphify markdown articles are written",
+    )
+
+
+class WikiGraphifyExportResponse(BaseModel):
+    """Result of a graphify wiki export operation."""
+
+    status: str
+    reason: Optional[str] = None
+    output_dir: Optional[str] = None
+    index_file: Optional[str] = None
+    articles_written: int = 0
+    communities: int = 0
+    god_nodes: int = 0
 
 
 # =====================================================================

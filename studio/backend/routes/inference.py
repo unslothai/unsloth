@@ -109,6 +109,8 @@ from models.inference import (
     WikiQueryRequest,
     WikiQueryResponse,
     WikiLintResponse,
+    WikiGraphifyExportRequest,
+    WikiGraphifyExportResponse,
     TextContentPart,
     ImageContentPart,
     ImageUrl,
@@ -199,6 +201,15 @@ _WIKI_WATCHER_ENABLED = os.getenv(
 _CHAT_HISTORY_PENDING_BLOCKS: list[str] = []
 _CHAT_HISTORY_BUFFER_STARTED_AT: Optional[_datetime.datetime] = None
 _CHAT_HISTORY_LOCK = threading.Lock()
+_PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS = max(
+    0,
+    int(os.getenv("UNSLOTH_WIKI_PENDING_INGEST_INTERVAL_SECONDS", "45")),
+)
+_PENDING_RAW_INGEST_MAX_FILES_PER_CHAT = max(
+    0,
+    int(os.getenv("UNSLOTH_WIKI_PENDING_INGEST_MAX_FILES_PER_CHAT", "1")),
+)
+_LAST_PENDING_RAW_INGEST_AT: Optional[float] = None
 
 
 def _loggable_rag_context(context: str) -> str:
@@ -294,54 +305,31 @@ def _get_route_wiki_components() -> tuple[WikiManager, WikiIngestor]:
     return _ROUTE_WIKI_MANAGER, _ROUTE_WIKI_INGESTOR
 
 
-def _ingest_pending_raw_files(max_files: int = 8) -> list[dict[str, Any]]:
-    manager, ingestor = _get_route_wiki_components()
-    raw_dir = _WIKI_VAULT_ROOT / "raw"
-    sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
-    raw_dir.mkdir(parents = True, exist_ok = True)
-    sources_dir.mkdir(parents = True, exist_ok = True)
+def _ingest_pending_raw_files(
+    max_files: int = 8,
+    respect_interval_gate: bool = True,
+) -> list[dict[str, Any]]:
+    global _LAST_PENDING_RAW_INGEST_AT
+    if (
+        respect_interval_gate
+        and _PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS > 0
+        and _LAST_PENDING_RAW_INGEST_AT
+    ):
+        elapsed = time.time() - _LAST_PENDING_RAW_INGEST_AT
+        if elapsed < _PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS:
+            logger.debug(
+                "Skipping pending raw ingest due to interval gate (elapsed=%.2fs, min=%ss)",
+                elapsed,
+                _PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS,
+            )
+            return []
 
-    candidates = sorted(
-        [p for p in raw_dir.iterdir() if p.is_file()],
-        key = lambda p: p.stat().st_mtime,
-        reverse = True,
+    _, ingestor = _get_route_wiki_components()
+    results = ingestor.ingest_pending_raw_files(
+        max_files = max_files,
+        contributor = "Unsloth Studio",
     )
-
-    ingested = 0
-    results: list[dict[str, Any]] = []
-    for path in candidates:
-        if ingested >= max_files:
-            break
-        if (
-            path.name.lower() in {".ds_store", "thumbs.db"}
-            or path.name.startswith(".")
-            or path.name.startswith("._")
-        ):
-            continue
-        if path.suffix.lower() not in {
-            ".py",
-            ".js",
-            ".ts",
-            ".tsx",
-            ".pdf",
-            ".txt",
-            ".md",
-            ".png",
-            ".jpg",
-            ".jpeg",
-        }:
-            continue
-
-        slug = manager.engine._slug(path.stem)
-        source_page = sources_dir / f"{slug}.md"
-        if source_page.exists():
-            continue
-
-        result = ingestor.ingest_file(path, contributor = "Unsloth Studio")
-        if result:
-            ingested += 1
-            results.append({"source_path": str(path), "result": result})
-
+    _LAST_PENDING_RAW_INGEST_AT = time.time()
     return results
 
 
@@ -818,7 +806,7 @@ async def debug_rag_context(
 ):
     """Preview the exact wiki context pages/snippets selected for a query."""
     if payload.include_pending_raw:
-        _ingest_pending_raw_files()
+        _ingest_pending_raw_files(respect_interval_gate = False)
 
     _, debug_payload = _get_route_rag_context(
         payload.query,
@@ -897,7 +885,10 @@ async def wiki_ingest(
             results = [{"source_path": str(source_path), "result": result}],
         )
 
-    results = _ingest_pending_raw_files(max_files = payload.max_pending_raw_files)
+    results = _ingest_pending_raw_files(
+        max_files = payload.max_pending_raw_files,
+        respect_interval_gate = False,
+    )
     return WikiIngestResponse(
         status = "ok",
         processed_files = len(results),
@@ -1105,6 +1096,30 @@ async def wiki_lint(
         missing_concepts = [str(x) for x in report.get("missing_concepts", [])],
         low_coverage_sources = [str(x) for x in report.get("low_coverage_sources", [])],
         total_pages = int(report.get("total_pages", 0)),
+        graphify_insights = dict(report.get("graphify_insights", {})),
+    )
+
+
+@router.post(
+    "/wiki/export/graphify-wiki",
+    response_model = WikiGraphifyExportResponse,
+)
+async def wiki_export_graphify_wiki(
+    payload: WikiGraphifyExportRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Export the current maintained wiki into graphify-style markdown articles."""
+    manager, _ = _get_route_wiki_components()
+    report = manager.engine.export_graphify_wiki(output_subdir = payload.output_subdir)
+
+    return WikiGraphifyExportResponse(
+        status = str(report.get("status", "error")),
+        reason = report.get("reason"),
+        output_dir = report.get("output_dir"),
+        index_file = report.get("index_file"),
+        articles_written = int(report.get("articles_written", 0)),
+        communities = int(report.get("communities", 0)),
+        god_nodes = int(report.get("god_nodes", 0)),
     )
 
 
@@ -2181,7 +2196,10 @@ async def openai_chat_completions(
 
         # RAG context + chat history persistence for GGUF path.
         try:
-            _ingest_pending_raw_files()
+            if _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT > 0:
+                _ingest_pending_raw_files(
+                    max_files = _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT,
+                )
             if chat_messages:
                 last_user_msg = next(
                     (m for m in reversed(chat_messages) if m.get("role") == "user"),

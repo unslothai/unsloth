@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 from core.wiki.engine import LLMWikiEngine, WikiConfig
@@ -56,6 +57,51 @@ def test_ingest_file_skips_ds_store(tmp_path: Path):
 
     assert title is None
     assert manager.calls == []
+
+
+def test_ingest_pending_raw_files_uses_hash_state_and_reingests_on_change(
+    tmp_path: Path,
+):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    raw_file = tmp_path / "raw" / "notes.txt"
+    raw_file.write_text("initial content", encoding = "utf-8")
+
+    first = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    assert len(first) == 1
+
+    state_path = tmp_path / "raw" / ".ingest_state.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text(encoding = "utf-8"))
+    assert str(raw_file.resolve()) in state
+
+    second = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    assert second == []
+
+    raw_file.write_text("updated content", encoding = "utf-8")
+    third = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    assert len(third) == 1
+
+
+def test_ingest_pending_raw_files_skips_sensitive_candidates(tmp_path: Path):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    nested = tmp_path / "raw" / "nested"
+    nested.mkdir(parents = True, exist_ok = True)
+
+    valid = nested / "design-notes.md"
+    valid.write_text("Retrieval design notes", encoding = "utf-8")
+
+    sensitive = tmp_path / "raw" / "api_token_dump.txt"
+    sensitive.write_text("secret token contents", encoding = "utf-8")
+
+    results = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    ingested_paths = {item["source_path"] for item in results}
+
+    assert str(valid.resolve()) in ingested_paths
+    assert str(sensitive.resolve()) not in ingested_paths
 
 
 def test_engine_surfaces_extraction_diagnostics(tmp_path: Path):
@@ -463,6 +509,59 @@ def test_enrich_analysis_pages_prepends_enrichment_section(tmp_path: Path):
 
     second_report = engine.enrich_analysis_pages(dry_run = False, max_analysis_pages = 10)
     assert second_report["updated_pages"] == 0
+
+
+def test_lint_includes_graphify_insights_payload(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nSee [[concepts/beta]].\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "concepts" / "beta.md").write_text(
+        "# Beta\n\nBeta details.\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.lint()
+    insights = report["graphify_insights"]
+
+    assert isinstance(insights, dict)
+    assert "available" in insights
+    assert "god_nodes" in insights
+    assert "surprising_connections" in insights
+
+
+def test_export_graphify_wiki_returns_report_and_writes_index_when_available(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nSee [[concepts/beta]].\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "concepts" / "beta.md").write_text(
+        "# Beta\n\nBeta details.\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.export_graphify_wiki(output_subdir = "graphify-wiki-test")
+
+    assert report["status"] in {"ok", "unavailable"}
+    if report["status"] == "ok":
+        index_file = Path(report["index_file"])
+        assert index_file.exists()
+        assert report["articles_written"] >= 1
+        assert report["communities"] >= 1
+    else:
+        assert report.get("reason")
 
 
 def test_enrich_analysis_pages_dry_run_does_not_edit_file(tmp_path: Path):
