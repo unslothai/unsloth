@@ -5,6 +5,7 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import { authFetch } from "@/features/auth";
+import { getAuthToken } from "@/features/auth/session";
 import {
   generateAudio,
   listCachedGguf,
@@ -710,9 +711,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const onAbortCancel = () => {
         const body: Record<string, string> = { cancel_id: cancelId };
         if (resolvedThreadId) body.session_id = resolvedThreadId;
-        authFetch("/api/inference/cancel", {
+        // Use plain fetch (+ manual Authorization) instead of authFetch.
+        // authFetch redirects to login on 401; that would kick the user
+        // out mid-stop if the access token expired during a long stream.
+        // The cancel POST is best-effort and the server accepts a bare
+        // Authorization header with keepalive: true.
+        const token = getAuthToken();
+        void fetch("/api/inference/cancel", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify(body),
           keepalive: true,
         }).catch(() => {});

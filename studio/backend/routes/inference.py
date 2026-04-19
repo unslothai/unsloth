@@ -61,7 +61,11 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend, _DEFAULT_T_MAX_PREDICT_MS
+    from core.inference.llama_cpp import (
+        LlamaCppBackend,
+        _DEFAULT_MAX_TOKENS,
+        _DEFAULT_T_MAX_PREDICT_MS,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -70,7 +74,11 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend, _DEFAULT_T_MAX_PREDICT_MS
+    from core.inference.llama_cpp import (
+        LlamaCppBackend,
+        _DEFAULT_MAX_TOKENS,
+        _DEFAULT_T_MAX_PREDICT_MS,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -190,22 +198,21 @@ class _TrackedCancel:
         return False
 
 
-def _cancel_by_keys_or_stash(keys) -> int:
-    """Set cancel_event for matching registry entries; stash unmatched keys
-    so a later _TrackedCancel.__enter__ can replay the cancel. Returns count
-    set now (stashed entries return 0 but fire on registration)."""
+def _cancel_by_keys(keys) -> int:
+    """Set cancel_event for matching registry entries. Returns count set.
+    Does NOT stash unmatched keys: session_id and completion_id are shared
+    across runs on the same thread, so stashing them would cancel the
+    user's next unrelated request. cancel_id is the only per-run unique
+    key and is handled by _cancel_by_cancel_id_or_stash."""
     if not keys:
         return 0
-    now = time.monotonic()
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
-        _prune_pending(now)
+        _prune_pending(time.monotonic())
         for k in keys:
             bucket = _CANCEL_REGISTRY.get(k)
             if bucket:
                 events.update(bucket)
-            else:
-                _PENDING_CANCELS[k] = now
     for ev in events:
         ev.set()
     return len(events)
@@ -745,7 +752,7 @@ async def cancel_inference(
     if not keys:
         return {"cancelled": 0}
 
-    n = _cancel_by_keys_or_stash(keys)
+    n = _cancel_by_keys(keys)
     return {"cancelled": n}
 
 
@@ -3003,8 +3010,7 @@ def _build_passthrough_payload(
     }
     if stream:
         body["stream_options"] = {"include_usage": True}
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
+    body["max_tokens"] = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
     body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     if stop:
         body["stop"] = stop
@@ -3351,108 +3357,51 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
 
-    # Dispatch the upstream request BEFORE returning StreamingResponse so
-    # transport errors and non-200 upstream statuses surface as real HTTP
-    # errors to the client. OpenAI SDKs rely on status codes to raise
-    # ``APIError``/``BadRequestError``/...; burying the failure inside a
-    # 200 SSE ``error`` frame silently breaks their error handling.
-    client = httpx.AsyncClient(
-        timeout = 600,
-        limits = httpx.Limits(max_keepalive_connections = 0),
-    )
-    resp = None
+    # Outer guard: `await client.send(...)` below is an await point,
+    # so asyncio.CancelledError (BaseException, not Exception) can strike
+    # there and bypass `except httpx.RequestError`, leaking the registry
+    # entry. The generator's own `finally` only runs once iteration starts;
+    # this outer except covers the gap before StreamingResponse returns.
     try:
-        req = client.build_request("POST", target_url, json = body)
-        resp = await client.send(req, stream = True)
-    except httpx.RequestError as e:
-        # llama-server subprocess crashed / still starting / unreachable.
-        logger.error("openai passthrough stream: upstream unreachable: %s", e)
-        if resp is not None:
-            try:
-                await resp.aclose()
-            except Exception:
-                pass
-        try:
-            await client.aclose()
-        except Exception:
-            pass
-        _tracker.__exit__(None, None, None)
-        raise HTTPException(
-            status_code = 502,
-            detail = _friendly_error(e),
+        # Dispatch the upstream request BEFORE returning StreamingResponse so
+        # transport errors and non-200 upstream statuses surface as real HTTP
+        # errors to the client. OpenAI SDKs rely on status codes to raise
+        # ``APIError``/``BadRequestError``/...; burying the failure inside a
+        # 200 SSE ``error`` frame silently breaks their error handling.
+        client = httpx.AsyncClient(
+            timeout = 600,
+            limits = httpx.Limits(max_keepalive_connections = 0),
         )
-
-    if resp.status_code != 200:
-        err_bytes = await resp.aread()
-        err_text = err_bytes.decode("utf-8", errors = "replace")
-        logger.error(
-            "openai passthrough upstream error: status=%s body=%s",
-            resp.status_code,
-            err_text[:500],
-        )
-        upstream_status = resp.status_code
+        resp = None
         try:
-            await resp.aclose()
-        except Exception:
-            pass
-        try:
-            await client.aclose()
-        except Exception:
-            pass
-        _tracker.__exit__(None, None, None)
-        raise HTTPException(
-            status_code = upstream_status,
-            detail = f"llama-server error: {err_text[:500]}",
-        )
-
-    async def _stream():
-        # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
-        # avoid `async with` on the client/response AND explicitly save
-        # resp.aiter_lines() so we can close it ourselves in the finally
-        # block. See the long comment there for the full rationale on
-        # why the anonymous `async for raw_line in resp.aiter_lines():`
-        # pattern leaks an unclosed async generator that Python's
-        # asyncgen GC hook then finalizes in a different asyncio task,
-        # producing "Exception ignored in:" / "async generator ignored
-        # GeneratorExit" / anyio cancel-scope traces on Python 3.13 +
-        # httpcore 1.0.x.
-        lines_iter = None
-        try:
-            lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if cancel_event.is_set():
-                    break
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    break
-                if not raw_line:
-                    continue
-                if not raw_line.startswith("data: "):
-                    continue
-                # Relay the llama-server SSE chunk verbatim so the client
-                # sees its native `id`, `finish_reason`, `delta.tool_calls`,
-                # and final `usage` unchanged.
-                yield raw_line + "\n\n"
-                if raw_line[6:].strip() == "[DONE]":
-                    break
-        except Exception as e:
-            # Mid-stream failures still have to be reported inside the SSE
-            # body because the 200 response headers have already been
-            # committed by the time the first chunk flushes.
-            logger.error("openai passthrough stream error: %s", e)
-            err = {
-                "error": {
-                    "message": _friendly_error(e),
-                    "type": "server_error",
-                },
-            }
-            yield f"data: {json.dumps(err)}\n\n"
-        finally:
-            if lines_iter is not None:
+            req = client.build_request("POST", target_url, json = body)
+            resp = await client.send(req, stream = True)
+        except httpx.RequestError as e:
+            # llama-server subprocess crashed / still starting / unreachable.
+            logger.error("openai passthrough stream: upstream unreachable: %s", e)
+            if resp is not None:
                 try:
-                    await lines_iter.aclose()
+                    await resp.aclose()
                 except Exception:
                     pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code = 502,
+                detail = _friendly_error(e),
+            )
+
+        if resp.status_code != 200:
+            err_bytes = await resp.aread()
+            err_text = err_bytes.decode("utf-8", errors = "replace")
+            logger.error(
+                "openai passthrough upstream error: status=%s body=%s",
+                resp.status_code,
+                err_text[:500],
+            )
+            upstream_status = resp.status_code
             try:
                 await resp.aclose()
             except Exception:
@@ -3461,17 +3410,81 @@ async def _openai_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
-            _tracker.__exit__(None, None, None)
+            raise HTTPException(
+                status_code = upstream_status,
+                detail = f"llama-server error: {err_text[:500]}",
+            )
 
-    return StreamingResponse(
-        _stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        async def _stream():
+            # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
+            # avoid `async with` on the client/response AND explicitly save
+            # resp.aiter_lines() so we can close it ourselves in the finally
+            # block. See the long comment there for the full rationale on
+            # why the anonymous `async for raw_line in resp.aiter_lines():`
+            # pattern leaks an unclosed async generator that Python's
+            # asyncgen GC hook then finalizes in a different asyncio task,
+            # producing "Exception ignored in:" / "async generator ignored
+            # GeneratorExit" / anyio cancel-scope traces on Python 3.13 +
+            # httpcore 1.0.x.
+            lines_iter = None
+            try:
+                lines_iter = resp.aiter_lines()
+                async for raw_line in lines_iter:
+                    if cancel_event.is_set():
+                        break
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        break
+                    if not raw_line:
+                        continue
+                    if not raw_line.startswith("data: "):
+                        continue
+                    # Relay the llama-server SSE chunk verbatim so the client
+                    # sees its native `id`, `finish_reason`, `delta.tool_calls`,
+                    # and final `usage` unchanged.
+                    yield raw_line + "\n\n"
+                    if raw_line[6:].strip() == "[DONE]":
+                        break
+            except Exception as e:
+                # Mid-stream failures still have to be reported inside the SSE
+                # body because the 200 response headers have already been
+                # committed by the time the first chunk flushes.
+                logger.error("openai passthrough stream error: %s", e)
+                err = {
+                    "error": {
+                        "message": _friendly_error(e),
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(err)}\n\n"
+            finally:
+                if lines_iter is not None:
+                    try:
+                        await lines_iter.aclose()
+                    except Exception:
+                        pass
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                _tracker.__exit__(None, None, None)
+
+        return StreamingResponse(
+            _stream(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except BaseException:
+        _tracker.__exit__(None, None, None)
+        raise
 
 
 async def _openai_passthrough_non_streaming(
