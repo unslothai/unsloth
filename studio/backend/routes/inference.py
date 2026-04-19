@@ -12,7 +12,6 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
-from starlette.background import BackgroundTask
 from typing import Optional
 import json
 import httpx
@@ -152,13 +151,6 @@ def _prune_pending(now: float) -> None:
         k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S
     ]:
         _PENDING_CANCELS.pop(k, None)
-
-
-def _remember_pending_cancel(cancel_id: str) -> None:
-    now = time.monotonic()
-    with _CANCEL_LOCK:
-        _prune_pending(now)
-        _PENDING_CANCELS[cancel_id] = now
 
 
 class _TrackedCancel:
@@ -1521,6 +1513,8 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     while True:
+                        if cancel_event.is_set():
+                            break
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
@@ -1628,6 +1622,8 @@ async def openai_chat_completions(
                         },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
+                finally:
+                    _tracker.__exit__(None, None, None)
 
             try:
                 return StreamingResponse(
@@ -1638,7 +1634,6 @@ async def openai_chat_completions(
                         "Connection": "keep-alive",
                         "X-Accel-Buffering": "no",
                     },
-                    background = BackgroundTask(_tracker.__exit__, None, None, None),
                 )
             except BaseException:
                 _tracker.__exit__(None, None, None)
@@ -1691,6 +1686,8 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     while True:
+                        if cancel_event.is_set():
+                            break
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
@@ -1774,6 +1771,8 @@ async def openai_chat_completions(
                         },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
+                finally:
+                    _tracker.__exit__(None, None, None)
 
             try:
                 return StreamingResponse(
@@ -1784,7 +1783,6 @@ async def openai_chat_completions(
                         "Connection": "keep-alive",
                         "X-Accel-Buffering": "no",
                     },
-                    background = BackgroundTask(_tracker.__exit__, None, None, None),
                 )
             except BaseException:
                 _tracker.__exit__(None, None, None)
@@ -1963,6 +1961,8 @@ async def openai_chat_completions(
                     },
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
+            finally:
+                _tracker.__exit__(None, None, None)
 
         try:
             return StreamingResponse(
@@ -1973,7 +1973,6 @@ async def openai_chat_completions(
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
                 },
-                background = BackgroundTask(_tracker.__exit__, None, None, None),
             )
         except BaseException:
             _tracker.__exit__(None, None, None)
