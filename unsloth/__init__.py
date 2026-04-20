@@ -220,10 +220,13 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+elif DEVICE_TYPE == "cpu":
+    SUPPORTS_BFLOAT16 = False
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
+if DEVICE_TYPE != "cpu":
+    import triton
 
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
