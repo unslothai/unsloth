@@ -599,7 +599,43 @@ class ResponsesInputImagePart(BaseModel):
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
 
 
-ResponsesContentPart = Union[ResponsesInputTextPart, ResponsesInputImagePart]
+class ResponsesOutputTextPart(BaseModel):
+    """Assistant ``output_text`` content part replayed on subsequent turns.
+
+    When a client (OpenAI Codex CLI, OpenAI Python SDK agents) loops on a
+    stateless Responses endpoint, prior assistant messages are round-tripped
+    as ``{"role":"assistant","content":[{"type":"output_text","text":...,
+    "annotations":[],"logprobs":[]}]}``. We preserve the text and ignore
+    the annotations/logprobs metadata when flattening into Chat Completions.
+    """
+
+    type: Literal["output_text"]
+    text: str
+    annotations: Optional[list] = None
+    logprobs: Optional[list] = None
+
+    model_config = {"extra": "allow"}
+
+
+class ResponsesUnknownContentPart(BaseModel):
+    """Catch-all for content-part types we don't model explicitly.
+
+    Keeps validation green when a client sends newer part types (e.g.
+    ``input_audio``, ``input_file``) we haven't mapped; these are silently
+    skipped during normalisation rather than rejected with a 422.
+    """
+
+    type: str
+
+    model_config = {"extra": "allow"}
+
+
+ResponsesContentPart = Union[
+    ResponsesInputTextPart,
+    ResponsesInputImagePart,
+    ResponsesOutputTextPart,
+    ResponsesUnknownContentPart,
+]
 
 
 class ResponsesInputMessage(BaseModel):
@@ -608,6 +644,12 @@ class ResponsesInputMessage(BaseModel):
     type: Optional[Literal["message"]] = None
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
+
+    # Codex (gpt-5.3-codex+) attaches a `phase` field ("commentary" |
+    # "final_answer") to assistant messages and requires clients to preserve
+    # it on subsequent turns. We accept and round-trip it; llama-server does
+    # not care about it.
+    model_config = {"extra": "allow"}
 
 
 class ResponsesFunctionCallInputItem(BaseModel):
@@ -648,10 +690,55 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
-ResponsesInputItem = Union[
-    ResponsesInputMessage,
-    ResponsesFunctionCallInputItem,
-    ResponsesFunctionCallOutputInputItem,
+class ResponsesUnknownInputItem(BaseModel):
+    """Catch-all for Responses input item types we don't model explicitly.
+
+    Covers ``reasoning`` items (replayed from prior o-series / gpt-5 turns)
+    and any future item types the client may send. These items are dropped
+    during normalisation — llama-server-backed GGUFs cannot consume them —
+    but keeping them in the request-model union stops unrelated turns from
+    failing validation with a 422.
+    """
+
+    type: str
+
+    model_config = {"extra": "allow"}
+
+
+def _responses_input_item_discriminator(v: Any) -> str:
+    """Route a Responses input item to the correct tagged variant.
+
+    Pydantic's default smart-union matching fails when one variant in the
+    union is tagged with a strict ``Literal`` (``function_call`` /
+    ``function_call_output``) and the incoming dict uses a different
+    ``type`` — the other variants' validation errors are hidden and the
+    outer ``Union[str, list[...]]`` reports a misleading "Input should be a
+    valid string" error. An explicit discriminator makes the routing
+    deterministic and lets us fall through to the catch-all.
+    """
+    if isinstance(v, dict):
+        t = v.get("type")
+        r = v.get("role")
+    else:
+        t = getattr(v, "type", None)
+        r = getattr(v, "role", None)
+    if t == "function_call":
+        return "function_call"
+    if t == "function_call_output":
+        return "function_call_output"
+    if r is not None or t == "message":
+        return "message"
+    return "unknown"
+
+
+ResponsesInputItem = Annotated[
+    Union[
+        Annotated[ResponsesInputMessage, Tag("message")],
+        Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
+        Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesUnknownInputItem, Tag("unknown")],
+    ],
+    Discriminator(_responses_input_item_discriminator),
 ]
 
 

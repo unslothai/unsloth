@@ -40,11 +40,15 @@ from models.inference import (
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
     ResponsesFunctionTool,
+    ResponsesInputMessage,
     ResponsesOutputFunctionCall,
     ResponsesOutputMessage,
     ResponsesOutputTextContent,
+    ResponsesOutputTextPart,
     ResponsesRequest,
     ResponsesResponse,
+    ResponsesUnknownContentPart,
+    ResponsesUnknownInputItem,
     ResponsesUsage,
 )
 from routes.inference import (
@@ -482,6 +486,155 @@ class TestResponsesOutputFunctionCall:
 # =====================================================================
 # Regression: ChatMessage validator still accepts mapped tool messages
 # =====================================================================
+
+
+class TestCodexStyleRequestShapes:
+    """Regression tests for the request shapes OpenAI Codex CLI sends."""
+
+    def test_assistant_replay_output_text_accepted(self):
+        """Codex replays prior assistant turns with `output_text` content.
+        Before, this triggered a 422 on every turn after the first."""
+        req = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "Hi"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Hello!",
+                            "annotations": [],
+                            "logprobs": [],
+                        }
+                    ],
+                },
+                {"role": "user", "content": "Continue"},
+            ],
+        )
+        assert len(req.input) == 3
+        parts = req.input[1].content
+        assert isinstance(parts, list)
+        assert isinstance(parts[0], ResponsesOutputTextPart)
+        assert parts[0].text == "Hello!"
+
+    def test_reasoning_item_accepted_as_unknown(self):
+        """`reasoning` items replayed from prior o-series turns must not
+        fail validation — Codex preserves them in multi-turn."""
+        req = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "Hi"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "encrypted_content": "opaque",
+                },
+                {"role": "assistant", "content": "Hello!"},
+            ],
+        )
+        assert len(req.input) == 3
+        assert isinstance(req.input[1], ResponsesUnknownInputItem)
+
+    def test_unknown_content_part_type_accepted(self):
+        """Unknown content-part types (e.g. future input_audio) validate as
+        ResponsesUnknownContentPart so the whole request doesn't 422."""
+        req = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "See:"},
+                        {"type": "input_audio", "audio": {"data": "..."}},
+                    ],
+                }
+            ],
+        )
+        parts = req.input[0].content
+        assert isinstance(parts[1], ResponsesUnknownContentPart)
+        assert parts[1].type == "input_audio"
+
+    def test_codex_full_shape_roundtrip(self):
+        """End-to-end: developer + user + assistant(output_text) +
+        function_call + function_call_output + reasoning in one request."""
+        payload = ResponsesRequest(
+            instructions = "Base instructions.",
+            input = [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Dev override."}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Weather?"}],
+                },
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": '{"temp":20}',
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "It's 20°C.",
+                            "annotations": [],
+                            "logprobs": [],
+                        }
+                    ],
+                },
+                {"role": "user", "content": "And tomorrow?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        # Single leading merged system; no mid-conversation system.
+        assert msgs[0].role == "system"
+        assert sum(1 for m in msgs if m.role == "system") == 1
+        assert "Base instructions." in msgs[0].content
+        assert "Dev override." in msgs[0].content
+
+        roles = [m.role for m in msgs[1:]]
+        # Reasoning item is dropped. Order: user, assistant(tool_calls),
+        # tool, assistant(text), user.
+        assert roles == ["user", "assistant", "tool", "assistant", "user"]
+        assert msgs[2].tool_calls is not None
+        assert msgs[3].role == "tool"
+        assert msgs[3].tool_call_id == "call_1"
+        assert msgs[4].content == "It's 20°C."
+
+    def test_single_output_text_part_flattens_to_string(self):
+        """ChatMessage assistant role prefers plain string content — tests
+        confirm we don't forward a single-part array that would otherwise
+        force legacy chat templates into multimodal handling."""
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
+                },
+                {"role": "user", "content": "next"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "assistant"
+        assert msgs[0].content == "ok"
 
 
 class TestTranslatedMessagesValidate:

@@ -101,6 +101,9 @@ from models.inference import (
     ResponsesInputMessage,
     ResponsesInputTextPart,
     ResponsesInputImagePart,
+    ResponsesOutputTextPart,
+    ResponsesUnknownContentPart,
+    ResponsesUnknownInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
     ResponsesOutputTextContent,
@@ -2154,14 +2157,15 @@ def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
 def _responses_message_text(content: Union[str, list]) -> str:
     """Flatten a ResponsesInputMessage ``content`` into a plain text string.
 
-    Used for system/developer message hoisting where only text is meaningful —
-    image parts are silently skipped. Returns an empty string for empty input.
+    Used for system/developer message hoisting and for assistant-replay
+    (``output_text``) messages when images/unknown parts are irrelevant.
+    Returns an empty string for empty input.
     """
     if isinstance(content, str):
         return content
     parts: list[str] = []
     for part in content or []:
-        if isinstance(part, ResponsesInputTextPart):
+        if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):
             parts.append(part.text)
     return "\n".join(parts)
 
@@ -2240,6 +2244,13 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             )
             continue
 
+        if isinstance(item, ResponsesUnknownInputItem):
+            # Reasoning items and any other unmodelled top-level Responses
+            # item types are silently dropped — llama-server-backed GGUFs
+            # cannot consume them and our lenient validation let them in so
+            # unrelated turns don't 422.
+            continue
+
         # ResponsesInputMessage — hoist system/developer to the top, merge.
         if item.role in ("system", "developer"):
             hoisted = _responses_message_text(item.content)
@@ -2249,20 +2260,40 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
 
         if isinstance(item.content, str):
             messages.append(ChatMessage(role = item.role, content = item.content))
-        else:
-            # Convert Responses content parts -> Chat content parts
-            parts = []
-            for part in item.content:
-                if isinstance(part, ResponsesInputTextPart):
-                    parts.append(TextContentPart(type = "text", text = part.text))
-                elif isinstance(part, ResponsesInputImagePart):
-                    parts.append(
-                        ImageContentPart(
-                            type = "image_url",
-                            image_url = ImageUrl(url = part.image_url, detail = part.detail),
-                        )
+            continue
+
+        # Assistant-replay turns come back as content = [output_text, ...].
+        # Chat Completions' assistant role expects a plain string, not a
+        # multimodal content array, so flatten output_text (and any stray
+        # input_text / unknown text) to a single string.
+        if item.role == "assistant":
+            text = _responses_message_text(item.content)
+            if text:
+                messages.append(ChatMessage(role = "assistant", content = text))
+            continue
+
+        # User (and any other remaining roles) — keep multimodal when
+        # present, drop unknown content parts silently.
+        parts: list = []
+        for part in item.content:
+            if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):
+                parts.append(TextContentPart(type = "text", text = part.text))
+            elif isinstance(part, ResponsesInputImagePart):
+                parts.append(
+                    ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = part.image_url, detail = part.detail),
                     )
-            messages.append(ChatMessage(role = item.role, content = parts if parts else ""))
+                )
+            # ResponsesUnknownContentPart and anything else: drop.
+        if parts:
+            # Collapse single-text-part content to a plain string so roles
+            # that reject multimodal arrays (e.g. legacy templates) still
+            # accept the message.
+            if len(parts) == 1 and isinstance(parts[0], TextContentPart):
+                messages.append(ChatMessage(role = item.role, content = parts[0].text))
+            else:
+                messages.append(ChatMessage(role = item.role, content = parts))
 
     if system_parts:
         merged = "\n\n".join(p for p in system_parts if p)
@@ -2421,9 +2452,25 @@ async def _responses_stream(
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
-    result = await openai_chat_completions(chat_req, request)
 
     async def event_generator():
+        # Await the inner chat-completions call HERE, not in the surrounding
+        # coroutine, so the httpx client / response / iterator created by
+        # _openai_passthrough_stream live entirely inside the StreamingResponse
+        # child task. Python 3.13 + anyio otherwise trips on
+        # "Attempted to exit cancel scope in a different task than it was
+        # entered in" when the async-gen GC finalises the inner httpcore
+        # byte stream on the child task after it was opened on the parent.
+        try:
+            result = await openai_chat_completions(chat_req, request)
+        except HTTPException as e:
+            # Llama-server unreachable / non-200 / auth failure. Headers
+            # are already on the wire (SSE started), so surface a typed
+            # error via response.failed rather than dropping the stream.
+            yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
+            yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': e.status_code, 'message': str(e.detail)}}})}\n\n"
+            return
+
         full_text = ""
         input_tokens = 0
         output_tokens = 0
