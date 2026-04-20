@@ -2439,6 +2439,18 @@ async def _responses_stream(
 ):
     """Handle a streaming Responses API call, emitting named SSE events.
 
+    For GGUF models the request goes directly to llama-server's
+    ``/v1/chat/completions`` endpoint from inside the StreamingResponse
+    child task — a single httpx lifecycle, a single async generator.
+    Wrapping the existing ``openai_chat_completions`` pass-through (which
+    already does its own httpx lifecycle) stacks two generators: Python
+    3.13 + httpcore 1.0.x then loses the close-propagation chain on the
+    innermost ``HTTP11ConnectionByteStream`` at asyncgen finalisation,
+    tripping "Attempted to exit cancel scope in a different task" /
+    "async generator ignored GeneratorExit". The direct path avoids that
+    altogether. Non-GGUF falls back to the wrapper (which doesn't use
+    httpx, so the issue doesn't apply).
+
     Text deltas arrive as ``response.output_text.delta`` on a single
     ``message`` output item at ``output_index=0``. Each tool call from
     ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
@@ -2453,24 +2465,28 @@ async def _responses_stream(
 
     chat_req = _build_chat_request(payload, messages, stream = True)
 
-    async def event_generator():
-        # Await the inner chat-completions call HERE, not in the surrounding
-        # coroutine, so the httpx client / response / iterator created by
-        # _openai_passthrough_stream live entirely inside the StreamingResponse
-        # child task. Python 3.13 + anyio otherwise trips on
-        # "Attempted to exit cancel scope in a different task than it was
-        # entered in" when the async-gen GC finalises the inner httpcore
-        # byte stream on the child task after it was opened on the parent.
-        try:
-            result = await openai_chat_completions(chat_req, request)
-        except HTTPException as e:
-            # Llama-server unreachable / non-200 / auth failure. Headers
-            # are already on the wire (SSE started), so surface a typed
-            # error via response.failed rather than dropping the stream.
-            yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
-            yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': e.status_code, 'message': str(e.detail)}}})}\n\n"
-            return
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        # The direct pass-through is GGUF-only. Non-GGUF /v1/responses
+        # streaming isn't a Codex-compatible path today and wrapping the
+        # transformers backend's streaming generator here would re-
+        # introduce the double-layer asyncgen close pattern that produces
+        # "Attempted to exit cancel scope in a different task" on Python
+        # 3.13. Surface a typed 400 so the client sees a useful error
+        # instead of a dangling stream.
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Streaming /v1/responses requires a GGUF model loaded via "
+                "llama-server. Use non-streaming /v1/responses, "
+                "/v1/chat/completions, or load a GGUF model."
+            ),
+        )
 
+    body = _build_openai_passthrough_body(chat_req)
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
+
+    async def event_generator():
         full_text = ""
         input_tokens = 0
         output_tokens = 0
@@ -2528,131 +2544,150 @@ async def _responses_stream(
         content_part = {"type": "output_text", "text": "", "annotations": []}
         yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
 
-        # ── Stream delta events from the inner chat completions stream ──
-        # Hold the inner body_iterator explicitly so we can aclose() it in a
-        # finally block. Without this, a client disconnect during a Responses
-        # stream leaves the inner async generator (from the chat-completions
-        # passthrough) to be finalized by the asyncgen GC hook on a different
-        # task, which trips anyio's cancel-scope check on Python 3.13 with
-        # "Attempted to exit cancel scope in a different task than it was
-        # entered in" and "async generator ignored GeneratorExit". See the
-        # same pattern in _anthropic_passthrough_stream and the #5099
-        # passthroughs.
-        inner_iter = (
-            result.body_iterator if isinstance(result, StreamingResponse) else None
-        )
+        # ── Direct httpx lifecycle to llama-server ──
+        # Full same-task open + close, identical pattern to
+        # _openai_passthrough_stream and _anthropic_passthrough_stream:
+        # no `async with`, explicit aclose of lines_iter BEFORE resp /
+        # client so the innermost httpcore byte stream is finalised in
+        # this task (not via Python's asyncgen GC in a sibling task).
+        client = httpx.AsyncClient(timeout = 600)
+        resp = None
+        lines_iter = None
         try:
-            if inner_iter is not None:
-                async for raw_chunk in inner_iter:
-                    if isinstance(raw_chunk, bytes):
-                        raw_chunk = raw_chunk.decode("utf-8", errors = "replace")
+            req = client.build_request("POST", target_url, json = body)
+            try:
+                resp = await client.send(req, stream = True)
+            except httpx.RequestError as e:
+                logger.error("responses stream: upstream unreachable: %s", e)
+                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': 502, 'message': _friendly_error(e)}}})}\n\n"
+                return
 
-                    for line in raw_chunk.split("\n"):
-                        line = line.strip()
-                        if not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            continue
-                        try:
-                            chunk_data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+            if resp.status_code != 200:
+                err_bytes = await resp.aread()
+                err_text = err_bytes.decode("utf-8", errors = "replace")
+                logger.error(
+                    "responses stream upstream error: status=%s body=%s",
+                    resp.status_code,
+                    err_text[:500],
+                )
+                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
+                return
 
-                        choices = chunk_data.get("choices", [])
-                        if not choices:
-                            usage = chunk_data.get("usage")
-                            if usage:
-                                input_tokens = usage.get("prompt_tokens", input_tokens)
-                                output_tokens = usage.get(
-                                    "completion_tokens", output_tokens
-                                )
-                            continue
-
-                        delta = choices[0].get("delta", {}) or {}
-                        content = delta.get("content")
-                        if content:
-                            full_text += content
-                            delta_event = {
-                                "type": "response.output_text.delta",
-                                "item_id": msg_id,
-                                "output_index": 0,
-                                "content_index": 0,
-                                "delta": content,
-                            }
-                            yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
-
-                        for tc in delta.get("tool_calls") or []:
-                            idx = tc.get("index", 0)
-                            st = tool_call_state.get(idx)
-                            fn = tc.get("function") or {}
-                            if st is None:
-                                # First chunk for this tool call — allocate an
-                                # output_index and emit output_item.added.
-                                st = {
-                                    "output_index": next_output_index,
-                                    "item_id": f"fc_{uuid.uuid4().hex[:12]}",
-                                    "call_id": tc.get("id") or "",
-                                    "name": fn.get("name") or "",
-                                    "arguments": "",
-                                    "opened": False,
-                                }
-                                next_output_index += 1
-                                tool_call_state[idx] = st
-                            else:
-                                # Later chunks sometimes carry the id/name only
-                                # once; merge when present.
-                                if tc.get("id") and not st["call_id"]:
-                                    st["call_id"] = tc["id"]
-                                if fn.get("name") and not st["name"]:
-                                    st["name"] = fn["name"]
-
-                            if not st["opened"] and st["call_id"] and st["name"]:
-                                item_added = {
-                                    "type": "response.output_item.added",
-                                    "output_index": st["output_index"],
-                                    "item": {
-                                        "type": "function_call",
-                                        "id": st["item_id"],
-                                        "status": "in_progress",
-                                        "call_id": st["call_id"],
-                                        "name": st["name"],
-                                        "arguments": "",
-                                    },
-                                }
-                                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
-                                st["opened"] = True
-
-                            arg_delta = fn.get("arguments") or ""
-                            if arg_delta and st["opened"]:
-                                st["arguments"] += arg_delta
-                                args_delta_event = {
-                                    "type": "response.function_call_arguments.delta",
-                                    "item_id": st["item_id"],
-                                    "output_index": st["output_index"],
-                                    "delta": arg_delta,
-                                }
-                                yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
-                            elif arg_delta:
-                                # Buffer the args until we can open the item
-                                # (id/name arrive in the same chunk as the first
-                                # arg delta for some models — but if not, stash).
-                                st["arguments"] += arg_delta
-
-                        usage = chunk_data.get("usage")
-                        if usage:
-                            input_tokens = usage.get("prompt_tokens", input_tokens)
-                            output_tokens = usage.get(
-                                "completion_tokens", output_tokens
-                            )
-        finally:
-            if inner_iter is not None:
+            lines_iter = resp.aiter_lines()
+            async for raw_line in lines_iter:
+                if await request.is_disconnected():
+                    break
+                if not raw_line:
+                    continue
+                if not raw_line.startswith("data: "):
+                    continue
+                data_str = raw_line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
                 try:
-                    aclose = getattr(inner_iter, "aclose", None)
-                    if aclose is not None:
-                        await aclose()
+                    chunk_data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                choices = chunk_data.get("choices", [])
+                if not choices:
+                    usage = chunk_data.get("usage")
+                    if usage:
+                        input_tokens = usage.get("prompt_tokens", input_tokens)
+                        output_tokens = usage.get("completion_tokens", output_tokens)
+                    continue
+
+                delta = choices[0].get("delta", {}) or {}
+                content = delta.get("content")
+                if content:
+                    full_text += content
+                    delta_event = {
+                        "type": "response.output_text.delta",
+                        "item_id": msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": content,
+                    }
+                    yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    st = tool_call_state.get(idx)
+                    fn = tc.get("function") or {}
+                    if st is None:
+                        # First chunk for this tool call — allocate an
+                        # output_index and emit output_item.added.
+                        st = {
+                            "output_index": next_output_index,
+                            "item_id": f"fc_{uuid.uuid4().hex[:12]}",
+                            "call_id": tc.get("id") or "",
+                            "name": fn.get("name") or "",
+                            "arguments": "",
+                            "opened": False,
+                        }
+                        next_output_index += 1
+                        tool_call_state[idx] = st
+                    else:
+                        # Later chunks sometimes carry the id/name only
+                        # once; merge when present.
+                        if tc.get("id") and not st["call_id"]:
+                            st["call_id"] = tc["id"]
+                        if fn.get("name") and not st["name"]:
+                            st["name"] = fn["name"]
+
+                    if not st["opened"] and st["call_id"] and st["name"]:
+                        item_added = {
+                            "type": "response.output_item.added",
+                            "output_index": st["output_index"],
+                            "item": {
+                                "type": "function_call",
+                                "id": st["item_id"],
+                                "status": "in_progress",
+                                "call_id": st["call_id"],
+                                "name": st["name"],
+                                "arguments": "",
+                            },
+                        }
+                        yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                        st["opened"] = True
+
+                    arg_delta = fn.get("arguments") or ""
+                    if arg_delta and st["opened"]:
+                        st["arguments"] += arg_delta
+                        args_delta_event = {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": st["item_id"],
+                            "output_index": st["output_index"],
+                            "delta": arg_delta,
+                        }
+                        yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                    elif arg_delta:
+                        # Buffer the args until we can open the item
+                        # (id/name arrive in the same chunk as the first
+                        # arg delta for some models — but if not, stash).
+                        st["arguments"] += arg_delta
+
+                usage = chunk_data.get("usage")
+                if usage:
+                    input_tokens = usage.get("prompt_tokens", input_tokens)
+                    output_tokens = usage.get("completion_tokens", output_tokens)
+        except Exception as e:
+            logger.error("responses stream error: %s", e)
+        finally:
+            if lines_iter is not None:
+                try:
+                    await lines_iter.aclose()
                 except Exception:
                     pass
+            if resp is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
         # ── Closing events for tool calls ──
         for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
