@@ -14,6 +14,11 @@ import {
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Tooltip,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -827,9 +832,9 @@ export function ChatPage(): ReactElement {
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <div
           className={cn(
-            "absolute top-0 left-0 right-2 z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
+            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
-            view.mode === "compare" && "right-2 left-auto w-auto bg-transparent pl-0 pr-2",
+            view.mode === "compare" && "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
           )}
         >
           <div className="flex items-center gap-1">
@@ -877,25 +882,36 @@ export function ChatPage(): ReactElement {
               {modelsError}
             </div>
           )}
-          <div className="flex-1" />
-          {view.mode === "single" && ggufContextLength && contextUsage ? (
-            <ContextUsageBar
-              used={contextUsage.totalTokens}
-              total={ggufContextLength}
-              cached={contextUsage.cachedTokens}
-              promptTokens={contextUsage.promptTokens}
-              completionTokens={contextUsage.completionTokens}
-            />
-          ) : null}
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(!settingsOpen)}
-            className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white"
-            title="Inference settings"
-            data-tour="chat-settings"
-          >
-            <HugeiconsIcon icon={Settings05Icon} className="size-5" />
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            {view.mode === "single" && ggufContextLength && contextUsage ? (
+              <ContextUsageBar
+                used={contextUsage.totalTokens}
+                total={ggufContextLength}
+                cached={contextUsage.cachedTokens}
+                promptTokens={contextUsage.promptTokens}
+                completionTokens={contextUsage.completionTokens}
+                className="h-[34px]"
+              />
+            ) : null}
+            {!settingsOpen && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(true)}
+                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Open configuration"
+                    data-tour="chat-settings"
+                  >
+                    <HugeiconsIcon icon={Settings05Icon} className="size-5" />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent side="bottom" sideOffset={6}>
+                  Open configuration
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
         </div>
 
         {view.mode === "single" ? (
