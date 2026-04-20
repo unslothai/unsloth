@@ -104,39 +104,30 @@ def _infer_device_map_from_loaded_model(model):
     device_map = {}
 
     def _assign(module, prefix):
-        subtree_devs = {
-            p.device for _, p in module.named_parameters(remove_duplicate = False)
-        }
-        if not subtree_devs:
+        params = list(module.named_parameters(remove_duplicate = False))
+        if not params:
             bufs = list(module.named_buffers())
             if bufs:
-                buf_devs = {b.device for _, b in bufs}
-                if len(buf_devs) == 1:
-                    device_map[prefix] = next(iter(buf_devs))
-                else:
-                    for child_name, child in module.named_children():
-                        child_prefix = (
-                            f"{prefix}.{child_name}" if prefix else child_name
-                        )
-                        _assign(child, child_prefix)
+                device_map[prefix] = bufs[0][1].device
             return
-        if len(subtree_devs) == 1:
-            device_map[prefix] = next(iter(subtree_devs))
-            return
-        for child_name, child in module.named_children():
-            child_prefix = f"{prefix}.{child_name}" if prefix else child_name
-            _assign(child, child_prefix)
-        local_devs = {
-            p.device
-            for _, p in module.named_parameters(
-                recurse = False,
-                remove_duplicate = False,
-            )
-        }
-        if local_devs and len(local_devs) == 1:
-            device_map[prefix] = next(iter(local_devs))
+        devices = {p.device for _, p in params}
+        if len(devices) == 1:
+            device_map[prefix] = next(iter(devices))
+        else:
+            for child_name, child in module.named_children():
+                child_prefix = f"{prefix}.{child_name}" if prefix else child_name
+                _assign(child, child_prefix)
+            for pname, param in module.named_parameters(remove_duplicate = False):
+                if "." not in pname:
+                    full = f"{prefix}.{pname}" if prefix else pname
+                    if not any(
+                        full == k or full.startswith(k + ".") for k in device_map
+                    ):
+                        device_map[full] = param.device
 
     _assign(model, "")
+    if "" in device_map and len(device_map) > 1:
+        device_map.pop("")
     return device_map
 
 
