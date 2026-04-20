@@ -1,28 +1,54 @@
 <h1 align="center" style="margin:0;">
   <a href="https://unsloth.ai/docs"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/STUDIO%20WHITE%20LOGO.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/STUDIO%20BLACK%20LOGO.png">
-    <img alt="Unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/STUDIO%20BLACK%20LOGO.png" height="60" style="max-width:100%;">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png">
+    <img alt="Unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png" height="80" style="max-width:100%;">
   </picture></a>
 </h1>
 <h3 align="center" style="margin: 0; margin-top: 0;">
-Run and train AI models with a unified local interface.
+Unsloth Studio lets you run and train models locally.
 </h3>
 
 <p align="center">
   <a href="#-features">Features</a> •
-  <a href="#-quickstart">Quickstart</a> •
+  <a href="#-install">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
-  <a href="https://unsloth.ai/docs">Documentation</a> •
-  <a href="https://www.reddit.com/r/unsloth/">Reddit</a>
+  <a href="https://unsloth.ai/docs">Documentation</a>
 </p>
- <a href="https://unsloth.ai/docs/new/studio">
-<img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
+<br>
+<a href="https://unsloth.ai/docs/new/studio">
+<p align="center">
+    <img
+      src="https://github.com/user-attachments/assets/35ad5370-e140-4095-b46f-dcb7a5ddc933"
+      alt="Train models with Unsloth Studio"
+      width="49.5%"
+    />
+  <img
+    src="https://github.com/user-attachments/assets/1429d0bf-f8ff-4366-9da8-f99cd02f525a"
+    alt="Run models with Unsloth Studio"
+    width="49.5%"
+  />
+</p></a>
 
-Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+## ⚡ Get started
+
+#### macOS, Linux, WSL:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | sh
+```
+#### Windows:
+```powershell
+irm https://unsloth.ai/install.ps1 | iex
+```
+#### Community:
+
+- [Discord](https://discord.gg/unsloth)
+- [𝕏 (Twitter)](https://x.com/UnslothAI)
+- [Reddit](https://reddit.com/r/unsloth)
 
 ## ⭐ Features
-Unsloth provides several key features for both inference and training:
+Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+
 ### Inference
 * **Search + download + run models** including GGUF, LoRA adapters, safetensors
 * **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
@@ -40,7 +66,7 @@ Unsloth provides several key features for both inference and training:
 * **Observability**: Monitor training live, track loss and GPU usage and customize graphs.
 * [Multi-GPU](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth) training is supported, with major improvements coming soon.
 
-## ⚡ Quickstart
+## 📥 Install
 Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
 
 ### Unsloth Studio (web UI)
@@ -133,7 +159,8 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
 
 ## 🦥 Unsloth News
-- **Gemma 4**: Run and train Google’s new models directly in Unsloth Studio! [Blog](https://unsloth.ai/docs/models/gemma-4)
+- **Qwen3.6**: Qwen3.6-35B-A3B can now be trained and run in Unsloth Studio. [Blog](https://unsloth.ai/docs/models/qwen3.6)
+- **Gemma 4**: Run and train Google’s new models directly in Unsloth. [Blog](https://unsloth.ai/docs/models/gemma-4)
 - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
 - **Qwen3.5** - 0.8B, 2B, 4B, 9B, 27B, 35-A3B, 112B-A10B are now supported. [Guide + notebooks](https://unsloth.ai/docs/models/qwen3.5/fine-tune)
 - Train **MoE LLMs 12x faster** with 35% less VRAM - DeepSeek, GLM, Qwen and gpt-oss. [Blog](https://unsloth.ai/docs/new/faster-moe)
