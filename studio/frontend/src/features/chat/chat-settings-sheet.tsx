@@ -52,12 +52,17 @@ import {
   CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
-  PencilEdit01Icon,
   Settings02Icon,
+  Settings05Icon,
   SlidersHorizontalIcon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Tooltip,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -738,15 +743,34 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto bg-muted/70">
-      <div className="sticky top-0 z-10 flex items-center gap-2 bg-muted/70 px-4 py-3 backdrop-blur">
-        <HugeiconsIcon
-          icon={PencilEdit01Icon}
-          className="size-4 text-muted-foreground/70"
-        />
-        <span className="flex-1 text-base font-semibold tracking-tight">
-          Configuration
-        </span>
+      <div className="aui-thread-viewport relative h-full overflow-y-auto">
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 pl-2 pr-2 pt-[11px] backdrop-blur">
+        {isMobile ? (
+          <span className="flex h-[34px] flex-1 items-center pl-1 text-base font-semibold tracking-tight">
+            Configuration
+          </span>
+        ) : (
+          <>
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onOpenChange?.(false)}
+                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close configuration"
+                >
+                  <HugeiconsIcon icon={Settings05Icon} className="size-5" />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                Close configuration
+              </TooltipContent>
+            </Tooltip>
+            <span className="flex h-[34px] flex-1 items-center text-base font-semibold tracking-tight">
+              Configuration
+            </span>
+          </>
+        )}
       </div>
 
       <div className="px-1.5">
@@ -889,7 +913,7 @@ export function ChatSettingsPanel({
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
             placeholder="You are a helpful assistant..."
-            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle"
+            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle focus-visible:ring-[1px]"
             rows={3}
           />
         </div>
@@ -1202,6 +1226,7 @@ export function ChatSettingsPanel({
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
+              fieldSizing="fixed"
               className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
               rows={14}
             />
