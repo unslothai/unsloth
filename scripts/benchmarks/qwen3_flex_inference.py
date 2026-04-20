@@ -629,7 +629,14 @@ def main():
         )
 
     med = sorted(wall_times)[len(wall_times) // 2]
+    best = min(wall_times)
     peak = torch.cuda.max_memory_allocated() / 1024**3
+    # Sample a couple of completions so we can eyeball coherence.
+    sample_completions = []
+    for s in out[:3]:
+        sample_completions.append(
+            tok.decode(s.output_ids[:80], skip_special_tokens = True)
+        )
     res = {
         "backend": "qwen3_flex",
         "capture_cudagraph": args.capture_cudagraph,
@@ -638,9 +645,12 @@ def main():
         "n_decoded_tokens": total_decoded,
         "wall_times_s": wall_times,
         "median_wall_s": med,
-        "decode_tps": total_decoded / med if med else 0,
+        "best_wall_s": best,
+        "decode_tps_median": total_decoded / med if med else 0,
+        "decode_tps_best": total_decoded / best if best else 0,
         "max_new_tokens": args.max_new_tokens,
         "peak_memory_gb": peak,
+        "sample_completions": sample_completions,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
     with open(args.stats_path, "w") as f:
