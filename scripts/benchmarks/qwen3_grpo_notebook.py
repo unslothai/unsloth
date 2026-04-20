@@ -33,31 +33,28 @@ for p in (HERE, WORKSPACE_ROOT):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--stats_path", default = "logs/notebook_ref_10.json")
-    p.add_argument("--output_dir", default = "outputs/notebook_ref_10")
-    p.add_argument("--max_steps", type = int, default = 10)
-    p.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
-    p.add_argument("--max_seq_length", type = int, default = 2048)
-    p.add_argument("--lora_rank", type = int, default = 32)
-    p.add_argument("--gpu_memory_utilization", type = float, default = 0.85)
-    p.add_argument("--num_generations", type = int, default = 4)
-    p.add_argument("--per_device_train_batch_size", type = int, default = 1)
-    p.add_argument("--temperature", type = float, default = 0.1)
-    p.add_argument("--top_p", type = float, default = 0.97)
-    p.add_argument("--min_p", type = float, default = 0.5)
-    p.add_argument("--top_k", type = int, default = 5)
-    p.add_argument(
-        "--skip_sft_pre_finetune",
-        action = "store_true",
-        help = "Skip the format-priming SFT stage; go straight to GRPO.",
-    )
+    p.add_argument("--stats_path", default="logs/notebook_ref_10.json")
+    p.add_argument("--output_dir", default="outputs/notebook_ref_10")
+    p.add_argument("--max_steps", type=int, default=10)
+    p.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
+    p.add_argument("--max_seq_length", type=int, default=2048)
+    p.add_argument("--lora_rank", type=int, default=32)
+    p.add_argument("--gpu_memory_utilization", type=float, default=0.85)
+    p.add_argument("--num_generations", type=int, default=4)
+    p.add_argument("--per_device_train_batch_size", type=int, default=1)
+    p.add_argument("--temperature", type=float, default=0.1)
+    p.add_argument("--top_p", type=float, default=0.97)
+    p.add_argument("--min_p", type=float, default=0.5)
+    p.add_argument("--top_k", type=int, default=5)
+    p.add_argument("--skip_sft_pre_finetune", action="store_true",
+                   help="Skip the format-priming SFT stage; go straight to GRPO.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
-    os.makedirs(args.output_dir, exist_ok = True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Import order matters: unsloth must come before transformers/trl.
     os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
@@ -65,28 +62,23 @@ def main():
     import torch  # noqa: E402
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = args.model_name,
-        max_seq_length = args.max_seq_length,
-        load_in_4bit = False,
-        fast_inference = True,
-        max_lora_rank = args.lora_rank,
-        gpu_memory_utilization = args.gpu_memory_utilization,
+        model_name=args.model_name,
+        max_seq_length=args.max_seq_length,
+        load_in_4bit=False,
+        fast_inference=True,
+        max_lora_rank=args.lora_rank,
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
     model = FastLanguageModel.get_peft_model(
         model,
-        r = args.lora_rank,
-        target_modules = [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
+        r=args.lora_rank,
+        target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
         ],
-        lora_alpha = args.lora_rank * 2,
-        use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        lora_alpha=args.lora_rank * 2,
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
     )
 
     reasoning_start = "<start_working_out>"
@@ -127,29 +119,16 @@ def main():
     import numpy as np
 
     if not args.skip_sft_pre_finetune:
-        sft_ds = load_dataset("unsloth/OpenMathReasoning-mini", split = "cot")
-        sft_df = sft_ds.to_pandas()[
-            ["expected_answer", "problem", "generated_solution"]
-        ]
-        is_number = pd.to_numeric(
-            pd.Series(sft_df["expected_answer"]), errors = "coerce"
-        ).notnull()
+        sft_ds = load_dataset("unsloth/OpenMathReasoning-mini", split="cot")
+        sft_df = sft_ds.to_pandas()[["expected_answer", "problem", "generated_solution"]]
+        is_number = pd.to_numeric(pd.Series(sft_df["expected_answer"]), errors="coerce").notnull()
         sft_df = sft_df.iloc[np.where(is_number)[0]]
 
         def format_dataset(x):
-            thoughts = (
-                x["generated_solution"]
-                .replace("<think>", "")
-                .replace("</think>", "")
-                .strip()
-            )
+            thoughts = x["generated_solution"].replace("<think>", "").replace("</think>", "").strip()
             final_prompt = (
-                reasoning_start
-                + thoughts
-                + reasoning_end
-                + solution_start
-                + x["expected_answer"]
-                + solution_end
+                reasoning_start + thoughts + reasoning_end
+                + solution_start + x["expected_answer"] + solution_end
             )
             return [
                 {"role": "system", "content": system_prompt},
@@ -157,69 +136,61 @@ def main():
                 {"role": "assistant", "content": final_prompt},
             ]
 
-        sft_df["Messages"] = sft_df.apply(format_dataset, axis = 1)
-        sft_df["N"] = sft_df["Messages"].apply(
-            lambda m: len(tokenizer.apply_chat_template(m))
-        )
+        sft_df["Messages"] = sft_df.apply(format_dataset, axis=1)
+        sft_df["N"] = sft_df["Messages"].apply(lambda m: len(tokenizer.apply_chat_template(m)))
         sft_df = sft_df.loc[sft_df["N"] <= args.max_seq_length / 2].copy()
         sft_df["text"] = tokenizer.apply_chat_template(
-            sft_df["Messages"].values.tolist(), tokenize = False
+            sft_df["Messages"].values.tolist(), tokenize=False
         )
         sft_dataset = Dataset.from_pandas(sft_df)
 
         from trl import SFTTrainer, SFTConfig
-
         sft_trainer = SFTTrainer(
-            model = model,
-            tokenizer = tokenizer,
-            train_dataset = sft_dataset,
-            args = SFTConfig(
-                dataset_text_field = "text",
-                per_device_train_batch_size = 1,
-                gradient_accumulation_steps = 1,
-                warmup_steps = 5,
-                num_train_epochs = 2,
-                learning_rate = 2e-4,
-                logging_steps = 5,
-                optim = "adamw_8bit",
-                weight_decay = 0.001,
-                lr_scheduler_type = "linear",
-                seed = 3407,
-                report_to = "none",
-                output_dir = os.path.join(args.output_dir, "sft"),
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=sft_dataset,
+            args=SFTConfig(
+                dataset_text_field="text",
+                per_device_train_batch_size=1,
+                gradient_accumulation_steps=1,
+                warmup_steps=5,
+                num_train_epochs=2,
+                learning_rate=2e-4,
+                logging_steps=5,
+                optim="adamw_8bit",
+                weight_decay=0.001,
+                lr_scheduler_type="linear",
+                seed=3407,
+                report_to="none",
+                output_dir=os.path.join(args.output_dir, "sft"),
             ),
         )
         sft_trainer.train()
         del sft_dataset, sft_df, sft_ds, sft_trainer
         torch.cuda.empty_cache()
         import gc
-
         gc.collect()
 
     # --- GRPO stage -----------------------------------------------------------
-    dataset = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
-    dataset = dataset.map(
-        lambda x: {
-            "prompt": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": x["prompt"]},
-            ],
-            "answer": x["solution"],
-        }
-    )
+    dataset = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
+    dataset = dataset.map(lambda x: {
+        "prompt": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": x["prompt"]},
+        ],
+        "answer": x["solution"],
+    })
 
-    solution_end_regex = (
-        r"</SOLUTION>[\s]{0,}" + "(?:" + re.escape(tokenizer.eos_token) + ")?"
-    )
+    solution_end_regex = r"</SOLUTION>[\s]{0,}" + "(?:" + re.escape(tokenizer.eos_token) + ")?"
     match_format = re.compile(
         rf"{reasoning_end}.*?"
         rf"{solution_start}(.+?){solution_end_regex}"
         rf"[\s]{{0,}}$",
-        flags = re.MULTILINE | re.DOTALL,
+        flags=re.MULTILINE | re.DOTALL,
     )
     match_numbers = re.compile(
         solution_start + r".*?[\s]{0,}([-]?[\d\.\,]{1,})",
-        flags = re.MULTILINE | re.DOTALL,
+        flags=re.MULTILINE | re.DOTALL,
     )
 
     def match_format_exactly(completions, **kwargs):
@@ -291,12 +262,10 @@ def main():
 
     # Filter long prompts.
     tokenized = dataset.map(
-        lambda x: {
-            "tokens": tokenizer.apply_chat_template(
-                x["prompt"], add_generation_prompt = True, tokenize = True
-            )
-        },
-        batched = False,
+        lambda x: {"tokens": tokenizer.apply_chat_template(
+            x["prompt"], add_generation_prompt=True, tokenize=True
+        )},
+        batched=False,
     )
     tokenized = tokenized.map(lambda x: {"L": len(x["tokens"])})
     maximum_length = int(np.quantile(tokenized["L"], 0.9))
@@ -308,63 +277,60 @@ def main():
     max_completion_length = args.max_seq_length - max_prompt_length
 
     from vllm import SamplingParams
-
     vllm_sampling_params = SamplingParams(
-        temperature = args.temperature,
-        top_p = args.top_p,
-        min_p = args.min_p,
-        top_k = args.top_k,
-        seed = 3407,
-        stop = [tokenizer.eos_token],
-        include_stop_str_in_output = True,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        min_p=args.min_p,
+        top_k=args.top_k,
+        seed=3407,
+        stop=[tokenizer.eos_token],
+        include_stop_str_in_output=True,
     )
 
     from trl import GRPOConfig, GRPOTrainer
-
     training_args = GRPOConfig(
-        vllm_sampling_params = vllm_sampling_params,
-        temperature = args.temperature,
-        top_p = args.top_p,
-        top_k = args.top_k,
-        learning_rate = 5e-6,
-        weight_decay = 0.001,
-        warmup_ratio = 0.1,
-        lr_scheduler_type = "linear",
-        optim = "adamw_8bit",
-        logging_steps = 1,
-        per_device_train_batch_size = args.per_device_train_batch_size,
-        gradient_accumulation_steps = 1,
-        num_generations = args.num_generations,
-        max_prompt_length = max_prompt_length,
-        max_completion_length = max_completion_length,
-        max_steps = args.max_steps,
-        save_steps = args.max_steps + 1,
-        report_to = "none",
-        output_dir = args.output_dir,
-        seed = 3407,
+        vllm_sampling_params=vllm_sampling_params,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        learning_rate=5e-6,
+        weight_decay=0.001,
+        warmup_ratio=0.1,
+        lr_scheduler_type="linear",
+        optim="adamw_8bit",
+        logging_steps=1,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        gradient_accumulation_steps=1,
+        num_generations=args.num_generations,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=max_completion_length,
+        max_steps=args.max_steps,
+        save_steps=args.max_steps + 1,
+        report_to="none",
+        output_dir=args.output_dir,
+        seed=3407,
     )
 
     from torch_debugging_utils import StatisticsCallback
-
     stats_cb = StatisticsCallback(
-        track_loss = True,
-        track_grad_norm = True,
-        track_memory = True,
-        track_tensor_stats = False,  # hooks are noisy + slow on GRPO model
+        track_loss=True,
+        track_grad_norm=True,
+        track_memory=True,
+        track_tensor_stats=False,  # hooks are noisy + slow on GRPO model
     )
 
     trainer = GRPOTrainer(
-        model = model,
-        processing_class = tokenizer,
-        reward_funcs = [
+        model=model,
+        processing_class=tokenizer,
+        reward_funcs=[
             match_format_exactly,
             match_format_approximately,
             check_answer,
             check_numbers,
         ],
-        args = training_args,
-        train_dataset = dataset,
-        callbacks = [stats_cb],
+        args=training_args,
+        train_dataset=dataset,
+        callbacks=[stats_cb],
     )
 
     t0 = time.perf_counter()
@@ -395,39 +361,30 @@ def main():
         "logs_path": args.stats_path,
         "peak_memory_gb": torch.cuda.max_memory_allocated() / 1024**3,
     }
-    print(json.dumps(summary, indent = 2))
+    print(json.dumps(summary, indent=2))
 
     # Canonical quick-inference: produce a few generations for the writeup.
     rollouts = []
     try:
         from vllm import SamplingParams as SP
-
         sp_sample = SP(
-            temperature = args.temperature,
-            top_p = args.top_p,
-            min_p = args.min_p,
-            top_k = args.top_k,
-            max_tokens = 256,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            min_p=args.min_p,
+            top_k=args.top_k,
+            max_tokens=256,
         )
         probe_prompts = [
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "What is the sqrt of 101?"},
-            ],
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "If 3x+7 = 22, what is x?"},
-            ],
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "What is 17 * 13?"},
-            ],
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": "What is the sqrt of 101?"}],
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": "If 3x+7 = 22, what is x?"}],
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": "What is 17 * 13?"}],
         ]
-        texts = [
-            tokenizer.apply_chat_template(p, add_generation_prompt = True, tokenize = False)
-            for p in probe_prompts
-        ]
-        outs = model.fast_generate(texts, sampling_params = sp_sample, lora_request = None)
+        texts = [tokenizer.apply_chat_template(p, add_generation_prompt=True, tokenize=False)
+                 for p in probe_prompts]
+        outs = model.fast_generate(texts, sampling_params=sp_sample, lora_request=None)
         for t, o in zip(texts, outs):
             rollouts.append({"prompt": t, "completion": o.outputs[0].text})
     except Exception as e:
