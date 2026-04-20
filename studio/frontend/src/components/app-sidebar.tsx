@@ -235,6 +235,7 @@ export function AppSidebar() {
             to="/chat"
             onClick={(event) => {
               event.preventDefault();
+              if (chatDisabled) return;
               setActiveThreadId(null);
               closeMobileIfOpen();
               void navigate({
