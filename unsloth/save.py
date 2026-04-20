@@ -41,6 +41,7 @@ import sys
 import requests
 import torch
 import os
+import json
 import shutil
 import pickle
 import gc
@@ -50,11 +51,10 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
-from transformers import ProcessorMixin
+from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
 
 try:
@@ -174,6 +174,71 @@ def check_if_sentencepiece_model(
     return sentencepiece_model
 
 
+def _preserve_sentencepiece_tokenizer_assets(
+    tokenizer,
+    save_directory,
+    token = None,
+):
+    if tokenizer is None or not os.path.isdir(save_directory):
+        return
+
+    tokenizer_model = os.path.join(save_directory, "tokenizer.model")
+    downloaded_path = None
+    if not os.path.isfile(tokenizer_model):
+        source = getattr(tokenizer, "name_or_path", None)
+        if isinstance(source, str) and source:
+            if os.path.isdir(source):
+                local_path = os.path.join(source, "tokenizer.model")
+                if os.path.isfile(local_path):
+                    downloaded_path = local_path
+            else:
+                from huggingface_hub import hf_hub_download
+
+                try:
+                    downloaded_path = hf_hub_download(
+                        repo_id = source,
+                        filename = "tokenizer.model",
+                        token = token,
+                    )
+                except Exception:
+                    downloaded_path = None
+
+    if not os.path.isfile(tokenizer_model) and downloaded_path is None:
+        return
+
+    tokenizer_config_path = os.path.join(save_directory, "tokenizer_config.json")
+    if os.path.isfile(tokenizer_config_path):
+        desired_added_tokens_decoder = {}
+        for token_id, added_token in getattr(tokenizer, "added_tokens_decoder", {}).items():
+            desired_added_tokens_decoder[str(token_id)] = {
+                "content": getattr(added_token, "content", str(added_token)),
+                "single_word": getattr(added_token, "single_word", False),
+                "lstrip": getattr(added_token, "lstrip", False),
+                "rstrip": getattr(added_token, "rstrip", False),
+                "normalized": getattr(added_token, "normalized", True),
+                "special": getattr(added_token, "special", False),
+            }
+        if desired_added_tokens_decoder:
+            with open(tokenizer_config_path, "r", encoding = "utf-8") as file:
+                tokenizer_config = json.load(file)
+            if tokenizer_config.get("added_tokens_decoder") != desired_added_tokens_decoder:
+                tokenizer_config["added_tokens_decoder"] = desired_added_tokens_decoder
+                with open(tokenizer_config_path, "w", encoding = "utf-8") as file:
+                    json.dump(tokenizer_config, file, indent = 2, ensure_ascii = False)
+                    file.write("\n")
+                logger.warning_once(
+                    f"Unsloth: Restored added_tokens_decoder metadata in "
+                    f"{tokenizer_config_path}."
+                )
+
+    if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
+        shutil.copy2(downloaded_path, tokenizer_model)
+        logger.warning_once(
+            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in "
+            f"{save_directory}."
+        )
+
+
 def _free_cached_model(model):
     from huggingface_hub import scan_cache_dir
 
@@ -269,6 +334,9 @@ def unsloth_save_model(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
+    if isinstance(tokenizer, PreTrainedTokenizerBase):
+        tokenizer = patch_saving_functions(tokenizer)
+
     if token is None:
         token = get_token()
 
@@ -1899,6 +1967,8 @@ def unsloth_save_pretrained_gguf(
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+    if isinstance(tokenizer, PreTrainedTokenizerBase):
+        tokenizer = patch_saving_functions(tokenizer)
 
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
@@ -2770,6 +2840,9 @@ def unsloth_generic_save(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
+    if isinstance(tokenizer, PreTrainedTokenizerBase):
+        tokenizer = patch_saving_functions(tokenizer)
+
     if token is None and push_to_hub:
         token = get_token()
 
@@ -3246,6 +3319,36 @@ def patch_saving_functions(model, vision = False):
     pass
     '''
     exec(push_to_hub_text, globals())
+
+    def unsloth_tokenizer_save_pretrained(
+        self,
+        save_directory,
+        legacy_format = None,
+        filename_prefix = None,
+        push_to_hub = False,
+        **kwargs,
+    ):
+        result = self.original_save_pretrained(
+            save_directory,
+            legacy_format = legacy_format,
+            filename_prefix = filename_prefix,
+            push_to_hub = push_to_hub,
+            **kwargs,
+        )
+        if not push_to_hub:
+            _preserve_sentencepiece_tokenizer_assets(
+                self,
+                save_directory,
+                token = kwargs.get("token", None),
+            )
+        return result
+
+    if (
+        isinstance(model, PreTrainedTokenizerBase)
+        and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
+    ):
+        model.original_save_pretrained = model.save_pretrained
+        model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
 
     original_model = model
     while True:
