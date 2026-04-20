@@ -283,7 +283,9 @@ def test_rank_pages_llm_rerank_reorders_candidates(tmp_path: Path):
     assert ranked_paths[:2] == ["sources/beta.md", "sources/alpha.md"]
 
 
-def test_rank_pages_llm_rerank_invalid_output_falls_back_to_deterministic_ranking(tmp_path: Path):
+def test_rank_pages_llm_rerank_invalid_output_falls_back_to_deterministic_ranking(
+    tmp_path: Path,
+):
     def _llm(prompt: str) -> str:
         if "ordered_pages" in prompt and "INDEX_FILE:" in prompt:
             return "not valid json and no usable page ids"
@@ -495,7 +497,10 @@ def test_query_saved_analysis_page_compacts_prompt_question_block(tmp_path: Path
     assert "Focus on:" not in analysis_text
     assert "Output format:" not in analysis_text
     assert "Requirements:" not in analysis_text
-    assert "Primary page: [[sources/accelerating-set-cover-problems-with-graph-neural-networks]]." in analysis_text
+    assert (
+        "Primary page: [[sources/accelerating-set-cover-problems-with-graph-neural-networks]]."
+        in analysis_text
+    )
 
 
 def test_low_unique_ratio_gate_is_less_aggressive_for_valid_repetitive_answers(
@@ -940,4 +945,6 @@ def test_index_analysis_summary_uses_title_and_full_primary_source_link(tmp_path
 
     assert "Summarize source" not in line
     assert "Accelerating Set Cover via Graph Neural Networks" in line
-    assert "[[sources/accelerating-set-cover-problems-with-graph-neural-networks]]" in line
+    assert (
+        "[[sources/accelerating-set-cover-problems-with-graph-neural-networks]]" in line
+    )

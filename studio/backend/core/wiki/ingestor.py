@@ -155,7 +155,9 @@ class WikiIngestor:
             candidates.sort(key = lambda p: p.stat().st_mtime, reverse = True)
             return candidates, skipped_sensitive
         except Exception as exc:
-            logger.warning("Graphify detect unavailable for wiki ingest candidates: %s", exc)
+            logger.warning(
+                "Graphify detect unavailable for wiki ingest candidates: %s", exc
+            )
             return [], 0
 
     def _fallback_detect_candidates(self) -> List[Path]:

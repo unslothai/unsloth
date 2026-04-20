@@ -1634,9 +1634,7 @@ class LLMWikiEngine:
                         line = f"{line} {fallback_tag}".rstrip()
                 else:
                     first_line = self._first_nonempty_content_line(page_text)
-                    line = (
-                        f"- [[{rel}]] - {first_line[:140] if first_line else ''}".rstrip()
-                    )
+                    line = f"- [[{rel}]] - {first_line[:140] if first_line else ''}".rstrip()
                 out.append(line)
             out.append("")
         self.index_file.write_text("\n".join(out).rstrip() + "\n", encoding = "utf-8")
@@ -1703,7 +1701,9 @@ class LLMWikiEngine:
 
         if not title:
             question = self._extract_analysis_question(text) or ""
-            source_title_match = re.search(r"(?i)summarize source\s+'([^']+)'", question)
+            source_title_match = re.search(
+                r"(?i)summarize source\s+'([^']+)'", question
+            )
             if source_title_match:
                 title = source_title_match.group(1).strip()
             else:
@@ -2180,7 +2180,9 @@ class LLMWikiEngine:
 
         return graph, communities
 
-    def export_graphify_wiki(self, output_subdir: str = "graphify-wiki") -> Dict[str, Any]:
+    def export_graphify_wiki(
+        self, output_subdir: str = "graphify-wiki"
+    ) -> Dict[str, Any]:
         requested_subdir = str(output_subdir or "graphify-wiki").strip().strip("/")
         if not requested_subdir:
             requested_subdir = "graphify-wiki"
