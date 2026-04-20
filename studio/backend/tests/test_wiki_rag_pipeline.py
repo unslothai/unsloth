@@ -383,6 +383,121 @@ def test_query_zero_limits_use_full_context(tmp_path: Path):
     assert long_tail in captured_prompt["text"]
 
 
+def test_query_saved_analysis_page_slug_uses_question_topic_terms(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: (
+            "FORGE uses graph embeddings for foundational optimization representation "
+            "with structured constraints and objective features. [[entities/forge]]"
+        ),
+    )
+
+    (tmp_path / "wiki" / "entities" / "forge.md").write_text(
+        "# Forge\n\nFoundational optimization representations from graph embeddings.\n",
+        encoding = "utf-8",
+    )
+
+    result = engine.query(
+        "What does FORGE describe for optimization embeddings?",
+        save_answer = True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["answer_page"]
+    assert "forge" in str(result["answer_page"])
+    saved = tmp_path / "wiki" / f"{result['answer_page']}.md"
+    assert saved.exists()
+
+
+def test_query_saved_analysis_page_slug_prefers_llm_title_output(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: (
+            "Title: Accelerating Set Cover With Graph Neural Networks\n"
+            "Section A: This source explains graph-based optimization signals, "
+            "decision constraints, and representation-learning tradeoffs for set cover. "
+            "[[sources/12345]]"
+        ),
+    )
+
+    (tmp_path / "wiki" / "sources" / "12345.md").write_text(
+        "# Raw Export 12345\n\nArbitrary raw filename content.\n",
+        encoding = "utf-8",
+    )
+
+    result = engine.query("Please summarize this source", save_answer = True)
+
+    assert result["answer_page"]
+    assert "accelerating-set-cover" in str(result["answer_page"])
+
+
+def test_query_saved_analysis_page_slug_anchors_to_context_and_is_unique(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: (
+            "Grounded answer with adequate lexical diversity and source citation. "
+            "[[sources/forge-model-overview]]"
+        ),
+    )
+
+    (tmp_path / "wiki" / "sources" / "forge-model-overview.md").write_text(
+        "# Forge Model Overview\n\nDetails about forge optimization modeling.\n",
+        encoding = "utf-8",
+    )
+
+    first = engine.query("Please tell me", save_answer = True)
+    second = engine.query("Please tell me", save_answer = True)
+
+    assert first["answer_page"]
+    assert second["answer_page"]
+    assert "forge" in str(first["answer_page"])
+    assert first["answer_page"] != second["answer_page"]
+    assert str(second["answer_page"]).endswith("-2")
+
+
+def test_query_saved_analysis_page_compacts_prompt_question_block(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "Source-first summary with grounded details. [[sources/accelerating-set-cover-problems-with-graph-neural-networks]]",
+    )
+
+    source_slug = "accelerating-set-cover-problems-with-graph-neural-networks"
+    (tmp_path / "wiki" / "sources" / f"{source_slug}.md").write_text(
+        "# Accelerating Set Cover Problems with Graph Neural Networks\n\nTechnical source details.\n",
+        encoding = "utf-8",
+    )
+
+    watcher_style_prompt = (
+        "Summarize source 'Accelerating Set Cover Problems with Graph Neural Networks' with a source-first lens.\n"
+        f"Primary page to ground on: [[sources/{source_slug}]].\n\n"
+        "Focus on:\n"
+        "1. What this source is about (2-3 sentences)\n"
+        "2. 4-7 concrete key takeaways\n"
+        "3. What changed in the wiki after ingest (new or updated entities/concepts)\n"
+        "4. Any caveats, uncertainty, or possible extraction gaps\n\n"
+        "Output format:\n"
+        "- Section A: Brief summary paragraph\n"
+        "- Section B: Key takeaways (bullets)\n\n"
+        "Requirements:\n"
+        "- Cite claims inline with wiki links like [[sources/...]] [[entities/...]] [[concepts/...]]\n"
+        f"- Prioritize [[sources/{source_slug}]] over unrelated pages"
+    )
+
+    result = engine.query(watcher_style_prompt, save_answer = True)
+    assert result["answer_page"]
+
+    analysis_text = (tmp_path / "wiki" / f"{result['answer_page']}.md").read_text(
+        encoding = "utf-8"
+    )
+    assert "## Question\n" in analysis_text
+    assert "Focus on:" not in analysis_text
+    assert "Output format:" not in analysis_text
+    assert "Requirements:" not in analysis_text
+    assert "Primary page: [[sources/accelerating-set-cover-problems-with-graph-neural-networks]]." in analysis_text
+
+
 def test_low_unique_ratio_gate_is_less_aggressive_for_valid_repetitive_answers(
     tmp_path: Path,
 ):
@@ -790,3 +905,39 @@ def test_retry_fallback_updates_index_when_resolved(tmp_path: Path):
         if "[[analysis/legacy-fallback]]" in line
     )
     assert "[fallback-resolved:" in fallback_line
+
+
+def test_index_analysis_summary_uses_title_and_full_primary_source_link(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "set-cover-summary.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Accelerating Set Cover Problems with Graph Neural Networks' with a source-first lens.\n"
+        "Primary page: [[sources/accelerating-set-cover-problems-with-graph-neural-networks]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: Accelerating Set Cover via Graph Neural Networks\n"
+        "Section A: Technical summary. [[sources/accelerating-set-cover-problems-with-graph-neural-networks]]\n\n"
+        "## Context Pages\n"
+        "- [[sources/accelerating-set-cover-problems-with-graph-neural-networks]]\n"
+        "- [[entities/set-cover]]\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/set-cover-summary]]" in item
+    )
+
+    assert "Summarize source" not in line
+    assert "Accelerating Set Cover via Graph Neural Networks" in line
+    assert "[[sources/accelerating-set-cover-problems-with-graph-neural-networks]]" in line

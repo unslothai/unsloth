@@ -170,6 +170,10 @@ _ROUTE_WIKI_INGESTOR: Optional[WikiIngestor] = None
 _RAG_MAX_PAGES = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_PAGES", "8"))
 _RAG_MAX_CHARS_PER_PAGE = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE", "1800"))
 _RAG_MAX_TOTAL_CHARS = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS", "12000"))
+_RAG_INCLUDE_SOURCE_PAGES = (
+    os.getenv("UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 _RAG_LOG_INJECTED_CONTEXT = os.getenv(
     "UNSLOTH_WIKI_LOG_INJECTED_CONTEXT", "true"
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -510,6 +514,12 @@ def _get_route_rag_context(
         max_chars_per_page = max(max_chars_per_page * 6, 6000),
     )
     blocks: list[dict] = result.get("context_blocks", [])
+    if not _RAG_INCLUDE_SOURCE_PAGES:
+        blocks = [
+            b
+            for b in blocks
+            if not str(b.get("page", "")).lower().startswith("sources/")
+        ]
 
     query_terms = [
         t
@@ -562,7 +572,7 @@ def _get_route_rag_context(
         blocks = (chat_blocks + non_chat)[:max_pages]
 
         sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
-        if sources_dir.exists():
+        if _RAG_INCLUDE_SOURCE_PAGES and sources_dir.exists():
             history_files = sorted(
                 [p for p in sources_dir.glob("chat-history-*.md")],
                 key = lambda p: p.stat().st_mtime,
@@ -642,7 +652,7 @@ def _get_route_rag_context(
             else:
                 blocks = blocks[:max_pages]
 
-    if not blocks and not wants_history:
+    if not blocks and not wants_history and _RAG_INCLUDE_SOURCE_PAGES:
         sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
         if sources_dir.exists() and (
             "resume" in query_lower
@@ -671,8 +681,26 @@ def _get_route_rag_context(
                     }
                 )
 
-    def _select_snippet(content: str) -> str:
+    if not _RAG_INCLUDE_SOURCE_PAGES:
+        blocks = [
+            b
+            for b in blocks
+            if not str(b.get("page", "")).lower().startswith("sources/")
+        ]
+
+    def _select_snippet(page: str, content: str) -> str:
         content = str(content)
+        page_lower = str(page).lower()
+
+        # Analysis pages often start with prompt metadata. Prefer the
+        # answer payload so injected context spends tokens on substance.
+        if page_lower.startswith("analysis/"):
+            answer_match = _re.search(r"(?ms)^## Answer\n(.+?)(?=\n## |\Z)", content)
+            if answer_match:
+                answer_text = answer_match.group(1).strip()
+                if answer_text:
+                    content = answer_text
+
         if len(content) <= max_chars_per_page:
             return content
 
@@ -698,7 +726,7 @@ def _get_route_rag_context(
     for block in blocks:
         page = block.get("page", "unknown")
         score = float(block.get("score", 0.0))
-        content = _select_snippet(block.get("content", ""))
+        content = _select_snippet(page, block.get("content", ""))
         context_parts.append(
             f"PAGE: {page}\n" f"SCORE: {score:.4f}\n" f"CONTENT:\n{content}"
         )
@@ -717,7 +745,10 @@ def _get_route_rag_context(
             {
                 "page": str(block.get("page", "unknown")),
                 "score": float(block.get("score", 0.0)),
-                "snippet": _select_snippet(block.get("content", "")),
+                "snippet": _select_snippet(
+                    str(block.get("page", "unknown")),
+                    block.get("content", ""),
+                ),
             }
             for block in blocks
         ],

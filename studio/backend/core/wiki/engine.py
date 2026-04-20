@@ -351,6 +351,27 @@ _TERM_STOPWORDS: Set[str] = {
     "your",
 }
 
+_ANALYSIS_SLUG_NOISE_TERMS: Set[str] = {
+    "answer",
+    "analysis",
+    "context",
+    "detail",
+    "details",
+    "document",
+    "equation",
+    "equations",
+    "explain",
+    "explains",
+    "explained",
+    "information",
+    "paper",
+    "result",
+    "results",
+    "summarize",
+    "summary",
+    "topic",
+}
+
 
 @dataclass
 class WikiConfig:
@@ -705,7 +726,12 @@ class LLMWikiEngine:
 
         answer_page = None
         if save_answer:
-            slug = self._slug(f"{self._today()}-{question[:80]}")
+            compact_question = self._compact_saved_question(question)
+            slug = self._build_unique_analysis_slug(
+                question,
+                used_pages,
+                llm_answer = llm_answer,
+            )
             rel = f"analysis/{slug}"
             p = self.analysis_dir / f"{slug}.md"
             mode = "extractive-fallback" if used_extractive_fallback else "llm"
@@ -735,7 +761,7 @@ class LLMWikiEngine:
             ]
             p.write_text(
                 "# Query Result\n\n"
-                f"## Question\n{question}\n\n"
+                f"## Question\n{compact_question}\n\n"
                 f"## Answer Mode\n{mode}\n\n"
                 f"## Answer\n{answer}\n\n"
                 f"{fallback_block}"
@@ -1600,14 +1626,17 @@ class LLMWikiEngine:
             for f in files:
                 rel = f"{subdir}/{f.stem}"
                 page_text = f.read_text(encoding = "utf-8", errors = "ignore")
-                first_line = self._first_nonempty_content_line(page_text)
-                line = (
-                    f"- [[{rel}]] - {first_line[:140] if first_line else ''}".rstrip()
-                )
                 if subdir == "analysis":
+                    summary = self._analysis_index_summary(page_text)
+                    line = f"- [[{rel}]] - {summary}".rstrip()
                     fallback_tag = self._analysis_index_fallback_tag(page_text)
                     if fallback_tag:
                         line = f"{line} {fallback_tag}".rstrip()
+                else:
+                    first_line = self._first_nonempty_content_line(page_text)
+                    line = (
+                        f"- [[{rel}]] - {first_line[:140] if first_line else ''}".rstrip()
+                    )
                 out.append(line)
             out.append("")
         self.index_file.write_text("\n".join(out).rstrip() + "\n", encoding = "utf-8")
@@ -1638,6 +1667,57 @@ class LLMWikiEngine:
             return None
         question = m.group(1).strip()
         return question or None
+
+    def _extract_analysis_answer(self, text: str) -> Optional[str]:
+        m = re.search(r"(?ms)^## Answer\n(.+?)(?=\n## |\Z)", text)
+        if not m:
+            return None
+        answer = m.group(1).strip()
+        return answer or None
+
+    def _normalize_wikilink(self, link: str) -> str:
+        normalized = str(link or "").strip().replace("\\", "/")
+        if normalized.endswith(".md"):
+            normalized = normalized[:-3]
+        return normalized
+
+    def _extract_analysis_primary_source_link(self, text: str) -> Optional[str]:
+        context_match = re.search(r"(?ms)^## Context Pages\n(.+?)(?=\n## |\Z)", text)
+        if context_match:
+            for link in re.findall(r"\[\[([^\]]+)\]\]", context_match.group(1)):
+                normalized = self._normalize_wikilink(link)
+                if normalized.startswith("sources/"):
+                    return normalized
+
+        answer = self._extract_analysis_answer(text) or ""
+        for link in re.findall(r"\[\[([^\]]+)\]\]", answer):
+            normalized = self._normalize_wikilink(link)
+            if normalized.startswith("sources/"):
+                return normalized
+
+        return None
+
+    def _analysis_index_summary(self, text: str) -> str:
+        answer = self._extract_analysis_answer(text) or ""
+        title = self._analysis_title_from_answer(answer)
+
+        if not title:
+            question = self._extract_analysis_question(text) or ""
+            source_title_match = re.search(r"(?i)summarize source\s+'([^']+)'", question)
+            if source_title_match:
+                title = source_title_match.group(1).strip()
+            else:
+                title = re.sub(r"\s+", " ", question).strip() if question else ""
+
+        primary_source = self._extract_analysis_primary_source_link(text)
+        if title and primary_source:
+            return f"{title} | primary: [[{primary_source}]]"
+        if title:
+            return title
+        if primary_source:
+            return f"Primary source: [[{primary_source}]]"
+
+        return self._first_nonempty_content_line(text)
 
     def _extract_analysis_fallback_reason(self, text: str) -> Optional[str]:
         m = re.search(r"(?ms)^## Fallback Reason\n(.+?)(?=\n## |\Z)", text)
@@ -1774,25 +1854,26 @@ class LLMWikiEngine:
                 index_preview,
                 raw_clipped,
             )
-            self._append_log(
-                f"## [{self._today()}] rerank-debug | llm-index-planner\n"
-                f"- status: {status}\n"
-                f"- query: {query_preview}\n"
-                f"- candidates: {len(candidates)}\n"
-                f"- top_n: {top_n}\n"
-                f"- index_chars: {len(index_text)}\n"
-                f"- index_lines: {len(index_lines)}\n"
-                f"- allowed_pages: {', '.join(candidate_paths)}\n"
-                "- index_preview:\n"
-                "```text\n"
-                f"{escaped_index}\n"
-                "```\n"
-                "- llm_output:\n"
-                "```text\n"
-                f"{escaped_raw}\n"
-                "```\n"
-                f"- ordered_paths: {ordered_str}\n"
-            )
+            # Disabled for now to keep wiki/log.md concise during normal use.
+            # self._append_log(
+            #     f"## [{self._today()}] rerank-debug | llm-index-planner\\n"
+            #     f"- status: {status}\\n"
+            #     f"- query: {query_preview}\\n"
+            #     f"- candidates: {len(candidates)}\\n"
+            #     f"- top_n: {top_n}\\n"
+            #     f"- index_chars: {len(index_text)}\\n"
+            #     f"- index_lines: {len(index_lines)}\\n"
+            #     f"- allowed_pages: {', '.join(candidate_paths)}\\n"
+            #     "- index_preview:\\n"
+            #     "```text\\n"
+            #     f"{escaped_index}\\n"
+            #     "```\\n"
+            #     "- llm_output:\\n"
+            #     "```text\\n"
+            #     f"{escaped_raw}\\n"
+            #     "```\\n"
+            #     f"- ordered_paths: {ordered_str}\\n"
+            # )
 
         if not index_text.strip():
             _log_rerank("index_empty", "")
@@ -1854,9 +1935,17 @@ class LLMWikiEngine:
 
         _log_rerank("ok", raw, ordered_paths)
 
+        # Keep planner intent first, but retain the remaining deterministic
+        # candidates so prompt-injection does not collapse to a single page.
+        full_order = list(ordered_paths)
+        for rel, _score in candidates:
+            if rel not in seen_paths:
+                full_order.append(rel)
+
         reranked: List[Tuple[str, float]] = []
-        for idx, rel in enumerate(ordered_paths):
-            rank_signal = (top_n - idx) / max(1, top_n)
+        total = max(1, len(full_order))
+        for idx, rel in enumerate(full_order):
+            rank_signal = (total - idx) / total
             reranked.append((rel, rank_signal))
 
         return reranked
@@ -2362,7 +2451,9 @@ class LLMWikiEngine:
             if score <= 0:
                 continue
             if rel.startswith("analysis/"):
-                score *= 0.90
+                score *= 1.20
+            elif rel.startswith("sources/"):
+                score *= 0.7
             scores.append((rel, score))
 
         if not scores:
@@ -2764,6 +2855,125 @@ class LLMWikiEngine:
         s = s.lower().strip()
         s = re.sub(r"[^a-z0-9]+", "-", s)
         return s.strip("-") or "untitled"
+
+    def _compact_saved_question(self, question: str) -> str:
+        raw = str(question or "").strip()
+        if not raw:
+            return ""
+
+        source_match = re.search(r"\[\[(sources/[^\]]+)\]\]", raw)
+        source_link = source_match.group(1) if source_match else None
+
+        title_match = re.search(r"(?i)summarize source\s+'([^']+)'", raw)
+        if title_match:
+            title = title_match.group(1).strip()
+            compact = f"Summarize source '{title}' with a source-first lens."
+            if source_link:
+                compact += f" Primary page: [[{source_link}]]."
+            return compact
+
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        compact = lines[0] if lines else raw
+        if source_link and source_link not in compact:
+            if not compact.endswith("."):
+                compact += "."
+            compact += f" Primary page: [[{source_link}]]."
+
+        compact = re.sub(r"\s+", " ", compact).strip()
+        if len(compact) > 320:
+            compact = compact[:320].rstrip() + "..."
+        return compact
+
+    def _analysis_title_from_answer(self, answer: str) -> Optional[str]:
+        raw = str(answer or "").strip()
+        if not raw:
+            return None
+
+        def _clean_title(value: str) -> Optional[str]:
+            title = re.sub(r"\[\[[^\]]+\]\]", " ", str(value or "")).strip()
+            title = re.sub(r"\s+", " ", title).strip(" -:;,.")
+            return title if len(title) >= 3 else None
+
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        for line in lines:
+            plain = re.sub(r"^[\-*\s]+", "", line).strip()
+            match = re.match(r"(?i)^\*{0,2}title\*{0,2}\s*:\s*(.+)$", plain)
+            if match:
+                cleaned = _clean_title(match.group(1))
+                if cleaned:
+                    return cleaned
+
+        for line in lines:
+            match = re.match(r"^#{1,3}\s+(.+)$", line)
+            if match:
+                cleaned = _clean_title(match.group(1))
+                if cleaned:
+                    return cleaned
+
+        return None
+
+    def _analysis_slug_terms(
+        self,
+        question: str,
+        used_pages: List[Tuple[str, float]],
+        llm_answer: str = "",
+    ) -> List[str]:
+        terms: List[str] = []
+        seen: Set[str] = set()
+
+        def _push_term(term: str) -> None:
+            if len(term) < 3:
+                return
+            if term in _ANALYSIS_SLUG_NOISE_TERMS:
+                return
+            if term in seen:
+                return
+            seen.add(term)
+            terms.append(term)
+
+        llm_title = self._analysis_title_from_answer(llm_answer)
+        if llm_title:
+            for token in self._tokenize_terms(llm_title):
+                _push_term(token)
+                if len(terms) >= 6:
+                    return terms
+
+        for token in self._tokenize_terms(question):
+            _push_term(token)
+            if len(terms) >= 6:
+                return terms
+
+        # If the query is generic, anchor the slug to retrieved page names.
+        for rel_path, _score in used_pages:
+            stem = Path(rel_path).stem.replace("-", " ").replace("_", " ")
+            for token in self._tokenize_terms(stem):
+                _push_term(token)
+                if len(terms) >= 6:
+                    return terms
+
+        return terms
+
+    def _build_unique_analysis_slug(
+        self,
+        question: str,
+        used_pages: List[Tuple[str, float]],
+        llm_answer: str = "",
+    ) -> str:
+        topic_terms = self._analysis_slug_terms(
+            question,
+            used_pages,
+            llm_answer = llm_answer,
+        )
+        topic = "-".join(topic_terms) if topic_terms else "query"
+        base_slug = self._slug(f"{self._today()}-{topic}")
+
+        slug = base_slug
+        suffix = 2
+        while (self.analysis_dir / f"{slug}.md").exists():
+            slug = f"{base_slug}-{suffix}"
+            suffix += 1
+
+        return slug
 
     def _normalize_term(self, token: str) -> str:
         term = token.lower().strip()

@@ -307,6 +307,7 @@ Extraction reliability hardening:
 
 Analysis quality + chat history persistence hardening:
 - Wiki query ranking now excludes `index.md` and `log.md`; `analysis/*` pages are included in query retrieval by default (configurable) to improve source-following and cross-page grounding.
+- Saved analysis page filenames now use `YYYY-MM-DD` plus topic terms derived from the query (and fall back to retrieved context-page names when the query is generic), with collision-safe suffixes (`-2`, `-3`, ...).
 - If a query answer looks low quality/garbled, the engine writes an extractive fallback answer from cited context instead of persisting gibberish.
 - Chat history snapshots are buffered in memory and flushed to disk/wiki on a cadence (default 10 minutes) rather than every request.
 - Index entries for fallback-generated analysis pages are explicitly marked (for example `[fallback: repetition]`) so retrieval and maintenance flows can de-prioritize low-confidence analysis.
