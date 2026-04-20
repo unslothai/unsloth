@@ -1,0 +1,23 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": null,
+  "n_prompts": 256,
+  "n_decoded_tokens": 117564,
+  "wall_times_s": [
+    19.21345060999738,
+    16.626979330030736,
+    16.620332353981212
+  ],
+  "median_wall_s": 16.626979330030736,
+  "best_wall_s": 16.620332353981212,
+  "decode_tps_median": 7070.6769802535555,
+  "decode_tps_best": 7073.504758876791,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 154.22740983963013,
+  "sample_completions": [
+    "There are 7 choices for each of the 4 slots, so the total number of secret codes is $7^4 = 2401$.</start_working_out><SOLUTION>2401</SOLUTION>",
+    "Let $h$ be the height of the tetrahedron. Then the volume of the tetrahedron is $\\frac{1}{3} \\cdot 120 \\cdot h = 40h$.<end_working_out><SOLUTION>400</SOLUTION>",
+    "There are 3 choices for the color of the top triangle. For each choice of the top triangle, there are 2 choices for the color of the left triangle, and 2 choices for the color of the right triangle. Therefore, there are $3 \\times 2 \\times 2 = 12$ ways to color the triforce.<end_working_out><SOLUTION>1"
+  ]
+}

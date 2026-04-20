@@ -19,12 +19,17 @@ paged KV + BlockMask pattern from
 
 ## Headline numbers
 
-| Batch | LoRA | vLLM tok/s | qwen3_flex tok/s | flex / vLLM |
-|-------|------|-----------:|-----------------:|------------:|
-| 32    | no   |       7224 |             2189 |       30 %  |
-| 32    | yes  |       4581 |             2334 |       51 %  |
-| 64    | yes  |       7775 |             4279 |       55 %  |
-| 128   | no   |      14996 |             6501 |       43 %  |
+| Batch | LoRA | vLLM tok/s | qwen3_flex tok/s | flex / vLLM | flex mem | vLLM mem |
+|-------|------|-----------:|-----------------:|------------:|---------:|---------:|
+| 32    | no   |       7224 |             2189 |       30 %  |  44 GB   | 156 GB   |
+| 32    | yes  |       4581 |             2334 |       51 %  |  44 GB   | 156 GB   |
+| 64    | yes  |       7775 |             4279 |       55 %  |  44 GB   | 156 GB   |
+| 128   | no   |      14996 |             6501 |       43 %  |  81 GB   | 157 GB   |
+| 256   | no   |      21170 |             7074 |       33 %  | 154 GB   | 157 GB   |
+
+Best at batch 64 with LoRA (55 %). That's the representative GRPO workload
+for this PR (`num_generations=4 × per_device_train_batch_size=2 ×
+rollout_rounds=8 per GRPO step` ~= 64 concurrent sequences).
 
 Peak memory: flex uses 44-81 GB (scales with batch). vLLM uses 156 GB
 regardless (colocates KV cache up front). flex memory is half to a fifth

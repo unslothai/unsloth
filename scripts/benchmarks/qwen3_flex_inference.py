@@ -52,7 +52,16 @@ from flex_paged_attention import PagedKVCache, PageTable  # noqa: E402
 
 # Compile flex_attention once at import for warm caches. `fullgraph=True` is
 # required for the decode CUDA graph capture to be worth anything.
-flex_attention_compiled = torch.compile(flex_attention, fullgraph = True)
+# Allow an environment override to try `mode="max-autotune"` for the kernel
+# template search -- pays off on steady-state decode but adds ~minutes of
+# warmup time at first import.
+_FLEX_COMPILE_MODE = os.environ.get("FLEX_COMPILE_MODE", None)
+if _FLEX_COMPILE_MODE:
+    flex_attention_compiled = torch.compile(
+        flex_attention, fullgraph = True, mode = _FLEX_COMPILE_MODE,
+    )
+else:
+    flex_attention_compiled = torch.compile(flex_attention, fullgraph = True)
 
 
 def _apply_rotary(q, k, cos, sin):

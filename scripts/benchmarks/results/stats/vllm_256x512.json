@@ -1,0 +1,28 @@
+{
+  "backend": "vllm",
+  "lora_adapter": null,
+  "n_prompts": 256,
+  "n_prompt_tokens": 36963,
+  "n_decoded_tokens": 120774,
+  "wall_times_s": [
+    5.908074813021813,
+    5.705008256016299,
+    5.693635127041489
+  ],
+  "median_wall_s": 5.705008256016299,
+  "prompt_tps": 6479.044085697884,
+  "decode_tps": 21169.82037188746,
+  "max_new_tokens": 512,
+  "sample_completions": [
+    "First, we need to find the length of the legs of the trapezoid. Since the trapezoid is isosceles, the legs are equal in length. Let's call the length of each leg $x$. We can use the Pythagorean theore",
+    " \nTo solve this problem, we need to analyze the given conditions and derive the form of the polynomial \\( P(x) \\). The key condition is that \\( P(k) = k^{2023} P\\left(1 - \\frac{1}{k}\\right) \\) for eve",
+    " To solve this problem, we need to find the maximum value of \\(a\\) such that the line \\(y = mx + 2\\) does not pass through any lattice points for \\(0 < x \\leq 100\\) when \\(\\frac{1}{2} < m < a\\).\n\nFirs"
+  ],
+  "peak_memory_gb": 157.12996101379395,
+  "sampling": {
+    "temperature": 0.1,
+    "top_p": 0.97,
+    "min_p": 0.5,
+    "top_k": 5
+  }
+}
