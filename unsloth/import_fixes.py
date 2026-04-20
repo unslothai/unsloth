@@ -684,7 +684,7 @@ def torchvision_compatibility_check():
         return
 
     if importlib.util.find_spec("torch") is None:
-        raise ImportError("Unsloth: torch not found. Please install torch first.")
+        return
     if importlib.util.find_spec("torchvision") is None:
         return
 
