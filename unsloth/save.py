@@ -179,31 +179,8 @@ def _preserve_sentencepiece_tokenizer_assets(
     save_directory,
     token = None,
 ):
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
     if tokenizer is None or not os.path.isdir(save_directory):
-        return
-
-    tokenizer_model = os.path.join(save_directory, "tokenizer.model")
-    downloaded_path = None
-    if not os.path.isfile(tokenizer_model):
-        source = getattr(tokenizer, "name_or_path", None)
-        if isinstance(source, str) and source:
-            if os.path.isdir(source):
-                local_path = os.path.join(source, "tokenizer.model")
-                if os.path.isfile(local_path):
-                    downloaded_path = local_path
-            else:
-                from huggingface_hub import hf_hub_download
-
-                try:
-                    downloaded_path = hf_hub_download(
-                        repo_id = source,
-                        filename = "tokenizer.model",
-                        token = token,
-                    )
-                except Exception:
-                    downloaded_path = None
-
-    if not os.path.isfile(tokenizer_model) and downloaded_path is None:
         return
 
     tokenizer_config_path = os.path.join(save_directory, "tokenizer_config.json")
@@ -235,6 +212,27 @@ def _preserve_sentencepiece_tokenizer_assets(
                     f"Unsloth: Restored added_tokens_decoder metadata in "
                     f"{tokenizer_config_path}."
                 )
+
+    tokenizer_model = os.path.join(save_directory, "tokenizer.model")
+    downloaded_path = None
+    if not os.path.isfile(tokenizer_model):
+        source = getattr(tokenizer, "name_or_path", None)
+        if isinstance(source, str) and source:
+            if os.path.isdir(source):
+                local_path = os.path.join(source, "tokenizer.model")
+                if os.path.isfile(local_path):
+                    downloaded_path = local_path
+            else:
+                from huggingface_hub import hf_hub_download
+
+                try:
+                    downloaded_path = hf_hub_download(
+                        repo_id = source,
+                        filename = "tokenizer.model",
+                        token = token,
+                    )
+                except Exception:
+                    downloaded_path = None
 
     if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
         shutil.copy2(downloaded_path, tokenizer_model)
@@ -339,7 +337,7 @@ def unsloth_save_model(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
-    if isinstance(tokenizer, PreTrainedTokenizerBase):
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
     if token is None:
@@ -469,8 +467,9 @@ def unsloth_save_model(
         )
         if tokenizer is not None:
             # Set padding side to left for inference
-            old_padding_side = tokenizer.padding_side
-            tokenizer.padding_side = "left"
+            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            old_padding_side = _tokenizer.padding_side
+            _tokenizer.padding_side = "left"
 
             getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)(
                 repo_id = save_directory,
@@ -487,7 +486,7 @@ def unsloth_save_model(
             )
 
             # Revert back padding side
-            tokenizer.padding_side = old_padding_side
+            _tokenizer.padding_side = old_padding_side
 
         if hasattr(model, "config"):
             print(
@@ -568,13 +567,14 @@ def unsloth_save_model(
             print("Unsloth: Saving tokenizer...", end = "")
 
             # Set padding side to left for inference
-            old_padding_side = tokenizer.padding_side
-            tokenizer.padding_side = "left"
+            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            old_padding_side = _tokenizer.padding_side
+            _tokenizer.padding_side = "left"
 
             tokenizer.save_pretrained(**tokenizer_save_settings)
 
             # Revert back padding side
-            tokenizer.padding_side = old_padding_side
+            _tokenizer.padding_side = old_padding_side
 
             print(" Done.")
         else:
@@ -854,13 +854,14 @@ def unsloth_save_model(
         print("Unsloth: Saving tokenizer...", end = "")
 
         # Set padding side to left for inference
-        old_padding_side = tokenizer.padding_side
-        tokenizer.padding_side = "left"
+        _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+        old_padding_side = _tokenizer.padding_side
+        _tokenizer.padding_side = "left"
 
         tokenizer.save_pretrained(**tokenizer_save_settings)
 
         # Revert back padding side
-        tokenizer.padding_side = old_padding_side
+        _tokenizer.padding_side = old_padding_side
 
         print(" Done.")
     else:
@@ -1972,7 +1973,7 @@ def unsloth_save_pretrained_gguf(
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
-    if isinstance(tokenizer, PreTrainedTokenizerBase):
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
     try:
@@ -2845,7 +2846,7 @@ def unsloth_generic_save(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
-    if isinstance(tokenizer, PreTrainedTokenizerBase):
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
     if token is None and push_to_hub:
@@ -2899,8 +2900,9 @@ def unsloth_generic_save(
                 **_save_kwargs,
             )
             if tokenizer is not None:
-                old_padding_side = tokenizer.padding_side
-                tokenizer.padding_side = "left"
+                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+                old_padding_side = _tokenizer.padding_side
+                _tokenizer.padding_side = "left"
                 tokenizer.push_to_hub(
                     save_directory,
                     token = token,
@@ -2909,15 +2911,16 @@ def unsloth_generic_save(
                     create_pr = create_pr,
                     revision = revision,
                 )
-                tokenizer.padding_side = old_padding_side
+                _tokenizer.padding_side = old_padding_side
         else:
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
             model.save_pretrained(save_directory, **_save_kwargs)
             if tokenizer is not None:
-                old_padding_side = tokenizer.padding_side
-                tokenizer.padding_side = "left"
+                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+                old_padding_side = _tokenizer.padding_side
+                _tokenizer.padding_side = "left"
                 tokenizer.save_pretrained(save_directory)
-                tokenizer.padding_side = old_padding_side
+                _tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     else:
@@ -3353,9 +3356,9 @@ def patch_saving_functions(model, vision = False):
         and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
     ):
         model.original_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(
-            unsloth_tokenizer_save_pretrained, model
-        )
+        model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
+    elif hasattr(model, "tokenizer"):
+        patch_saving_functions(model.tokenizer)
 
     original_model = model
     while True:
