@@ -32,7 +32,9 @@ _ATTR = "_persistent_cb_manager"
 _LOCK_ATTR = "_persistent_cb_lock"
 
 
-def install_for_model(model: torch.nn.Module, generation_config: GenerationConfig) -> None:
+def install_for_model(
+    model: torch.nn.Module, generation_config: GenerationConfig
+) -> None:
     """Replace `model.generate_batch` with a version that reuses one manager.
 
     The replacement accepts the same arguments as the stock method. A
@@ -57,7 +59,11 @@ def install_for_model(model: torch.nn.Module, generation_config: GenerationConfi
         if not inputs:
             return {}
 
-        gen_config = generation_config or getattr(self, "_persistent_cb_gen_config", None) or self.generation_config
+        gen_config = (
+            generation_config
+            or getattr(self, "_persistent_cb_gen_config", None)
+            or self.generation_config
+        )
 
         lock = getattr(self, _LOCK_ATTR)
         with lock:
@@ -70,15 +76,15 @@ def install_for_model(model: torch.nn.Module, generation_config: GenerationConfi
                 )
                 if stale:
                     try:
-                        manager.stop(block=True, timeout=5.0)
+                        manager.stop(block = True, timeout = 5.0)
                     except Exception:
                         pass
                     setattr(self, _ATTR, None)
                     manager = None
             if manager is None:
                 manager = self.init_continuous_batching(
-                    generation_config=gen_config,
-                    slice_inputs=slice_inputs,
+                    generation_config = gen_config,
+                    slice_inputs = slice_inputs,
                 )
                 manager.start()
                 setattr(self, _ATTR, manager)
@@ -88,7 +94,7 @@ def install_for_model(model: torch.nn.Module, generation_config: GenerationConfi
         manager.add_requests(inputs, **kwargs)
         finished = 0
         while finished < num_requests:
-            result = manager.get_result(timeout=1)
+            result = manager.get_result(timeout = 1)
             if result is None:
                 if not manager.is_running():
                     break
@@ -108,7 +114,7 @@ def teardown(model: torch.nn.Module) -> None:
     manager = getattr(model, _ATTR, None)
     if manager is not None:
         try:
-            manager.stop(block=True, timeout=5.0)
+            manager.stop(block = True, timeout = 5.0)
         except Exception:
             pass
     if hasattr(model, "_persistent_cb_original_generate_batch"):
