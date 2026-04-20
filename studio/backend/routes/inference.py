@@ -287,6 +287,7 @@ def _route_wiki_llm_stub(prompt: str) -> str:
                 max_new_tokens = _WIKI_LLM_MAX_TOKENS,
                 repetition_penalty = 1.0,
                 cancel_event = None,
+                enable_wiki_rag_history = False,
             ):
                 out += token
             if out.strip():

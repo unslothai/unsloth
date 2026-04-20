@@ -870,6 +870,7 @@ class InferenceBackend:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        enable_wiki_rag_history: bool = True,
     ) -> Generator[str, None, None]:
         """
         Generate response for text or vision models.
@@ -886,6 +887,7 @@ class InferenceBackend:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             cancel_event = cancel_event,
+            enable_wiki_rag_history = enable_wiki_rag_history,
         )
 
     def _generate_chat_response_inner(
@@ -900,6 +902,7 @@ class InferenceBackend:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        enable_wiki_rag_history: bool = True,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
         """
@@ -989,23 +992,36 @@ class InferenceBackend:
         if system_prompt:
             template_messages.insert(0, {"role": "system", "content": system_prompt})
 
-        # --- RAG Injection ---
-        rag_context = self._get_rag_context(messages[-1]["content"] if messages else "")
-        if rag_context:
-            logger.info("Injecting RAG context into prompt")
-            context_message = {
-                "role": "system",
-                "content": f"Use the following context to help answer the user's request:\n\n{rag_context}",
-            }
-            # Insert context after system prompt if it exists, or at the beginning
-            if system_prompt:
-                template_messages.insert(1, context_message)
-            else:
-                template_messages.insert(0, context_message)
+        # --- RAG Injection + Chat History ---
+        if enable_wiki_rag_history:
+            last_user_query = ""
+            if messages:
+                last_message = messages[-1]
+                if isinstance(last_message, dict):
+                    last_user_query = self._coerce_chat_history_content(
+                        last_message.get("content", "")
+                    )
+                else:
+                    last_user_query = self._coerce_chat_history_content(
+                        getattr(last_message, "content", "")
+                    )
 
-        # Save history for future RAG
-        self._save_chat_history_to_wiki(messages)
-        # ---------------------
+            rag_context = self._get_rag_context(last_user_query)
+            if rag_context:
+                logger.info("Injecting RAG context into prompt")
+                context_message = {
+                    "role": "system",
+                    "content": f"Use the following context to help answer the user's request:\n\n{rag_context}",
+                }
+                # Insert context after system prompt if it exists, or at the beginning
+                if system_prompt:
+                    template_messages.insert(1, context_message)
+                else:
+                    template_messages.insert(0, context_message)
+
+            # Save history for future RAG.
+            self._save_chat_history_to_wiki(messages)
+        # ------------------------------------
 
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
@@ -2179,6 +2195,51 @@ class InferenceBackend:
         logger.info(f"Wiki LLM function called with prompt: {prompt[:100]}...")
         return prompt
 
+    def _coerce_chat_history_content(self, content: object) -> str:
+        """Normalize message content of mixed shapes into a safe text snapshot."""
+
+        def _safe_json(value: object) -> str:
+            try:
+                encoded = json.dumps(value, ensure_ascii = True, sort_keys = True)
+            except Exception:
+                encoded = str(value)
+            if len(encoded) > 4000:
+                return encoded[:4000].rstrip() + "... [truncated]"
+            return encoded
+
+        def _flatten(value: object) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, list):
+                parts = []
+                for item in value:
+                    rendered = _flatten(item)
+                    if rendered:
+                        parts.append(rendered)
+                return "\n".join(parts).strip()
+            if isinstance(value, dict):
+                part_type = str(value.get("type", "")).lower()
+                if part_type == "text":
+                    text_value = value.get("text", value.get("content", ""))
+                    return str(text_value).strip()
+                if part_type == "image_url":
+                    image_url = value.get("image_url", "")
+                    if isinstance(image_url, dict):
+                        url = str(image_url.get("url", "")).strip()
+                    else:
+                        url = str(image_url).strip()
+                    if not url:
+                        return "[image]"
+                    if url.startswith("data:"):
+                        return "[image: inline data URL]"
+                    return f"[image: {url}]"
+                return _safe_json(value).strip()
+            return str(value).strip()
+
+        return _flatten(content)
+
     def _save_chat_history_to_wiki(self, messages: list) -> None:
         """
         Buffers chat snapshots and flushes to disk on a cadence (default 10 minutes).
@@ -2189,8 +2250,15 @@ class InferenceBackend:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             lines = [f"## Chat Snapshot - {timestamp}\n"]
             for msg in messages:
-                role = msg.get("role", "unknown").capitalize()
-                content = msg.get("content", "").strip()
+                if isinstance(msg, dict):
+                    role_raw = msg.get("role", "unknown")
+                    content_raw = msg.get("content", "")
+                else:
+                    role_raw = getattr(msg, "role", "unknown")
+                    content_raw = getattr(msg, "content", "")
+
+                role = str(role_raw).capitalize()
+                content = self._coerce_chat_history_content(content_raw)
                 if content:
                     lines.append(f"### {role}\n{content}\n")
             block = "\n".join(lines).strip()
