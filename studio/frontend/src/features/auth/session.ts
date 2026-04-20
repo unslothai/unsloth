@@ -8,7 +8,7 @@ export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 
-type PostAuthRoute = "/onboarding" | "/studio" | "/change-password" | "/chat";
+type PostAuthRoute = "/change-password" | "/chat";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -80,5 +80,5 @@ export function resetOnboardingDone(): void {
 export function getPostAuthRoute(): PostAuthRoute {
   if (mustChangePassword()) return "/change-password";
   if (usePlatformStore.getState().isChatOnly()) return "/chat";
-  return isOnboardingDone() ? "/studio" : "/onboarding";
+  return "/chat";
 }
