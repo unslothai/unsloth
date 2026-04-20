@@ -747,6 +747,53 @@ class WikiRetryFallbackResponse(BaseModel):
     results: list[Dict[str, Any]]
 
 
+class WikiMergeMaintenanceRequest(BaseModel):
+    """Request payload for duplicate entity/concept merge maintenance."""
+
+    dry_run: bool = Field(
+        True,
+        description = "If true, report merge actions without writing files",
+    )
+    include_entities: bool = Field(
+        True,
+        description = "Whether entity page merge candidates are considered",
+    )
+    include_concepts: bool = Field(
+        True,
+        description = "Whether concept page merge candidates are considered",
+    )
+    similarity_threshold: float = Field(
+        0.75,
+        ge = 0.5,
+        le = 1.0,
+        description = "Minimum candidate similarity required for merge planning",
+    )
+    max_merges: int = Field(
+        24,
+        ge = 1,
+        le = 512,
+        description = "Maximum number of merges to plan/apply in a single run",
+    )
+
+
+class WikiMergeMaintenanceResponse(BaseModel):
+    """Result of duplicate entity/concept merge maintenance."""
+
+    status: str
+    dry_run: bool
+    entity_candidates: int
+    concept_candidates: int
+    scanned_candidates: int
+    planned_merges: int
+    applied_merges: int
+    rewritten_pages: int
+    rewritten_links: int
+    archived_pages: list[str]
+    skipped: list[Dict[str, Any]]
+    merges: list[Dict[str, Any]]
+    errors: list[str]
+
+
 class WikiQueryRequest(BaseModel):
     """Request payload for querying the maintained wiki."""
 
@@ -775,6 +822,14 @@ class WikiLintResponse(BaseModel):
     broken_links: list[Dict[str, str]]
     missing_concepts: list[str]
     low_coverage_sources: list[str]
+    entity_merge_candidates: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Suggested duplicate entity pages that can be merged during maintenance",
+    )
+    concept_merge_candidates: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Suggested duplicate concept pages that can be merged during maintenance",
+    )
     total_pages: int
     graphify_insights: Dict[str, Any]
 

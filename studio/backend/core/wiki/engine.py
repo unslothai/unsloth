@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from pathlib import Path
 import json
 import os
+import shutil
 import re
 import logging
 import importlib
@@ -451,6 +452,12 @@ class WikiConfig:
             "UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY", True
         )
     )
+    index_include_source_pages: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_INDEX_INCLUDE_SOURCE_PAGES",
+            _env_flag("UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES", True),
+        )
+    )
     low_unique_ratio_min_tokens: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_MIN_TOKENS", 40, minimum = 1
@@ -841,6 +848,15 @@ class LLMWikiEngine:
             ]
         )
 
+        entity_merge_candidates = self._merge_candidates_for_folder(
+            self.entities_dir,
+            "entities",
+        )
+        concept_merge_candidates = self._merge_candidates_for_folder(
+            self.concepts_dir,
+            "concepts",
+        )
+
         graphify_insights = self._graphify_lint_insights(pages, graph)
 
         report = {
@@ -852,6 +868,8 @@ class LLMWikiEngine:
             "low_coverage_sources": sorted(set(low_coverage_sources)),
             "total_pages": len(pages),
             "graphify_insights": graphify_insights,
+            "entity_merge_candidates": entity_merge_candidates,
+            "concept_merge_candidates": concept_merge_candidates,
         }
 
         self._append_log(
@@ -861,9 +879,207 @@ class LLMWikiEngine:
             f"- Broken links: {len(report['broken_links'])}\n"
             f"- Missing concepts: {len(missing_concepts)}\n"
             f"- Low-coverage sources: {len(report['low_coverage_sources'])}\n"
+            f"- Entity merge candidates: {len(entity_merge_candidates)}\n"
+            f"- Concept merge candidates: {len(concept_merge_candidates)}\n"
             f"- Graphify insights available: {bool(graphify_insights.get('available'))}\n"
         )
         return report
+
+    def merge_duplicate_knowledge_pages(
+        self,
+        dry_run: bool = True,
+        include_entities: bool = True,
+        include_concepts: bool = True,
+        similarity_threshold: float = 0.75,
+        max_merges: int = 24,
+    ) -> Dict[str, Any]:
+        threshold = max(0.5, min(1.0, float(similarity_threshold)))
+        merge_limit = max(1, int(max_merges))
+
+        candidate_pool: List[Dict[str, Any]] = []
+        entity_candidates = 0
+        concept_candidates = 0
+
+        if include_entities:
+            entity_items = self._merge_candidates_for_folder(
+                self.entities_dir,
+                "entities",
+                similarity_threshold = threshold,
+            )
+            entity_candidates = len(entity_items)
+            for item in entity_items:
+                enriched = dict(item)
+                enriched["kind"] = "entity"
+                candidate_pool.append(enriched)
+
+        if include_concepts:
+            concept_items = self._merge_candidates_for_folder(
+                self.concepts_dir,
+                "concepts",
+                similarity_threshold = threshold,
+            )
+            concept_candidates = len(concept_items)
+            for item in concept_items:
+                enriched = dict(item)
+                enriched["kind"] = "concept"
+                candidate_pool.append(enriched)
+
+        candidate_pool.sort(
+            key = lambda item: (
+                -float(item.get("similarity", 0.0)),
+                str(item.get("canonical", "")),
+                str(item.get("duplicate", "")),
+            )
+        )
+
+        selected: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        duplicate_pages: Set[str] = set()
+        seen_pairs: Set[Tuple[str, str]] = set()
+
+        for item in candidate_pool:
+            canonical = str(item.get("canonical", "")).strip().replace("\\", "/")
+            duplicate = str(item.get("duplicate", "")).strip().replace("\\", "/")
+            if not canonical or not duplicate:
+                continue
+
+            pair = (canonical, duplicate)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+
+            if canonical == duplicate:
+                skipped.append(
+                    {
+                        "canonical": canonical,
+                        "duplicate": duplicate,
+                        "reason": "same_page",
+                    }
+                )
+                continue
+
+            if duplicate in duplicate_pages:
+                skipped.append(
+                    {
+                        "canonical": canonical,
+                        "duplicate": duplicate,
+                        "reason": "duplicate_already_selected",
+                    }
+                )
+                continue
+
+            if canonical in duplicate_pages:
+                skipped.append(
+                    {
+                        "canonical": canonical,
+                        "duplicate": duplicate,
+                        "reason": "canonical_marked_duplicate_elsewhere",
+                    }
+                )
+                continue
+
+            selected.append(item)
+            duplicate_pages.add(duplicate)
+            if len(selected) >= merge_limit:
+                break
+
+        replacements: Dict[str, str] = {}
+        merges: List[Dict[str, Any]] = []
+        archived_pages: List[str] = []
+        errors: List[str] = []
+        applied_merges = 0
+
+        for item in selected:
+            canonical_rel = str(item.get("canonical", "")).strip().replace("\\", "/")
+            duplicate_rel = str(item.get("duplicate", "")).strip().replace("\\", "/")
+            similarity = float(item.get("similarity", 0.0))
+
+            canonical_path = self.wiki_dir / canonical_rel
+            duplicate_path = self.wiki_dir / duplicate_rel
+            merge_record: Dict[str, Any] = {
+                "kind": str(item.get("kind", "unknown")),
+                "canonical": canonical_rel,
+                "duplicate": duplicate_rel,
+                "similarity": round(similarity, 3),
+            }
+
+            if not canonical_path.exists() or not duplicate_path.exists():
+                missing = []
+                if not canonical_path.exists():
+                    missing.append(canonical_rel)
+                if not duplicate_path.exists():
+                    missing.append(duplicate_rel)
+                reason = f"missing_pages: {', '.join(missing)}"
+                merge_record["status"] = "error"
+                merge_record["reason"] = reason
+                errors.append(reason)
+                merges.append(merge_record)
+                continue
+
+            canonical_text = canonical_path.read_text(encoding = "utf-8", errors = "ignore")
+            duplicate_text = duplicate_path.read_text(encoding = "utf-8", errors = "ignore")
+
+            archive_target, archive_rel = self._archive_target_for_page(duplicate_rel)
+            merged_canonical = self._merge_canonical_with_duplicate(
+                canonical_text,
+                duplicate_text,
+                duplicate_rel = duplicate_rel,
+                archived_rel = archive_rel,
+                similarity = similarity,
+            )
+
+            merge_record["archived_to"] = archive_rel
+            merge_record["status"] = "planned" if dry_run else "merged"
+            merges.append(merge_record)
+
+            replacements[duplicate_rel[:-3]] = canonical_rel[:-3]
+            archived_pages.append(archive_rel)
+
+            if not dry_run:
+                canonical_path.write_text(merged_canonical, encoding = "utf-8")
+                archive_target.parent.mkdir(parents = True, exist_ok = True)
+                shutil.move(str(duplicate_path), str(archive_target))
+                applied_merges += 1
+
+        rewritten_pages = 0
+        rewritten_links = 0
+        if replacements:
+            for rel in self._all_wiki_pages():
+                page_path = self.wiki_dir / rel
+                text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                updated, count = self._replace_wikilinks_with_map(text, replacements)
+                if count <= 0:
+                    continue
+
+                rewritten_pages += 1
+                rewritten_links += count
+                if not dry_run:
+                    page_path.write_text(updated, encoding = "utf-8")
+
+        if not dry_run and (applied_merges > 0 or rewritten_pages > 0):
+            self._rebuild_index()
+            self._append_log(
+                f"## [{self._today()}] merge-maintenance | wiki\n"
+                f"- Applied merges: {applied_merges}\n"
+                f"- Rewritten pages: {rewritten_pages}\n"
+                f"- Rewritten links: {rewritten_links}\n"
+            )
+
+        return {
+            "status": "ok",
+            "dry_run": bool(dry_run),
+            "entity_candidates": entity_candidates,
+            "concept_candidates": concept_candidates,
+            "scanned_candidates": len(candidate_pool),
+            "planned_merges": len(merges),
+            "applied_merges": applied_merges,
+            "rewritten_pages": rewritten_pages,
+            "rewritten_links": rewritten_links,
+            "archived_pages": archived_pages,
+            "skipped": skipped,
+            "merges": merges,
+            "errors": errors,
+        }
 
     def retry_fallback_analysis_pages(
         self,
@@ -1609,6 +1825,248 @@ class LLMWikiEngine:
         merged += "\n\n## Incremental Updates\n\n" + "\n".join(updates)
         p.write_text(merged, encoding = "utf-8")
 
+    def _merge_candidate_title(self, text: str, fallback_slug: str) -> str:
+        title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", text)
+        if title_match:
+            title = title_match.group(1).strip()
+            if title:
+                return title
+
+        heading_match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
+        if heading_match:
+            heading = heading_match.group(1).strip()
+            if heading:
+                return heading
+
+        return fallback_slug.replace("-", " ").strip()
+
+    def _merge_candidates_for_folder(
+        self,
+        folder: Path,
+        prefix: str,
+        similarity_threshold: float = 0.75,
+    ) -> List[Dict[str, Any]]:
+        pages: List[Dict[str, Any]] = []
+        for page in sorted(folder.glob("*.md")):
+            text = page.read_text(encoding = "utf-8", errors = "ignore")
+            rel = f"{prefix}/{page.name}"
+            title = self._merge_candidate_title(text, page.stem)
+            terms = set(self._tokenize_terms(title))
+            if not terms:
+                continue
+
+            updated_at = self._extract_updated_at(text)
+            if updated_at is None:
+                updated_at = datetime.fromtimestamp(page.stat().st_mtime, tz = timezone.utc)
+
+            pages.append(
+                {
+                    "page": rel,
+                    "title": title,
+                    "terms": terms,
+                    "updated_at": updated_at,
+                }
+            )
+
+        if len(pages) < 2:
+            return []
+
+        term_index: Dict[str, Set[int]] = {}
+        for idx, page in enumerate(pages):
+            for term in page["terms"]:
+                term_index.setdefault(term, set()).add(idx)
+
+        candidate_pairs: Set[Tuple[int, int]] = set()
+        for idxs in term_index.values():
+            ordered = sorted(idxs)
+            for left in range(len(ordered)):
+                for right in range(left + 1, len(ordered)):
+                    candidate_pairs.add((ordered[left], ordered[right]))
+
+        candidates: List[Dict[str, Any]] = []
+        for left_idx, right_idx in sorted(candidate_pairs):
+            left = pages[left_idx]
+            right = pages[right_idx]
+
+            left_terms = left["terms"]
+            right_terms = right["terms"]
+            common = left_terms.intersection(right_terms)
+            if not common:
+                continue
+
+            min_overlap = len(common) / max(1, min(len(left_terms), len(right_terms)))
+            jaccard = len(common) / max(1, len(left_terms.union(right_terms)))
+            similarity = max(min_overlap, jaccard)
+            if similarity < similarity_threshold:
+                continue
+
+            if left["updated_at"] > right["updated_at"]:
+                canonical, duplicate = left, right
+            elif right["updated_at"] > left["updated_at"]:
+                canonical, duplicate = right, left
+            else:
+                canonical, duplicate = (
+                    (left, right)
+                    if str(left["page"]) <= str(right["page"])
+                    else (right, left)
+                )
+
+            candidates.append(
+                {
+                    "canonical": str(canonical["page"]),
+                    "canonical_title": str(canonical["title"]),
+                    "duplicate": str(duplicate["page"]),
+                    "duplicate_title": str(duplicate["title"]),
+                    "similarity": round(float(similarity), 3),
+                    "reason": "title-term-overlap",
+                }
+            )
+
+        candidates.sort(
+            key = lambda item: (
+                -float(item.get("similarity", 0.0)),
+                str(item.get("canonical", "")),
+                str(item.get("duplicate", "")),
+            )
+        )
+        return candidates[:64]
+
+    def _extract_markdown_section(self, text: str, section_title: str) -> str:
+        m = re.search(
+            rf"(?ms)^## {re.escape(section_title)}\n(.+?)(?=\n## |\Z)",
+            text,
+        )
+        if not m:
+            return ""
+        return m.group(1).strip()
+
+    def _extract_markdown_bullets(self, section_body: str, limit: int = 6) -> List[str]:
+        out: List[str] = []
+        seen: Set[str] = set()
+
+        for raw_line in section_body.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("- "):
+                continue
+
+            bullet = re.sub(r"\s+", " ", line[2:].strip())
+            if not bullet or bullet.lower() == "none":
+                continue
+
+            normalized = bullet.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(bullet)
+            if len(out) >= max(1, int(limit)):
+                break
+
+        return out
+
+    def _archive_target_for_page(self, rel_path: str) -> Tuple[Path, str]:
+        rel = Path(str(rel_path).replace("\\", "/"))
+        archive_dir = self.wiki_dir / ".archive" / rel.parent
+
+        target = archive_dir / rel.name
+        if target.exists():
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            target = archive_dir / f"{rel.stem}--{stamp}{rel.suffix}"
+
+        archive_rel = str(target.relative_to(self.wiki_dir)).replace("\\", "/")
+        return target, archive_rel
+
+    def _merge_canonical_with_duplicate(
+        self,
+        canonical_text: str,
+        duplicate_text: str,
+        duplicate_rel: str,
+        archived_rel: str,
+        similarity: float,
+    ) -> str:
+        now_iso = self._now_iso()
+
+        summary_text = self._extract_markdown_section(duplicate_text, "Summary")
+        summary_line = ""
+        if summary_text:
+            summary_line = re.sub(r"\s+", " ", summary_text).strip()
+            if len(summary_line) > 260:
+                summary_line = summary_line[:260].rstrip() + "..."
+
+        facts = self._extract_markdown_bullets(
+            self._extract_markdown_section(duplicate_text, "Facts"),
+            limit = 8,
+        )
+        contradictions = self._extract_markdown_bullets(
+            self._extract_markdown_section(duplicate_text, "Contradictions"),
+            limit = 8,
+        )
+        sources = self._extract_markdown_bullets(
+            self._extract_markdown_section(duplicate_text, "Sources"),
+            limit = 8,
+        )
+
+        entry_lines = [
+            f"### {now_iso} merged {duplicate_rel}",
+            f"- similarity: {round(float(similarity), 3)}",
+            f"- archived_to: {archived_rel}",
+        ]
+        if summary_line:
+            entry_lines.append(f"- summary: {summary_line}")
+        if facts:
+            entry_lines.append("- facts:")
+            entry_lines.extend([f"  - {item}" for item in facts])
+        if contradictions:
+            entry_lines.append("- contradictions:")
+            entry_lines.extend([f"  - {item}" for item in contradictions])
+        if sources:
+            entry_lines.append("- sources:")
+            entry_lines.extend([f"  - {item}" for item in sources])
+
+        entry = "\n".join(entry_lines).rstrip()
+        existing_history = self._extract_markdown_section(canonical_text, "Merge History")
+        merged_history = (
+            f"{existing_history.rstrip()}\n\n{entry}".strip()
+            if existing_history
+            else entry
+        )
+
+        updated = self._upsert_top_section(
+            canonical_text,
+            section_title = "Merge History",
+            section_body = merged_history,
+        )
+        return self._set_frontmatter_updated_at(updated, now_iso)
+
+    def _replace_wikilinks_with_map(
+        self,
+        text: str,
+        replacements: Dict[str, str],
+    ) -> Tuple[str, int]:
+        normalized_map = {
+            str(old).strip().replace("\\", "/"): str(new).strip().replace("\\", "/")
+            for old, new in replacements.items()
+            if str(old).strip() and str(new).strip()
+        }
+        if not normalized_map:
+            return text, 0
+
+        replaced_count = 0
+
+        def _rewrite(match: re.Match[str]) -> str:
+            nonlocal replaced_count
+            raw_target = str(match.group(1) or "").strip().replace("\\", "/")
+            normalized_target = (
+                raw_target[:-3] if raw_target.endswith(".md") else raw_target
+            )
+            new_target = normalized_map.get(normalized_target)
+            if not new_target:
+                return match.group(0)
+            replaced_count += 1
+            return f"[[{new_target}]]"
+
+        rewritten = re.sub(r"\[\[([^\]]+)\]\]", _rewrite, text)
+        return rewritten, replaced_count
+
     def _rebuild_index(self) -> None:
         sections = [
             ("Sources", "sources"),
@@ -1616,9 +2074,15 @@ class LLMWikiEngine:
             ("Concepts", "concepts"),
             ("Analysis", "analysis"),
         ]
+        include_sources = bool(self.cfg.index_include_source_pages)
         out = ["# Index", ""]
         for header, subdir in sections:
             out.append(f"## {header}")
+            if subdir == "sources" and not include_sources:
+                out.append("- (omitted by source-exclusion policy)")
+                out.append("")
+                continue
+
             sub = self.wiki_dir / subdir
             files = sorted(sub.glob("*.md"))
             if not files:
@@ -1814,6 +2278,82 @@ class LLMWikiEngine:
 
         return out
 
+    def _planner_index_text(self, candidate_paths: List[str]) -> str:
+        include_sources = bool(self.cfg.index_include_source_pages)
+        summary_by_page = self._index_summary_by_page()
+
+        grouped: Dict[str, List[str]] = {
+            "sources": [],
+            "entities": [],
+            "concepts": [],
+            "analysis": [],
+            "other": [],
+        }
+
+        for rel in candidate_paths:
+            normalized = str(rel).strip().replace("\\", "/")
+            if not normalized:
+                continue
+            if not normalized.endswith(".md"):
+                normalized = f"{normalized}.md"
+
+            if normalized.startswith("sources/"):
+                if include_sources:
+                    grouped["sources"].append(normalized)
+            elif normalized.startswith("entities/"):
+                grouped["entities"].append(normalized)
+            elif normalized.startswith("concepts/"):
+                grouped["concepts"].append(normalized)
+            elif normalized.startswith("analysis/"):
+                grouped["analysis"].append(normalized)
+            else:
+                grouped["other"].append(normalized)
+
+        lines = ["# Index", ""]
+        sections = [
+            ("Sources", "sources"),
+            ("Entities", "entities"),
+            ("Concepts", "concepts"),
+            ("Analysis", "analysis"),
+            ("Other", "other"),
+        ]
+
+        for header, key in sections:
+            lines.append(f"## {header}")
+
+            if key == "sources" and not include_sources:
+                lines.append("- (omitted by source-exclusion policy)")
+                lines.append("")
+                continue
+
+            rel_pages = sorted(set(grouped.get(key, [])))
+            if not rel_pages:
+                lines.append("- (none)")
+                lines.append("")
+                continue
+
+            for rel in rel_pages:
+                link = rel[:-3] if rel.endswith(".md") else rel
+                summary = str(summary_by_page.get(rel, "")).strip()
+                if not summary:
+                    page_path = self.wiki_dir / rel
+                    if page_path.exists():
+                        page_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                        if link.startswith("analysis/"):
+                            summary = self._analysis_index_summary(page_text)
+                        else:
+                            summary = self._first_nonempty_content_line(page_text)
+
+                summary = re.sub(r"\s+", " ", summary).strip()
+                line = f"- [[{link}]]"
+                if summary:
+                    line += f" - {summary[:220]}"
+                lines.append(line.rstrip())
+
+            lines.append("")
+
+        return "\n".join(lines).rstrip() + "\n"
+
     def _llm_rerank_candidates(
         self,
         query: str,
@@ -1822,11 +2362,24 @@ class LLMWikiEngine:
         if not candidates:
             return candidates
 
-        top_n = min(len(candidates), self.cfg.ranking_llm_rerank_top_n)
         candidate_scores = {rel: score for rel, score in candidates}
+        if not self.cfg.index_include_source_pages:
+            candidate_scores = {
+                rel: score
+                for rel, score in candidate_scores.items()
+                if not rel.startswith("sources/")
+            }
+
+        filtered_candidates = [
+            (rel, score) for rel, score in candidates if rel in candidate_scores
+        ]
+        if not filtered_candidates:
+            return []
+
+        top_n = min(len(filtered_candidates), self.cfg.ranking_llm_rerank_top_n)
         candidate_paths = sorted(candidate_scores.keys())
 
-        index_text = self.index_file.read_text(encoding = "utf-8", errors = "ignore")
+        index_text = self._planner_index_text(candidate_paths)
         index_lines = index_text.splitlines()
         index_preview = "\n".join(index_lines[:80])
         query_preview = re.sub(r"\s+", " ", query).strip()[:280]
@@ -1846,7 +2399,7 @@ class LLMWikiEngine:
                 "RERANK DEBUG status=%s query=%r candidates=%d top_n=%d index_chars=%d index_lines=%d ordered_paths=%s index_preview=%r llm_output=%r",
                 status,
                 query_preview,
-                len(candidates),
+                len(filtered_candidates),
                 top_n,
                 len(index_text),
                 len(index_lines),
@@ -1881,11 +2434,11 @@ class LLMWikiEngine:
 
         prompt = (
             "You are a retrieval planner for a wiki search system.\n"
-            "Use the full index file to choose which wiki pages should be read to answer the query.\n"
+            "Use the provided index excerpt to choose which wiki pages should be read to answer the query.\n"
             "Return strict JSON only with this exact schema:\n"
             '{"ordered_pages": ["path/file.md", ...]}\n\n'
             "Rules:\n"
-            "- Read the entire INDEX_FILE content before selecting pages.\n"
+            "- Read the full INDEX_FILE content provided below before selecting pages.\n"
             "- Use only paths from ALLOWED_PAGES.\n"
             f"- Return at most {top_n} pages.\n"
             "- Order best first.\n"
@@ -1938,7 +2491,7 @@ class LLMWikiEngine:
         # Keep planner intent first, but retain the remaining deterministic
         # candidates so prompt-injection does not collapse to a single page.
         full_order = list(ordered_paths)
-        for rel, _score in candidates:
+        for rel, _score in filtered_candidates:
             if rel not in seen_paths:
                 full_order.append(rel)
 
@@ -2340,8 +2893,18 @@ class LLMWikiEngine:
             return set(), ""
         return set(self._tokenize_terms(target)), self._slug(target)
 
-    def _rank_pages(self, query: str) -> List[Tuple[str, float]]:
+    def _rank_pages(
+        self,
+        query: str,
+        include_source_pages: bool = True,
+    ) -> List[Tuple[str, float]]:
         all_pages = self._all_wiki_pages()
+        effective_include_sources = bool(
+            include_source_pages and self.cfg.index_include_source_pages
+        )
+        if not effective_include_sources:
+            all_pages = [p for p in all_pages if not p.startswith("sources/")]
+
         q_terms = self._terms(query)
         if not q_terms:
             ranked = self._rank_pages_by_recency(all_pages)

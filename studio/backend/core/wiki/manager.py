@@ -65,9 +65,13 @@ class WikiManager:
         question: str,
         max_pages: Optional[int] = None,
         max_chars_per_page: Optional[int] = None,
+        include_source_pages: bool = True,
     ) -> Dict:
         """Retrieve top wiki pages and text snippets for prompt injection."""
-        ranked = self.engine._rank_pages(question)
+        ranked = self.engine._rank_pages(
+            question,
+            include_source_pages = include_source_pages,
+        )
         pages_limit = (
             self.engine.cfg.max_context_pages if max_pages is None else max_pages
         )
@@ -136,4 +140,21 @@ class WikiManager:
         return self.engine.retry_fallback_analysis_pages(
             dry_run = dry_run,
             max_analysis_pages = max_analysis_pages,
+        )
+
+    def merge_duplicate_knowledge_pages(
+        self,
+        dry_run: bool = True,
+        include_entities: bool = True,
+        include_concepts: bool = True,
+        similarity_threshold: float = 0.75,
+        max_merges: int = 24,
+    ) -> Dict:
+        """Merge duplicate entity/concept pages and rewrite wiki links."""
+        return self.engine.merge_duplicate_knowledge_pages(
+            dry_run = dry_run,
+            include_entities = include_entities,
+            include_concepts = include_concepts,
+            similarity_threshold = similarity_threshold,
+            max_merges = max_merges,
         )

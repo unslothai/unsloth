@@ -106,6 +106,8 @@ from models.inference import (
     WikiEnrichResponse,
     WikiRetryFallbackRequest,
     WikiRetryFallbackResponse,
+    WikiMergeMaintenanceRequest,
+    WikiMergeMaintenanceResponse,
     WikiQueryRequest,
     WikiQueryResponse,
     WikiLintResponse,
@@ -287,7 +289,7 @@ def _route_wiki_llm_stub(prompt: str) -> str:
                 max_new_tokens = _WIKI_LLM_MAX_TOKENS,
                 repetition_penalty = 1.0,
                 cancel_event = None,
-                enable_wiki_rag_history = False,
+                enable_wiki_rag_history = True,
             ):
                 out += token
             if out.strip():
@@ -512,6 +514,7 @@ def _get_route_rag_context(
         query,
         max_pages = max(max_pages * 4, 12),
         max_chars_per_page = max(max_chars_per_page * 6, 6000),
+        include_source_pages = _RAG_INCLUDE_SOURCE_PAGES,
     )
     blocks: list[dict] = result.get("context_blocks", [])
     if not _RAG_INCLUDE_SOURCE_PAGES:
@@ -1009,6 +1012,48 @@ async def wiki_retry_fallback(
     )
 
 
+@router.post(
+    "/wiki/merge-maintenance",
+    response_model = WikiMergeMaintenanceResponse,
+)
+async def wiki_merge_maintenance(
+    payload: WikiMergeMaintenanceRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Merge duplicate entity/concept pages and rewrite links to canonical pages."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.merge_duplicate_knowledge_pages(
+            dry_run = payload.dry_run,
+            include_entities = payload.include_entities,
+            include_concepts = payload.include_concepts,
+            similarity_threshold = payload.similarity_threshold,
+            max_merges = payload.max_merges,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki merge maintenance failed: {exc}",
+        )
+
+    return WikiMergeMaintenanceResponse(
+        status = str(report.get("status", "ok")),
+        dry_run = bool(report.get("dry_run", payload.dry_run)),
+        entity_candidates = int(report.get("entity_candidates", 0)),
+        concept_candidates = int(report.get("concept_candidates", 0)),
+        scanned_candidates = int(report.get("scanned_candidates", 0)),
+        planned_merges = int(report.get("planned_merges", 0)),
+        applied_merges = int(report.get("applied_merges", 0)),
+        rewritten_pages = int(report.get("rewritten_pages", 0)),
+        rewritten_links = int(report.get("rewritten_links", 0)),
+        archived_pages = [str(item) for item in report.get("archived_pages", [])],
+        skipped = [dict(item) for item in report.get("skipped", [])],
+        merges = [dict(item) for item in report.get("merges", [])],
+        errors = [str(item) for item in report.get("errors", [])],
+    )
+
+
 @router.post("/wiki/query", response_model = WikiQueryResponse)
 async def wiki_query(
     payload: WikiQueryRequest,
@@ -1126,6 +1171,12 @@ async def wiki_lint(
         broken_links = [dict(x) for x in report.get("broken_links", [])],
         missing_concepts = [str(x) for x in report.get("missing_concepts", [])],
         low_coverage_sources = [str(x) for x in report.get("low_coverage_sources", [])],
+        entity_merge_candidates = [
+            dict(x) for x in report.get("entity_merge_candidates", [])
+        ],
+        concept_merge_candidates = [
+            dict(x) for x in report.get("concept_merge_candidates", [])
+        ],
         total_pages = int(report.get("total_pages", 0)),
         graphify_insights = dict(report.get("graphify_insights", {})),
     )

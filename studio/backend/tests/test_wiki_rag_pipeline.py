@@ -179,6 +179,30 @@ def test_manager_retrieve_context_zero_limits_return_full_content(tmp_path: Path
     assert any(full_marker in block["content"] for block in result["context_blocks"])
 
 
+def test_manager_retrieve_context_can_exclude_source_pages(tmp_path: Path):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha Source\n\nalpha retrieval source content\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "alpha.md").write_text(
+        "# Alpha Entity\n\nalpha retrieval entity details\n",
+        encoding = "utf-8",
+    )
+
+    result = manager.retrieve_context(
+        question = "alpha retrieval",
+        max_pages = 8,
+        max_chars_per_page = 400,
+        include_source_pages = False,
+    )
+
+    assert result["status"] == "ok"
+    assert result["context_pages"]
+    assert all(not page.startswith("sources/") for page in result["context_pages"])
+
+
 def test_rank_pages_can_expand_via_links(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -948,3 +972,270 @@ def test_index_analysis_summary_uses_title_and_full_primary_source_link(tmp_path
     assert (
         "[[sources/accelerating-set-cover-problems-with-graph-neural-networks]]" in line
     )
+
+
+def test_rebuild_index_omits_sources_when_source_index_disabled(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("UNSLOTH_WIKI_INDEX_INCLUDE_SOURCE_PAGES", "false")
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha Source\n\nsource detail\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "alpha-entity.md").write_text(
+        "# Alpha Entity\n\nentity detail\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    assert "## Sources" in index_text
+    assert "(omitted by source-exclusion policy)" in index_text
+    assert "[[sources/alpha]]" not in index_text
+    assert "[[entities/alpha-entity]]" in index_text
+
+
+def test_llm_rerank_uses_compact_index_without_sources_when_disabled(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("UNSLOTH_WIKI_INDEX_INCLUDE_SOURCE_PAGES", "false")
+
+    captured = {"prompt": ""}
+
+    def _llm(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return '{"ordered_pages": ["entities/alpha.md"]}'
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha Source\n\nsource detail\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "alpha.md").write_text(
+        "# Alpha Entity\n\nentity detail\n",
+        encoding = "utf-8",
+    )
+    engine._rebuild_index()
+
+    reranked = engine._llm_rerank_candidates(
+        "alpha",
+        [("sources/alpha.md", 1.0), ("entities/alpha.md", 0.8)],
+    )
+
+    assert reranked
+    prompt = captured["prompt"]
+    assert "entities/alpha.md" in prompt
+    assert "sources/alpha.md" not in prompt
+    assert "(omitted by source-exclusion policy)" in prompt
+
+
+def test_lint_reports_entity_and_concept_merge_candidates(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
+        "---\n"
+        "title: Retrieval Pipeline\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Retrieval Pipeline\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "retrieval-pipeline-system.md").write_text(
+        "---\n"
+        "title: Retrieval Pipeline System\n"
+        "updated_at: 2026-04-21T00:00:00+00:00\n"
+        "---\n\n"
+        "# Retrieval Pipeline System\n",
+        encoding = "utf-8",
+    )
+
+    (tmp_path / "wiki" / "concepts" / "vector-search.md").write_text(
+        "---\n"
+        "title: Vector Search\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Vector Search\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "concepts" / "vector-search-optimization.md").write_text(
+        "---\n"
+        "title: Vector Search Optimization\n"
+        "updated_at: 2026-04-21T00:00:00+00:00\n"
+        "---\n\n"
+        "# Vector Search Optimization\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.lint()
+
+    entity_candidates = report.get("entity_merge_candidates", [])
+    concept_candidates = report.get("concept_merge_candidates", [])
+
+    assert entity_candidates
+    assert concept_candidates
+
+    assert any(
+        {
+            item.get("canonical_title"),
+            item.get("duplicate_title"),
+        }
+        == {"Retrieval Pipeline", "Retrieval Pipeline System"}
+        for item in entity_candidates
+    )
+    assert any(
+        {
+            item.get("canonical_title"),
+            item.get("duplicate_title"),
+        }
+        == {"Vector Search", "Vector Search Optimization"}
+        for item in concept_candidates
+    )
+
+
+def test_merge_duplicate_knowledge_pages_dry_run_reports_without_writing(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
+        "---\n"
+        "title: Retrieval Pipeline\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Retrieval Pipeline\n\n"
+        "## Summary\n"
+        "Legacy retrieval details.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "retrieval-pipeline-system.md").write_text(
+        "---\n"
+        "title: Retrieval Pipeline System\n"
+        "updated_at: 2026-04-21T00:00:00+00:00\n"
+        "---\n\n"
+        "# Retrieval Pipeline System\n\n"
+        "## Summary\n"
+        "Canonical retrieval details.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "sample.md"
+    original_analysis = (
+        "# Query Result\n\n"
+        "## Question\n"
+        "What changed in retrieval?\n\n"
+        "## Answer\n"
+        "See [[entities/retrieval-pipeline]].\n"
+    )
+    analysis_path.write_text(original_analysis, encoding = "utf-8")
+
+    report = engine.merge_duplicate_knowledge_pages(
+        dry_run = True,
+        include_entities = True,
+        include_concepts = False,
+        similarity_threshold = 0.75,
+        max_merges = 8,
+    )
+
+    assert report["status"] == "ok"
+    assert report["planned_merges"] == 1
+    assert report["applied_merges"] == 0
+    assert report["rewritten_links"] >= 1
+    assert (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").exists()
+    assert analysis_path.read_text(encoding = "utf-8") == original_analysis
+
+
+def test_merge_duplicate_knowledge_pages_apply_archives_and_rewrites_links(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
+        "---\n"
+        "title: Retrieval Pipeline\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Retrieval Pipeline\n\n"
+        "## Summary\n"
+        "Legacy retrieval details.\n\n"
+        "## Facts\n"
+        "- Older architecture note\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "retrieval-pipeline-system.md").write_text(
+        "---\n"
+        "title: Retrieval Pipeline System\n"
+        "updated_at: 2026-04-21T00:00:00+00:00\n"
+        "---\n\n"
+        "# Retrieval Pipeline System\n\n"
+        "## Summary\n"
+        "Canonical retrieval details.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "sample.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "What changed in retrieval?\n\n"
+        "## Answer\n"
+        "See [[entities/retrieval-pipeline]].\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.merge_duplicate_knowledge_pages(
+        dry_run = False,
+        include_entities = True,
+        include_concepts = False,
+        similarity_threshold = 0.75,
+        max_merges = 8,
+    )
+
+    assert report["status"] == "ok"
+    assert report["applied_merges"] == 1
+    assert report["rewritten_links"] >= 1
+    assert report["archived_pages"]
+
+    merge = report["merges"][0]
+    canonical_rel = str(merge["canonical"])
+    duplicate_rel = str(merge["duplicate"])
+    archived_rel = str(merge["archived_to"])
+
+    canonical_link = canonical_rel[:-3] if canonical_rel.endswith(".md") else canonical_rel
+    duplicate_link = duplicate_rel[:-3] if duplicate_rel.endswith(".md") else duplicate_rel
+
+    assert not (tmp_path / "wiki" / duplicate_rel).exists()
+    assert (tmp_path / "wiki" / archived_rel).exists()
+
+    analysis_text = analysis_path.read_text(encoding = "utf-8")
+    assert f"[[{canonical_link}]]" in analysis_text
+    assert f"[[{duplicate_link}]]" not in analysis_text
+
+    canonical_text = (tmp_path / "wiki" / canonical_rel).read_text(encoding = "utf-8")
+    assert "## Merge History" in canonical_text
+    assert duplicate_rel in canonical_text
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    assert f"[[{duplicate_link}]]" not in index_text
+    assert f"[[{canonical_link}]]" in index_text
