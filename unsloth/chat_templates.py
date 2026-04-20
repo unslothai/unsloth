@@ -866,12 +866,34 @@ DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
 # =========================================== Gemma-4
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
 gemma4_template = \
-"""{%- if messages[0]['role'] == 'system' -%}
-    {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
-    {%- set loop_messages = messages[1:] -%}
-{%- else -%}
-    {%- set first_user_prefix = "" -%}
-    {%- set loop_messages = messages -%}
+"""{%- set thinking = enable_thinking is defined and enable_thinking -%}
+{%- set loop_messages = messages -%}
+{%- if messages[0]['role'] == 'system' or thinking -%}
+    {{ '<|turn>system\n' }}
+    {%- if thinking -%}
+        {{ '<|think|>\n' }}
+    {%- endif -%}
+    {%- if messages[0]['role'] == 'system' -%}
+        {%- if messages[0]['content'] is string -%}
+            {{ messages[0]['content'] | trim }}
+        {%- elif messages[0]['content'] is iterable -%}
+            {%- for item in messages[0]['content'] -%}
+                {%- if item['type'] == 'audio' -%}
+                    {{ '<|audio|>' }}
+                {%- elif item['type'] == 'image' -%}
+                    {{ '<|image|>' }}
+                {%- elif item['type'] == 'video' -%}
+                    {{ '<|video|>' }}
+                {%- elif item['type'] == 'text' -%}
+                    {{ item['text'] | trim }}
+                {%- endif -%}
+            {%- endfor -%}
+        {%- else -%}
+            {{ raise_exception("Invalid content type") }}
+        {%- endif -%}
+        {%- set loop_messages = messages[1:] -%}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
 {%- endif -%}
 {%- for message in loop_messages -%}
     {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
@@ -882,7 +904,7 @@ gemma4_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
+    {{ '<|turn>' + role + '\n' }}
     {%- if message['content'] is string -%}
         {{ message['content'] | trim }}
     {%- elif message['content'] is iterable -%}
@@ -918,15 +940,36 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4"] = None
 CHAT_TEMPLATES["gemma4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
 
-# Gemma-4 with empty thought channel (required for larger models like 31B, 26B-A4B)
-# Injects <|channel>thought\n<channel|> at the start of each model response during training
+# Gemma-4 thinking mode defaults to adding <|think|> in the system turn.
 gemma4_thinking_template = \
-"""{%- if messages[0]['role'] == 'system' -%}
-    {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
-    {%- set loop_messages = messages[1:] -%}
-{%- else -%}
-    {%- set first_user_prefix = "" -%}
-    {%- set loop_messages = messages -%}
+"""{%- set thinking = enable_thinking is not defined or enable_thinking -%}
+{%- set loop_messages = messages -%}
+{%- if messages[0]['role'] == 'system' or thinking -%}
+    {{ '<|turn>system\n' }}
+    {%- if thinking -%}
+        {{ '<|think|>\n' }}
+    {%- endif -%}
+    {%- if messages[0]['role'] == 'system' -%}
+        {%- if messages[0]['content'] is string -%}
+            {{ messages[0]['content'] | trim }}
+        {%- elif messages[0]['content'] is iterable -%}
+            {%- for item in messages[0]['content'] -%}
+                {%- if item['type'] == 'audio' -%}
+                    {{ '<|audio|>' }}
+                {%- elif item['type'] == 'image' -%}
+                    {{ '<|image|>' }}
+                {%- elif item['type'] == 'video' -%}
+                    {{ '<|video|>' }}
+                {%- elif item['type'] == 'text' -%}
+                    {{ item['text'] | trim }}
+                {%- endif -%}
+            {%- endfor -%}
+        {%- else -%}
+            {{ raise_exception("Invalid content type") }}
+        {%- endif -%}
+        {%- set loop_messages = messages[1:] -%}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
 {%- endif -%}
 {%- for message in loop_messages -%}
     {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
@@ -937,10 +980,7 @@ gemma4_thinking_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
-    {%- if role == "model" -%}
-        {{ '<|channel>thought\n<channel|>' }}
-    {%- endif -%}
+    {{ '<|turn>' + role + '\n' }}
     {%- if message['content'] is string -%}
         {{ message['content'] | trim }}
     {%- elif message['content'] is iterable -%}
