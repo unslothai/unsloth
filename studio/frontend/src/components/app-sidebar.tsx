@@ -497,21 +497,23 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="border-t border-sidebar-border">
+      <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-t-0">
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+                  className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:hover:bg-transparent group-data-[collapsible=icon]:data-[state=open]:bg-transparent"
                 >
-                  <UserAvatar
-                    name={displayTitle}
-                    imageUrl={avatarDataUrl}
-                    size="sm"
-                    className="!size-8"
-                  />
+                  <div className="shrink-0">
+                    <UserAvatar
+                      name={displayTitle}
+                      imageUrl={avatarDataUrl}
+                      size="sm"
+                      className="!size-8"
+                    />
+                  </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
                     <span className="truncate text-sm font-semibold">{displayTitle}</span>
                     <span className="truncate text-[11px] text-muted-foreground">Train</span>
