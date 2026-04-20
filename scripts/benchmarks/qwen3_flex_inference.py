@@ -584,17 +584,23 @@ def main():
     p.add_argument("--capture_cudagraph", action = "store_true")
     p.add_argument("--lora_adapter", default = None)
     # Kernel tuning (optional JSON-valued CLI args so we can sweep quickly):
-    p.add_argument("--decode_kernel_options", default = None,
-                   help = "JSON for FlexKernelOptions applied in decode, "
-                          "e.g. '{\"PRESCALE_QK\":true,\"USE_TMA\":true}'.")
-    p.add_argument("--prefill_kernel_options", default = None,
-                   help = "Same but for prefill.")
+    p.add_argument(
+        "--decode_kernel_options",
+        default = None,
+        help = "JSON for FlexKernelOptions applied in decode, "
+        'e.g. \'{"PRESCALE_QK":true,"USE_TMA":true}\'.',
+    )
+    p.add_argument(
+        "--prefill_kernel_options", default = None, help = "Same but for prefill."
+    )
     # If set, torch.compile the full attention-stack closure in addition to
     # (or instead of) compiling just flex_attention. `reduce-overhead` is
     # the interesting mode; it nests with our CUDA graph capture.
-    p.add_argument("--compile_model_forward", default = None,
-                   choices = [None, "default", "reduce-overhead",
-                              "max-autotune-no-cudagraphs"])
+    p.add_argument(
+        "--compile_model_forward",
+        default = None,
+        choices = [None, "default", "reduce-overhead", "max-autotune-no-cudagraphs"],
+    )
     p.add_argument("--stats_path", required = True)
     args = p.parse_args()
 
@@ -669,9 +675,12 @@ def main():
     # function gets captured into the same graph.
     if args.compile_model_forward:
         torch._dynamo.config.cache_size_limit = 256
-        print(f"[flex] torch.compile(call_model_with_flex_kwargs, "
-              f"mode={args.compile_model_forward!r})")
+        print(
+            f"[flex] torch.compile(call_model_with_flex_kwargs, "
+            f"mode={args.compile_model_forward!r})"
+        )
         import sys as _sys
+
         _this = _sys.modules[__name__]
         _this.call_model_with_flex_kwargs = torch.compile(
             call_model_with_flex_kwargs,
