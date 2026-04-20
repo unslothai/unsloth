@@ -1,15 +1,19 @@
-"""Qwen3-4B GRPO with transformers continuous-batching rollouts.
+"""Qwen3-4B GRPO with naive TRL generation (no vLLM, no CB).
 
-Unsloth's Qwen3Attention monkey-patch bypasses the functional attention
-interface that `paged|<impl>` continuous batching relies on, so this script
-loads a vanilla HF Qwen3 with PEFT LoRA instead. Training is slower than the
-Unsloth path but the goal here is to evaluate transformers CB as a drop-in
-replacement for vLLM rollouts. See benchmark_results.md for numbers.
+Mirrors the TRL example at https://huggingface.co/docs/trl/grpo_trainer: a
+vanilla HF model + `GRPOTrainer` with the default rollout path, which calls
+`model.generate(...)` per step. This is the honest "baseline" baseline — it
+is what a user would get if they just followed the TRL docs without enabling
+vLLM colocate or transformers continuous batching. Useful as a third column
+in the benchmark table.
+
+Hyperparameters, dataset, and reward functions are shared with the vLLM and
+CB scripts via `unsloth_grpo_common.py` so numbers are apples-to-apples.
 
 Run:
-    CUDA_VISIBLE_DEVICES=2 python scripts/qwen3_grpo_tpaged.py \
-        --max_steps 61 --output_dir outputs/grpo_tpaged \
-        --stats_path logs/tpaged_stats.json
+    CUDA_VISIBLE_DEVICES=2 python scripts/qwen3_grpo_naive.py \
+        --max_steps 20 --num_generations 2 --per_device_train_batch_size 2 \
+        --output_dir outputs/grpo_naive --stats_path logs/naive_stats.json
 """
 
 from __future__ import annotations
@@ -24,15 +28,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-# Minimal shim so TRL's GRPOTrainer imports cleanly against newer vLLM
-# releases where `GuidedDecodingParams` has moved or been removed. We do NOT
-# import `unsloth` here because that replaces TRL's GRPOTrainer with an
-# Unsloth-compiled variant that assumes the model has `for_training()` /
-# `for_inference()` hooks, which a vanilla HF model does not.
+# Same vLLM sampling-params shim as the tpaged script so TRL imports cleanly
+# even when vLLM is installed but the GuidedDecodingParams symbol has moved.
 try:
     import vllm.sampling_params as _vllm_sp
     if not hasattr(_vllm_sp, "GuidedDecodingParams"):
-        class _GuidedDecodingParamsShim:  # pragma: no cover - used only if TRL asks
+        class _GuidedDecodingParamsShim:  # pragma: no cover
             def __init__(self, *a, **kw):
                 pass
         _vllm_sp.GuidedDecodingParams = _GuidedDecodingParamsShim
@@ -42,9 +43,6 @@ except ImportError:
 import torch  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 from peft import LoraConfig, get_peft_model  # noqa: E402
-
-import flash_attn_fa4_shim  # noqa: E402
-flash_attn_fa4_shim.apply()
 
 from unsloth_grpo_common import (  # noqa: E402
     apply_chat_template_to_tokenizer,
@@ -59,21 +57,14 @@ def parse_args():
     p.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
     p.add_argument("--max_seq_length", type=int, default=2048)
     p.add_argument("--lora_rank", type=int, default=32)
-    p.add_argument("--max_steps", type=int, default=61)
-    p.add_argument("--num_generations", type=int, default=4)
-    p.add_argument("--per_device_train_batch_size", type=int, default=1)
+    p.add_argument("--max_steps", type=int, default=20)
+    p.add_argument("--num_generations", type=int, default=2)
+    p.add_argument("--per_device_train_batch_size", type=int, default=2)
     p.add_argument("--gradient_accumulation_steps", type=int, default=1)
     p.add_argument("--attn_impl", default="sdpa",
-                   help="Base attention impl to compose with paged. 'sdpa' or 'flash_attention_2'.")
-    p.add_argument("--max_batch_tokens", type=int, default=8192,
-                   help="PagedAttentionCache.max_batch_tokens. Default upper bound is 256 which is far too small.")
-    p.add_argument("--num_blocks", type=int, default=8192,
-                   help="PagedAttentionCache.num_blocks (block_size=32). 8192*32 tokens of KV capacity.")
-    p.add_argument("--output_dir", default="outputs/grpo_tpaged")
-    p.add_argument("--stats_path", default="logs/tpaged_stats.json")
-    p.add_argument("--persistent_cb", action="store_true",
-                   help="Reuse one ContinuousBatchingManager across every training step instead "
-                        "of letting TRL's generate_batch rebuild it (and the paged cache) each step.")
+                   help="Attention implementation: sdpa or flash_attention_2 (FA4 shim installed).")
+    p.add_argument("--output_dir", default="outputs/grpo_naive")
+    p.add_argument("--stats_path", default="logs/naive_stats.json")
     return p.parse_args()
 
 
@@ -82,7 +73,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok=True)
 
-    # 1. Vanilla HF load (no Unsloth patches on the attention forward).
+    # Install the FA4 shim only if the caller asked for flash_attention_2.
+    # For sdpa we leave transformers untouched.
+    if args.attn_impl == "flash_attention_2":
+        import flash_attn_fa4_shim
+        flash_attn_fa4_shim.apply()
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -90,8 +86,7 @@ def main():
         args.model_name,
         dtype=torch.bfloat16,
         attn_implementation=args.attn_impl,
-    )
-    model.to("cuda")
+    ).to("cuda")
 
     lora = LoraConfig(
         r=args.lora_rank,
@@ -112,12 +107,10 @@ def main():
 
     apply_chat_template_to_tokenizer(tokenizer)
 
-    # 2. Dataset + rewards (identical to the vLLM script).
     dataset, maximum_length = build_dataset(tokenizer, max_seq_length=args.max_seq_length)
-    print(f"[tpaged] Max prompt length (p90): {maximum_length}")
+    print(f"[naive] Max prompt length (p90): {maximum_length}")
     reward_funcs = build_reward_funcs(tokenizer)
 
-    # 3. Build GRPOConfig with transformers continuous batching enabled.
     from trl import GRPOConfig, GRPOTrainer
     shared = build_grpo_kwargs(
         tokenizer,
@@ -129,25 +122,16 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         output_dir=args.output_dir,
     )
-    # transformers `TopKLogitsWarper` rejects -1. None skips the warper entirely.
+    # transformers' TopKLogitsWarper rejects -1. None skips the warper.
     shared["top_k"] = None
-    # The default PagedAttentionCache upper bounds
-    # (`_upper_bound_max_batch_tokens=256`, `_upper_bound_num_blocks=4096`)
-    # are extremely conservative and cause long decode loops. Raise them via
-    # `generation_kwargs`, which TRL forwards to `GenerationConfig`, which the
-    # CB manager then reads off when sizing the paged cache.
+
     training_args = GRPOConfig(
         use_vllm=False,
-        use_transformers_paged=True,
+        use_transformers_paged=False,
         bf16=True,
-        generation_kwargs={
-            "max_batch_tokens": args.max_batch_tokens,
-            "num_blocks": args.num_blocks,
-        },
         **shared,
     )
 
-    # 4. Timing callback.
     from transformers import TrainerCallback
 
     timings = {"step_wall": [], "loss": [], "reward": []}
@@ -182,31 +166,15 @@ def main():
         callbacks=[StepTimer()],
     )
 
-    if args.persistent_cb:
-        # TRL constructs `self.generation_config` once in `__init__`; reuse
-        # the same object so the persistent manager stays warm.
-        from persistent_cb import install_for_model, teardown
-        # TRL generates against the unwrapped base model; attach the patch
-        # directly to it so every rollout picks up the persistent manager.
-        base = trainer.model_wrapped.base_model.model if hasattr(trainer.model_wrapped, "base_model") else trainer.model_wrapped
-        install_for_model(base, trainer.generation_config)
-        # PEFT's wrapper chains `generate_batch` through `base_model.model` via
-        # __getattr__, so installing on `base` is enough for TRL's call path.
-
     torch.cuda.reset_peak_memory_stats()
     t_start = time.perf_counter()
-    try:
-        trainer.train()
-    finally:
-        if args.persistent_cb:
-            from persistent_cb import teardown
-            teardown(base)
+    trainer.train()
     t_train = time.perf_counter() - t_start
 
     peak = torch.cuda.max_memory_allocated() / 1024**3
 
     stats = {
-        "backend": "transformers_paged",
+        "backend": "naive_trl",
         "attn_impl": args.attn_impl,
         "train_wall_s": t_train,
         "peak_memory_gb": peak,
@@ -217,12 +185,11 @@ def main():
         "max_completion_length": shared["max_completion_length"],
         "num_generations": args.num_generations,
         "max_steps": args.max_steps,
-        "persistent_cb": args.persistent_cb,
     }
     with open(args.stats_path, "w") as f:
         json.dump(stats, f, indent=2)
-    print(f"[tpaged] Wrote stats to {args.stats_path}")
-    print(f"[tpaged] Total train wall: {t_train:.1f}s   Peak mem: {peak:.2f} GB")
+    print(f"[naive] Wrote stats to {args.stats_path}")
+    print(f"[naive] Total train wall: {t_train:.1f}s   Peak mem: {peak:.2f} GB")
 
 
 if __name__ == "__main__":
