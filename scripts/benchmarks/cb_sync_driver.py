@@ -141,14 +141,17 @@ class SyncCBDriver:
         # CUDA graph replay path.
         if cfg.compile_mode:
             import torch._dynamo
+
             torch._dynamo.config.cache_size_limit = cfg.dynamo_cache_size_limit
             # GRPO's `requires_grad_` issue doesn't apply here (eval mode).
             try:
                 torch._dynamo.config.allow_unspec_int_on_nn_module = True
             except AttributeError:
                 pass
-            print(f"[cb_sync] torch.compile(model, mode='{cfg.compile_mode}', "
-                  f"dynamic=True)")
+            print(
+                f"[cb_sync] torch.compile(model, mode='{cfg.compile_mode}', "
+                f"dynamic=True)"
+            )
             self.model.forward = torch.compile(
                 self.model.forward,
                 mode = cfg.compile_mode,
@@ -169,8 +172,10 @@ class SyncCBDriver:
         """
         results: dict[str, list[int]] = {}
         while True:
-            if (self.manager.input_queue.empty()
-                    and not self.batch_processor.has_pending_requests()):
+            if (
+                self.manager.input_queue.empty()
+                and not self.batch_processor.has_pending_requests()
+            ):
                 break
             if not self.batch_processor.prepare_next_batch():
                 break
@@ -228,9 +233,17 @@ if __name__ == "__main__":
     parser.add_argument("--n_rounds", type = int, default = 2)
     parser.add_argument("--max_new_tokens", type = int, default = 512)
     parser.add_argument("--attn_impl", default = "paged_attention")
-    parser.add_argument("--compile_mode", default = None,
-                        choices = [None, "default", "reduce-overhead",
-                                   "max-autotune", "max-autotune-no-cudagraphs"])
+    parser.add_argument(
+        "--compile_mode",
+        default = None,
+        choices = [
+            None,
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ],
+    )
     parser.add_argument("--max_batch_tokens", type = int, default = 8192)
     parser.add_argument("--num_blocks", type = int, default = 8192)
     parser.add_argument("--lora_adapter", default = None)
@@ -251,6 +264,7 @@ if __name__ == "__main__":
 
     if args.lora_adapter:
         from peft import PeftModel
+
         model = PeftModel.from_pretrained(
             model, str(Path(args.lora_adapter).resolve()), is_trainable = False
         )
@@ -266,12 +280,16 @@ if __name__ == "__main__":
     ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
     ds = ds.shuffle(seed = 3407).select(range(args.n_prompts))
     messages = [
-        [{"role": "system", "content": SYSTEM_PROMPT},
-         {"role": "user", "content": x["prompt"]}]
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": x["prompt"]},
+        ]
         for x in ds
     ]
-    prompt_ids = [tok.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
-                  for m in messages]
+    prompt_ids = [
+        tok.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
+        for m in messages
+    ]
 
     gc_cfg = GenerationConfig(
         max_new_tokens = args.max_new_tokens,
@@ -312,8 +330,10 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
         total_decoded = sum(len(v) for v in results.values())
-        print(f"[cb_sync] round {r}: {wall_times[-1]:.2f}s, {total_decoded} tokens, "
-              f"{total_decoded / wall_times[-1]:.1f} tok/s")
+        print(
+            f"[cb_sync] round {r}: {wall_times[-1]:.2f}s, {total_decoded} tokens, "
+            f"{total_decoded / wall_times[-1]:.1f} tok/s"
+        )
 
     med = sorted(wall_times)[len(wall_times) // 2]
     out = {

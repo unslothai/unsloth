@@ -58,10 +58,12 @@ flex_attention_compiled = torch.compile(flex_attention, fullgraph = True)
 def _apply_rotary(q, k, cos, sin):
     cos = cos.unsqueeze(1)
     sin = sin.unsqueeze(1)
+
     def rotate_half(x):
         x1 = x[..., : x.shape[-1] // 2]
-        x2 = x[..., x.shape[-1] // 2:]
+        x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim = -1)
+
     q = (q * cos) + (rotate_half(q) * sin)
     k = (k * cos) + (rotate_half(k) * sin)
     return q, k
@@ -143,10 +145,12 @@ def patch_qwen3_model(model: torch.nn.Module, page_table: PageTable):
         ).to(model.device)
         # Bind as method.
         import types
+
         attn.forward = types.MethodType(fwd, attn)
 
 
 # --- model forward helper that passes flex kwargs through ------------------
+
 
 def call_model_with_flex_kwargs(model, input_ids, position_ids, flex_kwargs):
     """`model(**inputs, **flex_kwargs)` would error because Qwen3ForCausalLM
@@ -175,6 +179,7 @@ def call_model_with_flex_kwargs(model, input_ids, position_ids, flex_kwargs):
 
 # --- inference engine ------------------------------------------------------
 
+
 @dataclass
 class Sequence:
     text: str = ""
@@ -196,8 +201,16 @@ class Sequence:
 
 
 class FlexInference:
-    def __init__(self, model, tokenizer, max_batch_size = 32, max_seq_length = 2048,
-                 n_pages = 2048, page_size = 128, max_new_tokens = 512):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        max_batch_size = 32,
+        max_seq_length = 2048,
+        n_pages = 2048,
+        page_size = 128,
+        max_new_tokens = 512,
+    ):
         assert max_seq_length % page_size == 0
         self.model = model
         self.tokenizer = tokenizer
@@ -209,17 +222,21 @@ class FlexInference:
         self.max_new_tokens = max_new_tokens
 
         self.page_table = PageTable(
-            n_pages = n_pages, page_size = page_size,
-            max_batch_size = max_batch_size, device = self.device.type,
+            n_pages = n_pages,
+            page_size = page_size,
+            max_batch_size = max_batch_size,
+            device = self.device.type,
         )
         patch_qwen3_model(model, self.page_table)
 
         # Pre-allocated decode state.
-        self.input_pos_buffer = torch.zeros(max_batch_size, dtype = torch.int32,
-                                            device = self.device)
+        self.input_pos_buffer = torch.zeros(
+            max_batch_size, dtype = torch.int32, device = self.device
+        )
         # Full-length logical causal mask (shared across decode batch).
         self.block_mask_logical = self.page_table.create_causal_blockmask(
-            B = max_batch_size, L = max_seq_length,
+            B = max_batch_size,
+            L = max_seq_length,
         )
 
         self.cudagraph_captured = False
@@ -238,11 +255,16 @@ class FlexInference:
         sequence as [num_seqs, V].
         """
         input_ids_list = [seq.input_ids.to(self.device) for seq in batch]
-        input_pos_list = [torch.arange(seq.input_length, dtype = torch.long,
-                                       device = self.device) for seq in batch]
-        batch_idx_list = [torch.full((seq.input_length,), seq.batch_idx,
-                                     dtype = torch.long, device = self.device)
-                          for seq in batch]
+        input_pos_list = [
+            torch.arange(seq.input_length, dtype = torch.long, device = self.device)
+            for seq in batch
+        ]
+        batch_idx_list = [
+            torch.full(
+                (seq.input_length,), seq.batch_idx, dtype = torch.long, device = self.device
+            )
+            for seq in batch
+        ]
         input_ids = torch.cat(input_ids_list).view(1, -1)
         input_pos = torch.cat(input_pos_list).view(1, -1)
         batch_idx = torch.cat(batch_idx_list).view(1, -1)
@@ -255,8 +277,9 @@ class FlexInference:
             input_pos = F.pad(input_pos, (0, pad), value = 0)
             batch_idx = F.pad(batch_idx, (0, pad), value = 0)
 
-        input_lengths = torch.tensor([s.input_length for s in batch],
-                                     dtype = torch.long, device = self.device)
+        input_lengths = torch.tensor(
+            [s.input_length for s in batch], dtype = torch.long, device = self.device
+        )
         logits_positions = input_lengths.cumsum(dim = 0) - 1  # [num_seqs]
 
         mask = self.page_table.create_prefill_blockmask_no_paging(batch_idx)
@@ -268,8 +291,9 @@ class FlexInference:
             flex_kernel_options = {"FORCE_USE_FLEX_ATTENTION": True},
         )
         position_ids = input_pos  # Qwen3 uses 0-based; unlike Gemma2
-        hidden = call_model_with_flex_kwargs(self.model, input_ids, position_ids,
-                                             flex_kwargs)
+        hidden = call_model_with_flex_kwargs(
+            self.model, input_ids, position_ids, flex_kwargs
+        )
         return self.model.lm_head(hidden[:, logits_positions, :]).squeeze(0)
 
     def _decode_block_mask(self, batch_idx: torch.Tensor):
@@ -280,21 +304,33 @@ class FlexInference:
         assert batch_idx.ndim == 1 and input_pos.ndim == 1
         B = batch_idx.shape[0]
         input_block_idx = input_pos // block_mask.BLOCK_SIZE[0]
-        kv_num_blocks = block_mask.kv_num_blocks[batch_idx, :, input_block_idx].view(B, 1, 1)
-        kv_indices = block_mask.kv_indices[batch_idx, :, input_block_idx].view(B, 1, 1, -1)
+        kv_num_blocks = block_mask.kv_num_blocks[batch_idx, :, input_block_idx].view(
+            B, 1, 1
+        )
+        kv_indices = block_mask.kv_indices[batch_idx, :, input_block_idx].view(
+            B, 1, 1, -1
+        )
         full_num = full_idx = None
         if block_mask.full_kv_num_blocks is not None:
-            full_num = block_mask.full_kv_num_blocks[batch_idx, :, input_block_idx].view(B, 1, 1)
-            full_idx = block_mask.full_kv_indices[batch_idx, :, input_block_idx].view(B, 1, 1, -1)
+            full_num = block_mask.full_kv_num_blocks[
+                batch_idx, :, input_block_idx
+            ].view(B, 1, 1)
+            full_idx = block_mask.full_kv_indices[batch_idx, :, input_block_idx].view(
+                B, 1, 1, -1
+            )
 
         def causal_offset(off):
             def offset(b, h, q_idx, kv_idx):
                 return q_idx + off[b] >= kv_idx
+
             return offset
 
         seq_length = (1, block_mask.seq_lengths[1])
         mask = BlockMask.from_kv_blocks(
-            kv_num_blocks, kv_indices, full_num, full_idx,
+            kv_num_blocks,
+            kv_indices,
+            full_num,
+            full_idx,
             BLOCK_SIZE = block_mask.BLOCK_SIZE,
             mask_mod = causal_offset(input_pos),
             seq_lengths = seq_length,
@@ -312,12 +348,14 @@ class FlexInference:
             flex_batch_idx = batch_idx,
             flex_kernel_options = None,
         )
-        hidden = call_model_with_flex_kwargs(self.model, input_ids.view(B, 1),
-                                             position_ids, flex_kwargs)
+        hidden = call_model_with_flex_kwargs(
+            self.model, input_ids.view(B, 1), position_ids, flex_kwargs
+        )
         return self.model.lm_head(hidden[:, -1, :])  # [B, V]
 
-    def _decode_step(self, batch_idx: torch.Tensor, input_ids: torch.Tensor,
-                     input_pos: torch.Tensor):
+    def _decode_step(
+        self, batch_idx: torch.Tensor, input_ids: torch.Tensor, input_pos: torch.Tensor
+    ):
         self.input_pos_buffer.zero_()
         self.input_pos_buffer[batch_idx] = input_pos
         if not self.cudagraph_captured:
@@ -365,8 +403,11 @@ class FlexInference:
 
         input_ids = torch.zeros(max_bs, dtype = torch.int64, device = self.device)
         batch_idx = torch.arange(max_bs, dtype = torch.int64, device = self.device)
-        outputs = torch.zeros((max_bs, self.model.config.vocab_size),
-                              dtype = self.model.dtype, device = self.device)
+        outputs = torch.zeros(
+            (max_bs, self.model.config.vocab_size),
+            dtype = self.model.dtype,
+            device = self.device,
+        )
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         pool = None
         for bs in reversed(self.graph_bs):
@@ -386,7 +427,9 @@ class FlexInference:
         # Release the scratch batches; real requests will re-allocate them.
         for bi in reserved_batches:
             self.page_table.erase(bi)
-        self.graph_vars = dict(input_ids = input_ids, batch_idx = batch_idx, outputs = outputs)
+        self.graph_vars = dict(
+            input_ids = input_ids, batch_idx = batch_idx, outputs = outputs
+        )
 
     @torch.inference_mode()
     def generate(self, sequences: list[Sequence], capture_cudagraph = False):
@@ -406,7 +449,8 @@ class FlexInference:
                 seq = waiting.popleft()
                 bi = self.page_table.allocate()
                 self.page_table.reserve(
-                    bi, torch.tensor([bi], device = self.device, dtype = torch.long),
+                    bi,
+                    torch.tensor([bi], device = self.device, dtype = torch.long),
                     seq.total_length,
                 )
                 seq.batch_idx = bi
@@ -417,8 +461,10 @@ class FlexInference:
                 for i, seq in enumerate(batch):
                     seq.last_token_id = next_ids[i]
                     seq.output_ids.append(next_ids[i])
-                    if (seq.last_token_id == self.eos_token_id
-                        or len(seq.output_ids) >= seq.max_new_tokens):
+                    if (
+                        seq.last_token_id == self.eos_token_id
+                        or len(seq.output_ids) >= seq.max_new_tokens
+                    ):
                         seq.finished = True
                         done.append(seq)
                         self.page_table.erase(seq.batch_idx)
@@ -432,12 +478,14 @@ class FlexInference:
                 seq = running.popleft()
                 if self.page_table.capacity[seq.batch_idx] >= seq.total_length:
                     decode_batch.append(seq)
-                elif self.page_table.can_reserve(seq.total_length,
-                                                  batch_idx_int = seq.batch_idx):
+                elif self.page_table.can_reserve(
+                    seq.total_length, batch_idx_int = seq.batch_idx
+                ):
                     self.page_table.reserve(
                         seq.batch_idx,
-                        torch.tensor([seq.batch_idx], device = self.device,
-                                     dtype = torch.long),
+                        torch.tensor(
+                            [seq.batch_idx], device = self.device, dtype = torch.long
+                        ),
                         seq.total_length,
                     )
                     decode_batch.append(seq)
@@ -450,19 +498,30 @@ class FlexInference:
                 continue
 
             B = len(decode_batch)
-            bi_tensor = torch.tensor([s.batch_idx for s in decode_batch],
-                                     dtype = torch.long, device = self.device)
-            last_ids = torch.tensor([s.last_token_id for s in decode_batch],
-                                    dtype = torch.long, device = self.device)
-            cur_pos = torch.tensor([s.total_length - 1 for s in decode_batch],
-                                   dtype = torch.int32, device = self.device)
+            bi_tensor = torch.tensor(
+                [s.batch_idx for s in decode_batch],
+                dtype = torch.long,
+                device = self.device,
+            )
+            last_ids = torch.tensor(
+                [s.last_token_id for s in decode_batch],
+                dtype = torch.long,
+                device = self.device,
+            )
+            cur_pos = torch.tensor(
+                [s.total_length - 1 for s in decode_batch],
+                dtype = torch.int32,
+                device = self.device,
+            )
             logits = self._decode_step(bi_tensor, last_ids, cur_pos)
             next_ids = torch.argmax(logits, dim = -1).tolist()
             for i, seq in enumerate(decode_batch):
                 seq.last_token_id = next_ids[i]
                 seq.output_ids.append(next_ids[i])
-                if (seq.last_token_id == self.eos_token_id
-                    or len(seq.output_ids) >= seq.max_new_tokens):
+                if (
+                    seq.last_token_id == self.eos_token_id
+                    or len(seq.output_ids) >= seq.max_new_tokens
+                ):
                     seq.finished = True
                     done.append(seq)
                     self.page_table.erase(seq.batch_idx)
@@ -488,19 +547,25 @@ def main():
     args = p.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
     tok = AutoTokenizer.from_pretrained(args.model_name)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     # Load eager; we swap attention forward below.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_name, dtype = torch.bfloat16, attn_implementation = "eager",
+        args.model_name,
+        dtype = torch.bfloat16,
+        attn_implementation = "eager",
     ).to("cuda")
     model.eval()
 
     if args.lora_adapter:
         from peft import PeftModel
+
         model = PeftModel.from_pretrained(
-            model, str(Path(args.lora_adapter).resolve()), is_trainable = False,
+            model,
+            str(Path(args.lora_adapter).resolve()),
+            is_trainable = False,
         )
         # Merge so attention forward below sees merged weights without the
         # PEFT wrapper mangling `self.q_proj` etc.
@@ -508,24 +573,35 @@ def main():
         model.eval()
 
     from unsloth_grpo_common import (
-        SYSTEM_PROMPT, apply_chat_template_to_tokenizer,
+        SYSTEM_PROMPT,
+        apply_chat_template_to_tokenizer,
     )
     from datasets import load_dataset
+
     apply_chat_template_to_tokenizer(tok)
     ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
     ds = ds.shuffle(seed = 3407).select(range(args.n_prompts))
-    messages = [[{"role": "system", "content": SYSTEM_PROMPT},
-                 {"role": "user", "content": x["prompt"]}] for x in ds]
-    texts = [tok.apply_chat_template(m, add_generation_prompt = True, tokenize = False)
-             for m in messages]
+    messages = [
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": x["prompt"]},
+        ]
+        for x in ds
+    ]
+    texts = [
+        tok.apply_chat_template(m, add_generation_prompt = True, tokenize = False)
+        for m in messages
+    ]
 
     # Make sure the base HF model that Qwen3Attention belongs to isn't wrapped
     # by PeftModel anymore (we merged); `.model` should be Qwen3ForCausalLM.
     inference = FlexInference(
-        model, tok,
+        model,
+        tok,
         max_batch_size = args.max_batch_size,
         max_seq_length = args.max_seq_length,
-        n_pages = args.n_pages, page_size = args.page_size,
+        n_pages = args.n_pages,
+        page_size = args.page_size,
         max_new_tokens = args.max_new_tokens,
     )
 
@@ -547,8 +623,10 @@ def main():
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
         total_decoded = sum(len(s.output_ids) for s in out)
-        print(f"[flex] round {r}: {wall_times[-1]:.2f}s, {total_decoded} tokens, "
-              f"{total_decoded / wall_times[-1]:.1f} tok/s")
+        print(
+            f"[flex] round {r}: {wall_times[-1]:.2f}s, {total_decoded} tokens, "
+            f"{total_decoded / wall_times[-1]:.1f} tok/s"
+        )
 
     med = sorted(wall_times)[len(wall_times) // 2]
     peak = torch.cuda.max_memory_allocated() / 1024**3
