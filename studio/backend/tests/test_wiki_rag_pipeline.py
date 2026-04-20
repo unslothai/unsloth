@@ -81,9 +81,7 @@ def test_ingest_pending_raw_files_uses_collision_resistant_titles(tmp_path: Path
     assert any("repoa-readme" in slug for slug in slugs)
     assert any("repob-readme" in slug for slug in slugs)
 
-    combined_text = "\n".join(
-        page.read_text(encoding = "utf-8") for page in source_pages
-    )
+    combined_text = "\n".join(page.read_text(encoding = "utf-8") for page in source_pages)
     assert "repoA content marker" in combined_text
     assert "repoB content marker" in combined_text
 

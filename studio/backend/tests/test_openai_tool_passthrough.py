@@ -430,7 +430,10 @@ class TestHistoryIntentDetection:
         assert _looks_like_history_intent("Use chat history to answer this") is True
 
     def test_previous_message_phrase_detected(self):
-        assert _looks_like_history_intent("What did I ask in the previous message?") is True
+        assert (
+            _looks_like_history_intent("What did I ask in the previous message?")
+            is True
+        )
 
     def test_tokenization_query_not_treated_as_history(self):
         query = "Explain tokenization and token limits for this model"
