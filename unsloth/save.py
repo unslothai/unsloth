@@ -467,7 +467,9 @@ def unsloth_save_model(
         )
         if tokenizer is not None:
             # Set padding side to left for inference
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            _tokenizer = (
+                tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            )
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
@@ -567,7 +569,9 @@ def unsloth_save_model(
             print("Unsloth: Saving tokenizer...", end = "")
 
             # Set padding side to left for inference
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            _tokenizer = (
+                tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            )
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
@@ -854,7 +858,9 @@ def unsloth_save_model(
         print("Unsloth: Saving tokenizer...", end = "")
 
         # Set padding side to left for inference
-        _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+        _tokenizer = (
+            tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+        )
         old_padding_side = _tokenizer.padding_side
         _tokenizer.padding_side = "left"
 
@@ -2900,7 +2906,11 @@ def unsloth_generic_save(
                 **_save_kwargs,
             )
             if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+                _tokenizer = (
+                    tokenizer.tokenizer
+                    if hasattr(tokenizer, "tokenizer")
+                    else tokenizer
+                )
                 old_padding_side = _tokenizer.padding_side
                 _tokenizer.padding_side = "left"
                 tokenizer.push_to_hub(
@@ -2916,7 +2926,11 @@ def unsloth_generic_save(
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
             model.save_pretrained(save_directory, **_save_kwargs)
             if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+                _tokenizer = (
+                    tokenizer.tokenizer
+                    if hasattr(tokenizer, "tokenizer")
+                    else tokenizer
+                )
                 old_padding_side = _tokenizer.padding_side
                 _tokenizer.padding_side = "left"
                 tokenizer.save_pretrained(save_directory)
@@ -3356,7 +3370,9 @@ def patch_saving_functions(model, vision = False):
         and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
     ):
         model.original_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
+        model.save_pretrained = types.MethodType(
+            unsloth_tokenizer_save_pretrained, model
+        )
     elif hasattr(model, "tokenizer"):
         patch_saving_functions(model.tokenizer)
 
