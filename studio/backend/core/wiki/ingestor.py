@@ -252,6 +252,24 @@ class WikiIngestor:
         except UnicodeDecodeError:
             return file_path.read_text(encoding = "latin-1")
 
+    def _local_source_title(self, file_path: Path) -> str:
+        resolved = file_path.expanduser().resolve()
+        raw_root = self.raw_dir.expanduser().resolve()
+
+        try:
+            rel = resolved.relative_to(raw_root)
+            rel_no_suffix = rel.with_suffix("")
+            title = rel_no_suffix.as_posix().strip()
+            if title:
+                return title
+        except Exception:
+            pass
+
+        # For files outside the configured raw root, append a short
+        # path fingerprint so same-basename files do not overwrite each other.
+        digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:8]
+        return f"{resolved.stem} [{digest}]"
+
     def _read_local_content(self, file_path: Path) -> Tuple[str, str]:
         suffix = file_path.suffix.lower()
 
@@ -311,6 +329,7 @@ class WikiIngestor:
                     )
                     return None
                 title, content = self._read_local_content(resolved)
+                title = self._local_source_title(resolved)
                 reference = str(resolved)
 
             # 2. If it's code, we can enrich the ingestion with structural extraction
@@ -380,7 +399,7 @@ class WikiIngestor:
             current_hash = self._compute_file_hash(resolved)
             previous_hash = state.get(key)
 
-            slug = self.wiki_manager.engine._slug(resolved.stem)
+            slug = self.wiki_manager.engine._slug(self._local_source_title(resolved))
             source_page = sources_dir / f"{slug}.md"
 
             if source_page.exists() and (

@@ -30,7 +30,8 @@ def test_ingest_file_pdf_extracts_local_text(tmp_path: Path, monkeypatch):
     manager = _RecordingWikiManager()
     ingestor = WikiIngestor(manager, tmp_path / "raw")
 
-    pdf_path = tmp_path / "Resume.pdf"
+    pdf_path = tmp_path / "raw" / "Resume.pdf"
+    pdf_path.parent.mkdir(parents = True, exist_ok = True)
     pdf_path.write_bytes(b"%PDF-1.4 test")
 
     monkeypatch.setattr(
@@ -57,6 +58,34 @@ def test_ingest_file_skips_ds_store(tmp_path: Path):
 
     assert title is None
     assert manager.calls == []
+
+
+def test_ingest_pending_raw_files_uses_collision_resistant_titles(tmp_path: Path):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    file_a = tmp_path / "raw" / "repoA" / "README.md"
+    file_b = tmp_path / "raw" / "repoB" / "README.md"
+    file_a.parent.mkdir(parents = True, exist_ok = True)
+    file_b.parent.mkdir(parents = True, exist_ok = True)
+    file_a.write_text("repoA content marker", encoding = "utf-8")
+    file_b.write_text("repoB content marker", encoding = "utf-8")
+
+    results = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+
+    assert len(results) == 2
+
+    source_pages = sorted((tmp_path / "wiki" / "sources").glob("*.md"))
+    assert len(source_pages) == 2
+    slugs = [page.stem for page in source_pages]
+    assert any("repoa-readme" in slug for slug in slugs)
+    assert any("repob-readme" in slug for slug in slugs)
+
+    combined_text = "\n".join(
+        page.read_text(encoding = "utf-8") for page in source_pages
+    )
+    assert "repoA content marker" in combined_text
+    assert "repoB content marker" in combined_text
 
 
 def test_ingest_pending_raw_files_uses_hash_state_and_reingests_on_change(

@@ -55,6 +55,29 @@ def _friendly_error(exc: Exception) -> str:
     return "An internal error occurred"
 
 
+_HISTORY_INTENT_PHRASES = (
+    "conversation history",
+    "chat history",
+    "earlier conversation",
+    "previous conversation",
+    "previous message",
+    "earlier message",
+    "last message",
+    "what did i say",
+    "what did we discuss",
+    "from our chat",
+    "in this chat",
+    "in our conversation",
+    "remember what i said",
+    "remind me what i said",
+)
+
+
+def _looks_like_history_intent(query: str) -> bool:
+    query_lower = query.lower()
+    return any(phrase in query_lower for phrase in _HISTORY_INTENT_PHRASES)
+
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -517,17 +540,7 @@ def _get_route_rag_context(
     max_chars_per_page = max(200, min(max_chars_per_page, 12000))
     max_total_chars = max(500, min(max_total_chars, 30000))
 
-    wants_history = any(
-        token in query_lower
-        for token in (
-            "conversation history",
-            "chat history",
-            "earlier conversation",
-            "remember",
-            "token",
-            "previous message",
-        )
-    )
+    wants_history = _looks_like_history_intent(query)
 
     result = manager.retrieve_context(
         query,
