@@ -1222,8 +1222,12 @@ def test_merge_duplicate_knowledge_pages_apply_archives_and_rewrites_links(
     duplicate_rel = str(merge["duplicate"])
     archived_rel = str(merge["archived_to"])
 
-    canonical_link = canonical_rel[:-3] if canonical_rel.endswith(".md") else canonical_rel
-    duplicate_link = duplicate_rel[:-3] if duplicate_rel.endswith(".md") else duplicate_rel
+    canonical_link = (
+        canonical_rel[:-3] if canonical_rel.endswith(".md") else canonical_rel
+    )
+    duplicate_link = (
+        duplicate_rel[:-3] if duplicate_rel.endswith(".md") else duplicate_rel
+    )
 
     assert not (tmp_path / "wiki" / duplicate_rel).exists()
     assert (tmp_path / "wiki" / archived_rel).exists()

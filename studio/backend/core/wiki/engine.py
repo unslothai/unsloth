@@ -1857,7 +1857,9 @@ class LLMWikiEngine:
 
             updated_at = self._extract_updated_at(text)
             if updated_at is None:
-                updated_at = datetime.fromtimestamp(page.stat().st_mtime, tz = timezone.utc)
+                updated_at = datetime.fromtimestamp(
+                    page.stat().st_mtime, tz = timezone.utc
+                )
 
             pages.append(
                 {
@@ -2023,7 +2025,9 @@ class LLMWikiEngine:
             entry_lines.extend([f"  - {item}" for item in sources])
 
         entry = "\n".join(entry_lines).rstrip()
-        existing_history = self._extract_markdown_section(canonical_text, "Merge History")
+        existing_history = self._extract_markdown_section(
+            canonical_text, "Merge History"
+        )
         merged_history = (
             f"{existing_history.rstrip()}\n\n{entry}".strip()
             if existing_history
@@ -2338,7 +2342,9 @@ class LLMWikiEngine:
                 if not summary:
                     page_path = self.wiki_dir / rel
                     if page_path.exists():
-                        page_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                        page_text = page_path.read_text(
+                            encoding = "utf-8", errors = "ignore"
+                        )
                         if link.startswith("analysis/"):
                             summary = self._analysis_index_summary(page_text)
                         else:
