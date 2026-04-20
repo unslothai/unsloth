@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
-from typing import Optional
+from typing import Any, Optional
 import json
 import httpx
 import structlog
@@ -101,8 +101,11 @@ from models.inference import (
     ResponsesInputMessage,
     ResponsesInputTextPart,
     ResponsesInputImagePart,
+    ResponsesFunctionCallInputItem,
+    ResponsesFunctionCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
+    ResponsesOutputFunctionCall,
     ResponsesUsage,
     ResponsesResponse,
     AnthropicMessagesRequest,
@@ -2083,8 +2086,85 @@ async def openai_embeddings(
 # =====================================================================
 
 
+def _translate_responses_tools_to_chat(
+    tools: Optional[list[dict]],
+) -> Optional[list[dict]]:
+    """Translate Responses-shape function tools to the Chat Completions nested shape.
+
+    Responses uses a flat shape per tool entry::
+
+        {"type": "function", "name": "...", "description": "...",
+         "parameters": {...}, "strict": true}
+
+    The Chat Completions / llama-server passthrough expects the nested shape::
+
+        {"type": "function",
+         "function": {"name": "...", "description": "...",
+                      "parameters": {...}, "strict": true}}
+
+    Only ``type=="function"`` entries are forwarded. Built-in Responses tools
+    (``web_search``, ``file_search``, ``mcp``, ...) are dropped because
+    llama-server does not implement them server-side; keeping them in the
+    request would produce an opaque upstream 400.
+    """
+    if not tools:
+        return None
+    out: list[dict] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+        fn: dict = {}
+        if "name" in tool:
+            fn["name"] = tool["name"]
+        if tool.get("description") is not None:
+            fn["description"] = tool["description"]
+        if tool.get("parameters") is not None:
+            fn["parameters"] = tool["parameters"]
+        if tool.get("strict") is not None:
+            fn["strict"] = tool["strict"]
+        out.append({"type": "function", "function": fn})
+    return out or None
+
+
+def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
+    """Translate a Responses-shape ``tool_choice`` to the Chat Completions shape.
+
+    String values (``"auto"``/``"none"``/``"required"``) pass through unchanged.
+    The Responses forcing object ``{"type": "function", "name": "X"}`` is
+    converted to Chat Completions' ``{"type": "function", "function": {"name": "X"}}``.
+    Unknown / built-in tool choices are forwarded as-is; llama-server ignores
+    what it doesn't recognise.
+    """
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        return tool_choice
+    if (
+        isinstance(tool_choice, dict)
+        and tool_choice.get("type") == "function"
+        and "name" in tool_choice
+        and "function" not in tool_choice
+    ):
+        return {"type": "function", "function": {"name": tool_choice["name"]}}
+    return tool_choice
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
-    """Convert a ResponsesRequest into a list of ChatMessage for the completions backend."""
+    """Convert a ResponsesRequest's ``input`` into Chat-format ``ChatMessage`` list.
+
+    Handles the three input item shapes allowed by the Responses API:
+
+    - ``ResponsesInputMessage`` — regular chat messages (text or multimodal).
+    - ``ResponsesFunctionCallInputItem`` — a prior assistant tool call replayed
+      on a follow-up turn. Converted into an assistant message carrying a
+      Chat Completions ``tool_calls`` entry keyed by ``call_id``.
+    - ``ResponsesFunctionCallOutputInputItem`` — a tool result the client is
+      returning. Converted into a ``role="tool"`` message with ``tool_call_id``
+      set to the originating ``call_id`` so llama-server can reconcile the
+      call with its result.
+    """
     messages: list[ChatMessage] = []
 
     # System / developer instructions
@@ -2097,16 +2177,49 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             messages.append(ChatMessage(role = "user", content = payload.input))
         return messages
 
-    # List of ResponsesInputMessage
-    for msg in payload.input:
-        role = "system" if msg.role == "developer" else msg.role
+    for item in payload.input:
+        if isinstance(item, ResponsesFunctionCallInputItem):
+            messages.append(
+                ChatMessage(
+                    role = "assistant",
+                    content = None,
+                    tool_calls = [
+                        {
+                            "id": item.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.name,
+                                "arguments": item.arguments,
+                            },
+                        }
+                    ],
+                )
+            )
+            continue
 
-        if isinstance(msg.content, str):
-            messages.append(ChatMessage(role = role, content = msg.content))
+        if isinstance(item, ResponsesFunctionCallOutputInputItem):
+            # Chat Completions `role="tool"` requires a string content; if a
+            # Responses client sends a content-array output, serialize it.
+            output = item.output
+            if not isinstance(output, str):
+                output = json.dumps(output)
+            messages.append(
+                ChatMessage(
+                    role = "tool",
+                    tool_call_id = item.call_id,
+                    content = output,
+                )
+            )
+            continue
+
+        # ResponsesInputMessage
+        role = "system" if item.role == "developer" else item.role
+        if isinstance(item.content, str):
+            messages.append(ChatMessage(role = role, content = item.content))
         else:
             # Convert Responses content parts -> Chat content parts
             parts = []
-            for part in msg.content:
+            for part in item.content:
                 if isinstance(part, ResponsesInputTextPart):
                     parts.append(TextContentPart(type = "text", text = part.text))
                 elif isinstance(part, ResponsesInputImagePart):
@@ -2124,8 +2237,14 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
 def _build_chat_request(
     payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
 ) -> ChatCompletionRequest:
-    """Build a ChatCompletionRequest from a ResponsesRequest."""
-    chat_kwargs = dict(
+    """Build a ChatCompletionRequest from a ResponsesRequest.
+
+    Tools and ``tool_choice`` are translated from the flat Responses shape to
+    the nested Chat Completions shape here so the existing #5099
+    ``/v1/chat/completions`` client-side pass-through picks them up without
+    further modification.
+    """
+    chat_kwargs: dict = dict(
         model = payload.model,
         messages = messages,
         stream = stream,
@@ -2136,7 +2255,46 @@ def _build_chat_request(
         chat_kwargs["top_p"] = payload.top_p
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
-    return ChatCompletionRequest(**chat_kwargs)
+
+    chat_tools = _translate_responses_tools_to_chat(payload.tools)
+    if chat_tools is not None:
+        chat_kwargs["tools"] = chat_tools
+
+    chat_tool_choice = _translate_responses_tool_choice_to_chat(payload.tool_choice)
+    if chat_tool_choice is not None:
+        chat_kwargs["tool_choice"] = chat_tool_choice
+
+    req = ChatCompletionRequest(**chat_kwargs)
+    # `parallel_tool_calls` is not a first-class field on ChatCompletionRequest,
+    # but the model allows extras and _build_openai_passthrough_body forwards
+    # only explicitly-known fields. Llama-server does not currently implement
+    # parallel_tool_calls semantics, so we accept-and-ignore it on the
+    # Responses side to avoid breaking SDK clients that always send it.
+    return req
+
+
+def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
+    """Map Chat Completions ``tool_calls`` into Responses ``function_call`` output items.
+
+    The Chat Completions id (``call_xxx``) is the shared correlation key across
+    turns in the OpenAI Responses API — it is stored as ``call_id`` on the
+    output item and must be echoed back by the client as
+    ``function_call_output.call_id`` on the next turn.
+    """
+    items: list[dict] = []
+    for tc in tool_calls:
+        if tc.get("type") != "function":
+            continue
+        fn = tc.get("function") or {}
+        items.append(
+            ResponsesOutputFunctionCall(
+                call_id = tc.get("id", ""),
+                name = fn.get("name", ""),
+                arguments = fn.get("arguments", "") or "",
+                status = "completed",
+            ).model_dump()
+        )
+    return items
 
 
 async def _responses_non_streaming(
@@ -2156,35 +2314,44 @@ async def _responses_non_streaming(
     else:
         body = result
 
-    # Extract content and usage from the Chat Completions response
     choices = body.get("choices", [])
     text = ""
+    tool_calls: list[dict] = []
     if choices:
-        msg = choices[0].get("message", {})
+        msg = choices[0].get("message", {}) or {}
         text = msg.get("content", "") or ""
+        tool_calls = msg.get("tool_calls") or []
 
     usage_data = body.get("usage", {})
     input_tokens = usage_data.get("prompt_tokens", 0)
     output_tokens = usage_data.get("completion_tokens", 0)
 
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+
+    # Responses API emits each tool call as its own top-level output item,
+    # alongside an optional assistant text message. Emit the text message
+    # only when the model actually produced content, so clients that expect
+    # a pure tool-call turn (finish_reason="tool_calls") don't see a spurious
+    # empty message item.
+    output_items: list[dict] = []
+    if text:
+        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+        output_items.append(
+            ResponsesOutputMessage(
+                id = msg_id,
+                status = "completed",
+                role = "assistant",
+                content = [ResponsesOutputTextContent(text = text)],
+            ).model_dump()
+        )
+    output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
 
     response = ResponsesResponse(
         id = resp_id,
         created_at = int(time.time()),
         status = "completed",
         model = body.get("model", payload.model),
-        output = [
-            ResponsesOutputMessage(
-                id = msg_id,
-                status = "completed",
-                role = "assistant",
-                content = [
-                    ResponsesOutputTextContent(text = text),
-                ],
-            ),
-        ],
+        output = output_items,
         usage = ResponsesUsage(
             input_tokens = input_tokens,
             output_tokens = output_tokens,
@@ -2203,10 +2370,18 @@ async def _responses_stream(
     messages: list[ChatMessage],
     request: Request,
 ):
-    """Handle a streaming Responses API call, emitting named SSE events."""
+    """Handle a streaming Responses API call, emitting named SSE events.
+
+    Text deltas arrive as ``response.output_text.delta`` on a single
+    ``message`` output item at ``output_index=0``. Each tool call from
+    ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
+    output item (one per distinct ``tool_calls[].index``), and relayed as
+    ``response.function_call_arguments.delta`` / ``.done`` events so clients
+    (Codex, OpenAI Python SDK) can reconstruct the call incrementally and
+    reply with a ``function_call_output`` item on the next turn.
+    """
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-    item_id = f"item_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
@@ -2216,11 +2391,47 @@ async def _responses_stream(
         full_text = ""
         input_tokens = 0
         output_tokens = 0
+        # Per-tool-call state keyed by the Chat Completions `tool_calls[].index`
+        # which stays stable across chunks for the same call. Values are:
+        #   {output_index, item_id, call_id, name, arguments, opened}
+        tool_call_state: dict[int, dict] = {}
+        # Text message lives at output_index 0; tool calls claim 1, 2, ...
+        next_output_index = 1
+
+        def _snapshot_output() -> list[dict]:
+            """Snapshot of all completed output items for response.completed."""
+            items: list[dict] = [
+                {
+                    "type": "message",
+                    "id": msg_id,
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": full_text,
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ]
+            for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+                items.append(
+                    {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": st["arguments"],
+                    }
+                )
+            return items
 
         # ── Preamble events ──
         yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'in_progress', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
 
-        # output_item.added
+        # output_item.added (text message at output_index 0)
         output_item = {
             "type": "message",
             "id": msg_id,
@@ -2254,7 +2465,6 @@ async def _responses_stream(
 
                     choices = chunk_data.get("choices", [])
                     if not choices:
-                        # Check for usage in final chunk
                         usage = chunk_data.get("usage")
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
@@ -2263,7 +2473,7 @@ async def _responses_stream(
                             )
                         continue
 
-                    delta = choices[0].get("delta", {})
+                    delta = choices[0].get("delta", {}) or {}
                     content = delta.get("content")
                     if content:
                         full_text += content
@@ -2276,20 +2486,132 @@ async def _responses_stream(
                         }
                         yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
 
-                    # Check for usage in chunk
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        st = tool_call_state.get(idx)
+                        fn = tc.get("function") or {}
+                        if st is None:
+                            # First chunk for this tool call — allocate an
+                            # output_index and emit output_item.added.
+                            st = {
+                                "output_index": next_output_index,
+                                "item_id": f"fc_{uuid.uuid4().hex[:12]}",
+                                "call_id": tc.get("id") or "",
+                                "name": fn.get("name") or "",
+                                "arguments": "",
+                                "opened": False,
+                            }
+                            next_output_index += 1
+                            tool_call_state[idx] = st
+                        else:
+                            # Later chunks sometimes carry the id/name only
+                            # once; merge when present.
+                            if tc.get("id") and not st["call_id"]:
+                                st["call_id"] = tc["id"]
+                            if fn.get("name") and not st["name"]:
+                                st["name"] = fn["name"]
+
+                        if not st["opened"] and st["call_id"] and st["name"]:
+                            item_added = {
+                                "type": "response.output_item.added",
+                                "output_index": st["output_index"],
+                                "item": {
+                                    "type": "function_call",
+                                    "id": st["item_id"],
+                                    "status": "in_progress",
+                                    "call_id": st["call_id"],
+                                    "name": st["name"],
+                                    "arguments": "",
+                                },
+                            }
+                            yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                            st["opened"] = True
+
+                        arg_delta = fn.get("arguments") or ""
+                        if arg_delta and st["opened"]:
+                            st["arguments"] += arg_delta
+                            args_delta_event = {
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": st["item_id"],
+                                "output_index": st["output_index"],
+                                "delta": arg_delta,
+                            }
+                            yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                        elif arg_delta:
+                            # Buffer the args until we can open the item
+                            # (id/name arrive in the same chunk as the first
+                            # arg delta for some models — but if not, stash).
+                            st["arguments"] += arg_delta
+
                     usage = chunk_data.get("usage")
                     if usage:
                         input_tokens = usage.get("prompt_tokens", input_tokens)
                         output_tokens = usage.get("completion_tokens", output_tokens)
 
-        # ── Closing events ──
-        # output_text.done
+        # ── Closing events for tool calls ──
+        for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+            # If id/name never arrived (malformed upstream), synthesise so
+            # the client still sees a coherent frame sequence.
+            if not st["opened"]:
+                if not st["call_id"]:
+                    st["call_id"] = f"call_{uuid.uuid4().hex[:12]}"
+                item_added = {
+                    "type": "response.output_item.added",
+                    "output_index": st["output_index"],
+                    "item": {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "in_progress",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": "",
+                    },
+                }
+                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                if st["arguments"]:
+                    yield (
+                        "event: response.function_call_arguments.delta\n"
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": st["item_id"],
+                                "output_index": st["output_index"],
+                                "delta": st["arguments"],
+                            }
+                        )
+                        + "\n\n"
+                    )
+                st["opened"] = True
+
+            args_done = {
+                "type": "response.function_call_arguments.done",
+                "item_id": st["item_id"],
+                "output_index": st["output_index"],
+                "name": st["name"],
+                "arguments": st["arguments"],
+            }
+            yield f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done)}\n\n"
+
+            item_done = {
+                "type": "response.output_item.done",
+                "output_index": st["output_index"],
+                "item": {
+                    "type": "function_call",
+                    "id": st["item_id"],
+                    "status": "completed",
+                    "call_id": st["call_id"],
+                    "name": st["name"],
+                    "arguments": st["arguments"],
+                },
+            }
+            yield f"event: response.output_item.done\ndata: {json.dumps(item_done)}\n\n"
+
+        # ── Closing events for text message ──
         yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"
 
-        # content_part.done
         yield f"event: response.content_part.done\ndata: {json.dumps({'type': 'response.content_part.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': {'type': 'output_text', 'text': full_text, 'annotations': []}})}\n\n"
 
-        # output_item.done
         yield f"event: response.output_item.done\ndata: {json.dumps({'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'message', 'id': msg_id, 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]}})}\n\n"
 
         # response.completed
@@ -2302,21 +2624,7 @@ async def _responses_stream(
                 "created_at": created_at,
                 "status": "completed",
                 "model": payload.model,
-                "output": [
-                    {
-                        "type": "message",
-                        "id": msg_id,
-                        "status": "completed",
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": full_text,
-                                "annotations": [],
-                            }
-                        ],
-                    }
-                ],
+                "output": _snapshot_output(),
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,

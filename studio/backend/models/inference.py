@@ -605,17 +605,79 @@ ResponsesContentPart = Union[ResponsesInputTextPart, ResponsesInputImagePart]
 class ResponsesInputMessage(BaseModel):
     """A single message in the Responses API input array."""
 
+    type: Optional[Literal["message"]] = None
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
+
+
+class ResponsesFunctionCallInputItem(BaseModel):
+    """A prior assistant function_call being replayed in a multi-turn Responses input.
+
+    The Responses API represents tool calls as top-level input items (not
+    nested inside assistant messages), correlated across turns by ``call_id``.
+    """
+
+    type: Literal["function_call"]
+    id: Optional[str] = Field(
+        None, description = "Item id assigned by the server (e.g. fc_...)"
+    )
+    call_id: str = Field(
+        ...,
+        description = "Correlation id matching a function_call_output on the next turn.",
+    )
+    name: str
+    arguments: str = Field(
+        ..., description = "JSON string of the arguments the model produced."
+    )
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesFunctionCallOutputInputItem(BaseModel):
+    """A tool result supplied by the client for a prior function_call.
+
+    Replaces Chat Completions' ``role="tool"`` message. Correlated to the
+    originating call by ``call_id``.
+    """
+
+    type: Literal["function_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list] = Field(
+        ..., description = "String or content-array result of the tool call."
+    )
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+ResponsesInputItem = Union[
+    ResponsesInputMessage,
+    ResponsesFunctionCallInputItem,
+    ResponsesFunctionCallOutputInputItem,
+]
+
+
+class ResponsesFunctionTool(BaseModel):
+    """Flat function-tool definition used by the Responses API request.
+
+    Unlike Chat Completions (which nests ``{"name": ..., "parameters": ...}``
+    inside a ``"function"`` key), the Responses API uses a flat shape with
+    ``type``, ``name``, ``description``, ``parameters``, and ``strict`` at the
+    top level of each tool entry.
+    """
+
+    type: Literal["function"]
+    name: str
+    description: Optional[str] = None
+    parameters: Optional[dict] = None
+    strict: Optional[bool] = None
 
 
 class ResponsesRequest(BaseModel):
     """OpenAI Responses API request."""
 
     model: str = Field("default", description = "Model identifier")
-    input: Union[str, list[ResponsesInputMessage]] = Field(
+    input: Union[str, list[ResponsesInputItem]] = Field(
         default = [],
-        description = "Input text or message list",
+        description = "Input text or list of messages / function_call / function_call_output items",
     )
     instructions: Optional[str] = Field(
         None, description = "System / developer instructions"
@@ -625,9 +687,31 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
-    # Accepted but ignored -- keeps SDK clients from failing on unsupported fields
-    tools: Optional[list] = None
-    tool_choice: Optional[Any] = None
+    # OpenAI function-calling fields — forwarded to llama-server via the
+    # Chat Completions pass-through (see routes/inference.py). Typed as a
+    # plain list so built-in tool shapes (``web_search``, ``file_search``,
+    # ``mcp``, ...) round-trip without validation errors — the translator
+    # picks out only ``type=="function"`` entries for forwarding.
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = (
+            "Responses-shape function tool definitions. Entries with "
+            '`type="function"` are translated to the Chat Completions nested '
+            "shape before being forwarded to llama-server; other tool types "
+            "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
+            "compatibility but ignored on the llama-server passthrough."
+        ),
+    )
+    tool_choice: Optional[Any] = Field(
+        None,
+        description = (
+            "'auto' | 'required' | 'none' | {'type': 'function', 'name': ...} — "
+            "the Responses-shape forcing object is translated to the Chat "
+            "Completions nested shape internally."
+        ),
+    )
+    parallel_tool_calls: Optional[bool] = None
+
     previous_response_id: Optional[str] = None
     store: Optional[bool] = None
     metadata: Optional[dict] = None
@@ -660,6 +744,28 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputFunctionCall(BaseModel):
+    """A function-call output item in the Responses API response.
+
+    Unlike Chat Completions (which nests tool calls inside the assistant
+    message), the Responses API emits each tool call as its own top-level
+    ``output`` item so clients can correlate results via ``call_id`` on the
+    next turn.
+    """
+
+    type: Literal["function_call"] = "function_call"
+    id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
+    call_id: str
+    name: str
+    arguments: str = Field(
+        ..., description = "JSON string of the arguments the model produced."
+    )
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+
+ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+
+
 class ResponsesUsage(BaseModel):
     """Token usage for a Responses API response (input_tokens, not prompt_tokens)."""
 
@@ -676,7 +782,7 @@ class ResponsesResponse(BaseModel):
     created_at: int = Field(default_factory = lambda: int(time.time()))
     status: Literal["completed", "in_progress", "failed"] = "completed"
     model: str = "default"
-    output: list[ResponsesOutputMessage] = Field(default_factory = list)
+    output: list[ResponsesOutputItem] = Field(default_factory = list)
     usage: ResponsesUsage = Field(default_factory = ResponsesUsage)
     error: Optional[Any] = None
     incomplete_details: Optional[Any] = None
