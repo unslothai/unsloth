@@ -109,6 +109,13 @@ function formatRelativeShort(iso: string): string {
   return `${d}d`;
 }
 
+function createNavigationNonce(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function NavItem({
   icon,
   label,
@@ -226,10 +233,14 @@ export function AppSidebar() {
         <div className="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
           <Link
             to="/chat"
-            search={{ new: crypto.randomUUID() }}
-            onClick={() => {
+            onClick={(event) => {
+              event.preventDefault();
               setActiveThreadId(null);
               closeMobileIfOpen();
+              void navigate({
+                to: "/chat",
+                search: { new: createNavigationNonce() },
+              });
             }}
             className="flex items-center gap-[6px] select-none"
             aria-label="Unsloth home"
@@ -301,7 +312,7 @@ export function AppSidebar() {
               onClick={() => {
                 if (chatDisabled) return;
                 setActiveThreadId(null);
-                navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+                navigate({ to: "/chat", search: { new: createNavigationNonce() } });
                 closeMobileIfOpen();
               }}
             />
@@ -314,7 +325,7 @@ export function AppSidebar() {
               onClick={() => {
                 if (chatDisabled) return;
                 setActiveThreadId(null);
-                navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+                navigate({ to: "/chat", search: { compare: createNavigationNonce() } });
                 closeMobileIfOpen();
               }}
             />
