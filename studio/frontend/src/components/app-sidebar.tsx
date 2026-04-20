@@ -55,6 +55,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
+import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { usePlatformStore } from "@/config/env";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -185,6 +186,7 @@ export function AppSidebar() {
   const effectiveRunsOpen = isStudioRoute || runsOpen;
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
+  const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -495,22 +497,26 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="border-t border-sidebar-border">
+      <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-t-0">
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+                  aria-label={`${displayTitle} account menu`}
+                  className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:hover:bg-transparent group-data-[collapsible=icon]:data-[state=open]:bg-transparent"
                 >
-                  <img
-                    src="/Sloth emojis/sloth rounded.png"
-                    alt="Unsloth"
-                    className="size-8 rounded-lg shrink-0"
-                  />
+                  <div className="shrink-0">
+                    <UserAvatar
+                      name={displayTitle}
+                      imageUrl={avatarDataUrl}
+                      size="sm"
+                      className="!size-8"
+                    />
+                  </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate text-sm font-semibold">Unsloth</span>
+                    <span className="truncate text-sm font-semibold">{displayTitle}</span>
                     <span className="truncate text-[11px] text-muted-foreground">Train</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
