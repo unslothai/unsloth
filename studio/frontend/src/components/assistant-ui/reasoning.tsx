@@ -282,8 +282,8 @@ function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; end
       .join("\n");
   });
 
-  const handleCopy = useCallback(() => {
-    if (copyToClipboard(reasoningText)) {
+  const handleCopy = useCallback(async () => {
+    if (await copyToClipboard(reasoningText)) {
       setCopied(true);
       if (resetRef.current) clearTimeout(resetRef.current);
       resetRef.current = setTimeout(() => setCopied(false), COPY_RESET_MS);

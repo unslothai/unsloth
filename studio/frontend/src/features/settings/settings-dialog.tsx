@@ -15,6 +15,7 @@ import {
   PaintBrush02Icon,
   Settings02Icon,
   SparklesIcon,
+  UserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -24,6 +25,7 @@ import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { GeneralTab } from "./tabs/general-tab";
+import { ProfileTab } from "./tabs/profile-tab";
 
 interface TabDef {
   id: SettingsTab;
@@ -33,6 +35,7 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "general", label: "General", icon: Settings02Icon },
+  { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
   { id: "api-keys", label: "API Keys", icon: Key01Icon },
@@ -43,6 +46,8 @@ function renderTab(tab: SettingsTab) {
   switch (tab) {
     case "general":
       return <GeneralTab />;
+    case "profile":
+      return <ProfileTab />;
     case "appearance":
       return <AppearanceTab />;
     case "chat":
@@ -132,7 +137,7 @@ export function SettingsDialog() {
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6 pr-12">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
               {renderTab(activeTab)}
             </div>
           </main>

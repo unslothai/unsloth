@@ -58,23 +58,36 @@ export function useChatSidebarItems() {
   return { items, canCompare };
 }
 
+function cancelIfRunning(threadId: string): void {
+  const { runningByThreadId, cancelByThreadId } =
+    useChatRuntimeStore.getState();
+  if (!runningByThreadId[threadId]) return;
+  cancelByThreadId[threadId]?.();
+}
+
 export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
 ) {
+  const threadIds: string[] =
+    item.type === "single"
+      ? [item.id]
+      : (await db.threads.where("pairId").equals(item.id).toArray()).map(
+          (t) => t.id,
+        );
+
+  // Stop any in-flight streams before deleting, so the model doesn't keep
+  // generating against a thread that no longer exists.
+  for (const id of threadIds) cancelIfRunning(id);
+
   await db.transaction("rw", db.threads, db.messages, async () => {
-    if (item.type === "single") {
-      await db.messages.where("threadId").equals(item.id).delete();
-      await db.threads.delete(item.id);
-    } else {
-      const paired = await db.threads.where("pairId").equals(item.id).toArray();
-      for (const t of paired) {
-        await db.messages.where("threadId").equals(t.id).delete();
-        await db.threads.delete(t.id);
-      }
+    for (const id of threadIds) {
+      await db.messages.where("threadId").equals(id).delete();
+      await db.threads.delete(id);
     }
   });
+
   if (activeId === item.id) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });

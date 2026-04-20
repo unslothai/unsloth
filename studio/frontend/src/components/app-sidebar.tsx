@@ -57,6 +57,7 @@ import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
+import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { usePlatformStore } from "@/config/env";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -182,6 +183,7 @@ export function AppSidebar() {
   useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
+  const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { items: chatItems } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -509,16 +511,19 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
+                  aria-label={`${displayTitle} account menu`}
                   className="!h-[50px] gap-[8px] rounded-[8px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#ececec]! dark:data-[state=open]:bg-[#2e3035]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
                 >
-                  <div
-                    aria-label="User"
-                    className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border border-sidebar-border bg-primary text-[16px] font-bold text-primary-foreground"
-                  >
-                    U
+                  <div className="shrink-0">
+                    <UserAvatar
+                      name={displayTitle}
+                      imageUrl={avatarDataUrl}
+                      size="sm"
+                      className="!size-8"
+                    />
                   </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13px] font-semibold text-[#383835] dark:text-[#c7c7c4]">User</span>
+                    <span className="truncate font-heading text-[13px] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
                     <span className="truncate text-[11px] text-muted-foreground">Studio</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
