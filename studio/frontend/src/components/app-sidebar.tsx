@@ -504,6 +504,7 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
+                  aria-label={`${displayTitle} account menu`}
                   className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:hover:bg-transparent group-data-[collapsible=icon]:data-[state=open]:bg-transparent"
                 >
                   <div className="shrink-0">
