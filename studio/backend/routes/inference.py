@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
-from typing import Any, Optional
+from typing import Any, Optional, Union
 import json
 import httpx
 import structlog
@@ -2151,6 +2151,21 @@ def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
     return tool_choice
 
 
+def _responses_message_text(content: Union[str, list]) -> str:
+    """Flatten a ResponsesInputMessage ``content`` into a plain text string.
+
+    Used for system/developer message hoisting where only text is meaningful —
+    image parts are silently skipped. Returns an empty string for empty input.
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for part in content or []:
+        if isinstance(part, ResponsesInputTextPart):
+            parts.append(part.text)
+    return "\n".join(parts)
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into Chat-format ``ChatMessage`` list.
 
@@ -2164,17 +2179,30 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
       returning. Converted into a ``role="tool"`` message with ``tool_call_id``
       set to the originating ``call_id`` so llama-server can reconcile the
       call with its result.
+
+    System / developer content is collected from ``instructions`` *and* from
+    any ``role="system"`` / ``role="developer"`` entries in ``input``, then
+    merged into a single ``role="system"`` message placed at the top of the
+    returned list. This satisfies strict chat templates (harmony / gpt-oss,
+    Qwen3, ...) whose Jinja raises ``"System message must be at the
+    beginning."`` when more than one system message is present or when a
+    system message appears after a user turn — the exact pattern the OpenAI
+    Codex CLI hits, since Codex sets ``instructions`` *and* also sends a
+    developer message in ``input``.
     """
+    system_parts: list[str] = []
     messages: list[ChatMessage] = []
 
-    # System / developer instructions
     if payload.instructions:
-        messages.append(ChatMessage(role = "system", content = payload.instructions))
+        system_parts.append(payload.instructions)
 
     # Simple string input
     if isinstance(payload.input, str):
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
+        if system_parts:
+            merged = "\n\n".join(p for p in system_parts if p)
+            return [ChatMessage(role = "system", content = merged), *messages]
         return messages
 
     for item in payload.input:
@@ -2212,10 +2240,15 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             )
             continue
 
-        # ResponsesInputMessage
-        role = "system" if item.role == "developer" else item.role
+        # ResponsesInputMessage — hoist system/developer to the top, merge.
+        if item.role in ("system", "developer"):
+            hoisted = _responses_message_text(item.content)
+            if hoisted:
+                system_parts.append(hoisted)
+            continue
+
         if isinstance(item.content, str):
-            messages.append(ChatMessage(role = role, content = item.content))
+            messages.append(ChatMessage(role = item.role, content = item.content))
         else:
             # Convert Responses content parts -> Chat content parts
             parts = []
@@ -2229,8 +2262,11 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                             image_url = ImageUrl(url = part.image_url, detail = part.detail),
                         )
                     )
-            messages.append(ChatMessage(role = role, content = parts if parts else ""))
+            messages.append(ChatMessage(role = item.role, content = parts if parts else ""))
 
+    if system_parts:
+        merged = "\n\n".join(p for p in system_parts if p)
+        return [ChatMessage(role = "system", content = merged), *messages]
     return messages
 
 
@@ -2446,107 +2482,130 @@ async def _responses_stream(
         yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
 
         # ── Stream delta events from the inner chat completions stream ──
-        if isinstance(result, StreamingResponse):
-            async for raw_chunk in result.body_iterator:
-                if isinstance(raw_chunk, bytes):
-                    raw_chunk = raw_chunk.decode("utf-8", errors = "replace")
+        # Hold the inner body_iterator explicitly so we can aclose() it in a
+        # finally block. Without this, a client disconnect during a Responses
+        # stream leaves the inner async generator (from the chat-completions
+        # passthrough) to be finalized by the asyncgen GC hook on a different
+        # task, which trips anyio's cancel-scope check on Python 3.13 with
+        # "Attempted to exit cancel scope in a different task than it was
+        # entered in" and "async generator ignored GeneratorExit". See the
+        # same pattern in _anthropic_passthrough_stream and the #5099
+        # passthroughs.
+        inner_iter = (
+            result.body_iterator if isinstance(result, StreamingResponse) else None
+        )
+        try:
+            if inner_iter is not None:
+                async for raw_chunk in inner_iter:
+                    if isinstance(raw_chunk, bytes):
+                        raw_chunk = raw_chunk.decode("utf-8", errors = "replace")
 
-                for line in raw_chunk.split("\n"):
-                    line = line.strip()
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str == "[DONE]":
-                        continue
-                    try:
-                        chunk_data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                    for line in raw_chunk.split("\n"):
+                        line = line.strip()
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            continue
+                        try:
+                            chunk_data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    choices = chunk_data.get("choices", [])
-                    if not choices:
+                        choices = chunk_data.get("choices", [])
+                        if not choices:
+                            usage = chunk_data.get("usage")
+                            if usage:
+                                input_tokens = usage.get("prompt_tokens", input_tokens)
+                                output_tokens = usage.get(
+                                    "completion_tokens", output_tokens
+                                )
+                            continue
+
+                        delta = choices[0].get("delta", {}) or {}
+                        content = delta.get("content")
+                        if content:
+                            full_text += content
+                            delta_event = {
+                                "type": "response.output_text.delta",
+                                "item_id": msg_id,
+                                "output_index": 0,
+                                "content_index": 0,
+                                "delta": content,
+                            }
+                            yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+
+                        for tc in delta.get("tool_calls") or []:
+                            idx = tc.get("index", 0)
+                            st = tool_call_state.get(idx)
+                            fn = tc.get("function") or {}
+                            if st is None:
+                                # First chunk for this tool call — allocate an
+                                # output_index and emit output_item.added.
+                                st = {
+                                    "output_index": next_output_index,
+                                    "item_id": f"fc_{uuid.uuid4().hex[:12]}",
+                                    "call_id": tc.get("id") or "",
+                                    "name": fn.get("name") or "",
+                                    "arguments": "",
+                                    "opened": False,
+                                }
+                                next_output_index += 1
+                                tool_call_state[idx] = st
+                            else:
+                                # Later chunks sometimes carry the id/name only
+                                # once; merge when present.
+                                if tc.get("id") and not st["call_id"]:
+                                    st["call_id"] = tc["id"]
+                                if fn.get("name") and not st["name"]:
+                                    st["name"] = fn["name"]
+
+                            if not st["opened"] and st["call_id"] and st["name"]:
+                                item_added = {
+                                    "type": "response.output_item.added",
+                                    "output_index": st["output_index"],
+                                    "item": {
+                                        "type": "function_call",
+                                        "id": st["item_id"],
+                                        "status": "in_progress",
+                                        "call_id": st["call_id"],
+                                        "name": st["name"],
+                                        "arguments": "",
+                                    },
+                                }
+                                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                                st["opened"] = True
+
+                            arg_delta = fn.get("arguments") or ""
+                            if arg_delta and st["opened"]:
+                                st["arguments"] += arg_delta
+                                args_delta_event = {
+                                    "type": "response.function_call_arguments.delta",
+                                    "item_id": st["item_id"],
+                                    "output_index": st["output_index"],
+                                    "delta": arg_delta,
+                                }
+                                yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                            elif arg_delta:
+                                # Buffer the args until we can open the item
+                                # (id/name arrive in the same chunk as the first
+                                # arg delta for some models — but if not, stash).
+                                st["arguments"] += arg_delta
+
                         usage = chunk_data.get("usage")
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
                             output_tokens = usage.get(
                                 "completion_tokens", output_tokens
                             )
-                        continue
-
-                    delta = choices[0].get("delta", {}) or {}
-                    content = delta.get("content")
-                    if content:
-                        full_text += content
-                        delta_event = {
-                            "type": "response.output_text.delta",
-                            "item_id": msg_id,
-                            "output_index": 0,
-                            "content_index": 0,
-                            "delta": content,
-                        }
-                        yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
-
-                    for tc in delta.get("tool_calls") or []:
-                        idx = tc.get("index", 0)
-                        st = tool_call_state.get(idx)
-                        fn = tc.get("function") or {}
-                        if st is None:
-                            # First chunk for this tool call — allocate an
-                            # output_index and emit output_item.added.
-                            st = {
-                                "output_index": next_output_index,
-                                "item_id": f"fc_{uuid.uuid4().hex[:12]}",
-                                "call_id": tc.get("id") or "",
-                                "name": fn.get("name") or "",
-                                "arguments": "",
-                                "opened": False,
-                            }
-                            next_output_index += 1
-                            tool_call_state[idx] = st
-                        else:
-                            # Later chunks sometimes carry the id/name only
-                            # once; merge when present.
-                            if tc.get("id") and not st["call_id"]:
-                                st["call_id"] = tc["id"]
-                            if fn.get("name") and not st["name"]:
-                                st["name"] = fn["name"]
-
-                        if not st["opened"] and st["call_id"] and st["name"]:
-                            item_added = {
-                                "type": "response.output_item.added",
-                                "output_index": st["output_index"],
-                                "item": {
-                                    "type": "function_call",
-                                    "id": st["item_id"],
-                                    "status": "in_progress",
-                                    "call_id": st["call_id"],
-                                    "name": st["name"],
-                                    "arguments": "",
-                                },
-                            }
-                            yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
-                            st["opened"] = True
-
-                        arg_delta = fn.get("arguments") or ""
-                        if arg_delta and st["opened"]:
-                            st["arguments"] += arg_delta
-                            args_delta_event = {
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": st["item_id"],
-                                "output_index": st["output_index"],
-                                "delta": arg_delta,
-                            }
-                            yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
-                        elif arg_delta:
-                            # Buffer the args until we can open the item
-                            # (id/name arrive in the same chunk as the first
-                            # arg delta for some models — but if not, stash).
-                            st["arguments"] += arg_delta
-
-                    usage = chunk_data.get("usage")
-                    if usage:
-                        input_tokens = usage.get("prompt_tokens", input_tokens)
-                        output_tokens = usage.get("completion_tokens", output_tokens)
+        finally:
+            if inner_iter is not None:
+                try:
+                    aclose = getattr(inner_iter, "aclose", None)
+                    if aclose is not None:
+                        await aclose()
+                except Exception:
+                    pass
 
         # ── Closing events for tool calls ──
         for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):

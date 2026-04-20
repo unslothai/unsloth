@@ -297,6 +297,64 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[2].tool_call_id == "call_1"
         assert msgs[2].content == '{"temp": 20}'
 
+    def test_instructions_plus_developer_message_are_merged(self):
+        """Codex CLI sends `instructions` (system prompt) AND a developer
+        message in `input`. Strict chat templates (harmony / gpt-oss, Qwen3,
+        ...) raise "System message must be at the beginning" when two
+        separate system-role messages appear, so we must emit exactly one
+        merged system message at the top.
+        """
+        payload = ResponsesRequest(
+            instructions = "Base instructions.",
+            input = [
+                {"role": "developer", "content": "Developer override."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        system_roles = [m for m in msgs if m.role == "system"]
+        assert len(system_roles) == 1
+        assert "Base instructions." in system_roles[0].content
+        assert "Developer override." in system_roles[0].content
+        # System must be the very first message for strict templates.
+        assert msgs[0].role == "system"
+        assert msgs[1].role == "user"
+
+    def test_developer_message_after_user_is_still_hoisted(self):
+        """Multi-turn conversations where a developer message appears after
+        user turns must still produce a single leading system message, not
+        a mid-conversation system that strict templates reject."""
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+                {"role": "developer", "content": "Updated rules."},
+                {"role": "user", "content": "Continue"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "system"
+        assert "Updated rules." in msgs[0].content
+        for m in msgs[1:]:
+            assert m.role != "system", "no trailing system message permitted"
+
+    def test_no_system_output_when_no_system_input(self):
+        payload = ResponsesRequest(input = "Hi")
+        msgs = _normalise_responses_input(payload)
+        assert all(m.role != "system" for m in msgs)
+
+    def test_multiple_system_messages_in_input_are_merged(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "system", "content": "A"},
+                {"role": "system", "content": "B"},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert sum(1 for m in msgs if m.role == "system") == 1
+        assert "A" in msgs[0].content and "B" in msgs[0].content
+
     def test_content_array_output_serialised_to_json_string(self):
         payload = ResponsesRequest(
             input = [
