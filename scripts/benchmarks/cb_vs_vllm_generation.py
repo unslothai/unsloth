@@ -50,8 +50,8 @@ def build_prompts(tokenizer, n_prompts):
     from datasets import load_dataset
 
     apply_chat_template_to_tokenizer(tokenizer)
-    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
-    ds = ds.shuffle(seed = 3407).select(range(n_prompts))
+    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
+    ds = ds.shuffle(seed=3407).select(range(n_prompts))
     messages = [
         [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -60,11 +60,11 @@ def build_prompts(tokenizer, n_prompts):
         for x in ds
     ]
     prompts_text = [
-        tokenizer.apply_chat_template(m, add_generation_prompt = True, tokenize = False)
+        tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         for m in messages
     ]
     prompt_ids = [
-        tokenizer.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
+        tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=True)
         for m in messages
     ]
     return prompts_text, prompt_ids
@@ -75,37 +75,35 @@ def run_vllm(args):
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = args.model_name,
-        max_seq_length = args.max_seq_length,
-        load_in_4bit = False,
-        fast_inference = True,
-        max_lora_rank = 32,
-        gpu_memory_utilization = args.gpu_memory_utilization,
+        model_name=args.model_name,
+        max_seq_length=args.max_seq_length,
+        load_in_4bit=False,
+        fast_inference=True,
+        max_lora_rank=32,
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
     prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
 
     lora_request = None
     if args.lora_adapter:
         from vllm.lora.request import LoRARequest
-
         lora_request = LoRARequest("fresh", 1, str(Path(args.lora_adapter).resolve()))
 
     from vllm import SamplingParams
-
     sp = SamplingParams(
-        temperature = args.temperature,
-        top_p = args.top_p,
-        min_p = args.min_p,
-        top_k = args.top_k,
-        seed = 3407,
-        max_tokens = args.max_new_tokens,
-        stop = [tokenizer.eos_token],
-        include_stop_str_in_output = True,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        min_p=args.min_p,
+        top_k=args.top_k,
+        seed=3407,
+        max_tokens=args.max_new_tokens,
+        stop=[tokenizer.eos_token],
+        include_stop_str_in_output=True,
     )
 
     # Warmup on 16 prompts then discard.
     warmup_text = prompts_text[:16]
-    _ = model.fast_generate(warmup_text, sampling_params = sp, lora_request = lora_request)
+    _ = model.fast_generate(warmup_text, sampling_params=sp, lora_request=lora_request)
     torch.cuda.synchronize()
 
     n_prompt_tokens = sum(len(p) for p in prompt_ids)
@@ -116,7 +114,7 @@ def run_vllm(args):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         outputs = model.fast_generate(
-            prompts_text, sampling_params = sp, lora_request = lora_request
+            prompts_text, sampling_params=sp, lora_request=lora_request
         )
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
@@ -124,11 +122,7 @@ def run_vllm(args):
         last_outputs = outputs
 
     med = sorted(wall_times)[len(wall_times) // 2]
-    sample_texts = (
-        [o.outputs[0].text[:200] for o in (last_outputs[:3] or [])]
-        if last_outputs
-        else []
-    )
+    sample_texts = [o.outputs[0].text[:200] for o in (last_outputs[:3] or [])] if last_outputs else []
     return {
         "backend": "vllm",
         "lora_adapter": args.lora_adapter,
@@ -157,17 +151,16 @@ def run_tpaged(args):
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        dtype = torch.bfloat16,
-        attn_implementation = args.attn_impl,
+        dtype=torch.bfloat16,
+        attn_implementation=args.attn_impl,
     ).to("cuda")
     model.eval()
 
     if args.lora_adapter:
         from peft import PeftModel
-
         # NOTE: no merge_adapter -- we measure LoRA-active inference.
         model = PeftModel.from_pretrained(
-            model, str(Path(args.lora_adapter).resolve()), is_trainable = False
+            model, str(Path(args.lora_adapter).resolve()), is_trainable=False
         )
         model.eval()
 
@@ -176,16 +169,16 @@ def run_tpaged(args):
     prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
 
     gen_config = GenerationConfig(
-        max_new_tokens = args.max_new_tokens,
-        do_sample = True,
-        temperature = args.temperature,
-        top_p = args.top_p,
-        min_p = args.min_p,
-        top_k = args.top_k,
-        pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id,
-        bos_token_id = tokenizer.bos_token_id,
-        eos_token_id = tokenizer.eos_token_id,
-        use_cache = True,
+        max_new_tokens=args.max_new_tokens,
+        do_sample=True,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        min_p=args.min_p,
+        top_k=args.top_k,
+        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        use_cache=True,
     )
     gen_config.max_batch_tokens = args.max_batch_tokens
     gen_config.num_blocks = args.num_blocks
@@ -195,9 +188,7 @@ def run_tpaged(args):
 
     warmup_ids = prompt_ids[:16]
     with torch.inference_mode():
-        _ = model.generate_batch(
-            warmup_ids, generation_config = gen_config, progress_bar = False
-        )
+        _ = model.generate_batch(warmup_ids, generation_config=gen_config, progress_bar=False)
     torch.cuda.synchronize()
 
     n_prompt_tokens = sum(len(p) for p in prompt_ids)
@@ -209,7 +200,7 @@ def run_tpaged(args):
         t0 = time.perf_counter()
         with torch.inference_mode():
             outputs = model.generate_batch(
-                prompt_ids, generation_config = gen_config, progress_bar = False
+                prompt_ids, generation_config=gen_config, progress_bar=False
             )
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
@@ -221,7 +212,7 @@ def run_tpaged(args):
     if last_outputs is not None:
         for k in list(last_outputs.keys())[:3]:
             toks = last_outputs[k].generated_tokens
-            sample_texts.append(tokenizer.decode(toks, skip_special_tokens = False)[:200])
+            sample_texts.append(tokenizer.decode(toks, skip_special_tokens=False)[:200])
 
     med = sorted(wall_times)[len(wall_times) // 2]
     return {
@@ -257,40 +248,33 @@ def run_unsloth_fi_false(args):
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = args.model_name,
-        max_seq_length = args.max_seq_length,
-        load_in_4bit = False,
-        fast_inference = False,
-        max_lora_rank = 32,
+        model_name=args.model_name,
+        max_seq_length=args.max_seq_length,
+        load_in_4bit=False,
+        fast_inference=False,
+        max_lora_rank=32,
     )
     # Attach LoRA rank 32 the same way the GRPO notebook does.
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 32,
-        target_modules = [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
+        r=32,
+        target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
         ],
-        lora_alpha = 64,
-        use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        lora_alpha=64,
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
     )
 
     # Optional: overlay a shared adapter so weights match other backends.
     if args.lora_adapter:
         from safetensors import safe_open
-
         adapter_file = Path(args.lora_adapter).resolve() / "adapter_model.safetensors"
         loaded_tensors = {}
-        with safe_open(str(adapter_file), framework = "pt") as f:
+        with safe_open(str(adapter_file), framework="pt") as f:
             for key in f.keys():
                 loaded_tensors[key] = f.get_tensor(key)
-
         # Both PEFT and Unsloth's `get_peft_model` produce parameter names with
         # `base_model.model.` prefix plus `.lora_{A,B}.default.weight`. Build a
         # normalized (core-path) -> param map, then match by core path only.
@@ -298,12 +282,10 @@ def run_unsloth_fi_false(args):
             n = name
             for pref in ("base_model.model.", "model."):
                 if n.startswith(pref):
-                    n = n[len(pref) :]
+                    n = n[len(pref):]
             n = n.replace(".lora_A.default.", ".lora_A.").replace(
-                ".lora_B.default.", ".lora_B."
-            )
+                ".lora_B.default.", ".lora_B.")
             return n
-
         own_by_core = {}
         for n, p in model.named_parameters():
             if "lora_" in n:
@@ -317,10 +299,8 @@ def run_unsloth_fi_false(args):
                         own.data.copy_(tensor.to(own.device, own.dtype))
                         matched += 1
                         break
-        print(
-            f"[unsloth_fi_false] LoRA weight sync matched {matched} tensors "
-            f"(out of {len(loaded_tensors)} adapter entries)."
-        )
+        print(f"[unsloth_fi_false] LoRA weight sync matched {matched} tensors "
+              f"(out of {len(loaded_tensors)} adapter entries).")
 
     FastLanguageModel.for_inference(model)
 
@@ -328,29 +308,28 @@ def run_unsloth_fi_false(args):
 
     # `model.generate` accepts batched input_ids; pad to max length.
     from transformers import GenerationConfig
-
     if tokenizer.padding_side != "left":
         tokenizer.padding_side = "left"  # decoder needs left padding
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     gen_config = GenerationConfig(
-        max_new_tokens = args.max_new_tokens,
-        do_sample = True,
-        temperature = args.temperature,
-        top_p = args.top_p,
-        min_p = args.min_p,
-        top_k = args.top_k,
-        pad_token_id = tokenizer.pad_token_id,
-        bos_token_id = tokenizer.bos_token_id,
-        eos_token_id = tokenizer.eos_token_id,
-        use_cache = True,
+        max_new_tokens=args.max_new_tokens,
+        do_sample=True,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        min_p=args.min_p,
+        top_k=args.top_k,
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        use_cache=True,
     )
 
     def _batched_generate(texts):
-        batch = tokenizer(texts, return_tensors = "pt", padding = True).to("cuda")
+        batch = tokenizer(texts, return_tensors="pt", padding=True).to("cuda")
         with torch.inference_mode():
-            out = model.generate(**batch, generation_config = gen_config)
+            out = model.generate(**batch, generation_config=gen_config)
         prompt_len = batch["input_ids"].shape[1]
         return out, prompt_len
 
@@ -371,9 +350,7 @@ def run_unsloth_fi_false(args):
         wall_times.append(time.perf_counter() - t0)
         # Count generated tokens past prompt_len per sequence (subtract any
         # trailing pad-only tail by comparing against EOS).
-        total_decoded = int(
-            (out_ids[:, prompt_len:] != tokenizer.pad_token_id).sum().item()
-        )
+        total_decoded = int((out_ids[:, prompt_len:] != tokenizer.pad_token_id).sum().item())
         last_out_ids = out_ids
         last_prompt_len = prompt_len
 
@@ -381,11 +358,8 @@ def run_unsloth_fi_false(args):
     sample_texts = []
     if last_out_ids is not None:
         for i in range(min(3, last_out_ids.shape[0])):
-            sample_texts.append(
-                tokenizer.decode(
-                    last_out_ids[i, last_prompt_len:], skip_special_tokens = False
-                )[:200]
-            )
+            sample_texts.append(tokenizer.decode(
+                last_out_ids[i, last_prompt_len:], skip_special_tokens=False)[:200])
 
     return {
         "backend": "unsloth_fi_false",
@@ -404,35 +378,30 @@ def run_unsloth_fi_false(args):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument(
-        "--backend", choices = ["vllm", "tpaged", "unsloth_fi_false"], required = True
-    )
-    p.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
-    p.add_argument("--max_seq_length", type = int, default = 2048)
-    p.add_argument("--n_prompts", type = int, default = 32)
-    p.add_argument("--n_rounds", type = int, default = 2)
-    p.add_argument("--max_new_tokens", type = int, default = 512)
-    p.add_argument("--gpu_memory_utilization", type = float, default = 0.8)
-    p.add_argument("--attn_impl", default = "sdpa")
-    p.add_argument("--max_batch_tokens", type = int, default = 8192)
-    p.add_argument("--num_blocks", type = int, default = 16384)
-    p.add_argument("--persistent_cb", action = "store_true")
-    p.add_argument(
-        "--lora_adapter",
-        default = None,
-        help = "Path to a PEFT adapter (rank 32) applied in every backend.",
-    )
-    p.add_argument("--temperature", type = float, default = 0.1)
-    p.add_argument("--top_p", type = float, default = 0.97)
-    p.add_argument("--min_p", type = float, default = 0.5)
-    p.add_argument("--top_k", type = int, default = 5)
-    p.add_argument("--stats_path", required = True)
+    p.add_argument("--backend", choices=["vllm", "tpaged", "unsloth_fi_false"], required=True)
+    p.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
+    p.add_argument("--max_seq_length", type=int, default=2048)
+    p.add_argument("--n_prompts", type=int, default=32)
+    p.add_argument("--n_rounds", type=int, default=2)
+    p.add_argument("--max_new_tokens", type=int, default=512)
+    p.add_argument("--gpu_memory_utilization", type=float, default=0.8)
+    p.add_argument("--attn_impl", default="sdpa")
+    p.add_argument("--max_batch_tokens", type=int, default=8192)
+    p.add_argument("--num_blocks", type=int, default=16384)
+    p.add_argument("--persistent_cb", action="store_true")
+    p.add_argument("--lora_adapter", default=None,
+                   help="Path to a PEFT adapter (rank 32) applied in every backend.")
+    p.add_argument("--temperature", type=float, default=0.1)
+    p.add_argument("--top_p", type=float, default=0.97)
+    p.add_argument("--min_p", type=float, default=0.5)
+    p.add_argument("--top_k", type=int, default=5)
+    p.add_argument("--stats_path", required=True)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok=True)
 
     torch.cuda.reset_peak_memory_stats()
     if args.backend == "vllm":
@@ -450,8 +419,8 @@ def main():
         "top_k": args.top_k,
     }
     with open(args.stats_path, "w") as f:
-        json.dump(out, f, indent = 2)
-    print(json.dumps(out, indent = 2))
+        json.dump(out, f, indent=2)
+    print(json.dumps(out, indent=2))
     os._exit(0)
 
 

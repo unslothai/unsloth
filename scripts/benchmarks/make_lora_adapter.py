@@ -20,16 +20,16 @@ from pathlib import Path
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
-    p.add_argument("--output", default = "outputs/lora_rank32_fresh")
-    p.add_argument("--rank", type = int, default = 32)
+    p.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
+    p.add_argument("--output", default="outputs/lora_rank32_fresh")
+    p.add_argument("--rank", type=int, default=32)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     out_dir = Path(args.output).resolve()
-    out_dir.mkdir(parents = True, exist_ok = True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Use vanilla HF -- PEFT's save_pretrained yields the canonical
     # adapter_config.json + adapter_model.safetensors that vLLM's LoRARequest
@@ -45,23 +45,16 @@ def main():
     # bf16 base; we only need structure + save. Keep on CPU to avoid a GPU load
     # just for `save_pretrained`.
     print(f"[make_lora_adapter] Loading {args.model_name} on CPU...")
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, dtype = torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, dtype=torch.bfloat16)
 
     peft_cfg = LoraConfig(
-        r = args.rank,
-        lora_alpha = args.rank * 2,
-        target_modules = [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-        bias = "none",
-        task_type = "CAUSAL_LM",
-        lora_dropout = 0.0,
+        r=args.rank,
+        lora_alpha=args.rank * 2,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        bias="none",
+        task_type="CAUSAL_LM",
+        lora_dropout=0.0,
     )
     peft_model = get_peft_model(model, peft_cfg)
     peft_model.print_trainable_parameters()
@@ -73,31 +66,26 @@ def main():
     with torch.no_grad():
         for name, p in peft_model.named_parameters():
             if "lora_B" in name:
-                p.normal_(mean = 0.0, std = 1e-4)
+                p.normal_(mean=0.0, std=1e-4)
                 n_reinit += 1
-    print(
-        f"[make_lora_adapter] Reinitialized {n_reinit} lora_B matrices with tiny gaussian."
-    )
+    print(f"[make_lora_adapter] Reinitialized {n_reinit} lora_B matrices with tiny gaussian.")
 
     peft_model.save_pretrained(str(out_dir))
     tok.save_pretrained(str(out_dir))
 
     # Sanity: verify safetensors file present and non-trivial.
     from safetensors import safe_open
-
     st_path = out_dir / "adapter_model.safetensors"
     n_zero_tensors = 0
     n_tensors = 0
-    with safe_open(str(st_path), framework = "pt") as f:
+    with safe_open(str(st_path), framework="pt") as f:
         for key in f.keys():
             t = f.get_tensor(key)
             n_tensors += 1
             if (t == 0).all().item():
                 n_zero_tensors += 1
-    print(
-        f"[make_lora_adapter] Wrote {n_tensors} tensors to {st_path} "
-        f"({n_zero_tensors} all-zero)."
-    )
+    print(f"[make_lora_adapter] Wrote {n_tensors} tensors to {st_path} "
+          f"({n_zero_tensors} all-zero).")
     print(f"[make_lora_adapter] Adapter saved to {out_dir}")
 
 
