@@ -39,6 +39,14 @@
 	font-display: swap;
 }
 
+@font-face {
+	font-family: "Fira Code";
+	src: url("/fonts/FiraCode-VariableFont_wght.ttf") format("truetype-variations");
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
+}
+
 :root {
 	/* Animation timing */
 	--duration-micro: 100ms;
@@ -400,8 +408,8 @@
 	}
 
 	[data-streamdown="code-block"] {
-		gap: 0;
-		padding: 0.5rem;
+		gap: 0.25rem;
+		padding: 0.75rem 1rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
 		min-width: 0;
@@ -409,7 +417,14 @@
 	}
 
 	[data-streamdown="code-block-header"] {
-		padding-left: 0.75rem;
+		padding-left: 0;
+	}
+
+	.aui-thread-root [data-streamdown="code-block"] code > span::before {
+		content: none !important;
+		display: none !important;
+		margin: 0 !important;
+		width: 0 !important;
 	}
 
 	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
@@ -441,11 +456,11 @@
 	/* Keep monospace for code fences and inline code (not KaTeX). */
 	.aui-thread-root [data-streamdown="code-block"] pre,
 	.aui-thread-root [data-streamdown="code-block"] code {
-		font-family: var(--font-mono), ui-monospace, monospace;
+		font-family: "Fira Code", ui-monospace, monospace;
 	}
 
 	.aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
-		font-family: var(--font-mono), ui-monospace, monospace;
+		font-family: "Fira Code", ui-monospace, monospace;
 	}
 
 	/* Align fenced code blocks with the main chat column even when nested in lists. */

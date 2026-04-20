@@ -785,7 +785,7 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-[16px] rounded-tr-[4px] bg-[#f0f0f0] px-4 py-2.5 text-foreground dark:bg-card">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[16px] rounded-tr-[4px] bg-[#f5f5f5] px-4 py-2.5 text-foreground dark:bg-background">
           <MessagePrimitive.Parts />
         </div>
         <div className="mt-1 flex min-h-6">
