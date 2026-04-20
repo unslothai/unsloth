@@ -17,8 +17,8 @@ export function KeyRevealCard({
 }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    if (copyToClipboard(rawKey)) {
+  const handleCopy = async () => {
+    if (await copyToClipboard(rawKey)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     }

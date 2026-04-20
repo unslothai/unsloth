@@ -272,8 +272,8 @@ function MermaidCopyButton({ source }: { source: string }) {
       type="button"
       className="absolute top-3.5 right-20 z-20 cursor-pointer text-muted-foreground transition-all hover:text-foreground"
       title="Copy Mermaid source"
-      onClick={() => {
-        if (!copyToClipboard(source)) {
+      onClick={async () => {
+        if (!(await copyToClipboard(source))) {
           return;
         }
         showCopied();
@@ -306,8 +306,8 @@ function CodeBlockActions({
           className={ACTION_BUTTON_CLASS}
           title="Copy code"
           disabled={disabled}
-          onClick={() => {
-            if (!copyToClipboard(source)) {
+          onClick={async () => {
+            if (!(await copyToClipboard(source))) {
               return;
             }
             showCopied();

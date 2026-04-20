@@ -701,9 +701,9 @@ const CopyButton: FC = () => {
   const [copied, setCopied] = useState(false);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     const text = aui.message().getCopyText();
-    if (copyToClipboard(text)) {
+    if (await copyToClipboard(text)) {
       setCopied(true);
       if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
       resetTimeoutRef.current = setTimeout(() => {
