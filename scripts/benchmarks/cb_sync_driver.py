@@ -55,6 +55,7 @@ from transformers.generation.continuous_batching.scheduler import FIFOScheduler
 @dataclass
 class CBSyncConfig:
     """Tunables for the sync driver."""
+
     max_new_tokens: int = 512
     use_cuda_graph: bool = True
     # Number of eager warmup steps before capturing a CUDA graph.
@@ -67,7 +68,7 @@ class CBSyncConfig:
     max_batch_tokens: int = 8192
     num_blocks: int = 8192
     # Progress callback (step_index, tokens_produced_total) -> None.
-    on_step: Optional[callable] = field(default=None)
+    on_step: Optional[callable] = field(default = None)
 
 
 class SyncCBDriver:
@@ -79,8 +80,12 @@ class SyncCBDriver:
     finished.
     """
 
-    def __init__(self, model: torch.nn.Module, generation_config: GenerationConfig,
-                 cfg: CBSyncConfig):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        generation_config: GenerationConfig,
+        cfg: CBSyncConfig,
+    ):
         self.model = model.eval()
         self.cfg = cfg
         # Force-greedy + upper-bound overrides on a copy.
@@ -100,11 +105,11 @@ class SyncCBDriver:
         # We reuse the Manager's methods but never call `.start()`. Its
         # constructor builds: logit processor, do_sample flag, etc.
         self.manager = ContinuousBatchingManager(
-            model=self.model,
-            generation_config=gc,
-            manual_eviction=False,
-            streaming=False,
-            slice_inputs=False,  # fixed-shape views -> CUDA-graph safe
+            model = self.model,
+            generation_config = gc,
+            manual_eviction = False,
+            streaming = False,
+            slice_inputs = False,  # fixed-shape views -> CUDA-graph safe
         )
         # The manager's `use_cuda_graph` is checked inside `warmup()`, but its
         # `__init__` refuses to set it. Set it directly now that we bypass
@@ -118,7 +123,7 @@ class SyncCBDriver:
             gc,
             self.model.device,
             self.model.dtype,
-            tp_size=getattr(self.model, "_tp_size", None),
+            tp_size = getattr(self.model, "_tp_size", None),
         )
         self.batch_processor = ContinuousBatchProcessor(
             self.cache,
@@ -129,10 +134,10 @@ class SyncCBDriver:
             self.manager.stop_event,
             self.model.device,
             self.model.dtype,
-            FIFOScheduler(self.cache, manual_eviction=False),
-            streaming=False,
-            manual_eviction=False,
-            slice_inputs=False,
+            FIFOScheduler(self.cache, manual_eviction = False),
+            streaming = False,
+            manual_eviction = False,
+            slice_inputs = False,
         )
         self.manager.batch_processor = self.batch_processor
         self._graph: Optional[torch.cuda.CUDAGraph] = None
@@ -148,13 +153,13 @@ class SyncCBDriver:
             for _ in range(self.cfg.warmup_steps):
                 self.manager._generation_step(self.batch_processor)
             torch.cuda.synchronize()
-            stream = torch.cuda.Stream(device=self.model.device)
+            stream = torch.cuda.Stream(device = self.model.device)
             stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(stream):
                 self.manager._generation_step(self.batch_processor)
             torch.cuda.current_stream().wait_stream(stream)
             self._graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self._graph, stream=stream):
+            with torch.cuda.graph(self._graph, stream = stream):
                 self.manager._generation_step(self.batch_processor)
         else:
             self._graph.replay()
@@ -206,14 +211,20 @@ class SyncCBDriver:
         Shape consistency between decodes is what makes the graph replayable.
         """
         try:
-            return (self.batch_processor.total_query_length
-                    == self.batch_processor.total_batch_size)
+            return (
+                self.batch_processor.total_query_length
+                == self.batch_processor.total_batch_size
+            )
         except Exception:
             return False
 
     def _produced(self) -> int:
-        return sum(len(r.generated_tokens) for r
-                   in getattr(self.batch_processor.scheduler, "active_requests", {}).values())
+        return sum(
+            len(r.generated_tokens)
+            for r in getattr(
+                self.batch_processor.scheduler, "active_requests", {}
+            ).values()
+        )
 
     def close(self):
         # Caches hold GPU memory; free them explicitly.
@@ -223,9 +234,12 @@ class SyncCBDriver:
         self.manager.batch_processor = None
 
 
-def cb_sync_generate(model: torch.nn.Module, generation_config: GenerationConfig,
-                     prompt_ids_list: list[list[int]],
-                     cfg: CBSyncConfig) -> dict[str, list[int]]:
+def cb_sync_generate(
+    model: torch.nn.Module,
+    generation_config: GenerationConfig,
+    prompt_ids_list: list[list[int]],
+    cfg: CBSyncConfig,
+) -> dict[str, list[int]]:
     """One-shot entrypoint: build a driver, submit, drain, close.
 
     Matches the semantics of `model.generate_batch(...)` but on the main
@@ -251,17 +265,18 @@ if __name__ == "__main__":
     sys.path.insert(0, str(HERE))
 
     import flash_attn_fa4_shim  # noqa: E402
+
     flash_attn_fa4_shim.apply()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", default="unsloth/Qwen3-4B-Base")
-    parser.add_argument("--n_prompts", type=int, default=32)
-    parser.add_argument("--max_new_tokens", type=int, default=512)
-    parser.add_argument("--attn_impl", default="paged_attention")
-    parser.add_argument("--use_cuda_graph", action="store_true")
-    parser.add_argument("--max_batch_tokens", type=int, default=8192)
-    parser.add_argument("--num_blocks", type=int, default=8192)
-    parser.add_argument("--stats_path", required=True)
+    parser.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
+    parser.add_argument("--n_prompts", type = int, default = 32)
+    parser.add_argument("--max_new_tokens", type = int, default = 512)
+    parser.add_argument("--attn_impl", default = "paged_attention")
+    parser.add_argument("--use_cuda_graph", action = "store_true")
+    parser.add_argument("--max_batch_tokens", type = int, default = 8192)
+    parser.add_argument("--num_blocks", type = int, default = 8192)
+    parser.add_argument("--stats_path", required = True)
     args = parser.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
@@ -270,36 +285,49 @@ if __name__ == "__main__":
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_name, dtype=torch.bfloat16,
-        attn_implementation=args.attn_impl,
+        args.model_name,
+        dtype = torch.bfloat16,
+        attn_implementation = args.attn_impl,
     ).to("cuda")
     model.eval()
 
     from unsloth_grpo_common import (
-        SYSTEM_PROMPT, apply_chat_template_to_tokenizer,
+        SYSTEM_PROMPT,
+        apply_chat_template_to_tokenizer,
     )
     from datasets import load_dataset
+
     apply_chat_template_to_tokenizer(tok)
-    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
-    ds = ds.shuffle(seed=3407).select(range(args.n_prompts))
-    messages = [[{"role": "system", "content": SYSTEM_PROMPT},
-                 {"role": "user", "content": x["prompt"]}] for x in ds]
-    prompt_ids = [tok.apply_chat_template(m, add_generation_prompt=True, tokenize=True)
-                  for m in messages]
+    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
+    ds = ds.shuffle(seed = 3407).select(range(args.n_prompts))
+    messages = [
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": x["prompt"]},
+        ]
+        for x in ds
+    ]
+    prompt_ids = [
+        tok.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
+        for m in messages
+    ]
 
     gc = GenerationConfig(
-        max_new_tokens=args.max_new_tokens, do_sample=False,
-        pad_token_id=tok.pad_token_id, bos_token_id=tok.bos_token_id,
-        eos_token_id=tok.eos_token_id, use_cache=True,
+        max_new_tokens = args.max_new_tokens,
+        do_sample = False,
+        pad_token_id = tok.pad_token_id,
+        bos_token_id = tok.bos_token_id,
+        eos_token_id = tok.eos_token_id,
+        use_cache = True,
     )
 
     cfg = CBSyncConfig(
-        max_new_tokens=args.max_new_tokens,
-        use_cuda_graph=args.use_cuda_graph,
-        max_batch_tokens=args.max_batch_tokens,
-        num_blocks=args.num_blocks,
-        eos_token_id=tok.eos_token_id,
-        pad_token_id=tok.pad_token_id or tok.eos_token_id,
+        max_new_tokens = args.max_new_tokens,
+        use_cuda_graph = args.use_cuda_graph,
+        max_batch_tokens = args.max_batch_tokens,
+        num_blocks = args.num_blocks,
+        eos_token_id = tok.eos_token_id,
+        pad_token_id = tok.pad_token_id or tok.eos_token_id,
     )
 
     torch.cuda.reset_peak_memory_stats()
@@ -330,7 +358,7 @@ if __name__ == "__main__":
         "max_new_tokens": args.max_new_tokens,
         "peak_memory_gb": torch.cuda.max_memory_allocated() / 1024**3,
     }
-    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
     with open(args.stats_path, "w") as f:
-        json.dump(out, f, indent=2)
-    print(json.dumps(out, indent=2))
+        json.dump(out, f, indent = 2)
+    print(json.dumps(out, indent = 2))
