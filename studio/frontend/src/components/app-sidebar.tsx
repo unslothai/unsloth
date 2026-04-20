@@ -37,7 +37,7 @@ import {
   CursorInfo02Icon,
   Delete02Icon,
   Download03Icon,
-  LibraryIcon,
+  GemIcon,
   MessageSearch01Icon,
   Search01Icon,
   NewReleasesIcon,
@@ -242,7 +242,7 @@ export function AppSidebar() {
             </span>
             <span
               style={{ fontFamily: '"Inter Variable", ui-sans-serif, system-ui, sans-serif' }}
-              className="ml-0.5 inline-flex items-center justify-center rounded-full border border-[#e0ded6] px-[7px] py-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-[#62605a] antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:border-[#3a3c3f] dark:text-[#9d9fa5] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
+              className="ml-0.5 inline-flex items-center justify-center rounded-full border border-[#e0ded6] px-[5px] py-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-[#62605a] antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:border-[#3a3c3f] dark:text-[#9d9fa5] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
             >
               BETA
             </span>
@@ -337,7 +337,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
-                icon={ChefHatIcon}
+                icon={GemIcon}
                 label="Train"
                 active={pathname === "/studio" || pathname.startsWith("/studio/")}
                 disabled={chatOnly}
@@ -349,7 +349,7 @@ export function AppSidebar() {
               />
 
               <NavItem
-                icon={LibraryIcon}
+                icon={ChefHatIcon}
                 label="Recipes"
                 active={isRecipesRoute}
                 onClick={() => {
