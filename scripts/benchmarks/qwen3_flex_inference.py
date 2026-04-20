@@ -58,7 +58,9 @@ from flex_paged_attention import PagedKVCache, PageTable  # noqa: E402
 _FLEX_COMPILE_MODE = os.environ.get("FLEX_COMPILE_MODE", None)
 if _FLEX_COMPILE_MODE:
     flex_attention_compiled = torch.compile(
-        flex_attention, fullgraph = True, mode = _FLEX_COMPILE_MODE,
+        flex_attention,
+        fullgraph = True,
+        mode = _FLEX_COMPILE_MODE,
     )
 else:
     flex_attention_compiled = torch.compile(flex_attention, fullgraph = True)
