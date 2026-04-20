@@ -1,0 +1,25 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": null,
+  "n_prompts": 32,
+  "n_decoded_tokens": 15164,
+  "wall_times_s": [
+    7.840532291971613,
+    5.729173633968458,
+    6.219996218045708,
+    5.283988946001045,
+    4.839393497037236
+  ],
+  "median_wall_s": 5.729173633968458,
+  "best_wall_s": 4.839393497037236,
+  "decode_tps_median": 2646.804053920124,
+  "decode_tps_best": 3133.4505055816758,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 43.90812540054321,
+  "sample_completions": [
+    " To solve this problem, we need to find the maximum value of \\(a\\) such that the line \\(y = mx + 2\\) does not pass through any lattice points for \\(0 < x \\leq 100\\) when \\(\\frac{1}{2} < m < a\\).\n\nFirst, let's consider the condition that the line \\(y = mx + 2",
+    " \nTo find the area of the smaller square, we need to determine its side length. Let's denote the side length of the smaller square as \\( s \\).\n\nFrom the diagram, we can see that the larger square has a side length of 6. The smaller square is inscribed within the larger square such that its vertices touch the midpoints of the sides of the larger square. This means",
+    " \nTo solve this problem, we need to consider all possible pairs of special fractions \\(\\frac{a}{b}\\) and \\(\\frac{c}{d}\\) where \\(a + b = 15\\) and \\(c + d = 15\\). We will then find the distinct integers that can be written as the sum of these two fractions.\n\nFirst, let's list"
+  ]
+}

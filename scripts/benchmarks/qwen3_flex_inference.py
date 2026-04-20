@@ -211,6 +211,23 @@ class Sequence:
         return self.input_length + len(self.output_ids)
 
 
+# Default kernel_options per phase. Our defaults stay conservative -- the
+# non-default FlexKernelOptions (PRESCALE_QK, ROWS_GUARANTEED_SAFE, USE_TMA)
+# are opt-in via CLI because some of them break correctness on our
+# paged-attention setup.
+#
+# Specifically, `ROWS_GUARANTEED_SAFE=True` is unsafe here: we reserve
+# batch_idx=0 and page_idx=0 as no-op padding slots. When a decode
+# padded batch row maps to only-reserved pages, the block mask returns
+# False for every kv_idx, so the row has zero unmasked values. The flag
+# tells the kernel to skip the row-has-at-least-one-unmasked check, so
+# the softmax NaNs silently -- which manifests as "!!!!!!" token spam.
+DECODE_KERNEL_OPTIONS_DEFAULT = None
+# Prefill keeps FORCE_USE_FLEX_ATTENTION so we don't auto-dispatch into
+# the flex-decoding kernel when the packed q_len gets small.
+PREFILL_KERNEL_OPTIONS_DEFAULT = {"FORCE_USE_FLEX_ATTENTION": True}
+
+
 class FlexInference:
     def __init__(
         self,
@@ -221,6 +238,8 @@ class FlexInference:
         n_pages = 2048,
         page_size = 128,
         max_new_tokens = 512,
+        decode_kernel_options = None,
+        prefill_kernel_options = None,
     ):
         assert max_seq_length % page_size == 0
         self.model = model
@@ -231,6 +250,16 @@ class FlexInference:
         self.max_seq_length = max_seq_length
         self.page_size = page_size
         self.max_new_tokens = max_new_tokens
+        self.decode_kernel_options = (
+            decode_kernel_options
+            if decode_kernel_options is not None
+            else DECODE_KERNEL_OPTIONS_DEFAULT
+        )
+        self.prefill_kernel_options = (
+            prefill_kernel_options
+            if prefill_kernel_options is not None
+            else PREFILL_KERNEL_OPTIONS_DEFAULT
+        )
 
         self.page_table = PageTable(
             n_pages = n_pages,
@@ -299,7 +328,7 @@ class FlexInference:
             flex_block_mask = mask,
             flex_input_pos = input_pos,
             flex_batch_idx = batch_idx,
-            flex_kernel_options = {"FORCE_USE_FLEX_ATTENTION": True},
+            flex_kernel_options = self.prefill_kernel_options,
         )
         position_ids = input_pos  # Qwen3 uses 0-based; unlike Gemma2
         hidden = call_model_with_flex_kwargs(
@@ -357,7 +386,7 @@ class FlexInference:
             flex_block_mask = mask,
             flex_input_pos = input_pos.view(B, 1).to(torch.long),
             flex_batch_idx = batch_idx,
-            flex_kernel_options = None,
+            flex_kernel_options = self.decode_kernel_options,
         )
         hidden = call_model_with_flex_kwargs(
             self.model, input_ids.view(B, 1), position_ids, flex_kwargs
@@ -554,8 +583,25 @@ def main():
     p.add_argument("--page_size", type = int, default = 128)
     p.add_argument("--capture_cudagraph", action = "store_true")
     p.add_argument("--lora_adapter", default = None)
+    # Kernel tuning (optional JSON-valued CLI args so we can sweep quickly):
+    p.add_argument("--decode_kernel_options", default = None,
+                   help = "JSON for FlexKernelOptions applied in decode, "
+                          "e.g. '{\"PRESCALE_QK\":true,\"USE_TMA\":true}'.")
+    p.add_argument("--prefill_kernel_options", default = None,
+                   help = "Same but for prefill.")
+    # If set, torch.compile the full attention-stack closure in addition to
+    # (or instead of) compiling just flex_attention. `reduce-overhead` is
+    # the interesting mode; it nests with our CUDA graph capture.
+    p.add_argument("--compile_model_forward", default = None,
+                   choices = [None, "default", "reduce-overhead",
+                              "max-autotune-no-cudagraphs"])
     p.add_argument("--stats_path", required = True)
     args = p.parse_args()
+
+    def _parse_opts(s):
+        if s is None:
+            return None
+        return json.loads(s)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -614,7 +660,25 @@ def main():
         n_pages = args.n_pages,
         page_size = args.page_size,
         max_new_tokens = args.max_new_tokens,
+        decode_kernel_options = _parse_opts(args.decode_kernel_options),
+        prefill_kernel_options = _parse_opts(args.prefill_kernel_options),
     )
+
+    # Optionally compile the manual forward walker. This fuses the layer-stack
+    # ops around flex_attention. Under CUDA graph capture, the compiled
+    # function gets captured into the same graph.
+    if args.compile_model_forward:
+        torch._dynamo.config.cache_size_limit = 256
+        print(f"[flex] torch.compile(call_model_with_flex_kwargs, "
+              f"mode={args.compile_model_forward!r})")
+        import sys as _sys
+        _this = _sys.modules[__name__]
+        _this.call_model_with_flex_kwargs = torch.compile(
+            call_model_with_flex_kwargs,
+            mode = args.compile_model_forward,
+            dynamic = True,
+            fullgraph = False,
+        )
 
     def make_seqs():
         return [Sequence(text = t, max_new_tokens = args.max_new_tokens) for t in texts]

@@ -1,0 +1,25 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": null,
+  "n_prompts": 64,
+  "n_decoded_tokens": 27985,
+  "wall_times_s": [
+    8.14494420203846,
+    6.53967270400608,
+    5.112081662984565,
+    5.535065989010036,
+    6.894235474988818
+  ],
+  "median_wall_s": 6.53967270400608,
+  "best_wall_s": 5.112081662984565,
+  "decode_tps_median": 4279.266144750168,
+  "decode_tps_best": 5474.286571482827,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 44.21115064620972,
+  "sample_completions": [
+    "First, let's find the sum of the numbers in Amanda's list. The sum of the first n even numbers is given by the formula n(n+1). In this case, n = 50 (since there are 50 even numbers from 2 to 100). So, the sum of Amanda's list is 50(50+1) = ",
+    "Let the roots of the equation be $r, r^2, r^3, r^4, r^5$ in geometric progression. By Vieta's formulas, the sum of the roots is $r + r^2 + r^3 + r^4 + r^5 = 180$. Dividing both sides by $r^5$, we get $1",
+    "First, let's find the angle \\( \\angle AOB into three equal parts. The area of each smaller triangle is:\n\\[ \\frac{\\sqrt{3}}{12} \\text{ triangle} = \\frac{\\sqrt{3}/4 \\]\n\nNow, let's find the value of \\( k + m + n \\). We have:\n\\[ k = 1 \\]\n\\["
+  ]
+}
