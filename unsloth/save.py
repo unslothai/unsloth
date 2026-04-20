@@ -209,7 +209,9 @@ def _preserve_sentencepiece_tokenizer_assets(
     tokenizer_config_path = os.path.join(save_directory, "tokenizer_config.json")
     if os.path.isfile(tokenizer_config_path):
         desired_added_tokens_decoder = {}
-        for token_id, added_token in getattr(tokenizer, "added_tokens_decoder", {}).items():
+        for token_id, added_token in getattr(
+            tokenizer, "added_tokens_decoder", {}
+        ).items():
             desired_added_tokens_decoder[str(token_id)] = {
                 "content": getattr(added_token, "content", str(added_token)),
                 "single_word": getattr(added_token, "single_word", False),
@@ -221,7 +223,10 @@ def _preserve_sentencepiece_tokenizer_assets(
         if desired_added_tokens_decoder:
             with open(tokenizer_config_path, "r", encoding = "utf-8") as file:
                 tokenizer_config = json.load(file)
-            if tokenizer_config.get("added_tokens_decoder") != desired_added_tokens_decoder:
+            if (
+                tokenizer_config.get("added_tokens_decoder")
+                != desired_added_tokens_decoder
+            ):
                 tokenizer_config["added_tokens_decoder"] = desired_added_tokens_decoder
                 with open(tokenizer_config_path, "w", encoding = "utf-8") as file:
                     json.dump(tokenizer_config, file, indent = 2, ensure_ascii = False)
@@ -3348,7 +3353,9 @@ def patch_saving_functions(model, vision = False):
         and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
     ):
         model.original_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
+        model.save_pretrained = types.MethodType(
+            unsloth_tokenizer_save_pretrained, model
+        )
 
     original_model = model
     while True:
