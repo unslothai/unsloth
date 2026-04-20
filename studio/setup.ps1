@@ -73,7 +73,109 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path = "$machinePath;$userPath"
+    # Merge: venv Scripts (if active) > Machine > User > current $env:Path. Dedup raw+expanded.
+    $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
+    $sources = @()
+    if ($venvScripts) { $sources += $venvScripts }
+    $sources += @($machinePath, $userPath, $env:Path)
+    $merged = ($sources | Where-Object { $_ }) -join ';'
+    $seen = @{}
+    $unique = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $merged -split ";") {
+        $rawKey = $p.Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+        $expKey = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd("\").ToLowerInvariant()
+        if ($rawKey -and -not $seen.ContainsKey($rawKey) -and -not $seen.ContainsKey($expKey)) {
+            $seen[$rawKey] = $true
+            if ($expKey -and $expKey -ne $rawKey) { $seen[$expKey] = $true }
+            $unique.Add($p)
+        }
+    }
+    $env:Path = $unique -join ";"
+}
+
+# ── Helper: safely add a directory to the persistent User PATH ──
+# Direct registry access preserves REG_EXPAND_SZ (avoids dotnet/runtime#1442).
+# Append (default) keeps existing tools first; Prepend for must-win entries.
+function Add-ToUserPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [ValidateSet('Append','Prepend')]
+        [string]$Position = 'Append'
+    )
+    try {
+        $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        try {
+            $rawPath = $regKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            [string[]]$entries = if ($rawPath) { $rawPath -split ';' } else { @() } # string[] prevents scalar collapse
+            $normalDir = $Directory.Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+            $expNormalDir = [Environment]::ExpandEnvironmentVariables($Directory).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+            $kept = New-Object System.Collections.Generic.List[string]
+            $matchIndices = New-Object System.Collections.Generic.List[int]
+            for ($i = 0; $i -lt $entries.Count; $i++) {
+                $stripped = $entries[$i].Trim().Trim('"')
+                $rawNorm = $stripped.TrimEnd('\').ToLowerInvariant()
+                $expNorm = [Environment]::ExpandEnvironmentVariables($stripped).TrimEnd('\').ToLowerInvariant()
+                $isMatch = ($rawNorm -and ($rawNorm -eq $normalDir -or $rawNorm -eq $expNormalDir)) -or
+                           ($expNorm -and ($expNorm -eq $normalDir -or $expNorm -eq $expNormalDir))
+                if ($isMatch) {
+                    $matchIndices.Add($i)
+                    continue
+                }
+                $kept.Add($entries[$i])
+            }
+            $alreadyPresent = $matchIndices.Count -gt 0
+            if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+                return $false
+            }
+            if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front
+                $matchIndices.Count -eq 1 -and $matchIndices[0] -eq 0) {
+                return $false
+            }
+            # One-time backup under HKCU\Software\Unsloth\PathBackup
+            if ($rawPath) {
+                try {
+                    $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+                    try {
+                        $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                        if (-not $existingBackup) {
+                            $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                        }
+                    } finally {
+                        $backupKey.Close()
+                    }
+                } catch { }
+            }
+            if (-not $rawPath) {
+                Write-Host "[WARN] User PATH is empty - initializing with $Directory" -ForegroundColor Yellow
+            }
+            $newPath = if ($rawPath) {
+                if ($Position -eq 'Prepend') {
+                    (@($Directory) + $kept) -join ';'
+                } else {
+                    ($kept + @($Directory)) -join ';'
+                }
+            } else {
+                $Directory
+            }
+            if ($newPath -ceq $rawPath) { # no actual change
+                return $false
+            }
+            $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            # Broadcast WM_SETTINGCHANGE via dummy env-var roundtrip.
+            # [NullString]::Value avoids PS 7.5+/.NET 9 $null-to-"" coercion.
+            try {
+                $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                [Environment]::SetEnvironmentVariable($d, '1', 'User')
+                [Environment]::SetEnvironmentVariable($d, [NullString]::Value, 'User')
+            } catch { }
+            return $true
+        } finally {
+            $regKey.Close()
+        }
+    } catch {
+        Write-Host "[WARN] Could not update User PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
 }
 
 # PowerShell 5.1 compatibility helper: avoid relying on New-TemporaryFile.
@@ -493,6 +595,31 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
+# Back up User PATH under HKCU\Software\Unsloth before any modifications.
+try {
+    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    if ($envKey) {
+        try {
+            $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        } finally {
+            $envKey.Close()
+        }
+        if ($rawPath) {
+            $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+            try {
+                $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                if (-not $existingBackup) {
+                    $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                }
+            } finally {
+                $backupKey.Close()
+            }
+        }
+    }
+} catch {
+    Write-Host "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
+}
+
 # ==========================================================================
 #  PHASE 1: System-level prerequisites (winget installs, env vars)
 #  All heavy system tool installs happen here BEFORE touching Python.
@@ -626,11 +753,8 @@ if (-not $HasCmake) {
         foreach ($d in $cmakeDefaults) {
             if (Test-Path (Join-Path $d "cmake.exe")) {
                 $env:Path = "$d;$env:Path"
-                # Persist to user PATH so Refresh-Environment does not drop it later
-                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-                if (-not $userPath -or $userPath -notlike "*$d*") {
-                    [Environment]::SetEnvironmentVariable('Path', "$d;$userPath", 'User')
-                }
+                # Persist to user PATH (Prepend so this cmake wins over older ones).
+                Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
                     Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
@@ -896,14 +1020,8 @@ $nvccBinDir = Split-Path $NvccPath -Parent
 if ($env:PATH -notlike "*$nvccBinDir*") {
     [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
 }
-# Persist nvcc bin dir to User PATH so it works in new terminals
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
-    if ($userPath) {
-        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir;$userPath", 'User')
-    } else {
-        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
-    }
+# Persist nvcc bin dir (Prepend so the driver-compatible toolkit wins).
+if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
     substep "Persisted CUDA bin dir to user PATH"
 }
 
@@ -1064,15 +1182,11 @@ if ($HasPython) {
     $PythonOk = $true
 }
 
-# Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
-$ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
+# Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
+$ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
-    $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $UserPathEntries = if ($UserPath) { $UserPath.Split(';') } else { @() }
-    if (-not ($UserPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
-        $newUserPath = if ($UserPath) { "$ScriptsDir;$UserPath" } else { $ScriptsDir }
-        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
-
+    # Append (not Prepend) -- this dir has other pip scripts; shim handles unsloth.
+    if (Add-ToUserPath -Directory $ScriptsDir) {
         # Also add to current process so it's available immediately
         $ProcessPathEntries = $env:PATH.Split(';')
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
@@ -1523,14 +1637,16 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+$PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+
 if ($CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu"
+        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -1542,11 +1658,11 @@ if ($CuTag -eq "cpu") {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
+        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -1585,54 +1701,103 @@ if ($stackExit -ne 0) {
     exit 1
 }
 
-# ── Pre-install transformers 5.x into .venv_t5/ ──
-# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-# at runtime (slow, ~10-15s), we pre-install into a separate directory.
-# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-Write-Host ""
-substep "pre-installing transformers 5.x for newer model support..."
-$VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
-if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
-New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
-$prevEAP_t5 = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        exit 1
-    }
-}
-# tiktoken is needed by Qwen-family tokenizers -- install with deps since
-# regex/requests may be missing on Windows
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5Dir tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
-} else {
-    $output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
-}
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" "Yellow"
-}
-$ErrorActionPreference = $prevEAP_t5
-step "transformers" "5.x pre-installed"
-
 } else {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
 }
+
+# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# Runs outside the deps fast-path gate so that upgrades from the legacy
+# single .venv_t5 are always migrated to the tiered layout.
+$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
+$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
+$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+
+$_NeedT5Install = $false
+if (Test-Path $VenvT5Legacy) {
+    Remove-Item -Recurse -Force $VenvT5Legacy
+    $_NeedT5Install = $true
+}
+if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
+# Also reinstall when python deps were updated
+if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
+
+if ($_NeedT5Install) {
+Write-Host ""
+
+$prevEAP_t5 = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
+# --- .venv_t5_530 (transformers 5.3.0) ---
+substep "pre-installing transformers 5.3.0 for newer model support..."
+if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
+New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
+foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_530Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_530Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_530Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_530Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_530/ -- Qwen tokenizers may fail" "Yellow"
+}
+step "transformers" "5.3.0 pre-installed"
+
+# --- .venv_t5_550 (transformers 5.5.0) ---
+substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
+if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
+New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
+foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_550Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_550Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_550Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_550Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
+}
+$ErrorActionPreference = $prevEAP_t5
+step "transformers" "5.5.0 pre-installed"
+
+} # end $_NeedT5Install
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build

@@ -195,6 +195,7 @@ class HostInfo:
     visible_cuda_devices: str | None
     has_physical_nvidia: bool
     has_usable_nvidia: bool
+    has_rocm: bool = False
 
 
 @dataclass
@@ -2516,12 +2517,25 @@ def detect_host() -> HostInfo:
     has_physical_nvidia = False
     has_usable_nvidia = False
     if nvidia_smi:
+        # Require `nvidia-smi -L` to actually list a GPU before treating the
+        # host as NVIDIA. The banner text "NVIDIA-SMI ..." is printed even
+        # when the command fails to communicate with the driver (e.g. stale
+        # container leftovers), which would otherwise misclassify an AMD
+        # ROCm host as NVIDIA and short-circuit the ROCm path.
+        try:
+            listing = run_capture([nvidia_smi, "-L"], timeout = 20)
+            gpu_lines = [
+                line for line in listing.stdout.splitlines() if line.startswith("GPU ")
+            ]
+            if gpu_lines:
+                has_physical_nvidia = True
+                has_usable_nvidia = visible_device_tokens != []
+        except Exception:
+            pass
+
         try:
             result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
-            if "NVIDIA-SMI" in merged:
-                has_physical_nvidia = True
-                has_usable_nvidia = visible_device_tokens != []
             for line in merged.splitlines():
                 if "CUDA Version:" in line:
                     raw = line.split("CUDA Version:", 1)[1].strip().split()[0]
@@ -2561,6 +2575,12 @@ def detect_host() -> HostInfo:
 
             if visible_gpu_rows:
                 has_usable_nvidia = True
+                # Older nvidia-smi versions (pre -L support) hit the
+                # except in the first try block but still succeed here,
+                # leaving has_physical_nvidia unset. Mirror the -L path
+                # so downstream diagnostics on line ~4390 still run.
+                if not has_physical_nvidia:
+                    has_physical_nvidia = True
             elif visible_device_tokens == []:
                 has_usable_nvidia = False
             elif supports_explicit_visible_device_matching(visible_device_tokens):
@@ -2569,6 +2589,56 @@ def detect_host() -> HostInfo:
                 has_usable_nvidia = True
         except Exception:
             pass
+
+    # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
+
+    def _amd_smi_has_gpu(stdout: str) -> bool:
+        """Check for 'GPU: <number>' data rows, not just a table header."""
+        return bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
+
+    has_rocm = False
+    if is_linux:
+        for _cmd, _check in (
+            # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
+            # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
+            # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
+            # the dash and must not be treated as a real GPU.
+            (
+                ["rocminfo"],
+                lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
+            ),
+            (["amd-smi", "list"], _amd_smi_has_gpu),
+        ):
+            _exe = shutil.which(_cmd[0])
+            if not _exe:
+                continue
+            try:
+                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+            except Exception:
+                continue
+            if _result.returncode == 0 and _result.stdout.strip():
+                if _check(_result.stdout):
+                    has_rocm = True
+                    break
+    elif is_windows:
+        # Windows: prefer active probes that validate GPU presence
+        for _cmd, _check in (
+            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
+            (["amd-smi", "list"], _amd_smi_has_gpu),
+        ):
+            _exe = shutil.which(_cmd[0])
+            if not _exe:
+                continue
+            try:
+                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+            except Exception:
+                continue
+            if _result.returncode == 0 and _result.stdout.strip():
+                if _check(_result.stdout):
+                    has_rocm = True
+                    break
+        # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
+        # since the HIP SDK can be installed without an AMD GPU.
 
     return HostInfo(
         system = system,
@@ -2584,6 +2654,7 @@ def detect_host() -> HostInfo:
         visible_cuda_devices = visible_cuda_devices,
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
+        has_rocm = has_rocm,
     )
 
 
@@ -2949,9 +3020,168 @@ def published_asset_choice_for_kind(
     return None
 
 
+def _detect_host_rocm_version() -> tuple[int, int] | None:
+    """Return (major, minor) of the installed ROCm runtime, or None.
+
+    Best-effort read from /opt/rocm/.info/version, amd-smi version, and
+    hipconfig --version. Used to pick a compatible upstream llama.cpp
+    ROCm prebuilt rather than always taking the numerically newest one
+    (which can be newer than the host runtime).
+    """
+    rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
+    for path in (
+        os.path.join(rocm_root, ".info", "version"),
+        os.path.join(rocm_root, "lib", "rocm_version"),
+    ):
+        try:
+            with open(path) as fh:
+                parts = fh.read().strip().split("-")[0].split(".")
+            # Explicit length guard avoids relying on the broad except
+            # below to swallow IndexError when the version file contains
+            # a single component (e.g. "6\n" on a partial install).
+            if len(parts) >= 2:
+                return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+    amd_smi = shutil.which("amd-smi")
+    if amd_smi:
+        try:
+            result = subprocess.run(
+                [amd_smi, "version"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0:
+                m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
+                if m:
+                    return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+    hipconfig = shutil.which("hipconfig")
+    if hipconfig:
+        try:
+            result = subprocess.run(
+                [hipconfig, "--version"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0:
+                raw = (result.stdout or "").strip().split("\n")[0]
+                parts = raw.split(".")
+                if (
+                    len(parts) >= 2
+                    and parts[0].isdigit()
+                    and parts[1].split("-")[0].isdigit()
+                ):
+                    return int(parts[0]), int(parts[1].split("-")[0])
+        except Exception:
+            pass
+
+    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
+    # and _detect_rocm_version() in install_python_stack.py so package-managed
+    # ROCm hosts without /opt/rocm/.info/version still report a usable version
+    # and the <= host version filter in resolve_upstream_asset_choice picks
+    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    for _cmd in (
+        ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
+        ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
+    ):
+        _exe = shutil.which(_cmd[0])
+        if not _exe:
+            continue
+        try:
+            _result = subprocess.run(
+                [_exe, *_cmd[1:]],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+        except Exception:
+            continue
+        if _result.returncode != 0 or not _result.stdout.strip():
+            continue
+        _raw = _result.stdout.strip()
+        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+        _raw = re.sub(r"^\d+:", "", _raw)
+        _m = re.match(r"(\d+)[.-](\d+)", _raw)
+        if _m:
+            return int(_m.group(1)), int(_m.group(2))
+    return None
+
+
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
+        # AMD ROCm: try upstream ROCm prebuilt first, then fall back to source build.
+        # Source build (via setup.sh) compiles with -DGGML_HIP=ON and auto-detects
+        # the exact GPU target via rocminfo, which is more reliable for consumer
+        # GPUs (e.g. gfx1151) that may not be in the prebuilt.
+        if host.has_rocm and not host.has_usable_nvidia:
+            # Scan upstream assets for any rocm-<version> prebuilt. When the
+            # host ROCm runtime version is known, pick the newest candidate
+            # whose major.minor is <= host version -- otherwise a ROCm 6.4
+            # host would download the rocm-7.2 tarball, fail preflight, and
+            # fall back to a source build even though a compatible 6.4
+            # prebuilt exists. If no compatible candidate matches (e.g. host
+            # runtime is older than every published prebuilt), fall back to
+            # the numerically newest so we at least try something.
+            _rocm_pattern = re.compile(
+                rf"llama-{re.escape(llama_tag)}-bin-ubuntu-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.tar\.gz"
+            )
+            rocm_candidates: list[tuple[tuple[int, ...], str]] = []
+            for _name in upstream_assets:
+                _m = _rocm_pattern.match(_name)
+                if _m is None:
+                    continue
+                _parts = tuple(int(p) for p in _m.group(1).split("."))
+                rocm_candidates.append((_parts, _name))
+            rocm_candidates.sort(reverse = True)
+            _host_rocm_version = _detect_host_rocm_version()
+            _compatible: list[tuple[tuple[int, ...], str]] = rocm_candidates
+            if _host_rocm_version is not None:
+                _compatible = [
+                    item
+                    for item in rocm_candidates
+                    if item[0][:2] <= _host_rocm_version
+                ]
+            if rocm_candidates and not _compatible:
+                # Fall back to the newest candidate so a source build is
+                # not forced when the host runtime is older than every
+                # published prebuilt: preflight will still catch a true
+                # incompatibility and trigger a fallback.
+                _compatible = rocm_candidates[:1]
+            if _compatible:
+                rocm_name = _compatible[0][1]
+                if _host_rocm_version is not None:
+                    log(
+                        f"AMD ROCm {_host_rocm_version[0]}.{_host_rocm_version[1]} "
+                        f"detected -- trying upstream prebuilt {rocm_name}"
+                    )
+                else:
+                    log(f"AMD ROCm detected -- trying upstream prebuilt {rocm_name}")
+                log(
+                    "Note: if your ROCm runtime version differs significantly, "
+                    "this may fail preflight and fall back to a source build (safe)"
+                )
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = rocm_name,
+                    url = upstream_assets[rocm_name],
+                    source_label = "upstream",
+                    install_kind = "linux-rocm",
+                )
+            # No ROCm prebuilt available -- fall back to source build
+            raise PrebuiltFallback(
+                "AMD ROCm detected but no upstream ROCm prebuilt found; "
+                "falling back to source build with HIP support"
+            )
+
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
@@ -2970,6 +3200,25 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if attempts:
                 return attempts[0]
             raise PrebuiltFallback("no compatible Windows CUDA asset was found")
+
+        # AMD ROCm on Windows: try HIP prebuilt
+        if host.has_rocm:
+            hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
+            if hip_name in upstream_assets:
+                log(
+                    f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}"
+                )
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = hip_name,
+                    url = upstream_assets[hip_name],
+                    source_label = "upstream",
+                    install_kind = "windows-hip",
+                )
+            log(
+                "AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU"
+            )
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -3052,7 +3301,16 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        published_choice = published_asset_choice_for_kind(release, "windows-cpu")
+        # AMD Windows hosts should prefer a hash-approved published
+        # Windows HIP bundle when one exists, but otherwise fall through
+        # to resolve_asset_choice() so the upstream HIP prebuilt is
+        # tried before the CPU fallback. Hard-pinning the published
+        # windows-cpu bundle here would make the new HIP path
+        # unreachable.
+        if host.has_rocm:
+            published_choice = published_asset_choice_for_kind(release, "windows-hip")
+        else:
+            published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
     elif host.is_macos and host.is_x86_64:
@@ -3401,7 +3659,7 @@ def overlay_directory_for_choice(
 
 
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
-    if choice.install_kind in {"linux-cpu", "linux-cuda"}:
+    if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
         return [
             "llama-server",
             "llama-quantize",
@@ -3411,11 +3669,12 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "libmtmd.so*",
             "libggml-cpu-*.so*",
             "libggml-cuda.so*",
+            "libggml-hip.so*",
             "libggml-rpc.so*",
         ]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
-    if choice.install_kind in {"windows-cpu", "windows-cuda"}:
+    if choice.install_kind in {"windows-cpu", "windows-cuda", "windows-hip"}:
         return ["*.exe", "*.dll"]
     raise PrebuiltFallback(
         f"unsupported install kind for runtime overlay: {choice.install_kind}"
@@ -4141,6 +4400,7 @@ def validate_server(
     install_dir: Path,
     *,
     runtime_line: str | None = None,
+    install_kind: str | None = None,
 ) -> None:
     last_failure: PrebuiltFallback | None = None
     for port_attempt in range(1, SERVER_PORT_BIND_ATTEMPTS + 1):
@@ -4164,7 +4424,33 @@ def validate_server(
             "--batch-size",
             "32",
         ]
-        if host.has_usable_nvidia or (host.is_macos and host.is_arm64):
+        # Only enable GPU offload for assets that actually ship GPU code.
+        # Gating on `host.has_rocm` alone breaks the intentional CPU
+        # fallback on AMD Windows hosts without a HIP prebuilt: the CPU
+        # binary would be launched with `--n-gpu-layers 1` and fail
+        # validation. Use the resolved install_kind as the source of
+        # truth and fall back to host detection when the caller did not
+        # pass one (keeps backwards compatibility with older call sites).
+        _gpu_kinds = {
+            "linux-cuda",
+            "linux-rocm",
+            "windows-cuda",
+            "windows-hip",
+            "macos-arm64",
+        }
+        if install_kind is not None:
+            _enable_gpu_layers = install_kind in _gpu_kinds
+        else:
+            # Older call sites that don't pass install_kind: keep ROCm
+            # hosts in the GPU-validation path so an AMD-only Linux host
+            # is exercised against the actual hardware rather than the
+            # CPU fallback. NVIDIA and macOS-arm64 are already covered.
+            _enable_gpu_layers = (
+                host.has_usable_nvidia
+                or host.has_rocm
+                or (host.is_macos and host.is_arm64)
+            )
+        if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
@@ -4689,10 +4975,21 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml*.dylib"],
             ["libmtmd*.dylib"],
         ]
+    if choice.install_kind == "linux-rocm":
+        return [
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu-*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-hip.so*"],
+        ]
     if choice.install_kind == "windows-cpu":
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
         return [["llama.dll"], ["ggml-cuda.dll"]]
+    if choice.install_kind == "windows-hip":
+        return [["llama.dll"], ["*hip*.dll"]]
     return []
 
 
@@ -4864,6 +5161,7 @@ def validate_prebuilt_choice(
         host,
         install_dir,
         runtime_line = choice.runtime_line,
+        install_kind = choice.install_kind,
     )
     log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
