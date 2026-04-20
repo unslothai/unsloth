@@ -514,7 +514,7 @@ export function SharedComposer({
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="Send to both models..."
-        className="mb-1 min-h-12 w-full resize-none overflow-y-hidden bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+        className="mb-1 min-h-12 w-full resize-none overflow-y-hidden bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
         rows={1}
       />
       <div className="relative mx-2 mb-2 flex items-center justify-between">

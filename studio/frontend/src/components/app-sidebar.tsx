@@ -32,19 +32,19 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   Book03Icon,
+  Cards01Icon,
   ColumnInsertIcon,
   CpuIcon,
   CursorInfo02Icon,
   Delete02Icon,
   Download01Icon,
   MessageSearch01Icon,
-  Cards01Icon,
   Search01Icon,
   NewReleasesIcon,
   PowerIcon,
   PencilEdit02Icon,
+  LayoutAlignLeftIcon,
   Settings02Icon,
-  SidebarLeftIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -139,8 +139,8 @@ function NavItem({
           data-tour={dataTour}
           className={
             isNav
-              ? "h-[30px] rounded-[8px] gap-2.5 px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white!"
-              : "h-[30px] rounded-[8px] gap-2.5 px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white!"
+              ? "h-[30px] rounded-[8px] gap-2.5 px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[30px] group-data-[collapsible=icon]:!rounded-[9px] group-data-[collapsible=icon]:mx-auto"
+              : "h-[30px] rounded-[8px] gap-2.5 px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[30px] group-data-[collapsible=icon]:!rounded-[9px] group-data-[collapsible=icon]:mx-auto"
           }
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-[18px]!" />
@@ -214,7 +214,11 @@ export function AppSidebar() {
 
   return (
     <>
-    <Sidebar collapsible="icon" variant="sidebar" className="font-heading">
+    <Sidebar
+      collapsible="icon"
+      variant="sidebar"
+      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+    >
       <SidebarHeader className="pl-[17px] pr-3 pt-[12px] pb-[12px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
         <div className="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
@@ -225,7 +229,7 @@ export function AppSidebar() {
               setActiveThreadId(null);
               closeMobileIfOpen();
             }}
-            className="flex items-center gap-1.5 select-none"
+            className="flex items-center gap-[6px] select-none"
             aria-label="Unsloth home"
           >
             <img
@@ -233,12 +237,12 @@ export function AppSidebar() {
               alt="Unsloth"
               className="h-[34px] w-[34px] rounded-full object-cover"
             />
-            <span className="font-heading text-[20px] font-semibold tracking-tight leading-none text-black dark:text-white">
+            <span className="font-heading text-[21px] font-semibold tracking-[-0.01em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
               unsloth
             </span>
             <span
               style={{ fontFamily: '"Inter Variable", ui-sans-serif, system-ui, sans-serif' }}
-              className="ml-0.5 mt-[3px] inline-flex items-center justify-center rounded-full border border-[#e0ded6] px-[7px] py-[2px] text-[8px] font-medium leading-none tracking-normal text-[#62605a] antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:border-[#3a3c3f] dark:text-[#9d9fa5] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
+              className="ml-0.5 inline-flex items-center justify-center rounded-full border border-[#e0ded6] px-[7px] py-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-[#62605a] antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:border-[#3a3c3f] dark:text-[#9d9fa5] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
             >
               BETA
             </span>
@@ -249,10 +253,10 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close sidebar"
                 >
-                  <HugeiconsIcon icon={SidebarLeftIcon} strokeWidth={1.5} className="size-[18px]" />
+                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="bottom" sideOffset={6}>
@@ -262,18 +266,18 @@ export function AppSidebar() {
           )}
         </div>
 
-        {/* Collapsed: sticker with hover-swap to open toggle */}
+        {/* Collapsed: panel icon doubles as expand trigger */}
         {!isMobile && (
-          <div className="hidden group-data-[collapsible=icon]:flex items-center justify-center h-9 w-full">
+          <div className="hidden group-data-[collapsible=icon]:flex h-[34px] items-center justify-center w-full">
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Open sidebar"
                 >
-                  <HugeiconsIcon icon={SidebarLeftIcon} strokeWidth={1.5} className="size-[18px]" />
+                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="right" sideOffset={8}>
@@ -498,24 +502,24 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:px-0">
+      <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:px-0">
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  className="gap-3 rounded-[8px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#ececec]! dark:data-[state=open]:bg-[#2e3035]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
+                  className="!h-[50px] gap-[8px] rounded-[8px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#ececec]! dark:data-[state=open]:bg-[#2e3035]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
                 >
                   <div
                     aria-label="User"
-                    className="flex size-9 shrink-0 items-center justify-center rounded-full border border-sidebar-border bg-primary text-[16px] font-bold text-primary-foreground"
+                    className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border border-sidebar-border bg-primary text-[16px] font-bold text-primary-foreground"
                   >
                     U
                   </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[14px] font-semibold text-[#383835] dark:text-[#c7c7c4]">User</span>
-                    <span className="truncate text-[12px] text-muted-foreground">Studio</span>
+                    <span className="truncate font-heading text-[13px] font-semibold text-[#383835] dark:text-[#c7c7c4]">User</span>
+                    <span className="truncate text-[11px] text-muted-foreground">Studio</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>

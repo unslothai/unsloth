@@ -326,9 +326,16 @@
 
 @layer utilities {
 
-	/* Heading font utility */
+	/* Heading font utility — matches the sidebar logo's letter-spacing so
+	   all Hellix text (select model, menus, nav items) stays visually
+	   consistent, with a small bump in dark mode to offset optical bloom. */
 	.font-heading {
 		font-family: var(--font-heading);
+		letter-spacing: -0.01em;
+	}
+
+	.dark .font-heading {
+		letter-spacing: 0.02em;
 	}
 
 	/* Elevated surface shadow (use ring-* for borders) */

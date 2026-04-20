@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
 import {
-  Settings04Icon,
+  Settings05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -311,7 +311,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
         >
           <div className="relative flex min-h-0 flex-col [&_.aui-thread-viewport]:pt-[48px] [&_.aui-thread-viewport]:px-10">
-            <div className="absolute top-0 left-0 right-3 z-20 flex h-[48px] items-start pt-[11px] gap-2 bg-background px-3">
+            <div className="absolute top-0 left-0 right-3 z-20 flex h-[48px] items-start pt-[11px] gap-2 bg-background pl-12 pr-3 md:pl-2">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -325,7 +325,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 }
                 onFoldersChange={onFoldersChange}
                 variant="ghost"
-                className="max-w-[80%]"
+                className="max-w-[80%] !h-[34px]"
               />
             </div>
             <div className="flex min-h-0 flex-1 flex-col">
@@ -343,7 +343,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             </div>
           </div>
           <div className="relative flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l [&_.aui-thread-viewport]:pt-[48px] [&_.aui-thread-viewport]:px-10">
-            <div className="absolute top-0 left-0 right-3 z-20 flex h-[48px] items-start pt-[11px] gap-2 bg-background px-3">
+            <div className="absolute top-0 left-0 right-3 z-20 flex h-[48px] items-start pt-[11px] gap-2 bg-background pl-12 pr-3 md:pl-2">
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
@@ -357,7 +357,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 }
                 onFoldersChange={onFoldersChange}
                 variant="ghost"
-                className="max-w-[80%]"
+                className="max-w-[80%] !h-[34px]"
               />
             </div>
             <div className="flex min-h-0 flex-1 flex-col">
@@ -762,7 +762,7 @@ export function ChatPage(): ReactElement {
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                className="max-w-[62vw] sm:max-w-none"
+                className="max-w-[62vw] sm:max-w-none !h-[34px]"
               />
             )}
             {loadingModel && loadToastDismissed ? (
@@ -805,11 +805,11 @@ export function ChatPage(): ReactElement {
           <button
             type="button"
             onClick={() => setSettingsOpen(!settingsOpen)}
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white"
             title="Inference settings"
             data-tour="chat-settings"
           >
-            <HugeiconsIcon icon={Settings04Icon} className="size-5" />
+            <HugeiconsIcon icon={Settings05Icon} className="size-5" />
           </button>
         </div>
 
