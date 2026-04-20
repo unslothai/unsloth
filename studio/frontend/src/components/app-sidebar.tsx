@@ -32,12 +32,12 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   Book03Icon,
-  Cards01Icon,
+  ChefHatIcon,
   ColumnInsertIcon,
-  CpuIcon,
   CursorInfo02Icon,
   Delete02Icon,
-  Download01Icon,
+  Download03Icon,
+  LibraryIcon,
   MessageSearch01Icon,
   Search01Icon,
   NewReleasesIcon,
@@ -337,7 +337,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
-                icon={CpuIcon}
+                icon={ChefHatIcon}
                 label="Train"
                 active={pathname === "/studio" || pathname.startsWith("/studio/")}
                 disabled={chatOnly}
@@ -349,7 +349,7 @@ export function AppSidebar() {
               />
 
               <NavItem
-                icon={Cards01Icon}
+                icon={LibraryIcon}
                 label="Recipes"
                 active={isRecipesRoute}
                 onClick={() => {
@@ -359,7 +359,7 @@ export function AppSidebar() {
               />
 
               <NavItem
-                icon={Download01Icon}
+                icon={Download03Icon}
                 label="Export"
                 active={pathname === "/export" || pathname.startsWith("/export/")}
                 disabled={chatOnly}
