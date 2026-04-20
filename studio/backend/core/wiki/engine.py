@@ -596,6 +596,10 @@ class LLMWikiEngine:
             ranked = [item for item in ranked if not item[0].startswith("analysis/")]
         if not ranked:
             ranked = self._rank_pages(question)
+            if not self.cfg.include_analysis_pages_in_query:
+                ranked = [
+                    item for item in ranked if not item[0].startswith("analysis/")
+                ]
 
         top_pages = (
             ranked

@@ -104,6 +104,24 @@ def test_ingest_pending_raw_files_skips_sensitive_candidates(tmp_path: Path):
     assert str(sensitive.resolve()) not in ingested_paths
 
 
+def test_ingest_pending_raw_files_skips_hidden_subdirectories(tmp_path: Path):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    visible = tmp_path / "raw" / "visible-notes.md"
+    visible.write_text("Visible notes", encoding = "utf-8")
+
+    archived = tmp_path / "raw" / ".archive" / "archived-notes.md"
+    archived.parent.mkdir(parents = True, exist_ok = True)
+    archived.write_text("Archived notes", encoding = "utf-8")
+
+    results = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    ingested_paths = {item["source_path"] for item in results}
+
+    assert str(visible.resolve()) in ingested_paths
+    assert str(archived.resolve()) not in ingested_paths
+
+
 def test_engine_surfaces_extraction_diagnostics(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -407,6 +425,24 @@ def test_query_zero_limits_use_full_context(tmp_path: Path):
     assert result["status"] == "ok"
     assert "sources/alpha.md" in result["context_pages"]
     assert long_tail in captured_prompt["text"]
+
+
+def test_query_respects_analysis_exclusion_on_empty_fallback(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "Fallback answer without analysis context.",
+    )
+    engine.cfg.include_analysis_pages_in_query = False
+
+    (tmp_path / "wiki" / "analysis" / "alpha.md").write_text(
+        "# Alpha Analysis\n\nalpha retrieval details\n",
+        encoding = "utf-8",
+    )
+
+    result = engine.query("alpha retrieval", save_answer = False)
+
+    assert result["status"] == "ok"
+    assert result["context_pages"] == []
 
 
 def test_query_saved_analysis_page_slug_uses_question_topic_terms(tmp_path: Path):

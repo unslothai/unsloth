@@ -67,6 +67,7 @@ class WikiFileEventHandler(FileSystemEventHandler):
         self._lock = threading.Lock()
         self._processed_mtime_ns: dict[str, int] = {}
         self._processed_hash: dict[str, str] = {}
+        self._ingest_inflight: set[str] = set()
 
     def _analysis_context_override_chars(self) -> Optional[int]:
         if (
@@ -162,13 +163,24 @@ class WikiFileEventHandler(FileSystemEventHandler):
                     return
                 if last_mtime == mtime_ns:
                     return
-                self._processed_mtime_ns[resolved] = mtime_ns
-                self._processed_hash[resolved] = file_hash
+                if resolved in self._ingest_inflight:
+                    return
+                self._ingest_inflight.add(resolved)
 
-            logger.info(f"New file detected in wiki raw directory: {file_path}")
-            title = self.ingestor.ingest_file(file_path, contributor = self.contributor)
-            if not title:
-                return
+            try:
+                logger.info(f"New file detected in wiki raw directory: {file_path}")
+                title = self.ingestor.ingest_file(
+                    file_path, contributor = self.contributor
+                )
+                if not title:
+                    return
+
+                with self._lock:
+                    self._processed_mtime_ns[resolved] = mtime_ns
+                    self._processed_hash[resolved] = file_hash
+            finally:
+                with self._lock:
+                    self._ingest_inflight.discard(resolved)
 
             if not self.auto_analyze:
                 return

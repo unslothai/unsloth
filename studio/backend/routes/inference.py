@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 import uuid
+import inspect
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
@@ -241,6 +242,21 @@ def _wiki_llm_available() -> bool:
         return False
 
 
+def _supports_enable_wiki_rag_history_arg(generate_fn: Any) -> bool:
+    try:
+        signature = inspect.signature(generate_fn)
+    except (TypeError, ValueError):
+        return False
+
+    if "enable_wiki_rag_history" in signature.parameters:
+        return True
+
+    return any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+
 def _route_wiki_llm_stub(prompt: str) -> str:
     """Best-effort wiki LLM function using whichever model backend is active."""
     wants_structured_json = (
@@ -278,19 +294,22 @@ def _route_wiki_llm_stub(prompt: str) -> str:
     try:
         backend = get_inference_backend()
         if backend.active_model_name:
+            generate_kwargs = {
+                "messages": [{"role": "user", "content": prompt}],
+                "system_prompt": "",
+                "temperature": temp,
+                "top_p": top_p,
+                "top_k": (top_k if wants_structured_json else 40),
+                "min_p": min_p,
+                "max_new_tokens": _WIKI_LLM_MAX_TOKENS,
+                "repetition_penalty": 1.0,
+                "cancel_event": None,
+            }
+            if _supports_enable_wiki_rag_history_arg(backend.generate_chat_response):
+                generate_kwargs["enable_wiki_rag_history"] = True
+
             out = ""
-            for token in backend.generate_chat_response(
-                messages = [{"role": "user", "content": prompt}],
-                system_prompt = "",
-                temperature = temp,
-                top_p = top_p,
-                top_k = (top_k if wants_structured_json else 40),
-                min_p = min_p,
-                max_new_tokens = _WIKI_LLM_MAX_TOKENS,
-                repetition_penalty = 1.0,
-                cancel_event = None,
-                enable_wiki_rag_history = True,
-            ):
+            for token in backend.generate_chat_response(**generate_kwargs):
                 out += token
             if out.strip():
                 return out.strip()

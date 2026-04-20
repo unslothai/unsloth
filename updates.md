@@ -618,3 +618,67 @@ New env knobs:
 
 Notes:
 - Explicit maintenance calls (`/wiki/ingest`, debug context with `include_pending_raw=true`) bypass interval throttling so manual/diagnostic operations remain immediate.
+
+## April 2026 Addendum (Merge Maintenance + Source Policy)
+
+This pass adds a first-class duplicate-merge maintenance workflow and reduces retrieval/index overhead when source pages are intentionally excluded.
+
+### Additional changed files
+- `studio/backend/core/wiki/engine.py`
+- `studio/backend/core/wiki/manager.py`
+- `studio/backend/routes/inference.py`
+- `studio/backend/models/inference.py`
+- `studio/backend/tests/test_wiki_rag_pipeline.py`
+- `updates.md`
+
+### 1) Internal wiki maintenance now keeps RAG history enabled by default
+Route-level internal wiki maintenance calls now keep `enable_wiki_rag_history=true` by default so maintenance runs have the same retrieval/history context behavior as normal wiki-assisted paths.
+
+### 2) Source-page exclusion now happens earlier (retrieval path), with index compaction
+Retrieval now enforces source inclusion policy before ranking/rerank work, so disabled source pages do not consume scoring budget or rerank tokens.
+
+Related behavior updates:
+- `retrieve_context(...)` now accepts `include_source_pages` through manager/route wiring.
+- `_rank_pages(...)` respects effective source policy directly.
+- LLM rerank prompt now uses compact candidate-only planner text (instead of a broad index dump).
+- Wiki index generation can omit the large Sources listing when source inclusion is disabled.
+
+Environment knobs:
+- `UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES`
+- `UNSLOTH_WIKI_INDEX_INCLUDE_SOURCE_PAGES`
+
+### 3) Lint now reports merge candidates for entities and concepts
+`GET /api/inference/wiki/lint` now includes merge candidate suggestions:
+- `entity_merge_candidates`
+- `concept_merge_candidates`
+
+These are advisory and non-destructive; they are intended to feed maintenance workflows.
+
+### 4) New duplicate merge-maintenance endpoint (dry-run + apply)
+Added endpoint:
+- `POST /api/inference/wiki/merge-maintenance`
+
+Request/response models:
+- `WikiMergeMaintenanceRequest`
+- `WikiMergeMaintenanceResponse`
+
+Apply behavior:
+- chooses canonical pages for high-confidence duplicates
+- archives duplicate pages under `wiki/.archive/...`
+- rewrites wiki links to canonical targets
+- rebuilds wiki index after apply
+
+Dry-run behavior:
+- returns planned operations and counts without writing.
+
+### 5) Verification status
+Focused regression tests:
+```bash
+/Users/zohairshafi/Local\ Workspace/unsloth/.venv/bin/python -m pytest -q studio/backend/tests/test_wiki_rag_pipeline.py
+# 38 passed
+```
+
+Live API smoke (auth-enabled backend):
+- Dry run: `POST /api/inference/wiki/merge-maintenance` -> `HTTP 200`
+- Apply mode: `POST /api/inference/wiki/merge-maintenance` -> `HTTP 200`
+- Observed response field in both runs: `rewritten_links: 303`

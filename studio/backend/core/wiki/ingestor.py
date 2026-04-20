@@ -180,6 +180,18 @@ class WikiIngestor:
             return graphify_candidates, skipped_sensitive
         return self._fallback_detect_candidates(), 0
 
+    def _is_hidden_path_under_raw(self, file_path: Path) -> bool:
+        try:
+            raw_root = self.raw_dir.expanduser().resolve()
+            resolved = file_path.expanduser().resolve()
+            rel_path = resolved.relative_to(raw_root)
+        except Exception:
+            return False
+
+        # The filename itself is handled separately; this catches hidden folders
+        # like raw/.archive/... to prevent archived files from being re-ingested.
+        return any(part.startswith(".") for part in rel_path.parts[:-1])
+
     def should_skip_local_file(self, file_path: Path) -> bool:
         """Skip hidden/system metadata files that should never enter wiki ingestion."""
         name = file_path.name
@@ -188,6 +200,7 @@ class WikiIngestor:
             lowered in self._SKIPPED_LOCAL_FILENAMES
             or name.startswith("._")
             or name.startswith(".")
+            or self._is_hidden_path_under_raw(file_path)
         )
 
     def _is_remote_source(self, value: str) -> bool:

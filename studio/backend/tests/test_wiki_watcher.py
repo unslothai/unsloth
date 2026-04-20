@@ -342,6 +342,37 @@ def test_watcher_can_force_source_only_mode(tmp_path: Path, monkeypatch):
     assert wiki_manager.calls[1]["preferred_context_only"] is True
 
 
+def test_watcher_retries_after_failed_ingest(tmp_path: Path, monkeypatch):
+    wiki_manager = _FakeWikiManager(wiki_dir = tmp_path / "wiki")
+    ingestor = _FakeIngestor(wiki_manager)
+
+    attempts = {"count": 0}
+
+    def _flaky_ingest(_file_path: Path, contributor = None):
+        attempts["count"] += 1
+        return None if attempts["count"] == 1 else "Sample Source"
+
+    ingestor.ingest_file = _flaky_ingest  # type: ignore[method-assign]
+
+    handler = WikiFileEventHandler(
+        ingestor = ingestor,
+        contributor = "tester",
+        auto_analyze = False,
+    )
+
+    monkeypatch.setattr("core.wiki.watcher.time.sleep", lambda _seconds: None)
+
+    raw_file = tmp_path / "retry-after-failure.txt"
+    raw_file.write_text("content", encoding = "utf-8")
+
+    handler._process_file(raw_file)
+    handler._process_file(raw_file)
+
+    assert attempts["count"] == 2
+    resolved = str(raw_file.resolve())
+    assert resolved in handler._processed_hash
+
+
 def test_watcher_runs_enrichment_on_same_schedule_as_lint(tmp_path: Path, monkeypatch):
     sources_dir = tmp_path / "wiki" / "sources"
     sources_dir.mkdir(parents = True)
