@@ -39,8 +39,9 @@ def _diff(a, b):
     if not a or not b:
         return None
     n = min(len(a), len(b))
-    diffs = [abs(a[i] - b[i]) for i in range(n)
-             if a[i] is not None and b[i] is not None]
+    diffs = [
+        abs(a[i] - b[i]) for i in range(n) if a[i] is not None and b[i] is not None
+    ]
     if not diffs:
         return None
     return {
@@ -52,12 +53,13 @@ def _diff(a, b):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--ref", required=True)
-    p.add_argument("--candidate", required=True)
+    p.add_argument("--ref", required = True)
+    p.add_argument("--candidate", required = True)
     args = p.parse_args()
 
     from torch_debugging_utils import compare_training_runs
-    base = compare_training_runs(args.ref, args.candidate, loss_tol=1e-3, grad_tol=1e-3)
+
+    base = compare_training_runs(args.ref, args.candidate, loss_tol = 1e-3, grad_tol = 1e-3)
 
     ref_a = _arrays(args.ref)
     cand_a = _arrays(args.candidate)
@@ -71,7 +73,7 @@ def main():
         "kl_diff": extras["kl"],
         "time_diff_ms": extras["time_ms"],
     }
-    print(json.dumps(out, indent=2))
+    print(json.dumps(out, indent = 2))
 
 
 if __name__ == "__main__":
