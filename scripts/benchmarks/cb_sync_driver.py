@@ -5,36 +5,33 @@ decode loop. That thread conflicts with two things we want to enable here:
 
 1. `torch.compile(mode="reduce-overhead")` which uses `cudagraph_trees` and
    requires main-thread TLS.
-2. Raw `torch.cuda.CUDAGraph` capture/replay on the decode forward, which is
-   the hot path. Captures *can* live in a child thread in principle, but
-   integrating with Inductor and debugging goes much smoother on the main
-   thread.
+2. Raw `torch.cuda.CUDAGraph` capture / replay on the decode forward.
 
 The manager's dead `warmup()` path suggests CB was supposed to grow CUDA
-graph support upstream, but `init_continuous_batching` currently raises
-`NotImplementedError` on `use_cuda_graph=True`. This driver side-steps that
-entirely by not going through `manager.start()` at all.
+graph support upstream but `init_continuous_batching` raises
+`NotImplementedError` on `use_cuda_graph=True`. This driver side-steps the
+whole manager thread, so the cudagraph integration point is now available.
 
 Key fixed-shape invariant: with `slice_inputs=False`, the full pre-allocated
 tensor buffers (input_ids, position_ids, cu_seq_lens_*, attention_mask,
-read_index / write_index) are returned as *views of the same storage* every
-step, so their shapes are constant across iterations. That is the precondition
-for CUDA graph replay to be safe.
+read_index / write_index) are returned as views of the same storage every
+step, so their shapes are constant across iterations. That is the
+precondition for graph replay / cudagraph_trees to be safe.
 
 Greedy sampling only (`do_sample=False`). `torch.multinomial` is not
-CUDA-graph-friendly; a downstream stochastic sanity check runs in a separate,
-non-graphed path.
+graph-friendly.
 
 Usage:
-    from cb_sync_driver import cb_sync_generate, CBSyncConfig
-    cfg = CBSyncConfig(max_new_tokens=512, use_cuda_graph=True)
-    outputs = cb_sync_generate(model, generation_config, prompt_ids_list, cfg)
+    driver = SyncCBDriver(model, gen_config, CBSyncConfig(compile_mode="reduce-overhead"))
+    # Reuse across many rollouts (cache / compiled forward stay warm):
+    for batch in batches:
+        driver.add_requests(batch)
+        out = driver.drive_until_empty()
 """
 
 from __future__ import annotations
 
 import queue
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -57,27 +54,33 @@ class CBSyncConfig:
     """Tunables for the sync driver."""
 
     max_new_tokens: int = 512
-    use_cuda_graph: bool = True
-    # Number of eager warmup steps before capturing a CUDA graph.
-    warmup_steps: int = 2
-    # Generation config knobs (forwarded to the manager's GenerationConfig).
-    do_sample: bool = False  # greedy only (CUDA-graph safe)
+    # torch.compile mode for the model forward. None = eager.
+    # "reduce-overhead" triggers cudagraph_trees, which captures a CUDA
+    # graph per unique input shape and replays it afterwards.
+    compile_mode: Optional[str] = None
+    do_sample: bool = False  # greedy only (graph-safe)
     eos_token_id: Optional[int] = None
     pad_token_id: Optional[int] = None
-    # Paged cache upper bounds; keep well above the default 256 / 4096.
+    # `slice_inputs=False` would give fixed shapes every step (graph-friendly)
+    # but forces every decode step to do `max_batch_tokens` tokens of work,
+    # which at max_batch_tokens=8192 is ~256x more than the real decode batch.
+    # Prefer `slice_inputs=True` (natural shapes) and let torch.compile bucket
+    # per shape. Steady-state decode has one shape so most steps replay the
+    # same graph anyway.
+    slice_inputs: bool = True
+    # Paged cache upper bounds.
     max_batch_tokens: int = 8192
     num_blocks: int = 8192
-    # Progress callback (step_index, tokens_produced_total) -> None.
+    # `torch._dynamo.config.cache_size_limit`: raise when varying shapes.
+    dynamo_cache_size_limit: int = 256
     on_step: Optional[callable] = field(default = None)
 
 
 class SyncCBDriver:
     """Main-thread driver that owns the PagedAttentionCache,
-    ContinuousBatchProcessor, and (optionally) a captured CUDA graph.
-
-    Unlike `ContinuousBatchingManager.start()`, there is no background
-    thread; `drive_until_empty()` blocks until every pending request is
-    finished.
+    ContinuousBatchProcessor, and optionally a `torch.compile`-compiled
+    forward. Reusable across multiple `drive_until_empty` calls -- the cache
+    and compiled forward stay warm between rounds.
     """
 
     def __init__(
@@ -88,7 +91,6 @@ class SyncCBDriver:
     ):
         self.model = model.eval()
         self.cfg = cfg
-        # Force-greedy + upper-bound overrides on a copy.
         gc = GenerationConfig.from_dict(generation_config.to_dict())
         gc.do_sample = cfg.do_sample
         if cfg.max_new_tokens:
@@ -99,25 +101,16 @@ class SyncCBDriver:
             gc.pad_token_id = cfg.pad_token_id
         gc.max_batch_tokens = cfg.max_batch_tokens
         gc.num_blocks = cfg.num_blocks
-        # Paged cache reads these at init.
         self.generation_config = gc
 
-        # We reuse the Manager's methods but never call `.start()`. Its
-        # constructor builds: logit processor, do_sample flag, etc.
         self.manager = ContinuousBatchingManager(
             model = self.model,
             generation_config = gc,
             manual_eviction = False,
             streaming = False,
-            slice_inputs = False,  # fixed-shape views -> CUDA-graph safe
+            slice_inputs = cfg.slice_inputs,
         )
-        # The manager's `use_cuda_graph` is checked inside `warmup()`, but its
-        # `__init__` refuses to set it. Set it directly now that we bypass
-        # `init_continuous_batching`.
-        self.manager.use_cuda_graph = cfg.use_cuda_graph
 
-        # Stand up the cache + processor ourselves so `_inner_generation_loop`
-        # has everything it needs.
         self.cache = PagedAttentionCache(
             self.model.config,
             gc,
@@ -137,69 +130,61 @@ class SyncCBDriver:
             FIFOScheduler(self.cache),
             streaming = False,
             manual_eviction = False,
-            slice_inputs = False,
+            slice_inputs = cfg.slice_inputs,
         )
         self.manager.batch_processor = self.batch_processor
-        self._graph: Optional[torch.cuda.CUDAGraph] = None
+
+        # torch.compile on the model forward. With slice_inputs=True the
+        # forward sees varying shapes (prefill bursts + decode steady state);
+        # `dynamic=True` lets Inductor bucket per shape without re-tracing
+        # every call, and `mode="reduce-overhead"` wraps each bucket in a
+        # CUDA graph replay path.
+        if cfg.compile_mode:
+            import torch._dynamo
+            torch._dynamo.config.cache_size_limit = cfg.dynamo_cache_size_limit
+            # GRPO's `requires_grad_` issue doesn't apply here (eval mode).
+            try:
+                torch._dynamo.config.allow_unspec_int_on_nn_module = True
+            except AttributeError:
+                pass
+            print(f"[cb_sync] torch.compile(model, mode='{cfg.compile_mode}', "
+                  f"dynamic=True)")
+            self.model.forward = torch.compile(
+                self.model.forward,
+                mode = cfg.compile_mode,
+                dynamic = True,
+                fullgraph = False,
+            )
         self._step_count = 0
 
     def add_requests(self, prompt_ids_list: list[list[int]]) -> list[str]:
         return [self.manager.add_request(ids) for ids in prompt_ids_list]
 
-    def _graphed_step(self):
-        """Capture or replay the decode CUDA graph."""
-        if self._graph is None:
-            # Eager warmup to populate allocator + workspaces.
-            for _ in range(self.cfg.warmup_steps):
-                self.manager._generation_step(self.batch_processor)
-            torch.cuda.synchronize()
-            stream = torch.cuda.Stream(device = self.model.device)
-            stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(stream):
-                self.manager._generation_step(self.batch_processor)
-            torch.cuda.current_stream().wait_stream(stream)
-            self._graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self._graph, stream = stream):
-                self.manager._generation_step(self.batch_processor)
-        else:
-            self._graph.replay()
-
     def drive_until_empty(self) -> dict[str, list[int]]:
         """Run the decode loop until every request finishes. Returns a dict
-        {request_id: generated_token_ids}."""
+        {request_id: generated_token_ids}.
+
+        Reusable across calls on the same driver -- the paged cache and the
+        compiled forward stay warm.
+        """
         results: dict[str, list[int]] = {}
-        # prepare_next_batch drains self.input_queue into the scheduler; we
-        # have to call it at least once before has_pending_requests() can
-        # return True. Loop until both the input_queue is empty AND the
-        # scheduler has nothing queued/active.
         while True:
-            input_empty = self.manager.input_queue.empty()
-            nothing_scheduled = not self.batch_processor.has_pending_requests()
-            if input_empty and nothing_scheduled:
+            if (self.manager.input_queue.empty()
+                    and not self.batch_processor.has_pending_requests()):
                 break
-            # 1. CPU: schedule the next batch (prepare_next_batch reads the
-            #    input_queue, packs shapes).
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
             if not self.batch_processor.prepare_next_batch():
-                # prepare_next_batch returns False if both the input queue
-                # drained empty AND the scheduler has no active requests. If
-                # we reach here with items still in input_queue, something is
-                # wrong -- bail to avoid an infinite loop.
                 break
-            # 2. GPU: forward (graphed on decode steps, eager on prefill).
-            if self.cfg.use_cuda_graph and self._is_pure_decode():
-                self._graphed_step()
-            else:
-                self.manager._generation_step(self.batch_processor)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            # 3. CPU: append new tokens, detect EOS, update scheduler.
+            # With `reduce-overhead`, Inductor captures a CUDA graph on the
+            # first call with a given shape signature and replays it after.
+            # Our shapes are constant (slice_inputs=False), so the second call
+            # is already replaying. No per-step torch.cuda.synchronize() --
+            # the replay itself fences appropriately.
+            self.manager._generation_step(self.batch_processor)
             self.batch_processor.update_batch()
             self._step_count += 1
             if self.cfg.on_step is not None:
-                self.cfg.on_step(self._step_count, self._produced())
-            # 4. Drain output_queue into results dict.
+                self.cfg.on_step(self._step_count, 0)
+            # Drain output_queue as requests finish.
             while True:
                 try:
                     out = self.manager.output_queue.get_nowait()
@@ -207,7 +192,6 @@ class SyncCBDriver:
                     break
                 if out.status == RequestStatus.FINISHED:
                     results[out.request_id] = out.generated_tokens
-        # Final drain after loop exits.
         while True:
             try:
                 out = self.manager.output_queue.get_nowait()
@@ -217,52 +201,10 @@ class SyncCBDriver:
                 results[out.request_id] = out.generated_tokens
         return results
 
-    def _is_pure_decode(self) -> bool:
-        """A decode-only batch has every request contributing exactly one
-        query token (q_len == b_size). Prefill batches have q_len >> b_size.
-        Shape consistency between decodes is what makes the graph replayable.
-        """
-        try:
-            return (
-                self.batch_processor.total_query_length
-                == self.batch_processor.total_batch_size
-            )
-        except Exception:
-            return False
-
-    def _produced(self) -> int:
-        return sum(
-            len(r.generated_tokens)
-            for r in getattr(
-                self.batch_processor.scheduler, "active_requests", {}
-            ).values()
-        )
-
     def close(self):
-        # Caches hold GPU memory; free them explicitly.
-        self._graph = None
         self.cache = None
         self.batch_processor = None
         self.manager.batch_processor = None
-
-
-def cb_sync_generate(
-    model: torch.nn.Module,
-    generation_config: GenerationConfig,
-    prompt_ids_list: list[list[int]],
-    cfg: CBSyncConfig,
-) -> dict[str, list[int]]:
-    """One-shot entrypoint: build a driver, submit, drain, close.
-
-    Matches the semantics of `model.generate_batch(...)` but on the main
-    thread with optional CUDA graph capture.
-    """
-    driver = SyncCBDriver(model, generation_config, cfg)
-    driver.add_requests(prompt_ids_list)
-    try:
-        return driver.drive_until_empty()
-    finally:
-        driver.close()
 
 
 # Simple microbench harness so the file is runnable standalone.
@@ -283,11 +225,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default = "unsloth/Qwen3-4B-Base")
     parser.add_argument("--n_prompts", type = int, default = 32)
+    parser.add_argument("--n_rounds", type = int, default = 2)
     parser.add_argument("--max_new_tokens", type = int, default = 512)
     parser.add_argument("--attn_impl", default = "paged_attention")
-    parser.add_argument("--use_cuda_graph", action = "store_true")
+    parser.add_argument("--compile_mode", default = None,
+                        choices = [None, "default", "reduce-overhead",
+                                   "max-autotune", "max-autotune-no-cudagraphs"])
     parser.add_argument("--max_batch_tokens", type = int, default = 8192)
     parser.add_argument("--num_blocks", type = int, default = 8192)
+    parser.add_argument("--lora_adapter", default = None)
     parser.add_argument("--stats_path", required = True)
     args = parser.parse_args()
 
@@ -303,6 +249,13 @@ if __name__ == "__main__":
     ).to("cuda")
     model.eval()
 
+    if args.lora_adapter:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(
+            model, str(Path(args.lora_adapter).resolve()), is_trainable = False
+        )
+        model.eval()
+
     from unsloth_grpo_common import (
         SYSTEM_PROMPT,
         apply_chat_template_to_tokenizer,
@@ -313,18 +266,14 @@ if __name__ == "__main__":
     ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
     ds = ds.shuffle(seed = 3407).select(range(args.n_prompts))
     messages = [
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": x["prompt"]},
-        ]
+        [{"role": "system", "content": SYSTEM_PROMPT},
+         {"role": "user", "content": x["prompt"]}]
         for x in ds
     ]
-    prompt_ids = [
-        tok.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
-        for m in messages
-    ]
+    prompt_ids = [tok.apply_chat_template(m, add_generation_prompt = True, tokenize = True)
+                  for m in messages]
 
-    gc = GenerationConfig(
+    gc_cfg = GenerationConfig(
         max_new_tokens = args.max_new_tokens,
         do_sample = False,
         pad_token_id = tok.pad_token_id,
@@ -335,7 +284,7 @@ if __name__ == "__main__":
 
     cfg = CBSyncConfig(
         max_new_tokens = args.max_new_tokens,
-        use_cuda_graph = args.use_cuda_graph,
+        compile_mode = args.compile_mode,
         max_batch_tokens = args.max_batch_tokens,
         num_blocks = args.num_blocks,
         eos_token_id = tok.eos_token_id,
@@ -343,25 +292,35 @@ if __name__ == "__main__":
     )
 
     torch.cuda.reset_peak_memory_stats()
-    # Warmup (first 16 prompts).
-    _ = cb_sync_generate(model, gc, prompt_ids[:16], cfg)
+
+    # One driver, multiple rounds -- cache + compiled forward stay warm.
+    driver = SyncCBDriver(model, gc_cfg, cfg)
+
+    # Warmup (first 16 prompts). With compile, this amortizes the capture.
+    print("[cb_sync] warmup...")
+    driver.add_requests(prompt_ids[:16])
+    _ = driver.drive_until_empty()
     torch.cuda.synchronize()
 
     wall_times = []
     total_decoded = 0
-    for _ in range(2):
+    for r in range(args.n_rounds):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        results = cb_sync_generate(model, gc, prompt_ids, cfg)
+        driver.add_requests(prompt_ids)
+        results = driver.drive_until_empty()
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
         total_decoded = sum(len(v) for v in results.values())
+        print(f"[cb_sync] round {r}: {wall_times[-1]:.2f}s, {total_decoded} tokens, "
+              f"{total_decoded / wall_times[-1]:.1f} tok/s")
 
     med = sorted(wall_times)[len(wall_times) // 2]
     out = {
         "backend": "cb_sync_driver",
-        "use_cuda_graph": args.use_cuda_graph,
+        "compile_mode": args.compile_mode,
         "attn_impl": args.attn_impl,
+        "lora_adapter": args.lora_adapter,
         "n_prompts": args.n_prompts,
         "n_decoded_tokens": total_decoded,
         "wall_times_s": wall_times,
@@ -374,3 +333,5 @@ if __name__ == "__main__":
     with open(args.stats_path, "w") as f:
         json.dump(out, f, indent = 2)
     print(json.dumps(out, indent = 2))
+    driver.close()
+    os._exit(0)

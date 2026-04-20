@@ -1,0 +1,15 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": false,
+  "lora_adapter": null,
+  "n_prompts": 32,
+  "n_decoded_tokens": 14922,
+  "wall_times_s": [
+    40.0974782659905,
+    28.064613271970302
+  ],
+  "median_wall_s": 40.0974782659905,
+  "decode_tps": 372.1431033895316,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 43.89091157913208
+}
