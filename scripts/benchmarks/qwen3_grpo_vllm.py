@@ -9,7 +9,6 @@ Run:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -26,10 +25,12 @@ from unsloth import FastLanguageModel  # noqa: E402
 import torch  # noqa: E402
 
 from unsloth_grpo_common import (  # noqa: E402
+    StepTimer,
     apply_chat_template_to_tokenizer,
     build_dataset,
-    build_reward_funcs,
     build_grpo_kwargs,
+    build_reward_funcs,
+    write_stats,
 )
 
 
@@ -121,30 +122,7 @@ def main():
     )
 
     # 5. Timing callback.
-    from transformers import TrainerCallback
-
-    timings = {"step_wall": [], "loss": [], "reward": []}
-
-    class StepTimer(TrainerCallback):
-        def __init__(self):
-            self.t0 = None
-
-        def on_step_begin(self, _args, state, control, **kwargs):
-            torch.cuda.synchronize()
-            self.t0 = time.perf_counter()
-
-        def on_log(self, _args, state, control, logs = None, **kwargs):
-            if logs is None:
-                return
-            if "loss" in logs:
-                timings["loss"].append(float(logs["loss"]))
-            if "reward" in logs:
-                timings["reward"].append(float(logs["reward"]))
-
-        def on_step_end(self, _args, state, control, **kwargs):
-            if self.t0 is not None:
-                torch.cuda.synchronize()
-                timings["step_wall"].append(time.perf_counter() - self.t0)
+    timer = StepTimer()
 
     trainer = GRPOTrainer(
         model = model,
@@ -152,7 +130,7 @@ def main():
         reward_funcs = reward_funcs,
         args = training_args,
         train_dataset = dataset,
-        callbacks = [StepTimer()],
+        callbacks = [timer],
     )
 
     torch.cuda.reset_peak_memory_stats()
@@ -162,20 +140,17 @@ def main():
 
     peak = torch.cuda.max_memory_allocated() / 1024**3
 
-    stats = {
-        "backend": "vllm_colocated",
-        "train_wall_s": t_train,
-        "peak_memory_gb": peak,
-        "step_wall_s": timings["step_wall"],
-        "losses": timings["loss"],
-        "rewards": timings["reward"],
-        "max_prompt_length": shared["max_prompt_length"],
-        "max_completion_length": shared["max_completion_length"],
-        "num_generations": args.num_generations,
-        "max_steps": args.max_steps,
-    }
-    with open(args.stats_path, "w") as f:
-        json.dump(stats, f, indent = 2)
+    write_stats(
+        args.stats_path,
+        backend = "vllm_colocated",
+        timer = timer,
+        train_wall_s = t_train,
+        peak_memory_gb = peak,
+        max_prompt_length = shared["max_prompt_length"],
+        max_completion_length = shared["max_completion_length"],
+        num_generations = args.num_generations,
+        max_steps = args.max_steps,
+    )
     print(f"[vllm] Wrote stats to {args.stats_path}")
     print(f"[vllm] Total train wall: {t_train:.1f}s   Peak mem: {peak:.2f} GB")
 

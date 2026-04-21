@@ -6,6 +6,9 @@ Exports:
     build_dataset(tokenizer, max_seq_length=2048)
     build_reward_funcs(tokenizer)
     build_grpo_kwargs(tokenizer, maximum_length, max_seq_length)
+    StepTimer  (TrainerCallback recording per-step wall time, loss, reward)
+    write_stats(path, backend, timer, ...)
+    install_vllm_sampling_shim()
 
 Keeps dataset loading, chat template, formatting rewards, and GRPO hparams
 identical between the vLLM baseline script and the transformers-CB candidate.
@@ -13,7 +16,10 @@ identical between the vLLM baseline script and the transformers-CB candidate.
 
 from __future__ import annotations
 
+import json
 import re
+import time
+
 import numpy as np
 import pandas as pd
 from datasets import Dataset, load_dataset
@@ -240,3 +246,132 @@ def build_grpo_kwargs(
         output_dir = output_dir,
         seed = 3407,
     )
+
+
+import torch
+from transformers import TrainerCallback
+
+
+class StepTimer(TrainerCallback):
+    """Per-step wall time / loss / reward recorder.
+
+    Shared verbatim across qwen3_grpo_{vllm,naive,tpaged}. Records step wall
+    time in `self.step_wall`, and picks up `loss` / `reward` from the TRL log
+    dict in `on_log`.
+    """
+
+    def __init__(self):
+        self.t0 = None
+        self.step_wall = []
+        self.loss = []
+        self.reward = []
+
+    def on_step_begin(self, _args, state, control, **kwargs):
+        torch.cuda.synchronize()
+        self.t0 = time.perf_counter()
+
+    def on_log(self, _args, state, control, logs = None, **kwargs):
+        if logs is None:
+            return
+        if "loss" in logs:
+            self.loss.append(float(logs["loss"]))
+        if "reward" in logs:
+            self.reward.append(float(logs["reward"]))
+
+    def on_step_end(self, _args, state, control, **kwargs):
+        if self.t0 is not None:
+            torch.cuda.synchronize()
+            self.step_wall.append(time.perf_counter() - self.t0)
+
+
+def write_stats(
+    path: str,
+    backend: str,
+    timer: StepTimer,
+    *,
+    train_wall_s: float,
+    peak_memory_gb: float,
+    max_prompt_length: int,
+    max_completion_length: int,
+    num_generations: int,
+    max_steps: int,
+    extra: dict | None = None,
+) -> None:
+    """Dump the per-step stats dict used by all three GRPO drivers.
+
+    Schema matches the pre-refactor output exactly: `backend`, `train_wall_s`,
+    `peak_memory_gb`, `step_wall_s`, `losses`, `rewards`, `max_prompt_length`,
+    `max_completion_length`, `num_generations`, `max_steps`, plus any
+    backend-specific keys passed in `extra` (e.g. `attn_impl`, `persistent_cb`).
+    """
+    stats = {
+        "backend": backend,
+        "train_wall_s": train_wall_s,
+        "peak_memory_gb": peak_memory_gb,
+        "step_wall_s": timer.step_wall,
+        "losses": timer.loss,
+        "rewards": timer.reward,
+        "max_prompt_length": max_prompt_length,
+        "max_completion_length": max_completion_length,
+        "num_generations": num_generations,
+        "max_steps": max_steps,
+    }
+    if extra:
+        stats.update(extra)
+    with open(path, "w") as f:
+        json.dump(stats, f, indent = 2)
+
+
+def maybe_compile_trainer_forwards(trainer, compile_mode, *, dynamic: bool = True, tag: str = ""):
+    """torch.compile wrap `trainer.model.forward` and (if present)
+    `trainer.ref_model.forward`. No-op if `compile_mode` is falsy.
+
+    Ported from the old `qwen3_grpo_unified.py` compile path, minus the
+    out-of-tree `torch_debugging_utils` imports that were dev-only.
+    """
+    if not compile_mode:
+        return
+    import torch._dynamo
+
+    torch._dynamo.config.cache_size_limit = 128
+    try:
+        torch._dynamo.config.allow_unspec_int_on_nn_module = True
+    except AttributeError:
+        pass
+    prefix = f"[{tag}] " if tag else ""
+    print(f"{prefix}Compiling trainer.model.forward (mode={compile_mode}, dynamic={dynamic})")
+    trainer.model.forward = torch.compile(
+        trainer.model.forward,
+        mode = compile_mode,
+        dynamic = dynamic,
+    )
+    ref = getattr(trainer, "ref_model", None)
+    if ref is not None:
+        ref.forward = torch.compile(
+            ref.forward,
+            mode = compile_mode,
+            dynamic = dynamic,
+        )
+
+
+def install_vllm_sampling_shim():
+    """Shim `vllm.sampling_params.GuidedDecodingParams` for newer vLLM releases.
+
+    TRL's `GRPOTrainer` imports `GuidedDecodingParams` from
+    `vllm.sampling_params`; newer vLLM versions have moved or removed it. Inject
+    a no-op class so the import succeeds even on the non-vLLM training paths
+    (naive, tpaged). No-op if vLLM is not installed or already exposes the
+    symbol.
+    """
+    try:
+        import vllm.sampling_params as _vllm_sp
+    except ImportError:
+        return
+    if hasattr(_vllm_sp, "GuidedDecodingParams"):
+        return
+
+    class _GuidedDecodingParamsShim:  # pragma: no cover - used only if TRL asks
+        def __init__(self, *a, **kw):
+            pass
+
+    _vllm_sp.GuidedDecodingParams = _GuidedDecodingParamsShim

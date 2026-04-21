@@ -141,6 +141,13 @@ CUDA_VISIBLE_DEVICES=6 python scripts/benchmarks/qwen3_grpo_tpaged.py \
     --max_batch_tokens 16384 --num_blocks 16384
 ```
 
+`qwen3_grpo_naive.py` and `qwen3_grpo_tpaged.py` accept an optional
+`--compile_mode {default,reduce-overhead,max-autotune-no-cudagraphs}` flag.
+When set, `trainer.model.forward` (and `trainer.ref_model.forward`, if present)
+are wrapped with `torch.compile` after trainer construction. The vLLM driver
+has no such flag because vLLM owns its own inference graph. `--compile_dynamic`
+(default on) toggles dynamic-shape compilation.
+
 ## Known integration notes for transformers continuous batching + TRL + Unsloth
 
 These are the sharp edges you hit going down the continuous-batching path and

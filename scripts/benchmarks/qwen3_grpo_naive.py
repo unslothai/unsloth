@@ -19,7 +19,6 @@ Run:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -28,31 +27,22 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-# Same vLLM sampling-params shim as the tpaged script so TRL imports cleanly
-# even when vLLM is installed but the GuidedDecodingParams symbol has moved.
-try:
-    import vllm.sampling_params as _vllm_sp
+from unsloth_grpo_common import (  # noqa: E402
+    StepTimer,
+    apply_chat_template_to_tokenizer,
+    build_dataset,
+    build_grpo_kwargs,
+    build_reward_funcs,
+    install_vllm_sampling_shim,
+    maybe_compile_trainer_forwards,
+    write_stats,
+)
 
-    if not hasattr(_vllm_sp, "GuidedDecodingParams"):
-
-        class _GuidedDecodingParamsShim:  # pragma: no cover
-            def __init__(self, *a, **kw):
-                pass
-
-        _vllm_sp.GuidedDecodingParams = _GuidedDecodingParamsShim
-except ImportError:
-    pass
+install_vllm_sampling_shim()
 
 import torch  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 from peft import LoraConfig, get_peft_model  # noqa: E402
-
-from unsloth_grpo_common import (  # noqa: E402
-    apply_chat_template_to_tokenizer,
-    build_dataset,
-    build_reward_funcs,
-    build_grpo_kwargs,
-)
 
 
 def parse_args():
@@ -71,6 +61,13 @@ def parse_args():
     )
     p.add_argument("--output_dir", default = "outputs/grpo_naive")
     p.add_argument("--stats_path", default = "logs/naive_stats.json")
+    p.add_argument(
+        "--compile_mode",
+        default = None,
+        choices = [None, "default", "reduce-overhead", "max-autotune-no-cudagraphs"],
+        help = "If set, torch.compile(model.forward, mode=...) after the trainer is built.",
+    )
+    p.add_argument("--compile_dynamic", action = "store_true", default = True)
     return p.parse_args()
 
 
@@ -149,30 +146,7 @@ def main():
         **shared,
     )
 
-    from transformers import TrainerCallback
-
-    timings = {"step_wall": [], "loss": [], "reward": []}
-
-    class StepTimer(TrainerCallback):
-        def __init__(self):
-            self.t0 = None
-
-        def on_step_begin(self, _args, state, control, **kwargs):
-            torch.cuda.synchronize()
-            self.t0 = time.perf_counter()
-
-        def on_log(self, _args, state, control, logs = None, **kwargs):
-            if logs is None:
-                return
-            if "loss" in logs:
-                timings["loss"].append(float(logs["loss"]))
-            if "reward" in logs:
-                timings["reward"].append(float(logs["reward"]))
-
-        def on_step_end(self, _args, state, control, **kwargs):
-            if self.t0 is not None:
-                torch.cuda.synchronize()
-                timings["step_wall"].append(time.perf_counter() - self.t0)
+    timer = StepTimer()
 
     trainer = GRPOTrainer(
         model = model,
@@ -180,7 +154,11 @@ def main():
         reward_funcs = reward_funcs,
         args = training_args,
         train_dataset = dataset,
-        callbacks = [StepTimer()],
+        callbacks = [timer],
+    )
+
+    maybe_compile_trainer_forwards(
+        trainer, args.compile_mode, dynamic = args.compile_dynamic, tag = "naive"
     )
 
     torch.cuda.reset_peak_memory_stats()
@@ -190,21 +168,18 @@ def main():
 
     peak = torch.cuda.max_memory_allocated() / 1024**3
 
-    stats = {
-        "backend": "naive_trl",
-        "attn_impl": args.attn_impl,
-        "train_wall_s": t_train,
-        "peak_memory_gb": peak,
-        "step_wall_s": timings["step_wall"],
-        "losses": timings["loss"],
-        "rewards": timings["reward"],
-        "max_prompt_length": shared["max_prompt_length"],
-        "max_completion_length": shared["max_completion_length"],
-        "num_generations": args.num_generations,
-        "max_steps": args.max_steps,
-    }
-    with open(args.stats_path, "w") as f:
-        json.dump(stats, f, indent = 2)
+    write_stats(
+        args.stats_path,
+        backend = "naive_trl",
+        timer = timer,
+        train_wall_s = t_train,
+        peak_memory_gb = peak,
+        max_prompt_length = shared["max_prompt_length"],
+        max_completion_length = shared["max_completion_length"],
+        num_generations = args.num_generations,
+        max_steps = args.max_steps,
+        extra = {"attn_impl": args.attn_impl},
+    )
     print(f"[naive] Wrote stats to {args.stats_path}")
     print(f"[naive] Total train wall: {t_train:.1f}s   Peak mem: {peak:.2f} GB")
 
