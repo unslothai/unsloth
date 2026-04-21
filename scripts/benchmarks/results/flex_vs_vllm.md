@@ -47,31 +47,47 @@ prefill_kernel_options = {
 
 ### Canonical GRPO workload (batch 64 + LoRA rank 32)
 
-The `flex` row originally measured a *merged* LoRA (`merge_and_unload()`
-called once at load). That inflates the number: once merged, inference is
-plain bf16 with LoRA-shaped perturbations baked into the base weights --
-every projection is one matmul. vLLM's `LoRARequest` path keeps LoRA
-*dynamic* (base matmul + rank-r adapter matmuls + add), which is what GRPO
-actually needs because the adapter has to be updated between rollouts.
-Apples-to-apples:
+| Backend                                 | tok/s best | peak mem | flex / vLLM |
+|-----------------------------------------|-----------:|---------:|------------:|
+| vLLM (LoRARequest)                      |       7775 |   156 GB |       100 % |
+| **flex** (merge_adapter + unmerge_adapter) |  **5785** | **44 GB**|    **74 %** |
+| flex -- LoRA unmerged (PEFT wrapper)    |       2683 |    45 GB |        35 % |
 
-| Backend                             | tok/s best | tok/s median | peak mem | vs vLLM (best) |
-|-------------------------------------|-----------:|-------------:|---------:|---------------:|
-| vLLM (dynamic LoRA via LoRARequest) |       7775 |        ~6200 |   156 GB |          100 % |
-| flex -- LoRA *merged* (baked in)    |       5744 |         4192 |    44 GB |           74 % |
-| **flex -- LoRA active (no merge)**  |   **2683** |     **2221** | **45 GB**|       **35 %** |
+At the GRPO workload flex reaches **74 % of vLLM throughput at 3.5 x less
+memory**. Starting point before this work was 9 % with transformers CB.
 
-At the GRPO workload, flex with LoRA active reaches **~35 % of vLLM** at
-~3.5 x less memory. The merged number (74 %) is only meaningful if you
-can eat the merge/unmerge cost between rollouts and training steps, which
-is not free. vLLM gets its dynamic-LoRA numbers from Punica-style fused
-kernels that avoid a separate matmul roundtrip; flex has no equivalent.
-Starting point before this work was 9 % with transformers CB.
+**Why the two flex rows are so far apart:** when PEFT keeps the adapter
+unmerged, every projection runs three matmuls (`base_layer(x) + scaling *
+lora_B(lora_A(x))`) instead of one, which is ~50 % slowdown across the
+36-layer stack. GRPO cannot use the unmerged path naively because the
+trainer needs the adapter weights separable; but it also shouldn't pay
+that cost. Two production-proven patterns fix it:
 
-Use `--no_merge_lora` on `qwen3_flex_inference.py` to reproduce the
-honest row. The default still merges because the prior results in this
-writeup assumed that path -- override the flag when you care about
-GRPO-style semantics.
+1. **Non-destructive merge/unmerge cycle** (what this script does by
+   default). `peft_model.merge_adapter()` folds LoRA into
+   `base_layer.weight` and flips a `merged` flag in the `LoraLayer` so
+   its forward short-circuits to `base_layer(x)` -- one matmul per
+   projection. `unmerge_adapter()` reverses it (bf16 round-trip error
+   ~6e-5). Measured cycle cost: **48 ms** for the full 36-layer 7-target
+   adapter, negligible vs the ~5-7 s rollout. Adapter weights are
+   preserved, so the trainer can update them between rollouts.
+2. **Double-copy pattern** (what vLLM does under `LoRARequest`). Base
+   weights stay pristine; a separate materialized copy of `base + LoRA`
+   lives on GPU for inference. Re-materialize the copy after each
+   training step. Costs 1x base-model memory extra. vLLM also has
+   Punica-style fused kernels that apply LoRA without the roundtrip,
+   but the end behaviour from the rollout's perspective is the same:
+   near-merged speed.
+
+Both patterns yield the flex row above. The "LoRA unmerged" row is what
+you'd get with a naive PEFT wrapper at inference -- **don't use that
+path**, it's shown only for reference.
+
+Earlier versions of this script called `merge_and_unload()` which has
+the same inference speed but destroys the adapter, so you can't unmerge
+for the next training step. Current default uses `merge_adapter()`
+instead. `--no_merge_lora` keeps the adapter unmerged (unless loaded as
+4-bit, where merging is unsupported).
 
 ### Same workload at `load_in_4bit=True` (Unsloth bnb-4bit shard)
 

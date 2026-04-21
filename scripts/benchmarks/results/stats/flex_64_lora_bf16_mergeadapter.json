@@ -1,0 +1,25 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": "outputs/lora_rank32_fresh",
+  "n_prompts": 64,
+  "n_decoded_tokens": 29357,
+  "wall_times_s": [
+    7.899581302946899,
+    5.07448300399119,
+    6.057169139035977,
+    6.930038888996933,
+    5.760280788992532
+  ],
+  "median_wall_s": 6.057169139035977,
+  "best_wall_s": 5.07448300399119,
+  "decode_tps_median": 4846.653498712153,
+  "decode_tps_best": 5785.219888786717,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 44.46234083175659,
+  "sample_completions": [
+    " To solve this problem, we need to find the area of the region inside the larger circle \\( C \\) with radius 30 and outside the six smaller congruent circles that form a ring and are each internally tangent to \\( C \\).\n\nFirst, let's denote the radius of each of the six smaller circles as \\( r \\). Since the six smaller circles are congruent and form a ring",
+    " \nWe know that the total number of pieces used to create an eight-row triangle is 15. We can set up an equation to represent the total number of pieces used.\n\nLet's denote the length of the shorter side of the triangle as x. Since the triangle has eight rows, the length of the longer side of the triangle will be 2x. \n\nThe total number of pieces used",
+    "First, let's find the sum of the smallest and largest 2-digit prime numbers, which are 11 and 97, respectively. The sum is 11 + 97 = 108. Now, let's find the sum of the smallest and largest 2-digit prime numbers: $11 + 97 = 108$. Since 1"
+  ]
+}
