@@ -916,7 +916,6 @@ export function ChatPage(): ReactElement {
 
         {view.mode === "single" ? (
           <SingleContent
-            key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
           />
