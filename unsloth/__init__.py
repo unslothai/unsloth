@@ -386,3 +386,5 @@ if torch is not None and DEVICE_TYPE != "cpu":
 
     # Patch TRL trainers for backwards compatibility
     _patch_trl_trainer()
+
+del _HAS_TORCH, _NO_TORCH_MODE
