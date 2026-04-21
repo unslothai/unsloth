@@ -335,10 +335,10 @@ class ExportBackend:
             Tuple of (success: bool, message: str)
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         if not self.is_peft:
-            return False, "This is not a PEFT model. Use 'Export Base Model' instead."
+            return False, "This is not a PEFT model. Use 'Export Base Model' instead.", None
 
         try:
             # Save locally if requested
@@ -399,14 +399,14 @@ class ExportBackend:
                     )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
-            return True, "Model exported successfully"
+            return True, "Model exported successfully", None
 
         except Exception as e:
             logger.error(f"Error exporting merged model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Export failed: {str(e)}"
+            return False, f"Export failed: {str(e)}", None
 
     def export_base_model(
         self,
@@ -424,7 +424,7 @@ class ExportBackend:
             Tuple of (success: bool, message: str)
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         if self.is_peft:
             return (
@@ -507,16 +507,16 @@ class ExportBackend:
                         )
                         logger.info(f"Model pushed successfully to {repo_id}")
                     else:
-                        return False, "Local save directory required for Hub upload"
+                        return False, "Local save directory required for Hub upload", None
 
-            return True, "Model exported successfully"
+            return True, "Model exported successfully", None
 
         except Exception as e:
             logger.error(f"Error exporting base model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Export failed: {str(e)}"
+            return False, f"Export failed: {str(e)}", None
 
     def export_gguf(
         self,
@@ -540,7 +540,7 @@ class ExportBackend:
             Tuple of (success: bool, message: str)
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         try:
             # Convert quantization method to lowercase for unsloth
@@ -655,14 +655,14 @@ class ExportBackend:
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
-            return True, f"GGUF model exported successfully ({quantization_method})"
+            return True, f"GGUF model exported successfully ({quantization_method})", None
 
         except Exception as e:
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"GGUF export failed: {str(e)}"
+            return False, f"GGUF export failed: {str(e)}", None
 
     def export_lora_adapter(
         self,
@@ -679,10 +679,10 @@ class ExportBackend:
             Tuple of (success: bool, message: str)
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         if not self.is_peft:
-            return False, "This is not a PEFT model. No adapter to export."
+            return False, "This is not a PEFT model. No adapter to export.", None
 
         try:
             # Save locally if requested
@@ -728,14 +728,14 @@ class ExportBackend:
                     )
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
-            return True, "LoRA adapter exported successfully"
+            return True, "LoRA adapter exported successfully", None
 
         except Exception as e:
             logger.error(f"Error exporting LoRA adapter: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Adapter export failed: {str(e)}"
+            return False, f"Adapter export failed: {str(e)}", None
 
 
 # Global export backend instance
