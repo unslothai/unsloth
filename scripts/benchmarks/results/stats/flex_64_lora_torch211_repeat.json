@@ -1,0 +1,25 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": "outputs/lora_rank32_fresh",
+  "n_prompts": 64,
+  "n_decoded_tokens": 29019,
+  "wall_times_s": [
+    8.298801471013576,
+    6.888721746974625,
+    6.2715082070208155,
+    4.575723551039118,
+    4.594870681001339
+  ],
+  "median_wall_s": 6.2715082070208155,
+  "best_wall_s": 4.575723551039118,
+  "decode_tps_median": 4627.116642774041,
+  "decode_tps_best": 6341.947820123435,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 44.21115064620972,
+  "sample_completions": [
+    "First, we need to find the length of segment $ABCD is 17.8 units. The length of segment $DB$ is 12.8 units.",
+    " \nTo solve this problem, we need to consider the different ways people can stand or sit around the table without having two adjacent people standing. Let's denote standing as S and sitting as T. We have 8 people, so there are 2^8 = 256 possible outcomes when flipping the coins.\n\nWe want to find the number of valid configurations where no two adjacent people stand.",
+    "Let the roots of the equation be $r, r^2, r^3, r^4, r^5$ in geometric progression. By Vieta's formulas, the sum of the roots is $r + r^2 + r^3 + r^4 + r^5 = 180$. Dividing both sides by $r^5$, we get $1"
+  ]
+}

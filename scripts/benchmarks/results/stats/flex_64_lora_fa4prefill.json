@@ -1,0 +1,25 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": "outputs/lora_rank32_fresh",
+  "n_prompts": 64,
+  "n_decoded_tokens": 29601,
+  "wall_times_s": [
+    11.575495404948015,
+    6.411582662025467,
+    6.848826738016214,
+    7.4589985449565575,
+    6.9681332929758355
+  ],
+  "median_wall_s": 6.9681332929758355,
+  "best_wall_s": 6.411582662025467,
+  "decode_tps_median": 4248.053066068501,
+  "decode_tps_best": 4616.800805723188,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 44.22274446487427,
+  "sample_completions": [
+    "First, let's find the sum of the numbers in Amanda's list. The sum of the first n even numbers is given by the formula n(n+1). In this case, n = 50 (since there are 50 even numbers from 2 to 100). So, the sum of Amanda's list is 50(50+1) = ",
+    " \nTo find the area of the smaller square, we need to determine its side length. Let's denote the side length of the smaller square as \\( s \\).\n\nFrom the diagram, we can see that the larger square has a side length of 6. The smaller square is inscribed within the larger square such that its vertices touch the midpoints of the sides of the larger square. This means",
+    " To solve the problem, we need to find the number of ordered pairs \\((x, y)\\) of positive integers that satisfy the inequalities \\(x \\le 2y \\le 60\\) and \\(y \\le 2x \\le 60\\).\n\nFirst, let's rewrite the inequalities in a more convenient form:\n1. \\(x \\le 2y \\le"
+  ]
+}

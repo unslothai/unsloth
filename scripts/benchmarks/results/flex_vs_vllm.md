@@ -98,16 +98,43 @@ per block.
 
 ## What I tried that did NOT move the needle
 
-- **`BACKEND="FLASH"` on prefill** (FA4 / FlashAttention-4 on Blackwell):
-  FA4 on sm_100 requires minimum 256-row blocks; our page_size is 128.
-  Raising page_size to 256 works but the paged-attention mask routing
-  gets more complex; out of scope for this writeup.
+- **`BACKEND="FLASH"` on prefill** (FA4 / FlashAttention-4 on Blackwell,
+  torch 2.11 + flash-attn CuTeDSL): empirically 4617 tok/s at batch 64 +
+  LoRA vs 5744 baseline on torch 2.11. The FA4 CuTe kernel is slow when
+  `mask_mod` indexes by `kv_idx` (documented in the attention-gym
+  `flex_flash_attention.py` limitations: "Indexing by kv_idx is a large
+  perf hit"). Our prefill mask is `document_causal`:
+      `docs[q_idx] == docs[kv_idx]`
+  which hits that exact slow path. `BLOCK_SIZE=(256, 128)` + padding to
+  the 256-row Q tile works (output is coherent), it's just slower than
+  the default Triton flex path for this mask.
+- **Inductor autotune replay** (`TORCHINDUCTOR_FLEX_ATTENTION_LOGGING_FILE`
+  + `mode="max-autotune-no-cudagraphs"` + parse the JSON log): Inductor's
+  chosen best decode config (`fwd_num_warps=4, fwd_num_stages=3,
+  fwd_BLOCK_M=64, fwd_BLOCK_N=64`) lands at 4827 tok/s -- worse than the
+  hand-tuned `num_warps=8` at 5744. Autotune times a single kernel call,
+  which doesn't catch cumulative register-spill / L1 effects across the
+  36-layer stack. Harness lives at `flex_autotune_replay.py`.
 - **torch.compile on `call_model_with_flex_kwargs`**: 4425 tok/s (same
   as eager walker) because the CUDA graph already captures every op in
   the walker into one replay. The compile step is work we don't need.
 - **`num_warps=4` / `num_warps=16`**: 4486 / 4748 -- neither beats 8.
   Inductor's default picks 4 on small blocks and we're already past
   that sweet spot, but 16 wastes registers.
+- **Explicit `fwd_BLOCK_M=128, fwd_BLOCK_N=128` pinning** on top of the
+  manual best: 5009 tok/s. The implicit default already picks 128 for
+  our shape; pinning it inhibits Inductor's shape-specialised choice
+  between the flex_attention and flex_decoding templates.
+
+## Torch version + run-to-run noise
+
+Upgrading torch 2.9.1 -> 2.11 (required for FA4's CuTeDSL path) moves
+best-of-N tok/s from ~5616 to ~5660 at batch 64 + LoRA -- essentially
+within noise. Over 10 rounds, median is 4192 and best is 5660; the large
+spread is GPU clock throttling across a ~60-second sustained run plus
+variable prompt-length distributions per round. Reported numbers use
+best-of-N to match the prior harness; steady-state median is roughly 75
+ % of best.
 
 ## Architecture notes (unchanged from prior commits)
 
@@ -132,9 +159,17 @@ prompts. See `sample_completions` in any `logs/flex_*_tuned.json`.
 - **Chunked prefill**: vLLM interleaves prefill and decode inside a
   single step. flex does a full separate prefill pass per new batch,
   which is the main remaining penalty for large batches.
-- **page_size=256 + BACKEND=FLASH on prefill**: should unlock FA4 on
-  Blackwell for the prefill pass. Decode would still go through
-  flex_decoding.
+- **Prefill-path mask refactor**: the document_causal mask indexes by
+  `kv_idx`. Flattening to a per-query bias (`bias[q_idx]`) would put
+  FA4 back on the fast path, but this is a non-trivial rework because
+  the causal-within-document constraint needs to be encoded without the
+  `docs[kv_idx]` lookup.
+- **Exhaustive Triton autotune** for flex_decoding: attention-gym's
+  `flex_grid_sweep.py` enumerates 144 fwd configs; Inductor's default
+  autotune only probes a handful. Running the full sweep with
+  end-to-end tok/s as the metric (not single-call ms) might beat the
+  manual num_warps=8 finding, but 144 * 5 rounds is ~20 hrs of B200
+  time.
 - **Kernel-level parity on decode**: vLLM on sm_100 uses FlashInfer
   TRTLLM kernels which are fused / tuned more aggressively than
   flex_attention's Inductor-generated Triton. Closing the last
@@ -143,7 +178,13 @@ prompts. See `sample_completions` in any `logs/flex_*_tuned.json`.
 
 ## Raw stats (under `scripts/benchmarks/results/stats/`)
 
-- `flex_{8,16,32,64,128}_tuned.json` (best opts, 5 rounds)
-- `flex_64_lora_tuned.json` (GRPO canonical)
+- `flex_{8,16,32,64,128}_tuned.json` (best opts, 5 rounds, torch 2.9.1)
+- `flex_64_lora_tuned.json` (GRPO canonical, torch 2.9.1)
+- `flex_64_lora_torch211_baseline.json` + `_repeat.json` + `_10rounds.json`
+  (same config re-run on torch 2.11 to measure noise)
+- `flex_64_lora_fa4prefill.json` (FA4 prefill regression at batch 64)
+- `flex_64_lora_autotune{,_tma}.json` (Inductor-autotune-suggested config)
+- `flex_64_lora_warps2.json` + `flex_64_lora_pinned_blocks.json` (other
+  sweep points)
 - `flex_{32,64,128,256}x512[_lora]_cudagraph.json` (prior best-of-3 runs)
 - `vllm_{8,16,32,64,128,256}[x512][_lora].json`

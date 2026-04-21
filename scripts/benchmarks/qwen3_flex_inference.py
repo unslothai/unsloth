@@ -240,6 +240,7 @@ class FlexInference:
         max_new_tokens = 512,
         decode_kernel_options = None,
         prefill_kernel_options = None,
+        fa4_prefill = False,
     ):
         assert max_seq_length % page_size == 0
         self.model = model
@@ -250,16 +251,28 @@ class FlexInference:
         self.max_seq_length = max_seq_length
         self.page_size = page_size
         self.max_new_tokens = max_new_tokens
+        self.fa4_prefill = fa4_prefill
+        # On SM100 (Blackwell), FA4 via flex_attention requires Q block = 256,
+        # KV block = 128. See attention-gym `get_flash_block_size`.
+        self.prefill_q_block = 256 if fa4_prefill else 128
+        self.prefill_kv_block = 128
         self.decode_kernel_options = (
             decode_kernel_options
             if decode_kernel_options is not None
             else DECODE_KERNEL_OPTIONS_DEFAULT
         )
-        self.prefill_kernel_options = (
+        base_prefill_opts = (
             prefill_kernel_options
             if prefill_kernel_options is not None
-            else PREFILL_KERNEL_OPTIONS_DEFAULT
+            else dict(PREFILL_KERNEL_OPTIONS_DEFAULT)
         )
+        if fa4_prefill:
+            # Use the CuTeDSL FA4 kernel on Blackwell. FORCE_USE_FLEX_ATTENTION
+            # must be off because the FLASH backend is the flex_attention kernel.
+            base_prefill_opts = dict(base_prefill_opts)
+            base_prefill_opts.pop("FORCE_USE_FLEX_ATTENTION", None)
+            base_prefill_opts["BACKEND"] = "FLASH"
+        self.prefill_kernel_options = base_prefill_opts
 
         self.page_table = PageTable(
             n_pages = n_pages,
@@ -309,9 +322,11 @@ class FlexInference:
         input_pos = torch.cat(input_pos_list).view(1, -1)
         batch_idx = torch.cat(batch_idx_list).view(1, -1)
 
-        # Pad to multiple of 128 (flex_attention block alignment).
+        # Pad to multiple of Q block size (flex_attention block alignment).
+        # For FA4 on Blackwell, Q block = 256 -- otherwise 128.
         L = input_ids.shape[1]
-        pad = (128 - L % 128) % 128
+        q_block = self.prefill_q_block
+        pad = (q_block - L % q_block) % q_block
         if pad > 0:
             input_ids = F.pad(input_ids, (0, pad), value = 0)
             input_pos = F.pad(input_pos, (0, pad), value = 0)
@@ -322,7 +337,15 @@ class FlexInference:
         )
         logits_positions = input_lengths.cumsum(dim = 0) - 1  # [num_seqs]
 
-        mask = self.page_table.create_prefill_blockmask_no_paging(batch_idx)
+        # If FA4 is on, BLOCK_SIZE is a (Q, KV) tuple. Otherwise scalar.
+        prefill_block_size = (
+            (self.prefill_q_block, self.prefill_kv_block)
+            if self.fa4_prefill
+            else self.prefill_q_block
+        )
+        mask = self.page_table.create_prefill_blockmask_no_paging(
+            batch_idx, BLOCK_SIZE = prefill_block_size
+        )
 
         flex_kwargs = dict(
             flex_block_mask = mask,
@@ -601,6 +624,14 @@ def main():
         default = None,
         choices = [None, "default", "reduce-overhead", "max-autotune-no-cudagraphs"],
     )
+    p.add_argument(
+        "--fa4_prefill",
+        action = "store_true",
+        help = (
+            "Use BLOCK_SIZE=(256,128) + BACKEND=FLASH on prefill to unlock the "
+            "CuTeDSL FA4 kernel on Blackwell (SM100)."
+        ),
+    )
     p.add_argument("--stats_path", required = True)
     args = p.parse_args()
 
@@ -668,6 +699,7 @@ def main():
         max_new_tokens = args.max_new_tokens,
         decode_kernel_options = _parse_opts(args.decode_kernel_options),
         prefill_kernel_options = _parse_opts(args.prefill_kernel_options),
+        fa4_prefill = args.fa4_prefill,
     )
 
     # Optionally compile the manual forward walker. This fuses the layer-stack
