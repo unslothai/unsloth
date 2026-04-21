@@ -322,7 +322,9 @@ def write_stats(
         json.dump(stats, f, indent = 2)
 
 
-def maybe_compile_trainer_forwards(trainer, compile_mode, *, dynamic: bool = True, tag: str = ""):
+def maybe_compile_trainer_forwards(
+    trainer, compile_mode, *, dynamic: bool = True, tag: str = ""
+):
     """torch.compile wrap `trainer.model.forward` and (if present)
     `trainer.ref_model.forward`. No-op if `compile_mode` is falsy.
 
@@ -339,7 +341,9 @@ def maybe_compile_trainer_forwards(trainer, compile_mode, *, dynamic: bool = Tru
     except AttributeError:
         pass
     prefix = f"[{tag}] " if tag else ""
-    print(f"{prefix}Compiling trainer.model.forward (mode={compile_mode}, dynamic={dynamic})")
+    print(
+        f"{prefix}Compiling trainer.model.forward (mode={compile_mode}, dynamic={dynamic})"
+    )
     trainer.model.forward = torch.compile(
         trainer.model.forward,
         mode = compile_mode,
