@@ -8,7 +8,7 @@ import { preprocessLaTeX } from "@/lib/latex";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { code } from "@streamdown/code";
+import { createCodePlugin } from "./code-plugin";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
@@ -16,8 +16,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
+const code = createCodePlugin({
+  themes: [unslothLightTheme, unslothDarkTheme],
+});
 const { withSmoothContextProvider } = INTERNAL;
 
 const STREAMDOWN_COMPONENTS = {
@@ -425,7 +429,7 @@ const MarkdownTextImpl = () => {
             panZoom: true,
           },
         }}
-        shikiTheme={["github-light", "github-dark"]}
+        shikiTheme={[unslothLightTheme, unslothDarkTheme]}
         BlockComponent={StreamdownBlock}
       >
         {processedText}
