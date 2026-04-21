@@ -248,6 +248,7 @@ def run_server(
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
+    llama_parallel_slots: int = 1,
 ):
     """
     Start the FastAPI server.
@@ -257,6 +258,7 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
+        llama_parallel_slots: Number of parallel slots for llama-server
 
     Note:
         Signal handlers are NOT registered here so that embedders
@@ -331,6 +333,7 @@ def run_server(
     # binds (port==0) leave it unset and let request handlers fall back
     # to the ASGI request scope or request.base_url.
     app.state.server_port = port if port and port > 0 else None
+    app.state.llama_parallel_slots = llama_parallel_slots
 
     # Run server in a daemon thread
     def _run():

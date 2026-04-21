@@ -99,6 +99,7 @@ export interface TrainingRuntimeState {
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  selectedHistoryRunId: string | null;
 }
 
 export interface TrainingRuntimeActions {
@@ -115,6 +116,7 @@ export interface TrainingRuntimeActions {
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
+  setSelectedHistoryRunId: (id: string | null) => void;
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
