@@ -81,6 +81,52 @@ from qwen3_flex_inference import (  # noqa: E402
     run_drift_verification,
 )
 from flex_paged_attention import PagedKVCache, PageTable  # noqa: E402
+from torch.nn.attention.flex_attention import create_block_mask as _create_block_mask  # noqa: E402
+
+
+# --- sliding-window block mask helpers ------------------------------------
+#
+# Gemma-4's `sliding_attention` layers attend only to the last
+# `sliding_window` KV positions (`q_idx - kv_idx < W`) in addition to the
+# standard causal mask. The shared helpers in `flex_paged_attention.py`
+# only expose the pure-causal builders, so we build sliding variants here
+# (local to this file so that file is untouched).
+
+
+def _causal_blockmask_with_window(B: int, L: int, block_size: int, window: int, device: str):
+    def causal_windowed(b, h, q_idx, kv_idx):
+        return (q_idx >= kv_idx) & (q_idx - kv_idx < window)
+
+    return _create_block_mask(
+        causal_windowed,
+        B = B,
+        H = None,
+        Q_LEN = L,
+        KV_LEN = L,
+        BLOCK_SIZE = block_size,
+        device = device,
+    )
+
+
+def _prefill_blockmask_with_window(batch_idx: torch.Tensor, block_size, window: int):
+    assert batch_idx.ndim == 2 and batch_idx.shape[0] == 1
+    L = batch_idx.shape[1]
+    docs = batch_idx.view(-1)
+
+    def document_causal_windowed(b, h, q_idx, kv_idx):
+        causal_mask = q_idx >= kv_idx
+        window_mask = q_idx - kv_idx < window
+        document_mask = docs[q_idx] == docs[kv_idx]
+        return causal_mask & window_mask & document_mask
+
+    return _create_block_mask(
+        document_causal_windowed,
+        B = 1,
+        H = None,
+        Q_LEN = L,
+        KV_LEN = L,
+        BLOCK_SIZE = block_size,
+    )
 
 
 # --- transformers version guard --------------------------------------------
@@ -165,7 +211,7 @@ def make_flex_gemma4_attention_forward(
         attention_mask = None,
         past_key_values = None,
         cache_position = None,
-        flex_block_mask: Optional[BlockMask] = None,
+        flex_block_mask: Optional[dict] = None,
         flex_input_pos: Optional[torch.Tensor] = None,
         flex_batch_idx: Optional[torch.Tensor] = None,
         flex_kernel_options: Optional[dict] = None,
@@ -185,10 +231,7 @@ def make_flex_gemma4_attention_forward(
             # cache's block-mask shape, so we route shared layers through
             # the eager SDPA kernel instead of flex_attention. This is
             # slower per-layer but keeps the sidecar design simple and
-            # CUDA-graph safe -- SDPA reads stable device pointers, and
-            # we attend over the full sidecar length (zero-initialized
-            # beyond the prefill sequence, giving negligible contribution
-            # once masked by causal).
+            # CUDA-graph safe.
             q = _apply_rotary_q(q, cos, sin)
             shared_k, shared_v = shared_kv_buffer[self.kv_shared_layer_index]
             B = q.shape[0]
@@ -200,20 +243,40 @@ def make_flex_gemma4_attention_forward(
                 groups = Hq // Hkv
                 k = k.repeat_interleave(groups, dim = 1)
                 v = v.repeat_interleave(groups, dim = 1)
-            # Causal mask over q_pos vs kv_pos. Note: Gemma-4 has two
-            # attention regimes (full_attention and sliding_attention),
-            # both causal; sliding-window layers additionally clamp kv to
-            # the last `sliding_window` positions. The sidecar path here
-            # treats shared layers as full-causal over the prefix. Strict
-            # sliding-window semantics on shared layers are a TODO; with
-            # 512-token windows and typical prefixes this approximation
-            # matches within a few ULP, but would drift on long prefixes.
-            is_causal = q.shape[-2] > 1
+
+            # Build the attn_mask matching this layer's regime:
+            #  - full_attention : pure causal.
+            #  - sliding_attn   : causal AND q_pos - kv_pos < window.
+            # For prefill (q_len > 1) the mask is a [q_len, kv_len] bool;
+            # for decode (q_len == 1) it becomes a [1, kv_len] row where
+            # the single q position is `input_pos` (passed in
+            # flex_input_pos) and kv_positions run 0..kv_len-1.
+            q_len = q.shape[-2]
+            kv_len = k.shape[-2]
+            window = getattr(self, "sliding_window", None)
+            if q_len > 1:
+                # Prefill: q_len == prefill_packed_len, kv_len should equal
+                # q_len in a clean run. Build per-batch positions.
+                q_pos = torch.arange(q_len, device = q.device)
+                kv_pos = torch.arange(kv_len, device = q.device)
+                attn_mask = q_pos[:, None] >= kv_pos[None, :]
+                if window is not None:
+                    attn_mask = attn_mask & (q_pos[:, None] - kv_pos[None, :] < window)
+            else:
+                # Decode: q_pos per batch comes from flex_input_pos.
+                q_pos = flex_input_pos.view(B, 1)  # [B, 1]
+                kv_pos = torch.arange(kv_len, device = q.device)[None, :]
+                attn_mask = q_pos >= kv_pos
+                if window is not None:
+                    attn_mask = attn_mask & (q_pos - kv_pos < window)
+                # SDPA expects mask shape [B, 1, 1, kv_len].
+                attn_mask = attn_mask.unsqueeze(1).unsqueeze(1)
+
             attn_output = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
-                is_causal = is_causal,
+                attn_mask = attn_mask,
                 scale = self.scaling,
             )
             attn_output = (
@@ -247,12 +310,15 @@ def make_flex_gemma4_attention_forward(
             if self._paged_cache is not None and flex_input_pos is not None:
                 k, v = self._paged_cache.update(flex_input_pos, k, v, flex_batch_idx)
 
+        # flex_block_mask is a dict keyed by layer_type; pick the one
+        # matching this layer's regime (full_attention vs sliding_attention).
+        block_mask = flex_block_mask[self.layer_type]
         attn_output = flex_attention_compiled(
             q,
             k,
             v,
             scale = self.scaling,
-            block_mask = flex_block_mask,
+            block_mask = block_mask,
             enable_gqa = True,
             kernel_options = flex_kernel_options,
         )
@@ -466,10 +532,34 @@ class FlexGemma4Inference:
         self.input_pos_buffer = torch.zeros(
             max_batch_size, dtype = torch.int32, device = self.device
         )
-        self.block_mask_logical = self.page_table.create_causal_blockmask(
-            B = max_batch_size,
-            L = max_seq_length,
-        )
+
+        # Detect the sliding window from any sliding-attention layer.
+        # We need one block mask per layer type: `full_attention` is pure
+        # causal; `sliding_attention` is causal AND q_pos - kv_pos < window.
+        sliding_window = None
+        for layer in model.model.layers:
+            if getattr(layer.self_attn, "is_sliding", False):
+                sliding_window = layer.self_attn.sliding_window
+                break
+
+        self.sliding_window = sliding_window
+        self.block_mask_logical_by_type = {
+            "full_attention": self.page_table.create_causal_blockmask(
+                B = max_batch_size, L = max_seq_length
+            ),
+        }
+        if sliding_window is not None:
+            self.block_mask_logical_by_type["sliding_attention"] = (
+                _causal_blockmask_with_window(
+                    B = max_batch_size,
+                    L = max_seq_length,
+                    block_size = page_size,
+                    window = sliding_window,
+                    device = self.device.type,
+                )
+            )
+        # Legacy alias used by the original page-aware decode slicer.
+        self.block_mask_logical = self.block_mask_logical_by_type["full_attention"]
 
         self.cudagraph_captured = False
         self.graphs = {}
@@ -524,12 +614,19 @@ class FlexGemma4Inference:
             if self.fa4_prefill
             else self.prefill_q_block
         )
-        mask = self.page_table.create_prefill_blockmask_no_paging(
+        mask_full = self.page_table.create_prefill_blockmask_no_paging(
             batch_idx, BLOCK_SIZE = prefill_block_size
         )
+        masks_by_type = {"full_attention": mask_full}
+        if self.sliding_window is not None:
+            masks_by_type["sliding_attention"] = _prefill_blockmask_with_window(
+                batch_idx,
+                block_size = prefill_block_size,
+                window = self.sliding_window,
+            )
 
         flex_kwargs = dict(
-            flex_block_mask = mask,
+            flex_block_mask = masks_by_type,
             flex_input_pos = input_pos,
             flex_batch_idx = batch_idx,
             flex_kernel_options = self.prefill_kernel_options,
@@ -541,51 +638,80 @@ class FlexGemma4Inference:
         return self._softcap(logits)
 
     def _decode_block_mask(self, batch_idx: torch.Tensor):
-        block_mask = self.block_mask_logical
+        """Slice one row of the logical decode mask per sequence, for
+        both full and sliding regimes. Returns a dict keyed by layer_type
+        plus the raw `input_pos` tensor (needed for PageTable conversion)."""
         input_pos = self.input_pos_buffer[batch_idx]
         assert batch_idx.ndim == 1 and input_pos.ndim == 1
         B = batch_idx.shape[0]
-        input_block_idx = input_pos // block_mask.BLOCK_SIZE[0]
-        kv_num_blocks = block_mask.kv_num_blocks[batch_idx, :, input_block_idx].view(
-            B, 1, 1
-        )
-        kv_indices = block_mask.kv_indices[batch_idx, :, input_block_idx].view(
-            B, 1, 1, -1
-        )
-        full_num = full_idx = None
-        if block_mask.full_kv_num_blocks is not None:
-            full_num = block_mask.full_kv_num_blocks[
+
+        def _slice(block_mask, extra_mask_mod):
+            input_block_idx = input_pos // block_mask.BLOCK_SIZE[0]
+            kv_num_blocks = block_mask.kv_num_blocks[
                 batch_idx, :, input_block_idx
             ].view(B, 1, 1)
-            full_idx = block_mask.full_kv_indices[
+            kv_indices = block_mask.kv_indices[
                 batch_idx, :, input_block_idx
             ].view(B, 1, 1, -1)
+            full_num = full_idx = None
+            if block_mask.full_kv_num_blocks is not None:
+                full_num = block_mask.full_kv_num_blocks[
+                    batch_idx, :, input_block_idx
+                ].view(B, 1, 1)
+                full_idx = block_mask.full_kv_indices[
+                    batch_idx, :, input_block_idx
+                ].view(B, 1, 1, -1)
+
+            seq_length = (1, block_mask.seq_lengths[1])
+            return BlockMask.from_kv_blocks(
+                kv_num_blocks,
+                kv_indices,
+                full_num,
+                full_idx,
+                BLOCK_SIZE = block_mask.BLOCK_SIZE,
+                mask_mod = extra_mask_mod,
+                seq_lengths = seq_length,
+            )
 
         def causal_offset(off):
-            def offset(b, h, q_idx, kv_idx):
+            def m(b, h, q_idx, kv_idx):
                 return q_idx + off[b] >= kv_idx
 
-            return offset
+            return m
 
-        seq_length = (1, block_mask.seq_lengths[1])
-        mask = BlockMask.from_kv_blocks(
-            kv_num_blocks,
-            kv_indices,
-            full_num,
-            full_idx,
-            BLOCK_SIZE = block_mask.BLOCK_SIZE,
-            mask_mod = causal_offset(input_pos),
-            seq_lengths = seq_length,
-        )
-        return mask, input_pos
+        def causal_offset_windowed(off, window):
+            def m(b, h, q_idx, kv_idx):
+                return (q_idx + off[b] >= kv_idx) & (
+                    q_idx + off[b] - kv_idx < window
+                )
+
+            return m
+
+        masks = {
+            "full_attention": _slice(
+                self.block_mask_logical_by_type["full_attention"],
+                causal_offset(input_pos),
+            ),
+        }
+        if self.sliding_window is not None:
+            masks["sliding_attention"] = _slice(
+                self.block_mask_logical_by_type["sliding_attention"],
+                causal_offset_windowed(input_pos, self.sliding_window),
+            )
+        return masks, input_pos
 
     def _decode_step_eager(self, batch_idx: torch.Tensor, input_ids: torch.Tensor):
         B = input_ids.shape[0]
-        mask, input_pos = self._decode_block_mask(batch_idx)
-        mask = self.page_table.convert_logical_block_mask(mask, batch_idx)
+        masks, input_pos = self._decode_block_mask(batch_idx)
+        # Convert each regime's block mask through the page table so the
+        # logical→physical kv page mapping is correct for every layer.
+        masks = {
+            k: self.page_table.convert_logical_block_mask(m, batch_idx)
+            for k, m in masks.items()
+        }
         position_ids = input_pos.view(B, 1).to(torch.long)
         flex_kwargs = dict(
-            flex_block_mask = mask,
+            flex_block_mask = masks,
             flex_input_pos = input_pos.view(B, 1).to(torch.long),
             flex_batch_idx = batch_idx,
             flex_kernel_options = self.decode_kernel_options,
