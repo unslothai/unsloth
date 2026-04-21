@@ -124,6 +124,68 @@ You can use the same Docker image as Unsloth Studio.
 For RTX 50x, B200, 6000 GPUs: `uv pip install unsloth --torch-backend=auto`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/get-started/install/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
+### CPU-Only and No-Torch Modes
+
+#### CPU-Only Mode (PyTorch installed, no GPU)
+If you have PyTorch installed but no GPU available, Unsloth will automatically detect this and run in CPU-only mode:
+
+```python
+import unsloth
+from unsloth import FastLanguageModel
+
+# This will work on CPU-only machines
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/Llama-2-7b-gguf",
+    max_seq_length=2048,
+)
+```
+
+⚠️ **Warning**: On CPU-only machines, Unsloth will display: `"No GPU detected. Unsloth running in CPU-only mode. Only GGUF inference is supported."`
+
+**Limitations:**
+- Fine-tuning is not supported on CPU
+- Only GGUF inference is available
+- Performance will be significantly slower than GPU
+
+#### No-Torch Mode (PyTorch not installed)
+If PyTorch is not installed, Unsloth can still run in no-torch mode for GGUF inference only:
+
+```python
+import unsloth
+from unsloth import FastLanguageModel
+
+# This will work without PyTorch installed
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/Llama-2-7b-gguf",
+)
+```
+
+**To enable no-torch mode explicitly** (even if PyTorch is installed):
+```bash
+export UNSLOTH_NO_TORCH=1  # Linux/macOS
+set UNSLOTH_NO_TORCH=1     # Windows
+python your_script.py
+```
+
+⚠️ **Warning**: When `UNSLOTH_NO_TORCH=1` is set with PyTorch installed, Unsloth will display: `"UNSLOTH_NO_TORCH is set. Running in no-torch mode."`
+
+**Limitations:**
+- Fine-tuning is not possible
+- Training is not possible
+- Only GGUF inference is available
+- Model quantization and advanced features are not available
+
+#### Feature Availability Matrix
+
+| Feature | GPU | CPU with PyTorch | No-Torch Mode |
+|---------|-----|------------------|---------------|
+| GGUF Inference | ✅ | ✅ | ✅ |
+| Fine-tuning (QLoRA) | ✅ | ❌ | ❌ |
+| Full Fine-tuning | ✅ | ❌ | ❌ |
+| RL Training (GRPO) | ✅ | ❌ | ❌ |
+| Model Export | ✅ | ✅ | ❌ |
+| Quantization | ✅ | ✅ | ❌ |
+
 ## 📒 Free Notebooks
 
 Train for free with our notebooks. You can use our new [free Unsloth Studio notebook](https://colab.research.google.com/github/unslothai/unsloth/blob/main/studio/Unsloth_Studio_Colab.ipynb) to run and train models for free in a web UI.
