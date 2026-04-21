@@ -137,8 +137,12 @@ def make_flex_attention_forward(page_table: PageTable):
 
         if hasattr(self, "q_norm"):
             # Qwen3: RMSNorm on [B, S, H, D] (per-head), then transpose.
-            q = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-            k = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            q = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(
+                1, 2
+            )
+            k = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(
+                1, 2
+            )
         else:
             # Llama: no QK-norm.
             q = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
