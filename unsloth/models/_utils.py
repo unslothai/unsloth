@@ -945,6 +945,15 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+else:
+    def _noop_amp_decorator(*args, **kwargs):
+        def _wrap(func):
+            return func
+
+        return _wrap
+
+    torch_amp_custom_fwd = _noop_amp_decorator
+    torch_amp_custom_bwd = _noop_amp_decorator
 # =============================================
 
 # =============================================

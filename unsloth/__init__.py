@@ -376,7 +376,7 @@ elif torch is not None and DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 
-if torch is not None and DEVICE_TYPE != "cpu":
+if torch is not None:
     from .models import *
     from .models import __version__
     from .save import *
