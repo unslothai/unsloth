@@ -2672,6 +2672,10 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
 
 def fast_inference_setup(model_name, model_config):
     fast_inference = True
+    if os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1":
+        # Flex inference backend (Qwen3 / Llama-3 / Gemma-4-E2B-it). Skip
+        # the vLLM setup entirely — the flex engine does not use vllm.
+        return fast_inference, model_name
     if not is_vLLM_available():
         logger.warning_once(
             "Unsloth: vLLM is not installed! Will use Unsloth inference!"
@@ -2701,8 +2705,15 @@ def patch_peft_fast_inference(model):
         model.fast_generate = model.model.fast_generate
         model.fast_generate_batches = model.model.fast_generate_batches
 
-        # Also saving and loading LoRA
-        from unsloth_zoo.vllm_utils import save_lora, load_lora
+        # Pick the right save_lora / load_lora implementation. The flex
+        # backend (UNSLOTH_FAST_INFERENCE=1) never imports vllm; reading
+        # from unsloth_zoo.vllm_utils would try to import
+        # ``vllm.lora.request.LoRARequest`` inside load_lora and fail.
+        _is_flex = type(vllm_engine).__name__ == "FlexEngine"
+        if _is_flex:
+            from unsloth.inference.vllm_shim import save_lora, load_lora
+        else:
+            from unsloth_zoo.vllm_utils import save_lora, load_lora
 
         model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)

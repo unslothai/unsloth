@@ -353,7 +353,15 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
-        if fast_inference:
+        _use_flex_fast_inference = (
+            os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
+        )
+        if fast_inference and _use_flex_fast_inference:
+            # Flex backend path: skip the vLLM import gate entirely. The
+            # actual engine is attached further down in
+            # ``FastLlamaModel.from_pretrained``.
+            pass
+        elif fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise ImportError(
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
@@ -979,7 +987,14 @@ class FastModel(FastBaseModel):
                 )
             load_in_4bit = False
 
-        if fast_inference:
+        _use_flex_fast_inference = (
+            os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
+        )
+        if fast_inference and _use_flex_fast_inference:
+            # Flex backend path: skip the vLLM import gate. The engine is
+            # attached further down in the ``FastBaseModel`` loader.
+            pass
+        elif fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise ImportError(
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
