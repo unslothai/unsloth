@@ -22,7 +22,6 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 STUDIO_HOME = Path.home() / ".unsloth" / "studio"
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
-STALE_DESKTOP_PASSWORD_FILE = ".desktop_password"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
@@ -825,7 +824,6 @@ def provision_desktop_auth():
     auth_dir = STUDIO_HOME / "auth"
     secret = _create_desktop_secret_in_cli()
     _write_auth_secret(auth_dir / DESKTOP_SECRET_FILE, secret)
-    (auth_dir / STALE_DESKTOP_PASSWORD_FILE).unlink(missing_ok = True)
     typer.echo("Desktop auth ready.")
 
 
@@ -842,7 +840,6 @@ def reset_password():
     stale_files = [
         auth_dir / BOOTSTRAP_PASSWORD_FILE,
         auth_dir / DESKTOP_SECRET_FILE,
-        auth_dir / STALE_DESKTOP_PASSWORD_FILE,
     ]
     had_db = db_file.exists()
 

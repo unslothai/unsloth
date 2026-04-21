@@ -69,10 +69,6 @@ fn desktop_secret_path() -> Result<PathBuf, String> {
     Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))
 }
 
-fn stale_desktop_password_path() -> Result<PathBuf, String> {
-    Ok(auth_secret_path(&home_dir()?, ".desktop_password"))
-}
-
 fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(s.trim().to_string())),
@@ -258,9 +254,6 @@ pub async fn desktop_auth(
             authenticate_with_stale_port_retry(&client, &state, backend, &secret).await?;
         backend = resolved_backend;
         if let Some(tokens) = tokens {
-            if let Ok(stale) = stale_desktop_password_path() {
-                let _ = std::fs::remove_file(stale);
-            }
             return Ok(tokens);
         }
     }
