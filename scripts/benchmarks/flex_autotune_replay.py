@@ -39,33 +39,43 @@ def run_autotune_pass(log_file: str, args) -> None:
     env["TORCHINDUCTOR_FLEX_ATTENTION_LOGGING_FILE"] = log_file.replace(".json", "")
 
     cmd = [
-        sys.executable, "-u", str(HERE / "qwen3_flex_inference.py"),
-        "--n_prompts", str(args.n_prompts),
-        "--n_rounds", "1",
-        "--max_new_tokens", str(args.max_new_tokens),
-        "--max_batch_size", str(args.max_batch_size),
+        sys.executable,
+        "-u",
+        str(HERE / "qwen3_flex_inference.py"),
+        "--n_prompts",
+        str(args.n_prompts),
+        "--n_rounds",
+        "1",
+        "--max_new_tokens",
+        str(args.max_new_tokens),
+        "--max_batch_size",
+        str(args.max_batch_size),
         # NB: autotune in `max-autotune-no-cudagraphs` mode is incompatible with
         # our raw CUDA graph capture path, so we skip --capture_cudagraph here.
         # Goal is only to produce the log, not to benchmark.
-        "--stats_path", str(HERE / "logs" / "flex_autotune_stats.json"),
+        "--stats_path",
+        str(HERE / "logs" / "flex_autotune_stats.json"),
     ]
     if args.lora_adapter:
         cmd += ["--lora_adapter", args.lora_adapter]
     print("[autotune] running:", " ".join(cmd))
     print(f"[autotune] logging to {log_file}")
-    subprocess.run(cmd, env=env, check=True)
+    subprocess.run(cmd, env = env, check = True)
 
 
 class _SymStub:
     """Pretend-symbolic value so eval() can handle SymPy-ish free vars like `s40`."""
+
     def __init__(self, name):
         self.name = name
+
     def __repr__(self):
         return f"Sym({self.name})"
 
 
 class _SymNamespace(dict):
     """Any unknown name becomes a _SymStub instead of NameError."""
+
     def __getitem__(self, key):
         if key in self:
             return super().__getitem__(key)
@@ -119,8 +129,11 @@ def pick_decode_shape(shapes):
 
     def q_len_of(shape_key, parsed):
         # If we successfully parsed and there's a real int at index 4, use it.
-        if isinstance(parsed, (list, tuple)) and len(parsed) > 4 \
-                and isinstance(parsed[4], int):
+        if (
+            isinstance(parsed, (list, tuple))
+            and len(parsed) > 4
+            and isinstance(parsed[4], int)
+        ):
             return parsed[4]
         # Else extract from the raw string form, which is always
         # `('forward', <B>, 32, 8, <Q_LEN>, <KV_LEN>, 128, 128)`.
@@ -132,7 +145,7 @@ def pick_decode_shape(shapes):
     # (parsed, opts, time, kernel_type) -> plus we need the raw key string.
     # Pass shape_key via _SymNamespace too — actually we'll redo parse_log to
     # include the raw key. Simpler: re-read the file.
-    return min(shapes, key=lambda s: q_len_of(s[4] if len(s) > 4 else "", s[0]))
+    return min(shapes, key = lambda s: q_len_of(s[4] if len(s) > 4 else "", s[0]))
 
 
 def format_best_opts(best_opts: dict) -> dict:
@@ -150,16 +163,25 @@ def format_best_opts(best_opts: dict) -> dict:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--log_file", default="logs/flex_autotune.json",
-                   help="Inductor writes the autotune log here. Will have .json appended.")
-    p.add_argument("--output_opts", default="logs/flex_best_decode_opts.json",
-                   help="Extracted best kernel options go here.")
-    p.add_argument("--n_prompts", type=int, default=16)
-    p.add_argument("--max_batch_size", type=int, default=64)
-    p.add_argument("--max_new_tokens", type=int, default=64)
-    p.add_argument("--lora_adapter", default=None)
-    p.add_argument("--skip_autotune", action="store_true",
-                   help="Skip autotune pass and just parse existing log.")
+    p.add_argument(
+        "--log_file",
+        default = "logs/flex_autotune.json",
+        help = "Inductor writes the autotune log here. Will have .json appended.",
+    )
+    p.add_argument(
+        "--output_opts",
+        default = "logs/flex_best_decode_opts.json",
+        help = "Extracted best kernel options go here.",
+    )
+    p.add_argument("--n_prompts", type = int, default = 16)
+    p.add_argument("--max_batch_size", type = int, default = 64)
+    p.add_argument("--max_new_tokens", type = int, default = 64)
+    p.add_argument("--lora_adapter", default = None)
+    p.add_argument(
+        "--skip_autotune",
+        action = "store_true",
+        help = "Skip autotune pass and just parse existing log.",
+    )
     args = p.parse_args()
 
     log_file = args.log_file
@@ -187,11 +209,11 @@ def main():
     best.setdefault("PRESCALE_QK", True)
     best.setdefault("USE_TMA", True)
     best.setdefault("BLOCKS_ARE_CONTIGUOUS", True)
-    print("\n[autotune] final decode kernel_options:", json.dumps(best, indent=2))
+    print("\n[autotune] final decode kernel_options:", json.dumps(best, indent = 2))
 
-    Path(args.output_opts).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output_opts).parent.mkdir(parents = True, exist_ok = True)
     with open(args.output_opts, "w") as f:
-        json.dump(best, f, indent=2)
+        json.dump(best, f, indent = 2)
     print(f"[autotune] wrote {args.output_opts}")
 
 
