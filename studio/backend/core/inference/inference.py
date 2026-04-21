@@ -996,15 +996,20 @@ class InferenceBackend:
         if enable_wiki_rag_history:
             last_user_query = ""
             if messages:
-                last_message = messages[-1]
-                if isinstance(last_message, dict):
-                    last_user_query = self._coerce_chat_history_content(
-                        last_message.get("content", "")
+                for msg in reversed(messages):
+                    role = (
+                        msg.get("role")
+                        if isinstance(msg, dict)
+                        else getattr(msg, "role", None)
                     )
-                else:
-                    last_user_query = self._coerce_chat_history_content(
-                        getattr(last_message, "content", "")
-                    )
+                    if role == "user":
+                        content = (
+                            msg.get("content")
+                            if isinstance(msg, dict)
+                            else getattr(msg, "content", "")
+                        )
+                        last_user_query = self._coerce_chat_history_content(content)
+                        break
 
             rag_context = self._get_rag_context(last_user_query)
             if rag_context:
@@ -2290,6 +2295,12 @@ class InferenceBackend:
                 file_path.write_text(content, encoding = "utf-8")
                 self._pending_chat_history_blocks.clear()
                 self._chat_history_buffer_started_at = None
+                if self.wiki_watcher is None:
+                    # Watcher may be disabled or failed to start; ingest directly.
+                    self.wiki_ingestor.ingest_file(
+                        file_path,
+                        contributor = "Unsloth Studio",
+                    )
                 logger.info(f"Saved buffered chat history to {file_path}")
         except Exception as e:
             logger.error(f"Failed to save chat history to wiki: {e}")

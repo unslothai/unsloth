@@ -229,6 +229,10 @@ async def lifespan(app: FastAPI):
             )
             wiki_watcher.start()
             app.state.wiki_watcher = wiki_watcher
+            try:
+                get_inference_backend().wiki_watcher = wiki_watcher
+            except Exception as exc:
+                logger.warning("Failed to attach wiki watcher to inference backend: %s", exc)
             logger.info(
                 "Wiki watcher enabled at startup: %s (auto_query=%s lint_every=%d chat_history=%s)",
                 raw_dir,
@@ -258,6 +262,10 @@ async def lifespan(app: FastAPI):
     # Cleanup
     try:
         wiki_watcher = getattr(app.state, "wiki_watcher", None)
+        try:
+            get_inference_backend().wiki_watcher = None
+        except Exception:
+            pass
         if wiki_watcher is not None:
             wiki_watcher.stop()
             logger.info("Wiki watcher stopped")
