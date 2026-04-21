@@ -254,7 +254,7 @@ elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 elif DEVICE_TYPE == "cpu":
     SUPPORTS_BFLOAT16 = False
-    print("Unsloth: No GPU detected — running in CPU mode. Only GGUF inference is supported.")
+    warnings.warn("Unsloth: No GPU detected — running in CPU mode. Only GGUF inference is supported.", stacklevel=2)
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
