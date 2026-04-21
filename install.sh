@@ -34,8 +34,8 @@ substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
-PACKAGE_NAME="unsloth @ git+https://github.com/Manan17/unsloth.git@mlx-apple-silicon"
-UNSLOTH_ZOO_PACKAGE="unsloth-zoo @ git+https://github.com/Manan17/unsloth-zoo.git@mlx-apple-silicon"
+PACKAGE_NAME="unsloth @ git+https://github.com/Manan17/unsloth.git@main"
+UNSLOTH_ZOO_PACKAGE="unsloth-zoo @ git+https://github.com/Manan17/unsloth-zoo.git@main"
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _VERBOSE=false
