@@ -885,23 +885,7 @@ gemma4_template = \
         {{ '<|think|>\n' }}
     {%- endif -%}
     {%- if messages[0]['role'] in ['system', 'developer'] -%}
-        {%- if messages[0]['content'] is string -%}
-            {{ messages[0]['content'] | trim }}
-        {%- elif messages[0]['content'] is iterable -%}
-            {%- for item in messages[0]['content'] -%}
-                {%- if item['type'] == 'audio' -%}
-                    {{ '<|audio|>' }}
-                {%- elif item['type'] == 'image' -%}
-                    {{ '<|image|>' }}
-                {%- elif item['type'] == 'video' -%}
-                    {{ '<|video|>' }}
-                {%- elif item['type'] == 'text' -%}
-                    {{ item['text'] | trim }}
-                {%- endif -%}
-            {%- endfor -%}
-        {%- else -%}
-            {{ raise_exception("Invalid content type") }}
-        {%- endif -%}
+        {{ messages[0]['content'] | trim }}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
     {{ '<turn|>\n' }}
@@ -972,7 +956,7 @@ gemma4_thinking_template = \
     {%- endfor -%}
     {{- ns.result | trim -}}
 {%- endmacro -%}
-{%- set thinking = enable_thinking is not defined or enable_thinking -%}
+{%- set thinking = enable_thinking is defined and enable_thinking -%}
 {%- set loop_messages = messages -%}
 {%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
     {{ '<|turn>system\n' }}
@@ -980,23 +964,7 @@ gemma4_thinking_template = \
         {{ '<|think|>\n' }}
     {%- endif -%}
     {%- if messages[0]['role'] in ['system', 'developer'] -%}
-        {%- if messages[0]['content'] is string -%}
-            {{ messages[0]['content'] | trim }}
-        {%- elif messages[0]['content'] is iterable -%}
-            {%- for item in messages[0]['content'] -%}
-                {%- if item['type'] == 'audio' -%}
-                    {{ '<|audio|>' }}
-                {%- elif item['type'] == 'image' -%}
-                    {{ '<|image|>' }}
-                {%- elif item['type'] == 'video' -%}
-                    {{ '<|video|>' }}
-                {%- elif item['type'] == 'text' -%}
-                    {{ item['text'] | trim }}
-                {%- endif -%}
-            {%- endfor -%}
-        {%- else -%}
-            {{ raise_exception("Invalid content type") }}
-        {%- endif -%}
+        {{ messages[0]['content'] | trim }}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
     {{ '<turn|>\n' }}
@@ -1040,6 +1008,9 @@ gemma4_thinking_template = \
 {%- endfor -%}
 {%- if add_generation_prompt -%}
     {{'<|turn>model\n'}}
+    {%- if not thinking -%}
+        {{ '<|channel>thought\n<channel|>' }}
+    {%- endif -%}
 {%- endif -%}
 """
 
