@@ -16,6 +16,7 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -34,6 +35,7 @@ import {
   useAui,
   useAuiEvent,
   useAuiState,
+  useThreadViewport,
 } from "@assistant-ui/react";
 import { motion } from "motion/react";
 import {
@@ -69,12 +71,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 }) => {
   return (
     <ThreadPrimitive.Root
-      className={cn(
-        "aui-root aui-thread-root @container flex flex-col",
-        hideComposer
-          ? "h-full"
-          : "relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
-      )}
+      className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       style={{
         ["--thread-max-width" as string]: "44rem",
         ["--thread-content-max-width" as string]:
@@ -83,10 +80,8 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
     >
       <ThreadPrimitive.Viewport
         className={cn(
-          "aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-5",
-          hideComposer
-            ? "pt-4"
-            : "h-0 min-h-0 basis-0 pt-[56px]",
+          "aui-thread-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+          hideComposer ? "pt-4" : "pt-[48px]",
         )}
       >
         {!hideWelcome && (
@@ -103,31 +98,29 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
-        {/* Small overlap and extra slack so the last lines can scroll under the composer cleanly */}
-        {!hideComposer && <div className="h-40 shrink-0" aria-hidden />}
-
-        <ThreadPrimitive.ViewportFooter
-          className={cn(
-            "aui-thread-viewport-footer sticky z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
-            hideComposer
-              ? "bottom-0 gap-2"
-              : "bottom-[140px] shrink-0 gap-3",
-            // Compare: pointer-events pass-through so messages behind footer stay clickable
-            hideComposer
-              ? "pointer-events-none pb-3"
-              : "pb-2",
-          )}
-        >
+        {/* Bottom slack so the last message has breathing room above the
+            sticky scroll-to-bottom button (and the floating composer in
+            single mode). Without this, content would butt against the
+            sticky footer and feel cramped. */}
+        <AuiIf condition={({ thread }) => !thread.isEmpty}>
           <div
+            className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
+            aria-hidden
+          />
+        </AuiIf>
+
+        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+          <ThreadPrimitive.ViewportFooter
             className={cn(
-              "flex justify-center",
-              hideComposer && "pointer-events-auto",
+              "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
+              hideComposer ? "bottom-3" : "bottom-[140px]",
             )}
           >
             <ThreadScrollToBottom />
-          </div>
-        </ThreadPrimitive.ViewportFooter>
+          </ThreadPrimitive.ViewportFooter>
+        </AuiIf>
       </ThreadPrimitive.Viewport>
+
       {!hideComposer && (
         <AuiIf condition={({ thread }) => !thread.isEmpty}>
           <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-2 z-20">
@@ -140,7 +133,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
                 <ComposerAnimated />
               </div>
               <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-                LLM's can make mistakes. Double-check all responses.
+                LLMs can make mistakes. Double-check all responses.
               </p>
             </div>
           </div>
@@ -151,12 +144,24 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 };
 
 const ThreadScrollToBottom: FC = () => {
+  // Scoped to the nearest ThreadPrimitive.Root via context, so in compare
+  // mode each pane reads its own viewport state.
+  //
+  // The button stays mounted and toggles visibility via CSS. Conditionally
+  // rendering (return null) unmounts a DOM node inside the viewport, which
+  // the assistant-ui autoscroll hook's MutationObserver sees as a content
+  // change — during streaming that triggered spurious scroll-to-bottom
+  // calls, especially in the narrower mobile stacked layout.
+  const isAtBottom = useThreadViewport((vp) => vp.isAtBottom);
   return (
     <ThreadPrimitive.ScrollToBottom asChild={true}>
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom absolute -top-6 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
+        className={cn(
+          "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-4 bg-background hover:bg-accent dark:bg-background dark:hover:bg-accent",
+          isAtBottom && "invisible pointer-events-none",
+        )}
       >
         <ArrowDownIcon />
       </TooltipIconButton>
@@ -227,7 +232,7 @@ const SuggestionItem: FC = () => {
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img
@@ -235,10 +240,10 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               alt="Sloth mascot"
               className="size-20"
             />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-bold text-2xl tracking-[-0.02em] duration-200">
+            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
               Chat with your model
             </h1>
-            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-sm delay-75 duration-200">
+            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
@@ -303,13 +308,13 @@ const PendingAudioChip: FC = () => {
 const Composer: FC = () => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <PendingAudioChip />
         <ToolStatusDisplay />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
-          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           minRows={1}
           maxRows={6}
           autoFocus={true}
@@ -483,24 +488,6 @@ const CodeToolsToggle: FC = () => {
   );
 };
 
-const CodeToggleIcon: FC<{ className?: string }> = ({ className }) => {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
-  );
-};
-
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -638,7 +625,7 @@ const GeneratingIndicator: FC = () => {
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] duration-150"
+      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] font-[450] duration-150"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
@@ -714,9 +701,9 @@ const CopyButton: FC = () => {
   const [copied, setCopied] = useState(false);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     const text = aui.message().getCopyText();
-    if (copyToClipboard(text)) {
+    if (await copyToClipboard(text)) {
       setCopied(true);
       if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
       resetTimeoutRef.current = setTimeout(() => {
@@ -791,14 +778,14 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] font-[450] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-2xl bg-muted px-4 py-2.5 text-foreground">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[16px] rounded-tr-[4px] bg-[#f5f5f5] px-4 py-2.5 text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
         <div className="mt-1 flex min-h-6">
@@ -844,7 +831,7 @@ const EditComposer: FC = () => {
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
         <ComposerPrimitive.Input
-          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm outline-none"
+          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
         />
         <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
