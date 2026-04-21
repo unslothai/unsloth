@@ -16,6 +16,7 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect, functools
 import numpy as np
+from importlib.util import find_spec
 
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -92,6 +93,11 @@ _NO_TORCH_MODE = os.environ.get("UNSLOTH_NO_TORCH", "0").strip().lower() in (
     "yes",
     "on",
 )
+_HAS_TORCH = find_spec("torch") is not None
+if (not _HAS_TORCH) and (not _NO_TORCH_MODE):
+    # Auto-enable no-torch mode for CPU-only GGUF workflows.
+    _NO_TORCH_MODE = True
+    os.environ["UNSLOTH_NO_TORCH"] = "1"
 
 # Check for unsloth_zoo
 try:
@@ -136,14 +142,26 @@ except ModuleNotFoundError:
 except:
     raise
 
-from unsloth_zoo.device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
-)
+if torch is not None:
+    from unsloth_zoo.device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
+else:
+    def is_hip():
+        return False
+
+    def get_device_type():
+        return "cpu"
+
+    DEVICE_TYPE = "cpu"
+    DEVICE_TYPE_TORCH = "cpu"
+    DEVICE_COUNT = 1
+    ALLOW_PREQUANTIZED_MODELS = False
 
 # Fix other issues
 from .import_fixes import (
@@ -240,10 +258,10 @@ elif DEVICE_TYPE == "cpu":
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-if DEVICE_TYPE != "cpu":
+if torch is not None and DEVICE_TYPE != "cpu":
     import triton
 
-if DEVICE_TYPE == "cuda":
+if torch is not None and DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
         try:
@@ -340,32 +358,33 @@ if DEVICE_TYPE == "cuda":
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
     del libcuda_dirs
-elif DEVICE_TYPE == "hip":
+elif torch is not None and DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
-elif DEVICE_TYPE == "xpu":
+elif torch is not None and DEVICE_TYPE == "xpu":
     import bitsandbytes as bnb
 
     # TODO: check triton for intel installed properly.
     pass
 
-from .models import *
-from .models import __version__
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
+if torch is not None and DEVICE_TYPE != "cpu":
+    from .models import *
+    from .models import __version__
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
 
-# Export dataprep utilities for CLI and downstream users
-from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
-from unsloth_zoo.rl_environments import (
-    check_python_modules,
-    create_locked_down_function,
-    execute_with_time_limit,
-    Benchmarker,
-    is_port_open,
-    launch_openenv,
-)
+    # Export dataprep utilities for CLI and downstream users
+    from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
+    from unsloth_zoo.rl_environments import (
+        check_python_modules,
+        create_locked_down_function,
+        execute_with_time_limit,
+        Benchmarker,
+        is_port_open,
+        launch_openenv,
+    )
 
-# Patch TRL trainers for backwards compatibility
-_patch_trl_trainer()
+    # Patch TRL trainers for backwards compatibility
+    _patch_trl_trainer()

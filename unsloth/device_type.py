@@ -41,12 +41,13 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    # CPU-only torch builds should still allow import-time initialization.
+    if hasattr(torch, "cuda") and not torch.cuda.is_available():
+        return "cpu"
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            raise NotImplementedError(
-                "Unsloth cannot find any torch accelerator? You need a GPU."
-            )
+            return "cpu"
         accelerator = str(torch.accelerator.current_accelerator())
         if accelerator in ("cuda", "xpu", "hip"):
             raise RuntimeError(
@@ -54,9 +55,7 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
-    )
+    return "cpu"
 
 
 DEVICE_TYPE: str = get_device_type()
