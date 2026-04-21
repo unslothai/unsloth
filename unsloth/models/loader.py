@@ -353,9 +353,7 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
-        _use_flex_fast_inference = (
-            os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
-        )
+        _use_flex_fast_inference = os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
         if fast_inference and _use_flex_fast_inference:
             # Flex backend path: skip the vLLM import gate entirely. The
             # actual engine is attached further down in
@@ -987,9 +985,7 @@ class FastModel(FastBaseModel):
                 )
             load_in_4bit = False
 
-        _use_flex_fast_inference = (
-            os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
-        )
+        _use_flex_fast_inference = os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
         if fast_inference and _use_flex_fast_inference:
             # Flex backend path: skip the vLLM import gate. The engine is
             # attached further down in the ``FastBaseModel`` loader.

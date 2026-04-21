@@ -72,7 +72,7 @@ def _fa4_ok_for_head_dim(head_dim: int, device_cap: tuple[int, int]) -> bool:
         return False
     if major == 9:
         return 8 <= head_dim <= 256  # Hopper
-    return 8 <= head_dim <= 128       # Blackwell (sm_100 / sm_120)
+    return 8 <= head_dim <= 128  # Blackwell (sm_100 / sm_120)
 
 
 def _triton_block_defaults(
@@ -131,7 +131,11 @@ def _auto_kernel_options(
     ``'NoneType' object is not subscriptable``). Users who want FA4 can
     pass ``fa4_prefill=True`` explicitly to the engine after confirming it
     works on their workload."""
-    cap = torch.cuda.get_device_capability(device) if torch.cuda.is_available() else (0, 0)
+    cap = (
+        torch.cuda.get_device_capability(device)
+        if torch.cuda.is_available()
+        else (0, 0)
+    )
     head_dims = _collect_head_dims(hf_model) or [128]
     head_dim_max = max(head_dims)
 
@@ -285,9 +289,10 @@ class FlexEngine:
         peft_model = None,
         inference_model = None,
     ):
-        assert dtype in (torch.bfloat16, torch.float16), (
-            f"FlexEngine requires bf16 or fp16 dtype; got {dtype}."
-        )
+        assert dtype in (
+            torch.bfloat16,
+            torch.float16,
+        ), f"FlexEngine requires bf16 or fp16 dtype; got {dtype}."
         self.hf_model = hf_model
         self.tokenizer = tokenizer
         self.compute_dtype = dtype
@@ -335,7 +340,9 @@ class FlexEngine:
         )
 
         # Size n_pages from available VRAM so big prompts don't OOM.
-        n_pages = self._compute_n_pages(gpu_memory_utilization, max_batch_size, page_size)
+        n_pages = self._compute_n_pages(
+            gpu_memory_utilization, max_batch_size, page_size
+        )
 
         arch = _detect_arch(inference_model)
         self.arch = arch
@@ -506,9 +513,7 @@ class FlexEngine:
                 if candidate in target_sd:
                     renamed[candidate] = v
             if renamed:
-                missing, unexpected = peft_model.load_state_dict(
-                    renamed, strict = False
-                )
+                missing, unexpected = peft_model.load_state_dict(renamed, strict = False)
                 # ``missing`` will be every non-LoRA param; that's fine.
         refresh_lora_merge_from_pristine(base_model, peft_model)
         self._current_lora_int_id = getattr(lora_request, "lora_int_id", None)
@@ -545,7 +550,8 @@ class FlexEngine:
                     )
                 elif "prompt" in p:
                     seq = Sequence(
-                        text = p["prompt"], max_new_tokens = max_new_tokens,
+                        text = p["prompt"],
+                        max_new_tokens = max_new_tokens,
                     )
                 else:
                     raise ValueError(
@@ -657,9 +663,7 @@ class FlexEngine:
                 # Wrap the already-patched inference copy with a fresh LoRA
                 # adapter of the same shape. LoraLayer insertion is
                 # attention-forward-agnostic; it wraps Linear modules.
-                self._inference_peft = _get_peft_model(
-                    self._inference_model, peft_cfg
-                )
+                self._inference_peft = _get_peft_model(self._inference_model, peft_cfg)
                 self._inference_peft.eval()
             except Exception as e:
                 warnings.warn(

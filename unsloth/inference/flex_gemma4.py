@@ -105,7 +105,9 @@ from torch.nn.attention.flex_attention import create_block_mask as _create_block
 # (local to this file so that file is untouched).
 
 
-def _causal_blockmask_with_window(B: int, L: int, block_size: int, window: int, device: str):
+def _causal_blockmask_with_window(
+    B: int, L: int, block_size: int, window: int, device: str
+):
     def causal_windowed(b, h, q_idx, kv_idx):
         return (q_idx >= kv_idx) & (q_idx - kv_idx < window)
 
@@ -297,9 +299,7 @@ def make_flex_gemma4_attention_forward(page_table: PageTable):
     return forward
 
 
-def patch_gemma4_attention_forwards(
-    model: torch.nn.Module, page_table: PageTable
-):
+def patch_gemma4_attention_forwards(model: torch.nn.Module, page_table: PageTable):
     """Attach a PagedKVCache to every non-shared attention layer, link
     every shared attention layer to its store layer's cache, and swap in
     the flex_attention forward above.
@@ -341,9 +341,7 @@ def patch_gemma4_attention_forwards(
 # --- model forward walker --------------------------------------------------
 
 
-def call_gemma4_model_with_flex_kwargs(
-    model, input_ids, position_ids, flex_kwargs
-):
+def call_gemma4_model_with_flex_kwargs(model, input_ids, position_ids, flex_kwargs):
     """Walk the Gemma-4 text model manually so we can inject flex_* kwargs
     into each attention call. Mirrors `call_model_with_flex_kwargs` in
     `qwen3_flex_inference.py` but:
@@ -609,9 +607,9 @@ class FlexGemma4Inference:
             kv_num_blocks = block_mask.kv_num_blocks[
                 batch_idx, :, input_block_idx
             ].view(B, 1, 1)
-            kv_indices = block_mask.kv_indices[
-                batch_idx, :, input_block_idx
-            ].view(B, 1, 1, -1)
+            kv_indices = block_mask.kv_indices[batch_idx, :, input_block_idx].view(
+                B, 1, 1, -1
+            )
             full_num = full_idx = None
             if block_mask.full_kv_num_blocks is not None:
                 full_num = block_mask.full_kv_num_blocks[
@@ -640,9 +638,7 @@ class FlexGemma4Inference:
 
         def causal_offset_windowed(off, window):
             def m(b, h, q_idx, kv_idx):
-                return (q_idx + off[b] >= kv_idx) & (
-                    q_idx + off[b] - kv_idx < window
-                )
+                return (q_idx + off[b] >= kv_idx) & (q_idx + off[b] - kv_idx < window)
 
             return m
 
@@ -711,9 +707,7 @@ class FlexGemma4Inference:
                 allocated = self.page_table.allocate()
                 self.page_table.reserve(
                     allocated,
-                    torch.tensor(
-                        [allocated], device = self.device, dtype = torch.long
-                    ),
+                    torch.tensor([allocated], device = self.device, dtype = torch.long),
                     self.page_size,
                 )
                 reserved_batches.append(allocated)
@@ -1041,9 +1035,7 @@ def main():
                 "--verify_no_drift only applies to the bf16 double-copy path."
             )
         if args.no_merge_lora:
-            raise SystemExit(
-                "--verify_no_drift is incompatible with --no_merge_lora."
-            )
+            raise SystemExit("--verify_no_drift is incompatible with --no_merge_lora.")
         if base_model is None or peft_model is None:
             raise SystemExit(
                 "--verify_no_drift requires --lora_adapter against the bf16 path."
@@ -1160,9 +1152,7 @@ def main():
         "peak_memory_gb": peak,
         "sample_completions": sample_completions,
     }
-    os.makedirs(
-        os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True
-    )
+    os.makedirs(os.path.dirname(os.path.abspath(args.stats_path)) or ".", exist_ok = True)
     with open(args.stats_path, "w") as f:
         json.dump(res, f, indent = 2)
     print(json.dumps(res, indent = 2))

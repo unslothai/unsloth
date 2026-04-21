@@ -129,9 +129,7 @@ def load_lora(
         if load_tensors:
             model.peft_config["default"].save_pretrained(save_directory)
         elif not os.path.exists(save_directory):
-            raise OSError(
-                f"Unsloth: LoRA filepath = {save_directory} does not exist!"
-            )
+            raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
 
     if load_tensors:
         peft_config = _get_peft_config(save_directory)
