@@ -17,18 +17,7 @@ Unsloth Studio lets you run and train models locally.
 </p>
 <br>
 <a href="https://unsloth.ai/docs/new/studio">
-<p align="center">
-    <img
-      src="https://github.com/user-attachments/assets/35ad5370-e140-4095-b46f-dcb7a5ddc933"
-      alt="Train models with Unsloth Studio"
-      width="49.5%"
-    />
-  <img
-    src="https://github.com/user-attachments/assets/1429d0bf-f8ff-4366-9da8-f99cd02f525a"
-    alt="Run models with Unsloth Studio"
-    width="49.5%"
-  />
-</p></a>
+<img alt="unsloth studio ui homepage" src="https://github.com/user-attachments/assets/53ae17a9-d975-44ef-9686-efb4ebd0454d" style="max-width: 100%; margin-bottom: 0;"></a>
 
 ## ⚡ Get started
 
