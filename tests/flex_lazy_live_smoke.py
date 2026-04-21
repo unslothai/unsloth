@@ -38,9 +38,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def main():
-    assert os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1", (
-        "export UNSLOTH_FAST_INFERENCE=1 before running this smoke"
-    )
+    assert (
+        os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
+    ), "export UNSLOTH_FAST_INFERENCE=1 before running this smoke"
     import unsloth  # noqa: F401  (must import before transformers)
     from unsloth import FastLanguageModel
     from unsloth.inference.flex_engine import (
@@ -49,9 +49,7 @@ def main():
         build_flex_engine,
     )
 
-    model_name = os.environ.get(
-        "FLEX_LAZY_SMOKE_MODEL", "unsloth/Qwen3-0.6B-Base"
-    )
+    model_name = os.environ.get("FLEX_LAZY_SMOKE_MODEL", "unsloth/Qwen3-0.6B-Base")
     print(f"loading {model_name} ...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = model_name,
@@ -62,12 +60,12 @@ def main():
 
     assert hasattr(model, "vllm_engine"), "vllm_engine attr missing"
     sentinel = model.vllm_engine
-    assert isinstance(sentinel, _LazyFlexEngineSentinel), (
-        f"expected sentinel, got {type(sentinel)}"
-    )
-    assert not hasattr(model, "_flex_engine_instance"), (
-        "engine should NOT be built before first use"
-    )
+    assert isinstance(
+        sentinel, _LazyFlexEngineSentinel
+    ), f"expected sentinel, got {type(sentinel)}"
+    assert not hasattr(
+        model, "_flex_engine_instance"
+    ), "engine should NOT be built before first use"
     print("  [1/3] sentinel installed, no engine yet")
 
     engine = build_flex_engine(model)
@@ -75,7 +73,9 @@ def main():
     assert engine.max_batch_size == 32, engine.max_batch_size
     assert model._flex_engine_instance is engine
     assert model.vllm_engine is engine
-    print(f"  [2/3] build_flex_engine built engine at max_batch_size={engine.max_batch_size}")
+    print(
+        f"  [2/3] build_flex_engine built engine at max_batch_size={engine.max_batch_size}"
+    )
 
     try:
         build_flex_engine(model, max_batch_size = 64)

@@ -106,9 +106,9 @@ def _case1_default_floor():
     install_flex_sentinel(model, tokenizer = object())
 
     assert hasattr(model, "vllm_engine"), "sentinel not installed"
-    assert not hasattr(model, "_flex_engine_instance"), (
-        "engine should NOT exist before first use"
-    )
+    assert not hasattr(
+        model, "_flex_engine_instance"
+    ), "engine should NOT exist before first use"
 
     out = model.fast_generate(["hello"])
     assert out == [("stub", ["hello"])]

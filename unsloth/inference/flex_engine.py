@@ -680,9 +680,7 @@ class FlexEngine:
         if not self._sleep_mode_enabled or self._cumem_allocator is None:
             return None
         if level not in (1, 2):
-            raise ValueError(
-                f"FlexEngine.sleep: level must be 1 or 2, got {level}"
-            )
+            raise ValueError(f"FlexEngine.sleep: level must be 1 or 2, got {level}")
         if level == 2:
             warnings.warn(
                 "FlexEngine.sleep(level=2) is not implemented on the "
@@ -769,7 +767,8 @@ class FlexEngine:
                 # attention-forward-agnostic; it wraps Linear modules.
                 with weight_pool(self._cumem_allocator):
                     self._inference_peft = _get_peft_model(
-                        self._inference_model, peft_cfg,
+                        self._inference_model,
+                        peft_cfg,
                     )
                     self._inference_peft.eval()
             except Exception as e:

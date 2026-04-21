@@ -2542,9 +2542,7 @@ class FastLlamaModel:
                     weight_pool as _flex_weight_pool,
                 )
 
-                _flex_allocator = (
-                    _flex_get_cumem() if _flex_sleep_enabled() else None
-                )
+                _flex_allocator = _flex_get_cumem() if _flex_sleep_enabled() else None
                 with _flex_weight_pool(_flex_allocator):
                     model._unsloth_flex_inference_copy = _copy.deepcopy(model)
                     model._unsloth_flex_inference_copy.eval()

@@ -155,7 +155,9 @@ def main():
     out1 = engine.generate(
         prompts,
         sampling_params = type(
-            "SP", (), {"max_tokens": args.max_new_tokens, "temperature": 0.0},
+            "SP",
+            (),
+            {"max_tokens": args.max_new_tokens, "temperature": 0.0},
         )(),
     )
     print(
@@ -199,9 +201,7 @@ def main():
         engine.sleep(level = 1)
         t_sleep = time.perf_counter() - t0
         probe_post = _probe(f"post-sleep[{cycle + 1}]")
-        print(
-            f"[sleep-smoke] sleep(level=1) took {t_sleep:.3f}s; {probe_post}"
-        )
+        print(f"[sleep-smoke] sleep(level=1) took {t_sleep:.3f}s; {probe_post}")
 
         if sleep_enabled:
             drop = probe_pre["cuda_used_gb"] - probe_post["cuda_used_gb"]
@@ -226,9 +226,7 @@ def main():
             # With sleep mode off, the sleep() call must not free VRAM.
             # Process-level jitter is allowed (shared GPU); torch-owned
             # allocations must be untouched.
-            assert (
-                probe_post["allocated_gb"] == probe_pre["allocated_gb"]
-            ), (
+            assert probe_post["allocated_gb"] == probe_pre["allocated_gb"], (
                 "With sleep mode disabled, torch.memory_allocated must "
                 "be unchanged by sleep()"
             )
@@ -238,9 +236,7 @@ def main():
         engine.wake_up()
         t_wake = time.perf_counter() - t0
         probe_wake = _probe(f"post-wake[{cycle + 1}]")
-        print(
-            f"[sleep-smoke] wake_up() took {t_wake:.3f}s; {probe_wake}"
-        )
+        print(f"[sleep-smoke] wake_up() took {t_wake:.3f}s; {probe_wake}")
 
         post_sums = _checksum_params(engine._inference_model)
         diffs = []
@@ -265,7 +261,9 @@ def main():
         out2 = engine.generate(
             prompts,
             sampling_params = type(
-                "SP", (), {"max_tokens": args.max_new_tokens, "temperature": 0.0},
+                "SP",
+                (),
+                {"max_tokens": args.max_new_tokens, "temperature": 0.0},
             )(),
         )
         t_regen = time.perf_counter() - t0
