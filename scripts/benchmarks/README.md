@@ -89,6 +89,13 @@ CUDA 12 (H100 boxes still on cu12):
 Pin `flash-attn-4==4.0.0b9` to match this benchmark. The `[cu13]`
 extra pulls in `nvidia-cutlass-dsl` built for CUDA 13.
 
+`qwen3_flex_inference.py` runs on both Qwen3 and Llama-3.2 (the only
+arch-specific branch is Qwen3's per-head QK RMSNorm; the rest of the
+flex_attention + paged KV + CUDA graphs stack is identical). Pass
+`--model_name unsloth/Llama-3.2-3B-Instruct` to target Llama, along with
+`--chat_template native` to use Llama's shipped Instruct template instead
+of the Qwen3 GRPO template.
+
 | GPU          | arch      | sm    | Auto FA4 | Triton flex_attention |
 |--------------|-----------|-------|----------|------------------------|
 | A100         | Ampere    | sm_80 | off (uses Triton) | Works |
