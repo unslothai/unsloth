@@ -21,6 +21,16 @@ monkey-patched to use our PagedKVCache, and the inference loop runs
 prefill + decode on the main thread (no background worker, graph replay
 works end-to-end).
 
+LoRA: the bf16 path uses a **double-copy rollout pattern** when
+`--lora_adapter` is set. A pristine `base_model` lives on GPU alongside a
+deep-copy `inference_model` (wrapped by PEFT). Before each rollout --
+or at setup time, here -- the inference copy's LoRA-target base weights
+are restored in-place from pristine, then `merge_adapter()` is called
+fresh. We never call `unmerge_adapter()`. This avoids the ~1 ULP bf16
+drift per merge/unmerge cycle that would otherwise corrupt the base
+model across hundreds of GRPO iterations. `--verify_no_drift` hashes the
+base params before and after N cycles and asserts bit-identical.
+
 Run:
     CUDA_VISIBLE_DEVICES=6 python scripts/benchmarks/qwen3_flex_inference.py \
         --n_prompts 32 --max_new_tokens 512 --stats_path logs/qwen3_flex.json
@@ -32,6 +42,8 @@ warmup.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import os
 import sys
@@ -211,6 +223,146 @@ class Sequence:
         return self.input_length + len(self.output_ids)
 
 
+# --- double-copy LoRA rollout helpers -------------------------------------
+#
+# PEFT's `merge_adapter` / `unmerge_adapter` pair is asymmetric at bf16:
+# merge does `W_bf16 += delta_fp32` (the += upcasts then truncates), while
+# unmerge does `W_bf16 -= delta_fp32.to(bf16)` -- the delta is rounded to
+# bf16 first, so the round-trip leaves ~1 ULP drift on `base_layer.weight`
+# every cycle. Across hundreds of GRPO iterations this corrupts the base
+# model; the adapter ends up training against a drifting target.
+#
+# vLLM avoids this by keeping the base weights pristine and materializing a
+# second "base + LoRA" copy for inference. We do the same: keep `base_model`
+# (pristine) and `inference_model = deepcopy(base_model)`, wrap the copy
+# with PEFT, and before each rollout refresh the LoRA-target base weights
+# from pristine in-place and call `merge_adapter()` fresh. Never unmerge --
+# we always re-materialize, so there is no round-trip error to accumulate.
+
+
+def refresh_lora_merge_from_pristine(base_model, peft_model):
+    """Copy pristine `base_model` weights into `peft_model`'s LoRA-target
+    `base_layer.weight`s in-place, reset the PEFT `merged` flag without the
+    unmerge arithmetic, then call `peft_model.merge_adapter()` once.
+
+    In-place `weight.data.copy_(pristine)` writes into the same tensor
+    storage, so CUDA graphs captured against the merged weights stay valid
+    across refreshes (replay reads the captured address; the new value
+    takes effect on the next replay without re-capture).
+
+    Returns the number of LoraLayer modules refreshed.
+    """
+    from peft.tuners.lora.layer import LoraLayer
+
+    n_refreshed = 0
+    for name, module in peft_model.base_model.model.named_modules():
+        if not isinstance(module, LoraLayer):
+            continue
+        base_submodule = base_model.get_submodule(name)
+        module.base_layer.weight.data.copy_(base_submodule.weight.data)
+        module.merged_adapters = []
+        n_refreshed += 1
+    peft_model.merge_adapter()
+    return n_refreshed
+
+
+def _hash_state_dict(model) -> str:
+    """sha256 over all parameter bytes in name-sorted order. Uses the
+    bit-level `view(torch.uint8)` reinterpretation so bf16 / int / etc. all
+    round-trip without any float casting."""
+    h = hashlib.sha256()
+    sd = model.state_dict()
+    for name in sorted(sd.keys()):
+        t = sd[name].detach().cpu().contiguous()
+        h.update(name.encode("utf-8"))
+        h.update(t.view(torch.uint8).numpy().tobytes())
+    return h.hexdigest()
+
+
+def run_drift_verification(base_model, peft_model, n_iters: int = 10,
+                           noise_scale: float = 0.01):
+    """Simulate N GRPO iterations: perturb LoRA weights with random noise,
+    call `refresh_lora_merge_from_pristine`, repeat. Assert the pristine
+    `base_model`'s parameters are bit-identical before and after.
+
+    Also checks inference-copy determinism: after restoring the LoRA state
+    to its initial value, the merged `inference_model` state-dict hash
+    should match the hash taken right after the first refresh.
+    """
+    from peft.tuners.lora.layer import LoraLayer
+
+    inference_model = peft_model.base_model.model
+
+    # Snapshot initial LoRA A/B weights so we can restore at the end.
+    initial_lora = {}
+    for name, module in inference_model.named_modules():
+        if not isinstance(module, LoraLayer):
+            continue
+        for adapter_name in list(module.lora_A.keys()):
+            initial_lora[(name, "A", adapter_name)] = (
+                module.lora_A[adapter_name].weight.data.clone()
+            )
+            initial_lora[(name, "B", adapter_name)] = (
+                module.lora_B[adapter_name].weight.data.clone()
+            )
+
+    base_hash_before = _hash_state_dict(base_model)
+
+    # Initial refresh: establishes merged-state baseline for the inference copy.
+    refresh_lora_merge_from_pristine(base_model, peft_model)
+    inf_hash_initial_merged = _hash_state_dict(inference_model)
+
+    for _ in range(n_iters):
+        for name, module in inference_model.named_modules():
+            if not isinstance(module, LoraLayer):
+                continue
+            for adapter_name in list(module.lora_A.keys()):
+                a = module.lora_A[adapter_name].weight.data
+                b = module.lora_B[adapter_name].weight.data
+                a.add_(noise_scale * torch.randn_like(a))
+                b.add_(noise_scale * torch.randn_like(b))
+        refresh_lora_merge_from_pristine(base_model, peft_model)
+
+    base_hash_after = _hash_state_dict(base_model)
+
+    # Restore initial LoRA weights and re-merge; inference hash must match
+    # the initial merged-state hash (determinism of the refresh pipeline).
+    for (name, kind, adapter_name), w in initial_lora.items():
+        module = inference_model.get_submodule(name)
+        tgt = module.lora_A if kind == "A" else module.lora_B
+        tgt[adapter_name].weight.data.copy_(w)
+    refresh_lora_merge_from_pristine(base_model, peft_model)
+    inf_hash_restored = _hash_state_dict(inference_model)
+
+    base_ok = base_hash_before == base_hash_after
+    inf_ok = inf_hash_initial_merged == inf_hash_restored
+
+    assert base_ok, (
+        f"base model drifted across {n_iters} refreshes\n"
+        f"  before: {base_hash_before}\n"
+        f"  after : {base_hash_after}"
+    )
+    assert inf_ok, (
+        f"inference model did not revert to deterministic merged-state hash\n"
+        f"  initial  : {inf_hash_initial_merged}\n"
+        f"  restored : {inf_hash_restored}"
+    )
+    print(f"[verify] base model bit-identical across {n_iters} refreshes")
+    print(f"[verify] inference copy deterministic after LoRA restore")
+    print(f"[verify] sha256 base   : {base_hash_before}")
+    print(f"[verify] sha256 merged : {inf_hash_initial_merged}")
+    return {
+        "n_iters": n_iters,
+        "noise_scale": noise_scale,
+        "base_hash_before": base_hash_before,
+        "base_hash_after": base_hash_after,
+        "base_bit_identical": base_ok,
+        "inference_hash_initial_merged": inf_hash_initial_merged,
+        "inference_hash_after_restore": inf_hash_restored,
+        "inference_deterministic": inf_ok,
+    }
+
+
 # Default kernel_options per phase. Our defaults stay conservative -- the
 # non-default FlexKernelOptions (PRESCALE_QK, ROWS_GUARANTEED_SAFE, USE_TMA)
 # are opt-in via CLI because some of them break correctness on our
@@ -241,12 +393,21 @@ class FlexInference:
         decode_kernel_options = None,
         prefill_kernel_options = None,
         fa4_prefill = False,
+        base_model = None,
+        peft_model = None,
     ):
         assert max_seq_length % page_size == 0
         self.model = model
         self.tokenizer = tokenizer
         self.device = model.device
         self.eos_token_id = tokenizer.eos_token_id
+        # For double-copy LoRA rollout: `base_model` is the pristine copy
+        # (never touched); `peft_model` wraps the inference copy (`model`
+        # above is `peft_model.base_model.model`). Both may be None when
+        # no LoRA adapter is active, or when the 4-bit naive-wrapper path
+        # is used.
+        self.base_model = base_model
+        self.peft_model = peft_model
         self.max_batch_size = max_batch_size
         self.max_seq_length = max_seq_length
         self.page_size = page_size
@@ -494,6 +655,20 @@ class FlexInference:
             input_ids = input_ids, batch_idx = batch_idx, outputs = outputs
         )
 
+    def refresh_inference_from_base(self):
+        """Re-materialize the inference copy's merged LoRA weights from the
+        pristine `base_model`. Call this once at setup (before CUDA graph
+        capture) and, in a real GRPO loop, once after every training step
+        that updates the LoRA adapter. Never call `unmerge_adapter()` --
+        we always re-merge from pristine, so no drift accumulates.
+
+        No-op when the double-copy pair wasn't configured (e.g. no LoRA,
+        or 4-bit naive PEFT-wrapper path).
+        """
+        if self.base_model is None or self.peft_model is None:
+            return 0
+        return refresh_lora_merge_from_pristine(self.base_model, self.peft_model)
+
     @torch.inference_mode()
     def generate(self, sequences: list[Sequence], capture_cudagraph = False):
         self.tokenize(sequences)
@@ -645,11 +820,28 @@ def main():
         "--no_merge_lora",
         action = "store_true",
         help = (
-            "Keep the LoRA adapter as a PEFT wrapper instead of merging it "
-            "into the base. Matches the vLLM LoRARequest dynamic-serving "
-            "path and the GRPO rollout pattern where the adapter must stay "
-            "separable between rollouts/training steps."
+            "Reference path: keep the LoRA adapter as a PEFT wrapper "
+            "instead of merging it. Runs three matmuls per projection; "
+            "slow. Useful for the unmerged row in the writeup's comparison "
+            "table. The default is now the double-copy pattern, which is "
+            "both merge-speed and drift-free."
         ),
+    )
+    p.add_argument(
+        "--verify_no_drift",
+        action = "store_true",
+        help = (
+            "Drift-verification mode. Hash the pristine base model params, "
+            "run N perturb+refresh cycles (simulating N GRPO iterations) "
+            "on a copy, re-hash, and assert bit-identical. Requires a "
+            "--lora_adapter; skips rollout generation."
+        ),
+    )
+    p.add_argument(
+        "--verify_iterations",
+        type = int,
+        default = 10,
+        help = "Number of perturb+refresh cycles for --verify_no_drift.",
     )
     p.add_argument(
         "--model_name_4bit",
@@ -673,9 +865,18 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
+    base_model = None
+    peft_model = None
+
     if args.load_in_4bit:
         # Load the pre-quantized Unsloth 4-bit shard. Compute dtype comes
         # from the packaged config (bf16 for these shards).
+        #
+        # 4-bit keeps the naive PEFT-wrapper path: bnb's `Linear4bit` holds
+        # packed quantised weights, not regular bf16, so the double-copy
+        # refresh (in-place copy of `base_layer.weight`) doesn't apply.
+        # Materializing a full bf16 inference copy via dequant would wipe
+        # out the memory saving of 4-bit.
         bnb_model_name = args.model_name_4bit or f"{args.model_name}-unsloth-bnb-4bit"
         print(f"[flex] loading 4-bit base: {bnb_model_name}")
         model = AutoModelForCausalLM.from_pretrained(
@@ -687,47 +888,103 @@ def main():
         # for bnb-4bit shards of tied-embedding models.
         if getattr(model.config, "tie_word_embeddings", False):
             model.lm_head.weight = model.model.embed_tokens.weight
+        model.eval()
+
+        if args.lora_adapter:
+            from peft import PeftModel
+
+            peft_wrapper = PeftModel.from_pretrained(
+                model,
+                str(Path(args.lora_adapter).resolve()),
+                is_trainable = False,
+            )
+            # LoRA stays as a wrapper around Params4bit; three matmuls per
+            # projection. This is the slow reference row in the writeup.
+            model = peft_wrapper.base_model.model
     else:
-        model = AutoModelForCausalLM.from_pretrained(
+        # bf16 path -- double-copy LoRA rollout.
+        #
+        # `base_model` stays pristine; we deep-copy it to `inference_model`,
+        # wrap the copy with PEFT, and re-materialize the merged LoRA on
+        # the copy whenever the LoRA weights change. Memory cost: +~8 GB
+        # for Qwen3-4B bf16 (two copies on GPU) -- well within budget vs
+        # vLLM's 156 GB.
+        base_model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
             dtype = torch.bfloat16,
             attn_implementation = "eager",
         ).to("cuda")
-    model.eval()
+        base_model.eval()
 
-    if args.lora_adapter:
-        from peft import PeftModel
+        if not args.lora_adapter:
+            # No adapter -- use base_model directly, no inference copy.
+            model = base_model
+            base_model = None
+        elif args.no_merge_lora:
+            # Reference path: PEFT wrapper on the only model copy,
+            # adapter unmerged. Three matmuls per projection. Kept for
+            # the comparison row in the writeup.
+            from peft import PeftModel
 
-        peft_model = PeftModel.from_pretrained(
-            model,
-            str(Path(args.lora_adapter).resolve()),
-            is_trainable = False,
-        )
-        if args.load_in_4bit or args.no_merge_lora:
-            # Keep PEFT wrapping active, LoRA *unmerged*. Every projection
-            # runs `base_layer(x) + scaling * lora_B(lora_A(x))`, i.e. three
-            # matmuls instead of one. Required when 4-bit (merge into
-            # Params4bit is unsupported). Slow, not what you want in
-            # production -- use `merge_adapter` below when possible.
-            model = peft_model.base_model.model
+            peft_wrapper = PeftModel.from_pretrained(
+                base_model,
+                str(Path(args.lora_adapter).resolve()),
+                is_trainable = False,
+            )
+            model = peft_wrapper.base_model.model
+            base_model = None
         else:
-            # Non-destructive merge: `merge_adapter()` folds LoRA into
-            # `base_layer.weight` while keeping `lora_A` / `lora_B` around,
-            # and flips a `merged` flag inside each `LoraLayer` so its
-            # forward short-circuits to just `base_layer(x)` -- one matmul
-            # per projection, same speed as a plain bf16 model. Reversible
-            # via `unmerge_adapter()` (bf16 round-trip error ~6e-5).
-            #
-            # This matches the rollout semantics of vLLM's LoRARequest +
-            # double-copy pattern: base weights are logically separable
-            # from the adapter across a training step, but inference runs
-            # at merged speed. Earlier versions of this script called
-            # `merge_and_unload()` which is destructive (removes the
-            # adapter entirely); same speed but you couldn't unmerge for
-            # the next training step.
-            peft_model.merge_adapter()
+            # Double-copy rollout path.
+            from peft import PeftModel
+
+            print("[flex] deep-copying base model for double-copy LoRA rollout")
+            inference_model = copy.deepcopy(base_model)
+            inference_model.eval()
+
+            peft_model = PeftModel.from_pretrained(
+                inference_model,
+                str(Path(args.lora_adapter).resolve()),
+                is_trainable = False,
+            )
             model = peft_model.base_model.model
             model.eval()
+            # Do NOT call merge_adapter here -- FlexInference.refresh_
+            # inference_from_base() below handles the initial merge so the
+            # same code path runs at setup and on every GRPO refresh.
+
+    # Drift-verification mode: skip rollout generation, just hash-check.
+    if args.verify_no_drift:
+        if args.load_in_4bit:
+            raise SystemExit(
+                "--verify_no_drift only applies to the bf16 double-copy path "
+                "(4-bit keeps the naive PEFT-wrapper path, no merge refresh)."
+            )
+        if args.no_merge_lora:
+            raise SystemExit(
+                "--verify_no_drift is incompatible with --no_merge_lora "
+                "(nothing is merged; nothing to drift)."
+            )
+        if base_model is None or peft_model is None:
+            raise SystemExit(
+                "--verify_no_drift requires --lora_adapter so there is a "
+                "LoRA to merge/refresh against the pristine base."
+            )
+        print(
+            f"[flex] running drift verification: {args.verify_iterations} "
+            f"perturb+refresh cycles"
+        )
+        result = run_drift_verification(
+            base_model, peft_model, n_iters = args.verify_iterations
+        )
+        result = {"mode": "verify_no_drift", **result}
+        os.makedirs(
+            os.path.dirname(os.path.abspath(args.stats_path)) or ".",
+            exist_ok = True,
+        )
+        with open(args.stats_path, "w") as f:
+            json.dump(result, f, indent = 2)
+        print(json.dumps(result, indent = 2))
+        os._exit(0)
 
     from unsloth_grpo_common import (
         SYSTEM_PROMPT,
@@ -763,7 +1020,20 @@ def main():
         decode_kernel_options = _parse_opts(args.decode_kernel_options),
         prefill_kernel_options = _parse_opts(args.prefill_kernel_options),
         fa4_prefill = args.fa4_prefill,
+        base_model = base_model,
+        peft_model = peft_model,
     )
+
+    # Initial merge from pristine. Done via `refresh_inference_from_base`
+    # (not raw `merge_adapter`) so the exact same code path runs at setup
+    # and at every GRPO refresh -- the CUDA graph capture below sees the
+    # merged weights already in place. In a real GRPO loop, call
+    # `inference.refresh_inference_from_base()` after every training step
+    # that updates the LoRA adapter. We skip per-round refresh in this
+    # benchmark because the LoRA weights don't change between rounds.
+    if inference.base_model is not None and inference.peft_model is not None:
+        n = inference.refresh_inference_from_base()
+        print(f"[flex] double-copy rollout: refreshed {n} LoRA-target layers")
 
     # Optionally compile the manual forward walker. This fuses the layer-stack
     # ops around flex_attention. Under CUDA graph capture, the compiled

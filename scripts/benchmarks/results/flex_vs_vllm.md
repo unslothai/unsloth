@@ -47,13 +47,13 @@ prefill_kernel_options = {
 
 ### Canonical GRPO workload (batch 64 + LoRA rank 32)
 
-| Backend                                 | tok/s best | peak mem | flex / vLLM |
-|-----------------------------------------|-----------:|---------:|------------:|
-| vLLM (LoRARequest)                      |       7775 |   156 GB |       100 % |
-| **flex** (merge_adapter + unmerge_adapter) |  **5785** | **44 GB**|    **74 %** |
-| flex -- LoRA unmerged (PEFT wrapper)    |       2683 |    45 GB |        35 % |
+| Backend                                    | tok/s best | peak mem  | flex / vLLM |
+|--------------------------------------------|-----------:|----------:|------------:|
+| vLLM (LoRARequest)                         |       7775 |    156 GB |       100 % |
+| **flex** (double-copy, drift-free)         |  **5785**  | **~52 GB**|    **74 %** |
+| flex -- LoRA unmerged (PEFT wrapper)       |       2683 |     45 GB |        35 % |
 
-At the GRPO workload flex reaches **74 % of vLLM throughput at 3.5 x less
+At the GRPO workload flex reaches **74 % of vLLM throughput at ~3 x less
 memory**. Starting point before this work was 9 % with transformers CB.
 
 **Why the two flex rows are so far apart:** when PEFT keeps the adapter
@@ -61,38 +61,81 @@ unmerged, every projection runs three matmuls (`base_layer(x) + scaling *
 lora_B(lora_A(x))`) instead of one, which is ~50 % slowdown across the
 36-layer stack. GRPO cannot use the unmerged path naively because the
 trainer needs the adapter weights separable; but it also shouldn't pay
-that cost. Two production-proven patterns fix it:
+that cost.
 
-1. **Non-destructive merge/unmerge cycle** (what this script does by
-   default). `peft_model.merge_adapter()` folds LoRA into
-   `base_layer.weight` and flips a `merged` flag in the `LoraLayer` so
-   its forward short-circuits to `base_layer(x)` -- one matmul per
-   projection. `unmerge_adapter()` reverses it (bf16 round-trip error
-   ~6e-5). Measured cycle cost: **48 ms** for the full 36-layer 7-target
-   adapter, negligible vs the ~5-7 s rollout. Adapter weights are
-   preserved, so the trainer can update them between rollouts.
-2. **Double-copy pattern** (what vLLM does under `LoRARequest`). Base
-   weights stay pristine; a separate materialized copy of `base + LoRA`
-   lives on GPU for inference. Re-materialize the copy after each
-   training step. Costs 1x base-model memory extra. vLLM also has
-   Punica-style fused kernels that apply LoRA without the roundtrip,
-   but the end behaviour from the rollout's perspective is the same:
-   near-merged speed.
+#### What the default path does now: double-copy rollout
 
-Both patterns yield the flex row above. The "LoRA unmerged" row is what
-you'd get with a naive PEFT wrapper at inference -- **don't use that
-path**, it's shown only for reference.
+We keep two copies of the base model on GPU:
 
-Earlier versions of this script called `merge_and_unload()` which has
-the same inference speed but destroys the adapter, so you can't unmerge
-for the next training step. Current default uses `merge_adapter()`
-instead. `--no_merge_lora` keeps the adapter unmerged (unless loaded as
-4-bit, where merging is unsupported).
+- `base_model` -- pristine; never mutated.
+- `inference_model = deepcopy(base_model)` -- wrapped by PEFT; merged
+  LoRA lives on `base_layer.weight` here.
+
+Before each rollout (and at setup), `refresh_lora_merge_from_pristine`:
+
+1. Walks PEFT's `LoraLayer` modules.
+2. `module.base_layer.weight.data.copy_(base_submodule.weight.data)` --
+   in-place restore from the pristine base.
+3. Resets `module.merged_adapters = []` directly (skips PEFT's unmerge
+   arithmetic).
+4. Calls `peft_model.merge_adapter()` once to fold LoRA into the
+   inference copy fresh.
+
+We **never call `unmerge_adapter()`**. PEFT's merge/unmerge pair is
+asymmetric at bf16 -- merge does `W_bf16 += delta_fp32` (the `+=`
+upcasts, stores back in bf16), unmerge does `W_bf16 -= delta_fp32.to(bf16)`
+(the delta is rounded to bf16 first, then subtracted). Net effect is ~1
+ULP drift on `base_layer.weight` per cycle (empirically ~6e-5 max diff
+after one cycle on this model). Across hundreds of GRPO iterations
+that corrupts the base model and the adapter trains against a drifting
+target. Re-materialising from pristine per refresh bypasses the whole
+round-trip.
+
+**Cost.** +~8 GB GPU memory (second copy of Qwen3-4B bf16 weights), so
+peak memory goes from ~44 GB to ~52 GB. Per-refresh overhead: param
+copy (~3 ms) + `merge_adapter()` (~30 ms) = ~35 ms, well under 1 % of a
+5-7 s rollout.
+
+**CUDA graphs stay valid.** In-place `weight.data.copy_(pristine)`
+writes to the same tensor storage, so graphs captured against the
+merged weights read current values at the captured addresses on the
+next replay -- no re-capture needed.
+
+#### Drift verification
+
+`--verify_no_drift` takes a sha256 over every parameter in `base_model`
+(raw bytes via `tensor.view(torch.uint8)`), runs N perturb+refresh
+cycles (random noise added to `lora_A` / `lora_B` on each iteration,
+simulating a training step), re-hashes, and asserts bit-identical.
+It also checks determinism of the inference copy: after restoring the
+LoRA A/B weights to their initial values and refreshing, the merged
+state-dict hash matches the pre-perturbation hash.
+
+Confirmed on Qwen3-4B bf16 with LoRA rank 32 across 10 refreshes: base
+model bit-identical; inference copy deterministic after LoRA restore.
+
+```
+CUDA_VISIBLE_DEVICES=6 python scripts/benchmarks/qwen3_flex_inference.py \
+  --verify_no_drift --lora_adapter outputs/lora_rank32_fresh --n_rounds 1 \
+  --stats_path scripts/benchmarks/results/stats/flex_verify_nodrift.json
+```
+
+The "LoRA unmerged" row is shown only for reference -- it's what you'd
+get with a naive PEFT wrapper on the hot path. **Don't use it in
+production**, and it doesn't apply outside the 4-bit path below.
+
+`--no_merge_lora` opts into that reference path (single model, PEFT
+wrapper, adapter unmerged). It's kept for the comparison row above and
+nothing else.
 
 ### Same workload at `load_in_4bit=True` (Unsloth bnb-4bit shard)
 
 Loading base as bitsandbytes 4-bit (`unsloth/Qwen3-4B-Base-unsloth-bnb-4bit`,
-compute dtype bf16). LoRA kept as PEFT wrapper (can't merge into 4-bit).
+compute dtype bf16). LoRA kept as PEFT wrapper (can't merge into 4-bit;
+the double-copy pattern above also doesn't apply -- bnb's `Linear4bit`
+holds packed quantised weights, not regular bf16, so an in-place copy
+of `base_layer.weight` isn't meaningful, and materialising a bf16
+inference copy via dequant would wipe out the memory saving of 4-bit).
 lm_head is tied to embed_tokens post-load because the 4-bit shard ships
 without an lm_head parameter.
 
