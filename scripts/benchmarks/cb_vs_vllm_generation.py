@@ -42,14 +42,24 @@ import flash_attn_fa4_shim  # noqa: E402
 flash_attn_fa4_shim.apply()
 
 
-def build_prompts(tokenizer, n_prompts):
+def build_prompts(tokenizer, n_prompts, chat_template = "auto", model_type_name = None):
     from unsloth_grpo_common import (
         apply_chat_template_to_tokenizer,
         SYSTEM_PROMPT,
     )
     from datasets import load_dataset
 
-    apply_chat_template_to_tokenizer(tokenizer)
+    if chat_template == "auto":
+        use_grpo = (model_type_name or "").startswith("Qwen3")
+    elif chat_template == "grpo":
+        use_grpo = True
+    else:  # "native"
+        use_grpo = False
+    if use_grpo:
+        apply_chat_template_to_tokenizer(tokenizer)
+        print("[bench] chat_template: GRPO")
+    else:
+        print("[bench] chat_template: tokenizer native")
     ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
     ds = ds.shuffle(seed = 3407).select(range(n_prompts))
     messages = [
@@ -74,7 +84,7 @@ def run_vllm(args):
     os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
     from unsloth import FastLanguageModel
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    fi_kwargs = dict(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
         load_in_4bit = args.load_in_4bit,
@@ -82,7 +92,19 @@ def run_vllm(args):
         max_lora_rank = 32,
         gpu_memory_utilization = args.gpu_memory_utilization,
     )
-    prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
+    if args.enforce_eager:
+        # vLLM 0.19 + torch 2.10 hits `RuntimeError: Tried to erase Node
+        # size_1 but it still had 2 users` during split_graph. enforce_eager
+        # skips vLLM's torch.compile path entirely (still PagedAttention +
+        # FlashInfer decode, just no graph capture).
+        fi_kwargs["enforce_eager"] = True
+    model, tokenizer = FastLanguageModel.from_pretrained(**fi_kwargs)
+    prompts_text, prompt_ids = build_prompts(
+        tokenizer,
+        args.n_prompts,
+        chat_template = args.chat_template,
+        model_type_name = type(getattr(model, "model", model)).__name__,
+    )
 
     lora_request = None
     if args.lora_adapter:
@@ -188,7 +210,12 @@ def run_tpaged(args):
 
     if args.persistent_cb:
         from persistent_cb import install_for_model  # noqa: WPS433
-    prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
+    prompts_text, prompt_ids = build_prompts(
+        tokenizer,
+        args.n_prompts,
+        chat_template = args.chat_template,
+        model_type_name = type(model).__name__,
+    )
 
     gen_config = GenerationConfig(
         max_new_tokens = args.max_new_tokens,
@@ -339,7 +366,12 @@ def run_unsloth_fi_false(args):
 
     FastLanguageModel.for_inference(model)
 
-    prompts_text, prompt_ids = build_prompts(tokenizer, args.n_prompts)
+    prompts_text, prompt_ids = build_prompts(
+        tokenizer,
+        args.n_prompts,
+        chat_template = args.chat_template,
+        model_type_name = type(model).__name__,
+    )
 
     # `model.generate` accepts batched input_ids; pad to max length.
     from transformers import GenerationConfig
@@ -452,6 +484,25 @@ def parse_args():
     p.add_argument("--min_p", type = float, default = 0.5)
     p.add_argument("--top_k", type = int, default = 5)
     p.add_argument("--stats_path", required = True)
+    p.add_argument(
+        "--chat_template",
+        choices = ["auto", "grpo", "native"],
+        default = "auto",
+        help = (
+            "`auto`: GRPO for Qwen3, tokenizer native otherwise. "
+            "`grpo`: force GRPO template. `native`: force tokenizer's "
+            "built-in Instruct template (Llama-3.2-Instruct)."
+        ),
+    )
+    p.add_argument(
+        "--enforce_eager",
+        action = "store_true",
+        help = (
+            "vLLM only: skip the torch.compile + cudagraph path and run "
+            "eager. Useful when vLLM's compile regresses on the local "
+            "torch build."
+        ),
+    )
     return p.parse_args()
 
 
