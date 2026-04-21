@@ -240,29 +240,93 @@ class Sequence:
 # we always re-materialize, so there is no round-trip error to accumulate.
 
 
-def refresh_lora_merge_from_pristine(base_model, peft_model):
-    """Copy pristine `base_model` weights into `peft_model`'s LoRA-target
-    `base_layer.weight`s in-place, reset the PEFT `merged` flag without the
-    unmerge arithmetic, then call `peft_model.merge_adapter()` once.
+def _lora_needs_peft_fallback(module, active_adapters) -> bool:
+    """True when the module needs PEFT's merge path because the math isn't
+    plain `W += alpha * B @ A`. rslora is intentionally NOT here: PEFT
+    folds its scaling (alpha / sqrt(r)) into `module.scaling[adapter]`, so
+    the fused addmm path handles it transparently via `alpha=`."""
+    if getattr(module, "lora_variant", None):
+        if any(a in module.lora_variant for a in active_adapters):
+            return True
+    mag = getattr(module, "lora_magnitude_vector", None)
+    if mag is not None and len(mag) > 0:
+        return True
+    if getattr(module, "fan_in_fan_out", False):
+        return True
+    lora_bias = getattr(module, "lora_bias", None)
+    if lora_bias and any(bool(lora_bias.get(a)) for a in active_adapters):
+        return True
+    return False
 
-    In-place `weight.data.copy_(pristine)` writes into the same tensor
-    storage, so CUDA graphs captured against the merged weights stay valid
-    across refreshes (replay reads the captured address; the new value
-    takes effect on the next replay without re-capture).
+
+def refresh_lora_merge_from_pristine(base_model, peft_model):
+    """Fused one-kernel LoRA refresh. For each LoraLayer:
+        W_inf = W_pristine + sum_active(scaling * (B @ A))
+    via `torch.addmm(out=W_inf)`, then set `merged_adapters` directly so
+    PEFT's forward short-circuits to `base_layer(x)` only.
+
+    In-place addmm writes into the same tensor storage as the merged
+    weight, so CUDA graphs captured against it stay valid across
+    refreshes (replay reads the captured address; the new value takes
+    effect on the next replay without re-capture).
+
+    DoRA / fan_in_fan_out / lora_bias layers fall back to PEFT's
+    get_delta_weight/merge path via a single `peft_model.merge_adapter()`
+    call at the end (after restoring their base_layer.weight from
+    pristine). rslora does not fall back.
 
     Returns the number of LoraLayer modules refreshed.
     """
     from peft.tuners.lora.layer import LoraLayer
 
     n_refreshed = 0
+    needs_fallback = []
     for name, module in peft_model.base_model.model.named_modules():
         if not isinstance(module, LoraLayer):
             continue
-        base_submodule = base_model.get_submodule(name)
-        module.base_layer.weight.data.copy_(base_submodule.weight.data)
-        module.merged_adapters = []
+        pristine_w = base_model.get_submodule(name).weight.data
+        W = module.base_layer.weight.data
+        active = list(module.active_adapters)
+
+        if _lora_needs_peft_fallback(module, active):
+            W.copy_(pristine_w)
+            module.merged_adapters = []
+            needs_fallback.append(module)
+            n_refreshed += 1
+            continue
+
+        if not active:
+            W.copy_(pristine_w)
+            module.merged_adapters = []
+            n_refreshed += 1
+            continue
+
+        adapter0 = active[0]
+        A = module.lora_A[adapter0].weight.data
+        B = module.lora_B[adapter0].weight.data
+        torch.addmm(
+            pristine_w,
+            B.to(W.dtype),
+            A.to(W.dtype),
+            alpha=module.scaling[adapter0],
+            out=W,
+        )
+        for adapter in active[1:]:
+            A = module.lora_A[adapter].weight.data
+            B = module.lora_B[adapter].weight.data
+            torch.addmm(
+                W,
+                B.to(W.dtype),
+                A.to(W.dtype),
+                alpha=module.scaling[adapter],
+                out=W,
+            )
+        module.merged_adapters = list(active)
         n_refreshed += 1
-    peft_model.merge_adapter()
+
+    if needs_fallback:
+        peft_model.merge_adapter()
+
     return n_refreshed
 
 
