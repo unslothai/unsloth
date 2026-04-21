@@ -162,6 +162,14 @@ export function useIntentAwareAutoScroll(): {
       const atBottomStrict = (): boolean =>
         distanceFromBottom() <= AT_BOTTOM_THRESHOLD_PX;
 
+      // True only when there is room to scroll upward. Guards the
+      // wheel/touch detach paths: a wheel-up or swipe-down gesture on
+      // a viewport with nothing above (short thread, or already at
+      // the top) can't express intent to leave the bottom and must
+      // not flip userDetachedRef — otherwise later streaming updates
+      // skip extendFollow and auto-follow stays dead for the session.
+      const canScrollUp = (): boolean => el.scrollTop > 0;
+
       const extendFollow = (): void => {
         if (userDetachedRef.current) {
           return;
@@ -215,7 +223,7 @@ export function useIntentAwareAutoScroll(): {
       };
 
       const onWheel = (e: WheelEvent) => {
-        if (e.deltaY < 0) {
+        if (e.deltaY < 0 && canScrollUp()) {
           detach();
         }
       };
@@ -227,7 +235,7 @@ export function useIntentAwareAutoScroll(): {
       const onTouchMove = (e: TouchEvent) => {
         const y = e.touches[0]?.clientY ?? 0;
         // Finger moves DOWN on the screen = content scrolls UP.
-        if (y - touchStartY > TOUCH_MOVE_THRESHOLD_PX) {
+        if (y - touchStartY > TOUCH_MOVE_THRESHOLD_PX && canScrollUp()) {
           detach();
         }
       };

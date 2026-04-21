@@ -123,7 +123,6 @@ function NavItem({
   disabled,
   onClick,
   children,
-  variant = "nav",
   dataTour,
 }: {
   icon: typeof ZapIcon;
@@ -132,10 +131,8 @@ function NavItem({
   disabled?: boolean;
   onClick: () => void;
   children?: React.ReactNode;
-  variant?: "nav" | "menu";
   dataTour?: string;
 }) {
-  const isNav = variant === "nav";
   return (
     <SidebarMenuItem>
       <div className="relative">
@@ -145,11 +142,7 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className={
-            isNav
-              ? "h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
-              : "h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
-          }
+          className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-[18px]! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14px] leading-[18px] tracking-[0.01em]">{label}</span>
