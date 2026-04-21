@@ -22,20 +22,24 @@ interface PlatformState {
   isChatOnly: () => boolean;
 }
 
+// Client-side platform detection as fallback when backend isn't ready yet.
+function detectLocalPlatform(): DeviceType {
+  if (typeof navigator === "undefined") return "linux";
+  const platform = navigator.platform.toLowerCase();
+  const ua = navigator.userAgent.toLowerCase();
+  if (platform.includes("mac") || ua.includes("mac")) return "mac";
+  if (platform.includes("win") || ua.includes("win")) return "windows";
+  return "linux";
+}
+
+const localDeviceType = detectLocalPlatform();
+
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
-  deviceType: "linux",
-  chatOnly: false,
+  deviceType: localDeviceType,
+  chatOnly: localDeviceType === "mac",
   fetched: false,
   isChatOnly: () => get().chatOnly,
 }));
-
-// Client-side platform detection as fallback when backend isn't ready yet.
-function detectLocalPlatform(): DeviceType {
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes("mac")) return "mac";
-  if (ua.includes("win")) return "windows";
-  return "linux";
-}
 
 export async function fetchDeviceType(): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
