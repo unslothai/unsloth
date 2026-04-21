@@ -26,7 +26,9 @@ from gemma4_flex_inference import (  # noqa: E402
 
 def main():
     Gemma4ForCausalLM, Gemma4Config, Gemma4TextConfig = _require_gemma4()
-    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+    from transformers.models.gemma4.modeling_gemma4 import (
+        Gemma4ForConditionalGeneration,
+    )
     from transformers import AutoTokenizer
 
     name = "unsloth/gemma-4-E2B-it"
@@ -78,9 +80,7 @@ def main():
     with torch.inference_mode():
         # `Gemma4ForConditionalGeneration.forward` applies
         # `final_logit_softcapping` internally.
-        ref_logits = ref_raw(input_ids = ids, use_cache = False).logits[
-            0, -1, :
-        ].float()
+        ref_logits = ref_raw(input_ids = ids, use_cache = False).logits[0, -1, :].float()
         shell_logits = shell(ids, use_cache = False).logits[0, -1, :].float()
     print(
         f"raw   Gemma4ForConditionalGeneration: mean {ref_logits.mean():.4f}, "
