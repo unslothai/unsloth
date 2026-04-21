@@ -1810,24 +1810,92 @@ class LLMWikiEngine:
             return
 
         old = p.read_text(encoding = "utf-8", errors = "ignore")
-        updates = []
-        if summary:
-            updates.append(f"### Summary update ({self._today()})\n{summary}\n")
-        if facts:
+
+        def _norm(value: str) -> str:
+            return re.sub(r"\s+", " ", str(value).strip()).lower()
+
+        current_summary = _norm(self._extract_markdown_section(old, "Summary"))
+        existing_facts = self._extract_markdown_bullets(
+            self._extract_markdown_section(old, "Facts"),
+            limit = 256,
+        )
+        existing_contradictions = self._extract_markdown_bullets(
+            self._extract_markdown_section(old, "Contradictions"),
+            limit = 256,
+        )
+        existing_sources = self._extract_markdown_bullets(
+            self._extract_markdown_section(old, "Sources"),
+            limit = 256,
+        )
+        existing_incremental = self._extract_markdown_bullets(
+            self._extract_markdown_section(old, "Incremental Updates"),
+            limit = 512,
+        )
+
+        existing_fact_norm = {_norm(item) for item in existing_facts}
+        existing_contra_norm = {_norm(item) for item in existing_contradictions}
+        existing_source_norm = {_norm(item) for item in existing_sources}
+        existing_fact_norm.update({_norm(item) for item in existing_incremental})
+        existing_contra_norm.update({_norm(item) for item in existing_incremental})
+        existing_source_norm.update({_norm(item) for item in existing_incremental})
+
+        updates: List[str] = []
+
+        summary_clean = re.sub(r"\s+", " ", summary or "").strip()
+        if summary_clean and _norm(summary_clean) != current_summary:
+            updates.append(f"### Summary update ({self._today()})\n{summary_clean}\n")
+
+        new_facts: List[str] = []
+        for fact in facts:
+            fact_clean = re.sub(r"\s+", " ", str(fact).strip())
+            if not fact_clean:
+                continue
+            key = _norm(fact_clean)
+            if key in existing_fact_norm:
+                continue
+            existing_fact_norm.add(key)
+            new_facts.append(fact_clean)
+        if new_facts:
             updates.append(
-                "### New facts\n" + "\n".join([f"- {f}" for f in facts]) + "\n"
+                "### New facts\n" + "\n".join([f"- {f}" for f in new_facts]) + "\n"
             )
-        if contradictions:
+
+        new_contradictions: List[str] = []
+        for contradiction in contradictions:
+            contradiction_clean = re.sub(r"\s+", " ", str(contradiction).strip())
+            if not contradiction_clean:
+                continue
+            key = _norm(contradiction_clean)
+            if key in existing_contra_norm:
+                continue
+            existing_contra_norm.add(key)
+            new_contradictions.append(contradiction_clean)
+        if new_contradictions:
             updates.append(
                 "### New contradictions\n"
-                + "\n".join([f"- {c}" for c in contradictions])
+                + "\n".join([f"- {c}" for c in new_contradictions])
                 + "\n"
             )
-        updates.append(f"### Source update\n- [[{rel_source}]] ({source_title})\n")
+
+        source_update = f"[[{rel_source}]] ({source_title})"
+        if _norm(source_update) not in existing_source_norm:
+            updates.append(f"### Source update\n- {source_update}\n")
+
+        if not updates:
+            return
 
         merged = self._set_frontmatter_updated_at(old, updated_at)
-        merged += "\n\n## Incremental Updates\n\n" + "\n".join(updates)
-        p.write_text(merged, encoding = "utf-8")
+        existing_updates = self._extract_markdown_section(merged, "Incremental Updates")
+        merged_base = self._remove_markdown_section(merged, "Incremental Updates").rstrip()
+
+        update_blocks: List[str] = []
+        if existing_updates.strip():
+            update_blocks.append(existing_updates.strip())
+        update_blocks.append("\n".join(updates).strip())
+        combined_updates = "\n\n".join([block for block in update_blocks if block]).strip()
+
+        final_text = f"{merged_base}\n\n## Incremental Updates\n\n{combined_updates}\n"
+        p.write_text(final_text, encoding = "utf-8")
 
     def _merge_candidate_title(self, text: str, fallback_slug: str) -> str:
         title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", text)
@@ -2589,10 +2657,50 @@ class LLMWikiEngine:
         cleaned = leading_pattern.sub("", cleaned)
         return cleaned
 
+    def _split_frontmatter_block(self, text: str) -> Tuple[str, str]:
+        if not text.startswith("---\n"):
+            return "", text
+
+        match = re.match(r"(?s)^---\n(.*?)\n---\n?", text)
+        if not match:
+            return "", text
+
+        frontmatter = match.group(1)
+        body = text[match.end() :]
+        return frontmatter, body
+
+    def _extract_embedded_frontmatter_block(self, text: str) -> Tuple[str, str]:
+        # Recover from historical malformed pages that had frontmatter placed
+        # below content due non-frontmatter-aware section upserts.
+        pattern = re.compile(
+            r"(?ms)(?:^|\n)---\n((?:[A-Za-z0-9_-]+:\s*.*\n)+)---\n?"
+        )
+        match = pattern.search(text)
+        if not match:
+            return "", text
+
+        frontmatter = match.group(1).rstrip("\n")
+        cleaned = (text[: match.start()] + text[match.end() :]).lstrip("\n")
+        return frontmatter, cleaned
+
+    def _strip_embedded_frontmatter_blocks(self, text: str) -> str:
+        block_pattern = re.compile(r"(?ms)^---\n(?:[A-Za-z0-9_-]+:\s*.*\n)+---\n?")
+        cleaned = text
+        while True:
+            match = block_pattern.search(cleaned)
+            if not match:
+                break
+            cleaned = (cleaned[: match.start()] + cleaned[match.end() :]).lstrip("\n")
+        return cleaned
+
     def _upsert_top_section(
         self, text: str, section_title: str, section_body: str
     ) -> str:
-        cleaned = self._remove_markdown_section(text, section_title).lstrip("\n")
+        frontmatter, body = self._split_frontmatter_block(text)
+        if not frontmatter:
+            frontmatter, body = self._extract_embedded_frontmatter_block(text)
+
+        cleaned = self._remove_markdown_section(body, section_title).lstrip("\n")
         section_block = f"## {section_title}\n{section_body.rstrip()}\n\n"
 
         heading_match = re.match(r"^(# .+\n+)", cleaned)
@@ -2600,8 +2708,14 @@ class LLMWikiEngine:
             insert_at = heading_match.end()
             prefix = cleaned[:insert_at]
             suffix = cleaned[insert_at:].lstrip("\n")
-            return prefix + section_block + suffix
-        return section_block + cleaned
+            merged_body = prefix + section_block + suffix
+        else:
+            merged_body = section_block + cleaned
+
+        if not frontmatter:
+            return merged_body
+
+        return f"---\n{frontmatter.rstrip()}\n---\n\n{merged_body.lstrip()}"
 
     def _all_wiki_pages(self) -> List[str]:
         out = []
@@ -3387,20 +3501,24 @@ class LLMWikiEngine:
         return excerpt
 
     def _set_frontmatter_updated_at(self, md: str, updated_at: str) -> str:
-        if not md.startswith("---\n"):
-            return f"---\nupdated_at: {updated_at}\n---\n\n" + md
-        parts = md.split("---\n", 2)
-        if len(parts) < 3:
-            return md
-        front = parts[1]
-        body = parts[2]
+        front, body = self._split_frontmatter_block(md)
+        if not front:
+            front, body = self._extract_embedded_frontmatter_block(md)
+
+        body = self._strip_embedded_frontmatter_blocks(body)
+        body = body.lstrip("\n")
+
+        if not front:
+            return f"---\nupdated_at: {updated_at}\n---\n\n" + body
+
         if re.search(r"^updated_at:\s*", front, flags = re.M):
             front = re.sub(
                 r"^updated_at:\s*.*$", f"updated_at: {updated_at}", front, flags = re.M
             )
         else:
             front = front.rstrip() + f"\nupdated_at: {updated_at}\n"
-        return f"---\n{front}---\n{body}"
+
+        return f"---\n{front.rstrip()}\n---\n\n{body}"
 
     def _extract_updated_at(self, md: str) -> Optional[datetime]:
         m = re.search(r"^updated_at:\s*(.+)$", md, flags = re.M)

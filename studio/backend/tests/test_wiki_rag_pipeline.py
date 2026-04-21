@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import ast
 from pathlib import Path
 
 from core.wiki.engine import LLMWikiEngine, WikiConfig
@@ -111,6 +112,71 @@ def test_ingest_pending_raw_files_uses_hash_state_and_reingests_on_change(
     assert len(third) == 1
 
 
+def test_ingest_pending_raw_files_backfills_hash_for_existing_source_page(
+    tmp_path: Path,
+):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    raw_file = tmp_path / "raw" / "report.md"
+    raw_file.write_text("first ingest content", encoding = "utf-8")
+
+    initial_title = ingestor.ingest_file(raw_file, contributor = "tester")
+    assert initial_title
+
+    calls = {"count": 0}
+
+    def _should_not_run(*_args, **_kwargs):
+        calls["count"] += 1
+        return None
+
+    ingestor.ingest_file = _should_not_run  # type: ignore[method-assign]
+
+    results = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+
+    assert results == []
+    assert calls["count"] == 0
+
+    state_path = tmp_path / "raw" / ".ingest_state.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text(encoding = "utf-8"))
+    assert str(raw_file.resolve()) in state
+
+
+def _load_route_stream_merge_helper() -> object:
+    route_file = Path(__file__).resolve().parents[1] / "routes" / "inference.py"
+    src = route_file.read_text(encoding = "utf-8")
+    module = ast.parse(src)
+
+    helper_def = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_merge_streamed_text_chunks"
+    )
+
+    helper_module = ast.Module(body = [helper_def], type_ignores = [])
+    namespace: dict[str, object] = {"Any": object}
+    exec(compile(helper_module, str(route_file), "exec"), namespace)
+    return namespace["_merge_streamed_text_chunks"]
+
+
+def test_route_stream_merge_helper_handles_cumulative_snapshots():
+    merge = _load_route_stream_merge_helper()
+    assert callable(merge)
+
+    chunks = ["a", "ab", "abc"]
+    assert merge(chunks) == "abc"
+
+
+def test_route_stream_merge_helper_handles_delta_chunks():
+    merge = _load_route_stream_merge_helper()
+    assert callable(merge)
+
+    chunks = ["a", "b", "c"]
+    assert merge(chunks) == "abc"
+
+
 def test_ingest_pending_raw_files_skips_sensitive_candidates(tmp_path: Path):
     manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
     ingestor = WikiIngestor(manager, tmp_path / "raw")
@@ -147,6 +213,100 @@ def test_ingest_pending_raw_files_skips_hidden_subdirectories(tmp_path: Path):
 
     assert str(visible.resolve()) in ingested_paths
     assert str(archived.resolve()) not in ingested_paths
+
+
+def test_upsert_knowledge_page_skips_duplicate_incremental_writes(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    page = tmp_path / "wiki" / "entities" / "forge.md"
+    initial = (
+        "---\n"
+        "title: Forge\n"
+        "type: entity\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Forge\n\n"
+        "## Summary\n"
+        "Foundational optimization representation model.\n\n"
+        "## Facts\n"
+        "- Supports transfer learning\n\n"
+        "## Contradictions\n\n"
+        "## Sources\n"
+        "- [[sources/forge-paper]] (Forge Paper)\n"
+    )
+    page.write_text(initial, encoding = "utf-8")
+
+    engine._upsert_knowledge_page(
+        folder = engine.entities_dir,
+        page_name = "Forge",
+        page_type = "entity",
+        summary = "Foundational optimization representation model.",
+        facts = ["Supports transfer learning"],
+        contradictions = [],
+        source_title = "Forge Paper",
+        source_slug = "forge-paper",
+        updated_at = "2026-04-20T12:00:00+00:00",
+    )
+
+    assert page.read_text(encoding = "utf-8") == initial
+
+
+def test_upsert_knowledge_page_keeps_single_incremental_section(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    page = tmp_path / "wiki" / "concepts" / "forge-sat.md"
+    page.write_text(
+        "---\n"
+        "title: Forge-Sat\n"
+        "type: concept\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Forge-Sat\n\n"
+        "## Summary\n"
+        "SAT-native variant.\n\n"
+        "## Facts\n"
+        "- Uses SAT-specific features\n\n"
+        "## Contradictions\n\n"
+        "## Sources\n"
+        "- [[sources/forge-paper]] (Forge Paper)\n",
+        encoding = "utf-8",
+    )
+
+    engine._upsert_knowledge_page(
+        folder = engine.concepts_dir,
+        page_name = "Forge-Sat",
+        page_type = "concept",
+        summary = "SAT-native variant.",
+        facts = ["Achieved highest clustering NMI"],
+        contradictions = [],
+        source_title = "Forge Paper",
+        source_slug = "forge-paper",
+        updated_at = "2026-04-20T13:00:00+00:00",
+    )
+    first = page.read_text(encoding = "utf-8")
+
+    engine._upsert_knowledge_page(
+        folder = engine.concepts_dir,
+        page_name = "Forge-Sat",
+        page_type = "concept",
+        summary = "SAT-native variant.",
+        facts = ["Achieved highest clustering NMI"],
+        contradictions = [],
+        source_title = "Forge Paper",
+        source_slug = "forge-paper",
+        updated_at = "2026-04-20T14:00:00+00:00",
+    )
+    second = page.read_text(encoding = "utf-8")
+
+    assert first == second
+    assert second.count("## Incremental Updates") == 1
+    assert second.count("- Achieved highest clustering NMI") == 1
 
 
 def test_engine_surfaces_extraction_diagnostics(tmp_path: Path):
@@ -1300,9 +1460,66 @@ def test_merge_duplicate_knowledge_pages_apply_archives_and_rewrites_links(
     assert f"[[{duplicate_link}]]" not in analysis_text
 
     canonical_text = (tmp_path / "wiki" / canonical_rel).read_text(encoding = "utf-8")
+    assert canonical_text.startswith("---\n")
+    assert canonical_text.count("\n---\n") == 1
+    assert canonical_text.count("## Merge History") == 1
+    assert canonical_text.index("## Merge History") > canonical_text.index(
+        "# Retrieval Pipeline System"
+    )
     assert "## Merge History" in canonical_text
     assert duplicate_rel in canonical_text
 
     index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
     assert f"[[{duplicate_link}]]" not in index_text
     assert f"[[{canonical_link}]]" in index_text
+
+
+def test_merge_duplicate_normalizes_misplaced_frontmatter_blocks(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    malformed_canonical = (
+        "## Merge History\n"
+        "### 2026-04-20T19:59:25.086376+00:00 merged concepts/forge-mip.md\n"
+        "- similarity: 1.0\n"
+        "- archived_to: .archive/concepts/forge-mip.md\n\n"
+        "---\n"
+        "title: Forge-Mip-Sat\n"
+        "type: concept\n"
+        "updated_at: 2026-04-20T13:58:27.476368+00:00\n"
+        "---\n\n"
+        "# Forge-Mip-Sat\n\n"
+        "## Summary\n"
+        "A feature-adapted transfer variant of the Forge model.\n"
+    )
+    duplicate_text = (
+        "---\n"
+        "title: Forge-Sat\n"
+        "updated_at: 2026-04-20T20:18:11.964246+00:00\n"
+        "---\n\n"
+        "# Forge-Sat\n\n"
+        "## Summary\n"
+        "A SAT-native foundational model variant.\n\n"
+        "## Facts\n"
+        "- Retains the Forge architecture\n\n"
+        "## Contradictions\n"
+        "- none\n\n"
+        "## Sources\n"
+        "- [[sources/transfer-learning]]\n"
+    )
+
+    merged = engine._merge_canonical_with_duplicate(
+        malformed_canonical,
+        duplicate_text,
+        duplicate_rel = "concepts/forge-sat.md",
+        archived_rel = ".archive/concepts/forge-sat.md",
+        similarity = 1.0,
+    )
+
+    assert merged.startswith("---\n")
+    assert merged.count("\n---\n") == 1
+    assert merged.count("## Merge History") == 1
+    assert "title: Forge-Mip-Sat" in merged
+    assert "concepts/forge-sat.md" in merged

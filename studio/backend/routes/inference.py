@@ -280,6 +280,24 @@ def _supports_enable_wiki_rag_history_arg(generate_fn: Any) -> bool:
     )
 
 
+def _merge_streamed_text_chunks(chunks: Any) -> str:
+    """Merge streamed text chunks that may be either deltas or cumulative snapshots."""
+    out = ""
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            continue
+        if not chunk:
+            continue
+
+        # Some backends stream cumulative snapshots ("a", "ab", "abc").
+        # Others stream deltas ("a", "b", "c"). Handle both.
+        if chunk.startswith(out):
+            out = chunk
+        else:
+            out += chunk
+    return out
+
+
 def _route_wiki_llm_stub(prompt: str) -> str:
     """Best-effort wiki LLM function using whichever model backend is active."""
     wants_structured_json = (
@@ -305,10 +323,7 @@ def _route_wiki_llm_stub(prompt: str) -> str:
                 presence_penalty = 0.0,
                 enable_thinking = False,
             )
-            final = ""
-            for chunk in chunks:
-                if isinstance(chunk, str):
-                    final = chunk
+            final = _merge_streamed_text_chunks(chunks)
             if final.strip():
                 return final.strip()
     except Exception as exc:
@@ -331,9 +346,9 @@ def _route_wiki_llm_stub(prompt: str) -> str:
             if _supports_enable_wiki_rag_history_arg(backend.generate_chat_response):
                 generate_kwargs["enable_wiki_rag_history"] = True
 
-            out = ""
-            for token in backend.generate_chat_response(**generate_kwargs):
-                out += token
+            out = _merge_streamed_text_chunks(
+                backend.generate_chat_response(**generate_kwargs)
+            )
             if out.strip():
                 return out.strip()
     except Exception as exc:

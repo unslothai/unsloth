@@ -402,11 +402,23 @@ class WikiIngestor:
             slug = self.wiki_manager.engine._slug(self._local_source_title(resolved))
             source_page = sources_dir / f"{slug}.md"
 
-            if source_page.exists() and (
-                (current_hash is not None and previous_hash == current_hash)
-                or current_hash is None
-            ):
-                continue
+            if source_page.exists():
+                if current_hash is None:
+                    continue
+
+                try:
+                    source_mtime = source_page.stat().st_mtime
+                    raw_mtime = resolved.stat().st_mtime
+                except OSError:
+                    source_mtime = 0.0
+                    raw_mtime = 0.0
+
+                source_is_up_to_date = source_mtime >= raw_mtime
+                if previous_hash == current_hash or source_is_up_to_date:
+                    if state.get(key) != current_hash:
+                        state[key] = current_hash
+                        state_changed = True
+                    continue
 
             title = self.ingest_file(resolved, contributor = contributor)
             if not title:
