@@ -14,6 +14,7 @@ export interface HfModelResult {
   likes: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
+  isGguf: boolean;
 }
 
 /** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
@@ -103,7 +104,10 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
     if (!isEmbedding && m.tags?.some((t) => excludedTags.has(t))) {
       return null;
     }
-    if (excludeGguf && m.tags?.includes("gguf")) {
+    const isGguf =
+      Boolean(m.tags?.some((tag) => tag.toLowerCase() === "gguf")) ||
+      /-GGUF(?:$|-)/i.test(m.name);
+    if (excludeGguf && isGguf) {
       return null;
     }
     return {
@@ -112,6 +116,7 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       likes: m.likes,
       totalParams: m.safetensors?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
+      isGguf,
     };
   };
 }
@@ -346,4 +351,3 @@ export function useHfModelSearch(
 
   return { ...search, results };
 }
-
