@@ -158,6 +158,7 @@ export function useIntentAwareAutoScroll(): {
         }
         return el.scrollHeight - el.scrollTop - el.clientHeight;
       };
+      let lastDistanceFromBottom = distanceFromBottom();
 
       const atBottomStrict = (): boolean =>
         distanceFromBottom() <= AT_BOTTOM_THRESHOLD_PX;
@@ -287,6 +288,7 @@ export function useIntentAwareAutoScroll(): {
           clientWidth !== lastClientWidth || clientHeight !== lastClientHeight;
 
         const delta = scrollTop - lastScrollTop;
+        const distanceNow = distanceFromBottom();
 
         // Viewport resizes can clamp scrollTop and produce spurious
         // direction signals. Only flip intent on deliberate scrolls.
@@ -298,7 +300,7 @@ export function useIntentAwareAutoScroll(): {
           upwardAccumulator = 0;
           if (
             userDetachedRef.current &&
-            distanceFromBottom() <= RE_ATTACH_THRESHOLD_PX
+            distanceNow <= RE_ATTACH_THRESHOLD_PX
           ) {
             userDetachedRef.current = false;
             extendFollow();
@@ -307,16 +309,28 @@ export function useIntentAwareAutoScroll(): {
           // Upward: sum across events. Middle-click autoscroll and
           // some trackpads deliver 1px-per-event scrolls that each
           // slip under a per-event threshold; summing catches them.
-          upwardAccumulator += -delta;
-          if (upwardAccumulator >= UPWARD_DETACH_THRESHOLD_PX) {
-            detach();
-            upwardAccumulator = 0;
+          //
+          // Count distance-from-bottom growth, not raw scrollTop
+          // delta. When content above collapses (reasoning panels
+          // auto-closing after streaming, tool outputs auto-hiding),
+          // browsers scroll-anchor to keep visible content stable:
+          // scrollTop decreases but scrollHeight decreases by the
+          // same amount, so distance is unchanged. Those layout-
+          // induced deltas must not flip user intent.
+          const distanceDelta = distanceNow - lastDistanceFromBottom;
+          if (distanceDelta > 0) {
+            upwardAccumulator += distanceDelta;
+            if (upwardAccumulator >= UPWARD_DETACH_THRESHOLD_PX) {
+              detach();
+              upwardAccumulator = 0;
+            }
           }
         }
 
         lastScrollTop = scrollTop;
         lastClientWidth = clientWidth;
         lastClientHeight = clientHeight;
+        lastDistanceFromBottom = distanceNow;
         requestTick();
       };
 
