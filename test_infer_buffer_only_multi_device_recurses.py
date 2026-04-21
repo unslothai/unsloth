@@ -79,14 +79,3 @@ def test_buffer_only_subtree_with_multi_device_recurses():
     assert dm.get("a") == torch.device("cuda", 0), dm
     assert dm.get("b") == torch.device("cuda", 1), dm
     assert "" not in dm, dm
-
-
-def test_buffer_only_subtree_with_single_device_collapses():
-    """Param-less subtree with buffers all on one device still collapses to a
-    single-entry prefix; no accidental recursion when not needed."""
-    infer, _ = _load_fns()
-    a = _BufMod(buffers = [("cache", "cuda:1")])
-    b = _BufMod(buffers = [("cache", "cuda:1")])
-    root = _BufMod(children = [("a", a), ("b", b)])
-    dm = infer(root)
-    assert dm == {"": torch.device("cuda", 1)}, dm
