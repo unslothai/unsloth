@@ -1,7 +1,9 @@
-# Adapted from attention-gym
-# Original source: https://github.com/pytorch-labs/attention-gym
-# License: BSD 3-Clause (see THIRD_PARTY_LICENSES.md)
-# Copyright (c) 2023, Driss Guessous
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+#
+# Adapted from attention-gym (https://github.com/pytorch-labs/attention-gym)
+# Copyright (c) 2023, Driss Guessous, licensed under BSD 3-Clause
+# (see THIRD_PARTY_LICENSES.md).
 
 # the original implementation has some bugs and has some feature that lives outside of the PageTable class
 

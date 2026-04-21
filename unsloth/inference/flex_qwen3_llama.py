@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+
 """Llama / Qwen3 inference with flex_attention + paged KV cache + CUDA graphs.
 
 The transformers continuous-batching path tops out at ~10% of vLLM on this

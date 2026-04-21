@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+
 """Gemma-4-E2B-it inference with flex_attention + paged KV cache + CUDA graphs.
 
 Extends the Qwen3/Llama-3.2 engine in `qwen3_flex_inference.py` to a third

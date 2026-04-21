@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+
 """vLLM-API surface for the flex inference backend.
 
 `FlexEngine.generate` / `.chat` return :class:`RequestOutput` objects with the

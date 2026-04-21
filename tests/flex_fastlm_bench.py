@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+
 """Batched steady-state throughput bench through ``FastLanguageModel`` +
 ``UNSLOTH_FAST_INFERENCE=1``. First ``generate`` call primes CUDA graphs;
 subsequent calls report steady state. Compare against April CLI-only

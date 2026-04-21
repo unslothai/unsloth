@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+
 """FlexEngine: vLLM-compatible LLM surface for the flex inference backends.
 
 When ``UNSLOTH_FAST_INFERENCE=1`` is set, :func:`load_flex` wraps the HF model
