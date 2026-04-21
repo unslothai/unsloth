@@ -346,7 +346,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "flex h-[48px] shrink-0 items-center gap-2 bg-background",
+        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
         side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
       )}
     >

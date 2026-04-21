@@ -170,6 +170,37 @@ export function useIntentAwareAutoScroll(): {
       // skip extendFollow and auto-follow stays dead for the session.
       const canScrollUp = (): boolean => el.scrollTop > 0;
 
+      // True when a nested scrollable ancestor of the event target
+      // (e.g. the reasoning panel's own overflow-y-auto region, or
+      // any tool output with internal scroll) has room above and
+      // will therefore consume the upward delta before it reaches
+      // the viewport. Walking stops at the viewport element itself,
+      // so only intermediate inner scrollers count.
+      //
+      // Wheel and touchmove events bubble, so without this check a
+      // user reading back through a long reasoning pane mid-stream
+      // would falsely detach the outer viewport.
+      const innerScrollWillConsumeUpward = (
+        target: EventTarget | null,
+      ): boolean => {
+        let node =
+          target instanceof Element ? (target as Element | null) : null;
+        while (node && node !== el) {
+          if (node.scrollTop > 0) {
+            const { overflowY } = window.getComputedStyle(node);
+            if (
+              overflowY === "auto" ||
+              overflowY === "scroll" ||
+              overflowY === "overlay"
+            ) {
+              return true;
+            }
+          }
+          node = node.parentElement;
+        }
+        return false;
+      };
+
       const extendFollow = (): void => {
         if (userDetachedRef.current) {
           return;
@@ -223,7 +254,11 @@ export function useIntentAwareAutoScroll(): {
       };
 
       const onWheel = (e: WheelEvent) => {
-        if (e.deltaY < 0 && canScrollUp()) {
+        if (
+          e.deltaY < 0 &&
+          canScrollUp() &&
+          !innerScrollWillConsumeUpward(e.target)
+        ) {
           detach();
         }
       };
@@ -235,7 +270,11 @@ export function useIntentAwareAutoScroll(): {
       const onTouchMove = (e: TouchEvent) => {
         const y = e.touches[0]?.clientY ?? 0;
         // Finger moves DOWN on the screen = content scrolls UP.
-        if (y - touchStartY > TOUCH_MOVE_THRESHOLD_PX && canScrollUp()) {
+        if (
+          y - touchStartY > TOUCH_MOVE_THRESHOLD_PX &&
+          canScrollUp() &&
+          !innerScrollWillConsumeUpward(e.target)
+        ) {
           detach();
         }
       };
@@ -295,6 +334,14 @@ export function useIntentAwareAutoScroll(): {
         extendFollow();
         requestTick();
       };
+
+      // Fresh attach always starts pinned. `userDetachedRef` survives
+      // ref rebinds (it's hook-scoped), so if the viewport element is
+      // ever unmounted and remounted without an AUI lifecycle event
+      // (e.g. a parent layout refactor that remounts the viewport),
+      // a prior detach would silently disable auto-follow for the
+      // rest of the session.
+      userDetachedRef.current = false;
 
       // Pin to bottom when the ref first attaches. Covers the case
       // where `thread.initialize` fires before the ref is bound.
