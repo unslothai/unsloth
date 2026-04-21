@@ -125,10 +125,16 @@ del PackageNotFoundError, importlib_version
 # Try importing PyTorch and check version
 if _NO_TORCH_MODE:
     torch = None
-    warnings.warn(
-        "Unsloth: running in no-torch mode. Training and non-GGUF inference features are disabled.",
-        stacklevel = 2,
-    )
+    if _HAS_TORCH:
+        warnings.warn(
+            "Unsloth: UNSLOTH_NO_TORCH is set — running in no-torch mode even though torch is installed. Training and GPU features are disabled.",
+            stacklevel = 2,
+        )
+    else:
+        warnings.warn(
+            "Unsloth: running in no-torch mode. Training and non-GGUF inference features are disabled.",
+            stacklevel = 2,
+        )
 else:
     try:
         import torch
