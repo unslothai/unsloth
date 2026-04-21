@@ -47,6 +47,26 @@ async function redirectToAuth(): Promise<void> {
   window.location.href = target;
 }
 
+async function retryWithCurrentToken(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const retryHeaders = new Headers(init?.headers);
+  const token = getAuthToken();
+  if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers: retryHeaders });
+}
+
+async function retryWithTauriAutoAuth(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response | null> {
+  clearAuthTokens();
+  const { tauriAutoAuth } = await import("./tauri-auto-auth");
+  if (await tauriAutoAuth()) return retryWithCurrentToken(input, init);
+  return null;
+}
+
 export async function refreshSession(): Promise<boolean> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;
@@ -95,15 +115,10 @@ export async function authFetch(
     }
     throw err;
   }
+
   if (await isPasswordChangeRequiredResponse(response)) {
     if (isTauri) {
-      const { tauriAutoAuth } = await import("./tauri-auto-auth");
-      if (await tauriAutoAuth()) {
-        const retryHeaders = new Headers(init?.headers);
-        const t = getAuthToken();
-        if (t) retryHeaders.set("Authorization", `Bearer ${t}`);
-        return fetch(resolvedInput, { ...init, headers: retryHeaders });
-      }
+      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
     }
     void redirectToAuth();
     return response;
@@ -112,16 +127,10 @@ export async function authFetch(
 
   const refreshed = await refreshSession();
   if (!refreshed) {
-    clearAuthTokens();
     if (isTauri) {
-      const { tauriAutoAuth } = await import("./tauri-auto-auth");
-      if (await tauriAutoAuth()) {
-        const retryHeaders = new Headers(init?.headers);
-        const t = getAuthToken();
-        if (t) retryHeaders.set("Authorization", `Bearer ${t}`);
-        return fetch(resolvedInput, { ...init, headers: retryHeaders });
-      }
+      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
     }
+    clearAuthTokens();
     void redirectToAuth();
     return response;
   }
@@ -131,15 +140,8 @@ export async function authFetch(
     return response;
   }
 
-  const retryHeaders = new Headers(init?.headers);
-  const newToken = getAuthToken();
-  if (newToken) {
-    retryHeaders.set("Authorization", `Bearer ${newToken}`);
-  } else {
-    clearAuthTokens();
-  }
-
-  return fetch(resolvedInput, { ...init, headers: retryHeaders });
+  if (!getAuthToken()) clearAuthTokens();
+  return retryWithCurrentToken(resolvedInput, init);
 }
 
 export function logout(): void {

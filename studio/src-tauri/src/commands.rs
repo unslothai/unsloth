@@ -176,27 +176,6 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
     }
 }
 
-/// Read the bootstrap password from ~/.unsloth/studio/auth/.bootstrap_password
-#[tauri::command]
-pub fn get_bootstrap_password() -> Result<String, String> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let path = home
-        .join(".unsloth")
-        .join("studio")
-        .join("auth")
-        .join(".bootstrap_password");
-
-    std::fs::read_to_string(&path)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| {
-            format!(
-                "Failed to read bootstrap password at {}: {}",
-                path.display(),
-                e
-            )
-        })
-}
-
 /// Open the Unsloth Studio directory in the system file manager.
 #[tauri::command]
 pub fn open_logs_dir() -> Result<(), String> {

@@ -141,12 +141,10 @@ fn main() {
             commands::check_health,
             commands::find_existing_server,
             commands::get_server_logs,
-            commands::get_bootstrap_password,
             commands::open_logs_dir,
             commands::start_backend_update,
             commands::install_system_packages,
-            desktop_auth::get_desktop_password,
-            desktop_auth::set_desktop_password,
+            desktop_auth::desktop_auth,
         ])
         .setup(|app| {
             setup_tray(app)?;

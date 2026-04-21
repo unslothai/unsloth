@@ -33,37 +33,43 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
   }
 }
 
+function authRedirect(to: "/login" | "/change-password"): never {
+  throw redirect({ to });
+}
+
 export async function requireAuth(): Promise<void> {
-  // Tauri desktop: silently authenticate, skip login/change-password entirely
-  if (isTauri && (await tauriAutoAuth())) return;
+  if (isTauri) {
+    await tauriAutoAuth();
+    return;
+  }
 
   if (await hasActiveSession()) {
     const { requires_password_change } = await fetchAuthStatus();
     if (requires_password_change || mustChangePassword()) {
-      throw redirect({ to: "/change-password" });
+      authRedirect("/change-password");
     }
     return;
   }
   const status = await fetchAuthStatus();
   if (status.requires_password_change || mustChangePassword()) {
-    throw redirect({ to: "/change-password" });
+    authRedirect("/change-password");
   }
-  throw redirect({ to: status.initialized ? "/login" : "/change-password" });
+  authRedirect(status.initialized ? "/login" : "/change-password");
 }
 
 export async function requireGuest(): Promise<void> {
-  // Tauri: user should never land on /login, redirect to app
-  if (isTauri && (await tauriAutoAuth())) {
-    throw redirect({ to: getPostAuthRoute() });
+  if (isTauri) {
+    await tauriAutoAuth();
+    throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
   throw redirect({ to: getPostAuthRoute() });
 }
 
 export async function requirePasswordChangeFlow(): Promise<void> {
-  // Tauri: auto-auth handles password change silently
-  if (isTauri && (await tauriAutoAuth())) {
-    throw redirect({ to: getPostAuthRoute() });
+  if (isTauri) {
+    await tauriAutoAuth();
+    throw redirect({ to: "/chat" });
   }
 
   const status = await fetchAuthStatus();
@@ -71,5 +77,5 @@ export async function requirePasswordChangeFlow(): Promise<void> {
   if (await hasActiveSession()) {
     throw redirect({ to: getPostAuthRoute() });
   }
-  throw redirect({ to: status.initialized ? "/login" : "/change-password" });
+  authRedirect(status.initialized ? "/login" : "/change-password");
 }
