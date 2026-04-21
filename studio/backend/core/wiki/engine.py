@@ -1886,13 +1886,17 @@ class LLMWikiEngine:
 
         merged = self._set_frontmatter_updated_at(old, updated_at)
         existing_updates = self._extract_markdown_section(merged, "Incremental Updates")
-        merged_base = self._remove_markdown_section(merged, "Incremental Updates").rstrip()
+        merged_base = self._remove_markdown_section(
+            merged, "Incremental Updates"
+        ).rstrip()
 
         update_blocks: List[str] = []
         if existing_updates.strip():
             update_blocks.append(existing_updates.strip())
         update_blocks.append("\n".join(updates).strip())
-        combined_updates = "\n\n".join([block for block in update_blocks if block]).strip()
+        combined_updates = "\n\n".join(
+            [block for block in update_blocks if block]
+        ).strip()
 
         final_text = f"{merged_base}\n\n## Incremental Updates\n\n{combined_updates}\n"
         p.write_text(final_text, encoding = "utf-8")
@@ -2672,9 +2676,7 @@ class LLMWikiEngine:
     def _extract_embedded_frontmatter_block(self, text: str) -> Tuple[str, str]:
         # Recover from historical malformed pages that had frontmatter placed
         # below content due non-frontmatter-aware section upserts.
-        pattern = re.compile(
-            r"(?ms)(?:^|\n)---\n((?:[A-Za-z0-9_-]+:\s*.*\n)+)---\n?"
-        )
+        pattern = re.compile(r"(?ms)(?:^|\n)---\n((?:[A-Za-z0-9_-]+:\s*.*\n)+)---\n?")
         match = pattern.search(text)
         if not match:
             return "", text
