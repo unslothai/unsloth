@@ -27,6 +27,58 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 
+def _install_httpcore_asyncgen_silencer() -> None:
+    """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
+
+    When Studio proxies a streaming response from llama-server via httpx,
+    the innermost ``HTTP11ConnectionByteStream.__aiter__`` async generator
+    is finalised by Python's asyncgen GC hook on a task different from the
+    one that opened it. Its ``aclose`` path then calls
+    ``anyio.Lock.acquire`` → ``cancel_shielded_checkpoint`` which enters a
+    ``CancelScope`` on the finaliser task — Python 3.13 flags the
+    cross-task exit as ``"Attempted to exit cancel scope in a different
+    task"`` and prints ``"async generator ignored GeneratorExit"`` as an
+    unraisable warning.
+
+    This is a known httpx + httpcore + anyio interaction (see MCP SDK
+    python-sdk#831, agno #3556, chainlit #2361, langchain-mcp-adapters
+    #254). It is benign: the response has already been delivered with a
+    200. The streaming pass-throughs (``/v1/chat/completions``,
+    ``/v1/messages``, ``/v1/responses``, ``/v1/completions``) already
+    manage their httpx lifecycle inside a single task with explicit
+    ``aclose()`` of the lines iterator, response, and client; the errant
+    generator is not one we hold a reference to and therefore cannot
+    close ourselves.
+
+    We install a single process-wide unraisable hook that swallows just
+    this specific interaction — identified by the tuple of (RuntimeError
+    mentioning cancel scope / GeneratorExit) + (object repr referencing
+    HTTP11ConnectionByteStream) — and defers to the default hook for
+    everything else. The filter is idempotent.
+    """
+    prior_hook = sys.unraisablehook
+    if getattr(prior_hook, "_unsloth_httpcore_silencer", False):
+        return
+
+    def _hook(unraisable):
+        exc_value = getattr(unraisable, "exc_value", None)
+        obj = getattr(unraisable, "object", None)
+        obj_repr = repr(obj) if obj is not None else ""
+        if (
+            isinstance(exc_value, RuntimeError)
+            and "HTTP11ConnectionByteStream" in obj_repr
+            and ("cancel scope" in str(exc_value) or "GeneratorExit" in str(exc_value))
+        ):
+            return
+        prior_hook(unraisable)
+
+    _hook._unsloth_httpcore_silencer = True  # type: ignore[attr-defined]
+    sys.unraisablehook = _hook
+
+
+_install_httpcore_asyncgen_silencer()
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     # httpx transport-layer failures reaching the managed llama-server —
