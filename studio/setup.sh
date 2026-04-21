@@ -912,8 +912,6 @@ else
 
                 _BUILD_DESC="building (ROCm)"
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
-                export ROCM_PATH="$ROCM_ROOT"
-                export HIP_PATH="$ROCM_ROOT"
 
                 # Use upstream-recommended HIP compiler (not legacy hipcc-as-CXX)
                 if command -v hipconfig &>/dev/null; then
