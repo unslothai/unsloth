@@ -308,8 +308,8 @@ def refresh_lora_merge_from_pristine(base_model, peft_model):
             pristine_w,
             B.to(W.dtype),
             A.to(W.dtype),
-            alpha=module.scaling[adapter0],
-            out=W,
+            alpha = module.scaling[adapter0],
+            out = W,
         )
         for adapter in active[1:]:
             A = module.lora_A[adapter].weight.data
@@ -318,8 +318,8 @@ def refresh_lora_merge_from_pristine(base_model, peft_model):
                 W,
                 B.to(W.dtype),
                 A.to(W.dtype),
-                alpha=module.scaling[adapter],
-                out=W,
+                alpha = module.scaling[adapter],
+                out = W,
             )
         module.merged_adapters = list(active)
         n_refreshed += 1
@@ -343,8 +343,9 @@ def _hash_state_dict(model) -> str:
     return h.hexdigest()
 
 
-def run_drift_verification(base_model, peft_model, n_iters: int = 10,
-                           noise_scale: float = 0.01):
+def run_drift_verification(
+    base_model, peft_model, n_iters: int = 10, noise_scale: float = 0.01
+):
     """Simulate N GRPO iterations: perturb LoRA weights with random noise,
     call `refresh_lora_merge_from_pristine`, repeat. Assert the pristine
     `base_model`'s parameters are bit-identical before and after.
@@ -363,12 +364,12 @@ def run_drift_verification(base_model, peft_model, n_iters: int = 10,
         if not isinstance(module, LoraLayer):
             continue
         for adapter_name in list(module.lora_A.keys()):
-            initial_lora[(name, "A", adapter_name)] = (
-                module.lora_A[adapter_name].weight.data.clone()
-            )
-            initial_lora[(name, "B", adapter_name)] = (
-                module.lora_B[adapter_name].weight.data.clone()
-            )
+            initial_lora[(name, "A", adapter_name)] = module.lora_A[
+                adapter_name
+            ].weight.data.clone()
+            initial_lora[(name, "B", adapter_name)] = module.lora_B[
+                adapter_name
+            ].weight.data.clone()
 
     base_hash_before = _hash_state_dict(base_model)
 
