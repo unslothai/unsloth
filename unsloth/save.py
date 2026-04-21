@@ -258,6 +258,31 @@ def check_if_sentencepiece_model(
     return sentencepiece_model
 
 
+_TOKENIZER_MODEL_CACHE = {}
+
+
+def _has_tokenizer_model(tokenizer, token = None):
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if tokenizer is None:
+        return False
+
+    source = getattr(tokenizer, "name_or_path", None)
+    if not isinstance(source, str) or not source:
+        return False
+    if os.path.isdir(source):
+        return os.path.isfile(os.path.join(source, "tokenizer.model"))
+
+    if source not in _TOKENIZER_MODEL_CACHE:
+        try:
+            repo_info = HfApi(token = token).model_info(source, files_metadata = False)
+            _TOKENIZER_MODEL_CACHE[source] = any(
+                sibling.rfilename == "tokenizer.model" for sibling in repo_info.siblings
+            )
+        except Exception:
+            _TOKENIZER_MODEL_CACHE[source] = False
+    return _TOKENIZER_MODEL_CACHE[source]
+
+
 def _preserve_sentencepiece_tokenizer_assets(
     tokenizer,
     save_directory,
@@ -299,7 +324,10 @@ def _preserve_sentencepiece_tokenizer_assets(
 
     tokenizer_model = os.path.join(save_directory, "tokenizer.model")
     downloaded_path = None
-    if not os.path.isfile(tokenizer_model):
+    if not os.path.isfile(tokenizer_model) and _has_tokenizer_model(
+        tokenizer,
+        token = token,
+    ):
         source = getattr(tokenizer, "name_or_path", None)
         if isinstance(source, str) and source:
             if os.path.isdir(source):
