@@ -86,6 +86,13 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
+_NO_TORCH_MODE = os.environ.get("UNSLOTH_NO_TORCH", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
@@ -115,10 +122,17 @@ del PackageNotFoundError, importlib_version
 try:
     import torch
 except ModuleNotFoundError:
-    raise ImportError(
-        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"
-        "We have some installation instructions on our Github page."
-    )
+    if _NO_TORCH_MODE:
+        torch = None
+        warnings.warn(
+            "Unsloth: running in no-torch mode. Training and non-GGUF inference features are disabled.",
+            stacklevel = 2,
+        )
+    else:
+        raise ImportError(
+            "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"
+            "We have some installation instructions on our Github page."
+        )
 except:
     raise
 
