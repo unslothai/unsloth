@@ -2868,7 +2868,7 @@ async def openai_responses(
 
 def _normalize_anthropic_openai_images(
     openai_messages: list[dict], is_vision: bool
-) -> None:
+) -> bool:
     """Enforce the vision guard on translated Anthropic messages and
     normalize any ``image_url`` parts with base64 data URLs to PNG.
 
@@ -2878,28 +2878,14 @@ def _normalize_anthropic_openai_images(
     `_openai_messages_for_passthrough` / the GGUF branch of
     `/v1/chat/completions` so the two endpoints agree.
 
-    Mutates ``openai_messages`` in place. Raises HTTPException(400) when
-    images are present but the active model is not a vision model, or
-    when an image cannot be decoded.
+    Mutates ``openai_messages`` in place. Returns ``True`` when any
+    image part was seen (so the caller can skip a second scan). Raises
+    HTTPException(400) when images are present but the active model is
+    not a vision model, or when an image cannot be decoded.
     """
-    has_image = any(
-        isinstance(m.get("content"), list)
-        and any(p.get("type") == "image_url" for p in m["content"])
-        for m in openai_messages
-    )
-    if not has_image:
-        return
+    from PIL import Image
 
-    if not is_vision:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Image provided but current GGUF model does not support vision.",
-        )
-
-    import base64 as _b64
-    from io import BytesIO as _BytesIO
-    from PIL import Image as _Image
-
+    has_image = False
     for msg in openai_messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -2907,24 +2893,35 @@ def _normalize_anthropic_openai_images(
         for part in content:
             if part.get("type") != "image_url":
                 continue
+
+            has_image = True
+            if not is_vision:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Image provided but current GGUF model does not support vision.",
+                )
+
             url = (part.get("image_url") or {}).get("url", "")
             if not url.startswith("data:"):
                 # Remote URLs are forwarded as-is; llama-server will
                 # fetch (or fail) per its own support matrix.
                 continue
+
             try:
                 _, b64data = url.split(",", 1)
-                raw = _b64.b64decode(b64data)
-                img = _Image.open(_BytesIO(raw)).convert("RGB")
-                buf = _BytesIO()
+                raw = base64.b64decode(b64data)
+                img = Image.open(io.BytesIO(raw)).convert("RGB")
+                buf = io.BytesIO()
                 img.save(buf, format = "PNG")
-                png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+                png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
             except Exception as e:
                 raise HTTPException(
                     status_code = 400,
                     detail = f"Failed to process image: {e}",
                 )
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
+
+    return has_image
 
 
 @router.post("/messages")
@@ -2959,7 +2956,9 @@ async def anthropic_messages(
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
-    _normalize_anthropic_openai_images(openai_messages, llama_backend.is_vision)
+    _has_image = _normalize_anthropic_openai_images(
+        openai_messages, llama_backend.is_vision
+    )
 
     temperature = payload.temperature if payload.temperature is not None else 0.6
     top_p = payload.top_p if payload.top_p is not None else 0.95
@@ -2987,11 +2986,6 @@ async def anthropic_messages(
     # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
-    _has_image = any(
-        isinstance(m.get("content"), list)
-        and any(p.get("type") == "image_url" for p in m["content"])
-        for m in openai_messages
-    )
     # Server-side agentic loop doesn't support multimodal input — matches
     # the `not image_b64` gate in /v1/chat/completions.
     server_tools = (

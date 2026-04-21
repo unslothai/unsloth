@@ -335,6 +335,43 @@ class TestAnthropicMessagesToOpenAI:
         parts = result[0]["content"]
         assert parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
+    def test_image_text_order_preserved(self):
+        # [text1, image1, text2, image2] must not collapse to
+        # [text1+text2, image1, image2].
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AA",
+                        },
+                    },
+                    {"type": "text", "text": "after"},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://x/y.png"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert [p["type"] for p in parts] == [
+            "text",
+            "image_url",
+            "text",
+            "image_url",
+        ]
+        assert parts[0]["text"] == "before"
+        assert parts[2]["text"] == "after"
+        assert parts[1]["image_url"]["url"] == "data:image/png;base64,AA"
+        assert parts[3]["image_url"]["url"] == "https://x/y.png"
+
     def test_malformed_image_block_is_skipped(self):
         msgs = [
             {
@@ -896,8 +933,20 @@ def _jpeg_data_url() -> str:
 class TestNormalizeAnthropicOpenAIImages:
     def test_noop_when_no_images(self):
         msgs = [{"role": "user", "content": "hi"}]
-        _normalize_anthropic_openai_images(msgs, is_vision = False)
+        has_image = _normalize_anthropic_openai_images(msgs, is_vision = False)
+        assert has_image is False
         assert msgs == [{"role": "user", "content": "hi"}]
+
+    def test_returns_true_when_image_present(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _jpeg_data_url()}},
+                ],
+            }
+        ]
+        assert _normalize_anthropic_openai_images(msgs, is_vision = True) is True
 
     def test_rejects_image_when_model_not_vision(self):
         msgs = [
