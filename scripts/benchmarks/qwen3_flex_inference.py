@@ -487,6 +487,7 @@ class FlexInference:
             supported = major >= 9
             if fa4_prefill and not supported:
                 import warnings
+
                 warnings.warn(
                     f"--fa4_prefill needs Hopper (sm_90) or Blackwell "
                     f"(sm_100 / sm_120); found sm_{major}0. Falling back to "

@@ -4,6 +4,7 @@ Runs on any GPU (and on CPU) because we monkey-patch
 `torch.cuda.get_device_capability` and stub out the page-table / model
 patching that the constructor does after the guard.
 """
+
 import os
 import sys
 import types
@@ -37,13 +38,13 @@ class _FakeTokenizer:
     eos_token_id = 0
 
 
-def _make_fake_model(device_str="cpu"):
+def _make_fake_model(device_str = "cpu"):
     m = types.SimpleNamespace()
     m.device = torch.device(device_str)
     return m
 
 
-def _build(fa4_prefill, cc_major, cc_minor=0):
+def _build(fa4_prefill, cc_major, cc_minor = 0):
     """Construct a FlexInference with the guard exercised.
 
     Returns the instance. Patches torch.cuda.get_device_capability,
@@ -60,37 +61,40 @@ def _build(fa4_prefill, cc_major, cc_minor=0):
         kw.pop("device", None)
         return _real_zeros(*a, **kw)
 
-    with mock.patch.object(
-        torch.cuda, "get_device_capability", return_value=(cc_major, cc_minor)
-    ), mock.patch.object(qfi, "PageTable", _FakePageTable), mock.patch.object(
-        qfi, "patch_qwen3_model", lambda *a, **kw: None
-    ), mock.patch.object(torch, "zeros", _fake_zeros):
+    with (
+        mock.patch.object(
+            torch.cuda, "get_device_capability", return_value = (cc_major, cc_minor)
+        ),
+        mock.patch.object(qfi, "PageTable", _FakePageTable),
+        mock.patch.object(qfi, "patch_qwen3_model", lambda *a, **kw: None),
+        mock.patch.object(torch, "zeros", _fake_zeros),
+    ):
         return qfi.FlexInference(
-            model=fake_model,
-            tokenizer=fake_tok,
-            max_batch_size=2,
-            max_seq_length=128,
-            n_pages=4,
-            page_size=128,
-            max_new_tokens=16,
-            fa4_prefill=fa4_prefill,
+            model = fake_model,
+            tokenizer = fake_tok,
+            max_batch_size = 2,
+            max_seq_length = 128,
+            n_pages = 4,
+            page_size = 128,
+            max_new_tokens = 16,
+            fa4_prefill = fa4_prefill,
         )
 
 
 def _fa4_warnings(caught):
     return [
-        w for w in caught
-        if issubclass(w.category, RuntimeWarning)
-        and "fa4_prefill" in str(w.message)
+        w
+        for w in caught
+        if issubclass(w.category, RuntimeWarning) and "fa4_prefill" in str(w.message)
     ]
 
 
 class TestFA4CapabilityGuard(unittest.TestCase):
     # --- explicit opt-in: --fa4_prefill=True ---
     def test_explicit_on_sub_hopper_disables_and_warns(self):
-        with warnings.catch_warnings(record=True) as caught:
+        with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
-            fi = _build(fa4_prefill=True, cc_major=8)
+            fi = _build(fa4_prefill = True, cc_major = 8)
         self.assertTrue(
             _fa4_warnings(caught),
             f"expected RuntimeWarning about fa4_prefill, got {caught!r}",
@@ -100,11 +104,12 @@ class TestFA4CapabilityGuard(unittest.TestCase):
         self.assertNotIn("BACKEND", fi.prefill_kernel_options)
 
     def _assert_fa4_enabled(self, cc_major, fa4_prefill):
-        with warnings.catch_warnings(record=True) as caught:
+        with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
-            fi = _build(fa4_prefill=fa4_prefill, cc_major=cc_major)
+            fi = _build(fa4_prefill = fa4_prefill, cc_major = cc_major)
         self.assertEqual(
-            _fa4_warnings(caught), [],
+            _fa4_warnings(caught),
+            [],
             f"unexpected fa4 RuntimeWarning on sm_{cc_major}0 "
             f"with fa4_prefill={fa4_prefill}: {caught!r}",
         )
@@ -113,21 +118,22 @@ class TestFA4CapabilityGuard(unittest.TestCase):
         self.assertEqual(fi.prefill_kernel_options.get("BACKEND"), "FLASH")
 
     def test_explicit_on_hopper_enables(self):
-        self._assert_fa4_enabled(cc_major=9, fa4_prefill=True)
+        self._assert_fa4_enabled(cc_major = 9, fa4_prefill = True)
 
     def test_explicit_on_blackwell_sm100_enables(self):
-        self._assert_fa4_enabled(cc_major=10, fa4_prefill=True)
+        self._assert_fa4_enabled(cc_major = 10, fa4_prefill = True)
 
     def test_explicit_on_blackwell_sm120_enables(self):
-        self._assert_fa4_enabled(cc_major=12, fa4_prefill=True)
+        self._assert_fa4_enabled(cc_major = 12, fa4_prefill = True)
 
     # --- auto-detect: fa4_prefill is None ---
     def test_auto_on_sub_hopper_disables_silently(self):
-        with warnings.catch_warnings(record=True) as caught:
+        with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
-            fi = _build(fa4_prefill=None, cc_major=8)
+            fi = _build(fa4_prefill = None, cc_major = 8)
         self.assertEqual(
-            _fa4_warnings(caught), [],
+            _fa4_warnings(caught),
+            [],
             f"auto-detect must not warn on unsupported GPU: {caught!r}",
         )
         self.assertIs(fi.fa4_prefill, False)
@@ -135,19 +141,19 @@ class TestFA4CapabilityGuard(unittest.TestCase):
         self.assertNotIn("BACKEND", fi.prefill_kernel_options)
 
     def test_auto_on_hopper_enables(self):
-        self._assert_fa4_enabled(cc_major=9, fa4_prefill=None)
+        self._assert_fa4_enabled(cc_major = 9, fa4_prefill = None)
 
     def test_auto_on_blackwell_sm100_enables(self):
-        self._assert_fa4_enabled(cc_major=10, fa4_prefill=None)
+        self._assert_fa4_enabled(cc_major = 10, fa4_prefill = None)
 
     def test_auto_on_blackwell_sm120_enables(self):
-        self._assert_fa4_enabled(cc_major=12, fa4_prefill=None)
+        self._assert_fa4_enabled(cc_major = 12, fa4_prefill = None)
 
     # --- explicit opt-out: --no-fa4_prefill / fa4_prefill=False ---
     def test_explicit_off_on_blackwell_stays_off(self):
-        with warnings.catch_warnings(record=True) as caught:
+        with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
-            fi = _build(fa4_prefill=False, cc_major=10)
+            fi = _build(fa4_prefill = False, cc_major = 10)
         self.assertEqual(_fa4_warnings(caught), [])
         self.assertIs(fi.fa4_prefill, False)
         self.assertEqual(fi.prefill_q_block, 128)
