@@ -47,14 +47,31 @@ prefill_kernel_options = {
 
 ### Canonical GRPO workload (batch 64 + LoRA rank 32)
 
-| Backend  | tok/s   | peak mem | flex / vLLM |
-|----------|--------:|---------:|------------:|
-| vLLM     | 7775    | 156 GB   | 100 %       |
-| **flex** | **5616**| **44 GB**| **72.2 %**  |
+The `flex` row originally measured a *merged* LoRA (`merge_and_unload()`
+called once at load). That inflates the number: once merged, inference is
+plain bf16 with LoRA-shaped perturbations baked into the base weights --
+every projection is one matmul. vLLM's `LoRARequest` path keeps LoRA
+*dynamic* (base matmul + rank-r adapter matmuls + add), which is what GRPO
+actually needs because the adapter has to be updated between rollouts.
+Apples-to-apples:
 
-At the GRPO workload flex reaches **72 % of vLLM throughput at
-3.5 × less memory**. Up from 9 % with transformers CB at the start of this
-work.
+| Backend                             | tok/s best | tok/s median | peak mem | vs vLLM (best) |
+|-------------------------------------|-----------:|-------------:|---------:|---------------:|
+| vLLM (dynamic LoRA via LoRARequest) |       7775 |        ~6200 |   156 GB |          100 % |
+| flex -- LoRA *merged* (baked in)    |       5744 |         4192 |    44 GB |           74 % |
+| **flex -- LoRA active (no merge)**  |   **2683** |     **2221** | **45 GB**|       **35 %** |
+
+At the GRPO workload, flex with LoRA active reaches **~35 % of vLLM** at
+~3.5 x less memory. The merged number (74 %) is only meaningful if you
+can eat the merge/unmerge cost between rollouts and training steps, which
+is not free. vLLM gets its dynamic-LoRA numbers from Punica-style fused
+kernels that avoid a separate matmul roundtrip; flex has no equivalent.
+Starting point before this work was 9 % with transformers CB.
+
+Use `--no_merge_lora` on `qwen3_flex_inference.py` to reproduce the
+honest row. The default still merges because the prior results in this
+writeup assumed that path -- override the flag when you care about
+GRPO-style semantics.
 
 ### Same workload at `load_in_4bit=True` (Unsloth bnb-4bit shard)
 

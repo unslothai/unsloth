@@ -642,6 +642,16 @@ def main():
         ),
     )
     p.add_argument(
+        "--no_merge_lora",
+        action = "store_true",
+        help = (
+            "Keep the LoRA adapter as a PEFT wrapper instead of merging it "
+            "into the base. Matches the vLLM LoRARequest dynamic-serving "
+            "path and the GRPO rollout pattern where the adapter must stay "
+            "separable between rollouts/training steps."
+        ),
+    )
+    p.add_argument(
         "--model_name_4bit",
         default = None,
         help = (
@@ -693,17 +703,28 @@ def main():
             str(Path(args.lora_adapter).resolve()),
             is_trainable = False,
         )
-        if args.load_in_4bit:
-            # Can't merge LoRA into 4-bit base. Keep PEFT wrapping active --
-            # `q_proj`/etc on each layer are now LoraLayer(base_layer=Linear4bit,
-            # lora_A=..., lora_B=...). The monkey-patched attention forward
-            # calls `self.q_proj(hidden_states)` which routes through LoRA.
+        if args.load_in_4bit or args.no_merge_lora:
+            # Keep PEFT wrapping active -- `q_proj`/etc on each layer are
+            # LoraLayer(base_layer=<Linear|Linear4bit>, lora_A=..., lora_B=...).
+            # The monkey-patched attention forward calls
+            # `self.q_proj(hidden_states)` which routes through the LoraLayer.
             # For `patch_qwen3_model` / `call_model_with_flex_kwargs` we pass
             # the underlying Qwen3ForCausalLM that PEFT has already modified
             # in-place.
+            #
+            # Required when 4-bit (merge into bnb Params4bit is unsupported)
+            # and for fair GRPO-style comparisons where LoRA must stay
+            # separable from the base so training steps can update just the
+            # adapter weights between rollouts.
             model = peft_model.base_model.model
         else:
-            # bf16 path: merge LoRA so there's no PEFT wrapper at call time.
+            # bf16 + merge: bake LoRA into base weights. This is strictly
+            # faster than leaving LoRA active because every projection is
+            # one matmul instead of (base_matmul + LoRA_A + LoRA_B + add).
+            # BUT it invalidates the adapter -- real GRPO rollouts would
+            # need to unmerge before the next training step and re-merge
+            # before the next rollout. Use --no_merge_lora for a fair
+            # comparison with vLLM's LoRARequest dynamic-serving path.
             model = peft_model.merge_and_unload()
             model.eval()
 

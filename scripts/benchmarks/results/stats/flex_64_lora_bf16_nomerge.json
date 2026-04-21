@@ -1,0 +1,25 @@
+{
+  "backend": "qwen3_flex",
+  "capture_cudagraph": true,
+  "lora_adapter": "outputs/lora_rank32_fresh",
+  "n_prompts": 64,
+  "n_decoded_tokens": 30064,
+  "wall_times_s": [
+    15.238620115967933,
+    13.535559127980378,
+    13.255199212988373,
+    11.203266007010825,
+    14.028489015006926
+  ],
+  "median_wall_s": 13.535559127980378,
+  "best_wall_s": 11.203266007010825,
+  "decode_tps_median": 2221.112531498786,
+  "decode_tps_best": 2683.503183909623,
+  "max_new_tokens": 512,
+  "peak_memory_gb": 45.04522657394409,
+  "sample_completions": [
+    " \nTo find the area of the smaller square, we need to determine its side length. Let's denote the side length of the smaller square as \\( s \\).\n\nFrom the diagram, we can see that the larger square has a side length of 6. The smaller square is inscribed within the larger square such that its vertices touch the midpoints of the sides of the larger square. This means",
+    "First, let's find the time it takes for the first car to travel half the distance between $P_1$ and $P_2$. Since the distance between the two points is 600 miles, half the distance is 300 miles. The first car travels at a speed of 50 mph, so it will take 300 miles / 50",
+    " \nA 10-digit palindrome has the form \\( \\overline{abcdeedcba} \\), where \\( a, b, c, d, e \\) are digits and \\( a \\neq 0 \\) (since it is a 10-digit number). The number can be expressed as:\n\n\\[\nN = 1000000000"
+  ]
+}
