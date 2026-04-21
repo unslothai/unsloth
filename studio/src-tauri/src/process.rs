@@ -117,7 +117,7 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// In dev mode (debug builds), checks for a local .venv in the repo first.
 /// Falls back to find_unsloth_binary() which checks ~/.unsloth/studio/unsloth_studio/
 /// (new layout) then ~/.unsloth/studio/.venv/ (old layout).
-fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
+pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
     // In dev mode, check for local repo venv first
     #[cfg(debug_assertions)]
     {

@@ -1,9 +1,8 @@
 use crate::commands;
 use crate::process::BackendState;
-use log::{info, warn};
+use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 static DESKTOP_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -15,22 +14,14 @@ pub struct DesktopAuthResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ChangePasswordRequest {
-    current_password: String,
-    new_password: String,
+struct DesktopAuthRequest {
+    secret: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: String,
-    must_change_password: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,7 +50,7 @@ impl AuthError {
     }
 }
 
-fn auth_password_path(home: &Path, filename: &str) -> PathBuf {
+fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
     home.join(".unsloth")
         .join("studio")
         .join("auth")
@@ -74,86 +65,24 @@ fn home_dir() -> Result<PathBuf, String> {
     dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())
 }
 
-fn desktop_password_path() -> Result<PathBuf, String> {
-    Ok(auth_password_path(&home_dir()?, ".desktop_password"))
+fn desktop_secret_path() -> Result<PathBuf, String> {
+    Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))
 }
 
-fn bootstrap_password_path() -> Result<PathBuf, String> {
-    Ok(auth_password_path(&home_dir()?, ".bootstrap_password"))
+fn stale_desktop_password_path() -> Result<PathBuf, String> {
+    Ok(auth_secret_path(&home_dir()?, ".desktop_password"))
 }
 
-fn read_password(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| format!("Failed to read password at {}: {}", path.display(), e))
-}
-
-fn read_password_if_exists(path: &Path) -> Result<Option<String>, String> {
+fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(s.trim().to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!(
-            "Failed to read password at {}: {}",
+            "Failed to read auth secret at {}: {}",
             path.display(),
             e
         )),
     }
-}
-
-fn generate_desktop_password() -> String {
-    (0..64)
-        .map(|_| {
-            let idx = rand::random_range(0..62u8);
-            let c = match idx {
-                0..26 => b'a' + idx,
-                26..52 => b'A' + (idx - 26),
-                52..62 => b'0' + (idx - 52),
-                _ => unreachable!(),
-            };
-            c as char
-        })
-        .collect()
-}
-
-fn write_desktop_password(password: &str) -> Result<(), String> {
-    let path = desktop_password_path()?;
-    write_desktop_password_to_path(&path, password)
-}
-
-fn write_desktop_password_to_path(path: &Path, password: &str) -> Result<(), String> {
-    let auth_dir = path
-        .parent()
-        .ok_or_else(|| "Failed to resolve auth directory".to_string())?;
-
-    std::fs::create_dir_all(auth_dir)
-        .map_err(|e| format!("Failed to create auth directory: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
-
-        if path.exists() {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| format!("Failed to set permissions: {}", e))?;
-        }
-
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|e| format!("Failed to write desktop password: {}", e))?;
-        file.write_all(password.as_bytes())
-            .map_err(|e| format!("Failed to write desktop password: {}", e))?;
-    }
-
-    #[cfg(not(unix))]
-    std::fs::write(path, password.as_bytes())
-        .map_err(|e| format!("Failed to write desktop password: {}", e))?;
-
-    Ok(())
 }
 
 async fn current_backend_port(
@@ -205,50 +134,29 @@ fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> b
     )
 }
 
-async fn login_with_password(
+async fn exchange_desktop_secret(
     client: &Client,
     port: u16,
-    password: &str,
-) -> Result<Option<TokenResponse>, AuthError> {
+    secret: &str,
+) -> Result<Option<DesktopAuthResponse>, AuthError> {
     let response = client
-        .post(auth_url(port, "login"))
-        .json(&LoginRequest {
-            username: "unsloth".to_string(),
-            password: password.to_string(),
+        .post(auth_url(port, "desktop-login"))
+        .json(&DesktopAuthRequest {
+            secret: secret.to_string(),
         })
         .send()
         .await
         .map_err(classify_auth_send_error)?;
 
-    if !response.status().is_success() {
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(AuthError::Failed(
+            "Desktop auth requires an updated Studio backend. Restart or update Unsloth Studio."
+                .to_string(),
+        ));
+    }
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Ok(None);
     }
-
-    response
-        .json::<TokenResponse>()
-        .await
-        .map(Some)
-        .map_err(|e| AuthError::Failed(format!("Desktop auth failed: {}", e)))
-}
-
-async fn change_password(
-    client: &Client,
-    port: u16,
-    access_token: &str,
-    current_password: &str,
-    new_password: &str,
-) -> Result<TokenResponse, AuthError> {
-    let response = client
-        .post(auth_url(port, "change-password"))
-        .bearer_auth(access_token)
-        .json(&ChangePasswordRequest {
-            current_password: current_password.to_string(),
-            new_password: new_password.to_string(),
-        })
-        .send()
-        .await
-        .map_err(classify_auth_send_error)?;
-
     if !response.status().is_success() {
         return Err(AuthError::Failed("Desktop auth failed".to_string()));
     }
@@ -256,43 +164,54 @@ async fn change_password(
     response
         .json::<TokenResponse>()
         .await
+        .map(|tokens| {
+            Some(DesktopAuthResponse {
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+            })
+        })
         .map_err(|e| AuthError::Failed(format!("Desktop auth failed: {}", e)))
 }
 
-async fn authenticate_with_password(
-    client: &Client,
-    port: u16,
-    password: &str,
-) -> Result<Option<DesktopAuthResponse>, AuthError> {
-    let Some(tokens) = login_with_password(client, port, password).await? else {
-        return Ok(None);
-    };
-
-    if !tokens.must_change_password {
-        return Ok(Some(DesktopAuthResponse {
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-        }));
+async fn provision_desktop_auth() -> Result<(), String> {
+    let bin = crate::process::resolve_backend_binary()?;
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.args(["studio", "provision-desktop-auth"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let new_password = generate_desktop_password();
-    write_desktop_password(&new_password).map_err(AuthError::Failed)?;
-    let fresh =
-        change_password(client, port, &tokens.access_token, password, &new_password).await?;
-
-    Ok(Some(DesktopAuthResponse {
-        access_token: fresh.access_token,
-        refresh_token: fresh.refresh_token,
-    }))
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "Desktop auth provisioning failed: {}",
+        stderr.trim()
+    ))
 }
 
 async fn authenticate_with_stale_port_retry(
     client: &Client,
     state: &tauri::State<'_, BackendState>,
     backend: BackendPort,
-    password: &str,
+    secret: &str,
 ) -> Result<(Option<DesktopAuthResponse>, BackendPort), String> {
-    match authenticate_with_password(client, backend.port, password).await {
+    match exchange_desktop_secret(client, backend.port, secret).await {
         Ok(tokens) => Ok((tokens, backend)),
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
             let Some(port) = commands::find_existing_server().await else {
@@ -303,7 +222,7 @@ async fn authenticate_with_stale_port_retry(
                 port,
                 source: PortSource::Discovered,
             };
-            authenticate_with_password(client, port, password)
+            exchange_desktop_secret(client, port, secret)
                 .await
                 .map(|tokens| (tokens, backend))
                 .map_err(AuthError::message)
@@ -323,38 +242,30 @@ pub async fn desktop_auth(
         .build()
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
 
-    let desktop_path = desktop_password_path()?;
-    match read_password_if_exists(&desktop_path) {
-        Ok(Some(password)) => {
-            info!("Desktop auth: trying stored desktop password");
-            let (tokens, resolved_backend) =
-                authenticate_with_stale_port_retry(&client, &state, backend, &password).await?;
-            backend = resolved_backend;
-            if let Some(tokens) = tokens {
-                return Ok(tokens);
-            }
+    for attempt in 0..2 {
+        if attempt == 1 {
+            info!("Desktop auth: provisioning local desktop secret");
+            provision_desktop_auth().await?;
         }
-        Ok(None) => {}
-        Err(e) => warn!("{}", e),
+
+        let path = desktop_secret_path()?;
+        let Some(secret) = read_secret_if_exists(&path)? else {
+            continue;
+        };
+
+        info!("Desktop auth: exchanging desktop secret");
+        let (tokens, resolved_backend) =
+            authenticate_with_stale_port_retry(&client, &state, backend, &secret).await?;
+        backend = resolved_backend;
+        if let Some(tokens) = tokens {
+            if let Ok(stale) = stale_desktop_password_path() {
+                let _ = std::fs::remove_file(stale);
+            }
+            return Ok(tokens);
+        }
     }
 
-    info!("Desktop auth: trying bootstrap password");
-    let bootstrap_path = bootstrap_password_path()?;
-    match read_password(&bootstrap_path) {
-        Ok(password) => {
-            match authenticate_with_stale_port_retry(&client, &state, backend, &password)
-                .await?
-                .0
-            {
-                Some(tokens) => Ok(tokens),
-                None => Err("Desktop auth failed".to_string()),
-            }
-        }
-        Err(e) => {
-            warn!("{}", e);
-            Err("Desktop auth failed".to_string())
-        }
-    }
+    Err("Desktop auth failed. Run `unsloth studio reset-password` and restart Studio.".to_string())
 }
 
 #[cfg(test)]
@@ -381,19 +292,19 @@ mod tests {
     }
 
     #[test]
-    fn auth_password_path_joins_expected_location() {
+    fn auth_secret_path_joins_expected_location() {
         let home = PathBuf::from("/home/alex");
         assert_eq!(
-            auth_password_path(&home, ".desktop_password"),
-            PathBuf::from("/home/alex/.unsloth/studio/auth/.desktop_password")
+            auth_secret_path(&home, ".desktop_secret"),
+            PathBuf::from("/home/alex/.unsloth/studio/auth/.desktop_secret")
         );
     }
 
     #[test]
     fn auth_url_builds_local_endpoint() {
         assert_eq!(
-            auth_url(8890, "login"),
-            "http://127.0.0.1:8890/api/auth/login"
+            auth_url(8890, "desktop-login"),
+            "http://127.0.0.1:8890/api/auth/desktop-login"
         );
     }
 
@@ -413,39 +324,24 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn write_desktop_password_to_path_sets_existing_file_0600() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = std::env::temp_dir().join(format!(
-            "unsloth-desktop-auth-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(".desktop_password");
-        std::fs::write(&path, b"old").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        write_desktop_password_to_path(&path, "new").unwrap();
-
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
     #[tokio::test]
-    async fn login_with_password_returns_none_for_non_success_http_status() {
-        let port = login_server("500 Internal Server Error").await;
-        let tokens = login_with_password(&Client::new(), port, "stale-password")
+    async fn exchange_desktop_secret_returns_none_for_unauthorized() {
+        let port = login_server("401 Unauthorized").await;
+        let tokens = exchange_desktop_secret(&Client::new(), port, "desktop-stale")
             .await
             .unwrap();
 
         assert!(tokens.is_none());
+    }
+
+    #[tokio::test]
+    async fn exchange_desktop_secret_reports_unsupported_backend_on_not_found() {
+        let port = login_server("404 Not Found").await;
+        let error = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+            .await
+            .unwrap_err()
+            .message();
+
+        assert!(error.contains("updated Studio backend"));
     }
 }

@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import importlib.util
+import hashlib
 import os
 import platform
+import secrets
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
+import types
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import typer
@@ -13,6 +20,15 @@ import typer
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
+DESKTOP_SECRET_FILE = ".desktop_secret"
+STALE_DESKTOP_PASSWORD_FILE = ".desktop_password"
+DEFAULT_ADMIN_USERNAME = "unsloth"
+DESKTOP_SECRET_PREFIX = "desktop-"
+API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
+DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
+DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
+PBKDF2_ITERATIONS = 100_000
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
 # (either site-packages or the repo root for editable installs).
@@ -129,10 +145,224 @@ def _create_api_key_inprocess(name: str) -> str:
     ``POST /api/auth/api-keys`` on fresh installs.  Safe because the
     CLI already has filesystem access to ``~/.unsloth/studio``.
     """
-    from auth.storage import create_api_key, DEFAULT_ADMIN_USERNAME
+    storage = _load_backend_auth_storage()
 
-    raw_key, _row = create_api_key(username = DEFAULT_ADMIN_USERNAME, name = name)
+    raw_key, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = name,
+    )
     return raw_key
+
+
+def _load_backend_auth_storage():
+    run_py = _find_run_py()
+    backend_dir = (
+        run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
+    )
+    if backend_dir.is_dir() and str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+
+    auth_dir = backend_dir / "auth"
+    storage_py = auth_dir / "storage.py"
+    loaded = sys.modules.get("auth.storage")
+    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
+    if loaded is not None and loaded_path == storage_py:
+        return loaded
+
+    package = sys.modules.get("auth")
+    package_paths = [Path(path).resolve() for path in getattr(package, "__path__", [])]
+    if package is None or auth_dir.resolve() not in package_paths:
+        package = types.ModuleType("auth")
+        package.__path__ = [str(auth_dir)]
+        package.__package__ = "auth"
+        package.__file__ = str(auth_dir / "__init__.py")
+        sys.modules["auth"] = package
+
+    spec = importlib.util.spec_from_file_location("auth.storage", storage_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load backend auth storage from {storage_py}")
+    storage = importlib.util.module_from_spec(spec)
+    sys.modules["auth.storage"] = storage
+    spec.loader.exec_module(storage)
+
+    return storage
+
+
+def _write_auth_secret(path: Path, secret: str) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    if platform.system() == "Windows":
+        path.write_text(secret)
+        return
+
+    fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, "w") as f:
+            fd = -1
+            f.write(secret)
+        os.replace(tmp_path, path)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        tmp_path.unlink(missing_ok = True)
+        raise
+    os.chmod(path, 0o600)
+
+
+def _connect_auth_db() -> sqlite3.Connection:
+    auth_dir = STUDIO_HOME / "auth"
+    auth_dir.mkdir(parents = True, exist_ok = True)
+    conn = sqlite3.connect(auth_dir / "auth.db")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_user (
+            id INTEGER PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            jwt_secret TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id INTEGER PRIMARY KEY,
+            token_hash TEXT NOT NULL,
+            username TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            is_desktop INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            expires_at TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_secrets (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
+    auth_columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    if "must_change_password" not in auth_columns:
+        conn.execute(
+            "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+        )
+    refresh_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+    }
+    if "is_desktop" not in refresh_columns:
+        conn.execute(
+            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.commit()
+    return conn
+
+
+def _pbkdf2_hex(value: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        value.encode("utf-8"),
+        salt,
+        PBKDF2_ITERATIONS,
+    ).hex()
+
+
+def _hash_password(password: str) -> tuple[str, str]:
+    salt = secrets.token_hex(16)
+    pwd_hash = _pbkdf2_hex(password, salt.encode("utf-8"))
+    return salt, pwd_hash
+
+
+def _get_or_create_api_key_pbkdf2_salt(conn: sqlite3.Connection) -> bytes:
+    row = conn.execute(
+        "SELECT value FROM app_secrets WHERE key = ?",
+        (API_KEY_PBKDF2_SALT_KEY,),
+    ).fetchone()
+    if row is None:
+        salt_hex = secrets.token_hex(32)
+        conn.execute(
+            "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+            (API_KEY_PBKDF2_SALT_KEY, salt_hex),
+        )
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (API_KEY_PBKDF2_SALT_KEY,),
+        ).fetchone()
+    return bytes.fromhex(row[0])
+
+
+def _ensure_cli_default_admin(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM auth_user WHERE username = ?",
+        (DEFAULT_ADMIN_USERNAME,),
+    ).fetchone()
+    if row is not None:
+        return
+
+    bootstrap_password = secrets.token_urlsafe(32)
+    password_salt, password_hash = _hash_password(bootstrap_password)
+    conn.execute(
+        """
+        INSERT INTO auth_user (
+            username,
+            password_salt,
+            password_hash,
+            jwt_secret,
+            must_change_password
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            DEFAULT_ADMIN_USERNAME,
+            password_salt,
+            password_hash,
+            secrets.token_urlsafe(64),
+            1,
+        ),
+    )
+    _write_auth_secret(
+        STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE,
+        bootstrap_password,
+    )
+
+
+def _create_desktop_secret_in_cli() -> str:
+    raw_secret = DESKTOP_SECRET_PREFIX + secrets.token_urlsafe(48)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect_auth_db()
+    try:
+        _ensure_cli_default_admin(conn)
+        secret_hash = _pbkdf2_hex(raw_secret, _get_or_create_api_key_pbkdf2_salt(conn))
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (DESKTOP_SECRET_HASH_KEY, secret_hash),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (DESKTOP_SECRET_CREATED_AT_KEY, now),
+        )
+        conn.commit()
+        return raw_secret
+    finally:
+        conn.close()
 
 
 def _load_model_via_http(
@@ -589,6 +819,16 @@ def update(
 # ── unsloth studio reset-password ────────────────────────────────────
 
 
+@studio_app.command("provision-desktop-auth", hidden = True)
+def provision_desktop_auth():
+    """Create/repair desktop auth state for the local machine."""
+    auth_dir = STUDIO_HOME / "auth"
+    secret = _create_desktop_secret_in_cli()
+    _write_auth_secret(auth_dir / DESKTOP_SECRET_FILE, secret)
+    (auth_dir / STALE_DESKTOP_PASSWORD_FILE).unlink(missing_ok = True)
+    typer.echo("Desktop auth ready.")
+
+
 @studio_app.command("reset-password")
 def reset_password():
     """Reset the Studio admin password.
@@ -599,13 +839,19 @@ def reset_password():
     """
     auth_dir = STUDIO_HOME / "auth"
     db_file = auth_dir / "auth.db"
-    pw_file = auth_dir / ".bootstrap_password"
-
-    if not db_file.exists():
-        typer.echo("No auth database found -- nothing to reset.")
-        raise typer.Exit(0)
+    stale_files = [
+        auth_dir / BOOTSTRAP_PASSWORD_FILE,
+        auth_dir / DESKTOP_SECRET_FILE,
+        auth_dir / STALE_DESKTOP_PASSWORD_FILE,
+    ]
+    had_db = db_file.exists()
 
     db_file.unlink(missing_ok = True)
-    pw_file.unlink(missing_ok = True)
+    for path in stale_files:
+        path.unlink(missing_ok = True)
+
+    if not had_db:
+        typer.echo("No auth database found -- nothing to reset.")
+        raise typer.Exit(0)
 
     typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")

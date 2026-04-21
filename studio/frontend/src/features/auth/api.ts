@@ -136,6 +136,9 @@ export async function authFetch(
   }
 
   if (mustChangePassword()) {
+    if (isTauri) {
+      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+    }
     void redirectToAuth();
     return response;
   }

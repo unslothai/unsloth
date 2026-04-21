@@ -3,6 +3,10 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import {
+  clearTauriAuthFailure,
+  getTauriAuthFailure,
+} from "@/features/auth";
 
 export type BackendStatus =
   | "checking"
@@ -35,6 +39,41 @@ export function useTauriBackend() {
   const [isExternalServer, setIsExternalServer] = useState(false);
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
+  const authFailureRef = useRef<string | null>(getTauriAuthFailure());
+
+  function setBackendStatus(nextStatus: BackendStatus) {
+    if (authFailureRef.current) return;
+    setStatus(nextStatus);
+  }
+
+  function setBackendError(
+    nextError: string,
+    nextStatus: BackendStatus = "error",
+  ) {
+    if (authFailureRef.current) return;
+    setStatus(nextStatus);
+    setError(nextError);
+  }
+
+  function clearBackendError() {
+    if (authFailureRef.current) return;
+    setError(null);
+  }
+
+  function setRunningStatus() {
+    setBackendStatus("running");
+  }
+
+  function setAuthFailure(detail: string) {
+    authFailureRef.current = detail;
+    setStatus("error");
+    setError(detail);
+  }
+
+  function clearAuthFailure() {
+    authFailureRef.current = null;
+    clearTauriAuthFailure();
+  }
 
   function stopExternalServerPoll() {
     externalPollAbortedRef.current = true;
@@ -66,8 +105,7 @@ export function useTauriBackend() {
       if (failures >= 3) {
         stopExternalServerPoll();
         setIsExternalServer(false);
-        setStatus("error");
-        setError("External server is no longer responding");
+        setBackendError("External server is no longer responding");
       }
     }, 15_000);
   }
@@ -86,7 +124,7 @@ export function useTauriBackend() {
       if (existingPort) {
         setApiBase(existingPort);
         setIsExternalServer(true);
-        setStatus("running");
+        setRunningStatus();
         // Monitor external server — we can't get Rust-side crash events for it
         startExternalServerPoll(existingPort);
         return;
@@ -94,14 +132,13 @@ export function useTauriBackend() {
 
       const installed = await invoke<boolean>("check_install_status");
       if (!installed) {
-        setStatus("not-installed");
+        setBackendStatus("not-installed");
         return;
       }
-      setStatus("starting");
+      setBackendStatus("starting");
       await startServer();
     } catch (e) {
-      setStatus("error");
-      setError(String(e));
+      setBackendError(String(e));
     }
   }
 
@@ -124,7 +161,7 @@ export function useTauriBackend() {
           });
           if (healthy) {
             setApiBase(portRef.current);
-            setStatus("running");
+            setRunningStatus();
             startingRef.current = false;
             return;
           }
@@ -135,7 +172,7 @@ export function useTauriBackend() {
             const healthy = await invoke<boolean>("check_health", { port: p });
             if (healthy) {
               setApiBase(p);
-              setStatus("running");
+              setRunningStatus();
               startingRef.current = false;
               return;
             }
@@ -143,17 +180,11 @@ export function useTauriBackend() {
         }
         await new Promise((r) => setTimeout(r, 500));
       }
-      setStatus("error");
-      if (!portRef.current) {
-        setError(
-          "Could not start the server — all ports 8888–8908 may be in use. " +
-            "Close other Unsloth instances or free a port and try again.",
-        );
-      } else {
-        setError(
-          "Server started but is not responding. Check the logs for details.",
-        );
-      }
+      const message = !portRef.current
+        ? "Could not start the server — all ports 8888–8908 may be in use. " +
+          "Close other Unsloth instances or free a port and try again."
+        : "Server started but is not responding. Check the logs for details.";
+      setBackendError(message);
     } catch (e) {
       const msg = String(e);
       if (msg.includes("already running")) {
@@ -161,13 +192,12 @@ export function useTauriBackend() {
         // the old process (stdout reader sets child=None), then retry via
         // find_existing_server which will attach to the running backend.
         startingRef.current = false;
-        setStatus("starting");
+        setBackendStatus("starting");
         await new Promise((r) => setTimeout(r, 2000));
         checkInstallAndStart();
         return;
       }
-      setStatus("error");
-      setError(msg);
+      setBackendError(msg);
     }
     startingRef.current = false;
   }
@@ -179,29 +209,29 @@ export function useTauriBackend() {
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
-      setStatus("stopped");
+      setBackendStatus("stopped");
       return;
     }
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("stop_server");
     startingRef.current = false;
-    setStatus("stopped");
+    setBackendStatus("stopped");
   }
 
   async function startInstall() {
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     seenStepsRef.current.clear();
-    setStatus("installing");
+    setBackendStatus("installing");
     setLogs([]);
-    setError(null);
+    clearBackendError();
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
       // Install completed — this is the ONLY path that starts the server
       // after install. The install-complete event listener does NOT call
       // startServer() to avoid a double-start race condition.
-      setStatus("starting");
+      setBackendStatus("starting");
       await startServer();
     } catch (e) {
       const msg = String(e);
@@ -209,12 +239,12 @@ export function useTauriBackend() {
       // install-needs-elevation which sets needs-elevation status.
       // Don't race with it by setting install-error here.
       if (msg.includes("NEEDS_ELEVATION")) return;
-      setStatus("install-error");
-      setError(msg);
+      setBackendError(msg, "install-error");
     }
   }
 
   const retry = useCallback(() => {
+    clearAuthFailure();
     setError(null);
     setLogs([]);
     startingRef.current = false;
@@ -229,9 +259,9 @@ export function useTauriBackend() {
   }, []);
 
   const retryInstall = useCallback(() => {
-    setError(null);
+    clearBackendError();
     setLogs([]);
-    setStatus("not-installed");
+    setBackendStatus("not-installed");
   }, []);
 
   const approveElevation = useCallback(async () => {
@@ -243,8 +273,7 @@ export function useTauriBackend() {
       setProgressDetail(null);
       await startInstall();
     } catch (e) {
-      setStatus("install-error");
-      setError(String(e));
+      setBackendError(String(e), "install-error");
     }
   }, [elevationPackages]);
 
@@ -254,7 +283,7 @@ export function useTauriBackend() {
     mountedRef.current = true;
 
     if (!isTauri) {
-      setStatus("running");
+      setRunningStatus();
       return;
     }
     checkInstallAndStart();
@@ -286,7 +315,7 @@ export function useTauriBackend() {
 
       listen<string[]>("install-needs-elevation", (e) => {
         setElevationPackages(e.payload);
-        setStatus("needs-elevation");
+        setBackendStatus("needs-elevation");
       }).then((u) => cleanup.push(u));
 
       listen<string>("install-progress-detail", (e) => {
@@ -294,8 +323,7 @@ export function useTauriBackend() {
       }).then((u) => cleanup.push(u));
 
       listen<string>("install-failed", (e) => {
-        setError(e.payload);
-        setStatus("install-error");
+        setBackendError(e.payload, "install-error");
       }).then((u) => cleanup.push(u));
 
       listen<number>("server-port", (e) => {
@@ -305,8 +333,7 @@ export function useTauriBackend() {
 
       listen<void>("server-crashed", () => {
         startingRef.current = false;
-        setStatus("error");
-        setError("Server stopped unexpectedly");
+        setBackendError("Server stopped unexpectedly");
       }).then((u) => cleanup.push(u));
 
       listen<string>("server-log", (e) => {
@@ -324,6 +351,20 @@ export function useTauriBackend() {
         }
       }).then((u) => cleanup.push(u));
     });
+
+    const onAuthFailed = (event: Event) => {
+      const detail =
+        event instanceof CustomEvent && typeof event.detail === "string"
+          ? event.detail
+          : "Desktop authentication failed. Restart Unsloth Studio or run `unsloth studio reset-password`.";
+      setAuthFailure(detail);
+    };
+    window.addEventListener("tauri-auth-failed", onAuthFailed);
+    const authFailure = getTauriAuthFailure();
+    if (authFailure) setAuthFailure(authFailure);
+    cleanup.push(() =>
+      window.removeEventListener("tauri-auth-failed", onAuthFailed),
+    );
 
     return () => {
       cleanup.forEach((fn) => fn());

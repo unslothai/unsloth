@@ -68,6 +68,17 @@ def get_bootstrap_password() -> Optional[str]:
     return _bootstrap_password
 
 
+def _load_bootstrap_password() -> Optional[str]:
+    """Load an existing bootstrap password without creating one."""
+    global _bootstrap_password
+    _bootstrap_password = None
+    if _BOOTSTRAP_PW_PATH.is_file():
+        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        if bootstrap_password:
+            _bootstrap_password = bootstrap_password
+    return _bootstrap_password
+
+
 def clear_bootstrap_password() -> None:
     """Delete the persisted bootstrap password file (called after password change)."""
     global _bootstrap_password
@@ -119,7 +130,8 @@ def get_connection() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY,
             token_hash TEXT NOT NULL,
             username TEXT NOT NULL,
-            expires_at TEXT NOT NULL
+            expires_at TEXT NOT NULL,
+            is_desktop INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -150,6 +162,13 @@ def get_connection() -> sqlite3.Connection:
     if "must_change_password" not in columns:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+        )
+    refresh_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+    }
+    if "is_desktop" not in refresh_columns:
+        conn.execute(
+            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
         )
     conn.commit()
     return conn
@@ -206,6 +225,9 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
 
 
 _API_KEY_PBKDF2_ITERATIONS = 100_000
+DESKTOP_SECRET_PREFIX = "desktop-"
+_DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
+_DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 
 
 def _pbkdf2_api_key(raw_key: str) -> str:
@@ -236,6 +258,10 @@ def _pbkdf2_api_key(raw_key: str) -> str:
         _API_KEY_PBKDF2_ITERATIONS,
     )
     return dk.hex()
+
+
+def _pbkdf2_desktop_secret(raw_secret: str) -> str:
+    return _pbkdf2_api_key(raw_secret)
 
 
 def is_initialized() -> bool:
@@ -379,6 +405,10 @@ def ensure_default_admin() -> bool:
     Uses a randomly generated diceware passphrase as the bootstrap password.
     Returns True when the default admin was created in this call.
     """
+    if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is not None:
+        _load_bootstrap_password()
+        return False
+
     bootstrap_pw = generate_bootstrap_password()
     try:
         create_initial_user(
@@ -416,7 +446,13 @@ def update_password(username: str, new_password: str) -> bool:
         conn.close()
 
 
-def save_refresh_token(token: str, username: str, expires_at: str) -> None:
+def save_refresh_token(
+    token: str,
+    username: str,
+    expires_at: str,
+    *,
+    is_desktop: bool = False,
+) -> None:
     """
     Store a hashed refresh token with its associated username and expiry.
     """
@@ -425,21 +461,21 @@ def save_refresh_token(token: str, username: str, expires_at: str) -> None:
     try:
         conn.execute(
             """
-            INSERT INTO refresh_tokens (token_hash, username, expires_at)
-            VALUES (?, ?, ?)
+            INSERT INTO refresh_tokens (token_hash, username, expires_at, is_desktop)
+            VALUES (?, ?, ?, ?)
             """,
-            (token_hash, username, expires_at),
+            (token_hash, username, expires_at, int(is_desktop)),
         )
         conn.commit()
     finally:
         conn.close()
 
 
-def verify_refresh_token(token: str) -> Optional[str]:
+def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
     """
-    Verify a refresh token and return the username.
+    Verify a refresh token and return the username plus desktop marker.
 
-    Returns the username if valid and not expired, None otherwise.
+    Returns the username and desktop marker if valid and not expired, None otherwise.
     The token is NOT consumed — it stays valid until it expires.
     """
     token_hash = _hash_token(token)
@@ -454,7 +490,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
 
         cur = conn.execute(
             """
-            SELECT id, username, expires_at FROM refresh_tokens
+            SELECT id, username, expires_at, is_desktop FROM refresh_tokens
             WHERE token_hash = ?
             """,
             (token_hash,),
@@ -470,7 +506,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
             conn.commit()
             return None
 
-        return row["username"]
+        return row["username"], bool(row["is_desktop"])
     finally:
         conn.close()
 
@@ -480,6 +516,65 @@ def revoke_user_refresh_tokens(username: str) -> None:
     conn = get_connection()
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_desktop_secret() -> str:
+    """Create/rotate the local desktop credential and return it once."""
+    ensure_default_admin()
+    raw_secret = DESKTOP_SECRET_PREFIX + secrets.token_urlsafe(48)
+    secret_hash = _pbkdf2_desktop_secret(raw_secret)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, secret_hash),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_DESKTOP_SECRET_CREATED_AT_KEY, now),
+        )
+        conn.commit()
+        return raw_secret
+    finally:
+        conn.close()
+
+
+def validate_desktop_secret(raw_secret: str) -> Optional[str]:
+    """Return the real admin username when the desktop secret matches."""
+    if not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
+        return None
+    if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is None:
+        return None
+
+    secret_hash = _pbkdf2_desktop_secret(raw_secret)
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_DESKTOP_SECRET_HASH_KEY,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        if not secrets.compare_digest(row["value"], secret_hash):
+            return None
+        return DEFAULT_ADMIN_USERNAME
+    finally:
+        conn.close()
+
+
+def clear_desktop_secret() -> None:
+    """Remove backend-side desktop auth state."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key IN (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, _DESKTOP_SECRET_CREATED_AT_KEY),
+        )
         conn.commit()
     finally:
         conn.close()
