@@ -96,6 +96,42 @@ flex_attention + paged KV + CUDA graphs stack is identical). Pass
 `--chat_template native` to use Llama's shipped Instruct template instead
 of the Qwen3 GRPO template.
 
+`gemma4_flex_inference.py` extends the engine to `unsloth/gemma-4-E2B-it`.
+Gemma-4 is not a drop-in: its text backbone has KV-sharing layers
+(layers 15-34 consume full-sequence K/V produced by a store layer), two
+attention regimes (`full_attention` with `head_dim=512` / rope_theta=1e6
+and `sliding_attention` with `head_dim=256` / sliding_window=512),
+per-layer input embeddings, four norms per block with double residuals,
+and a final logit softcap. The new file keeps the shared helpers
+(`PagedKVCache`, `PageTable`, LoRA double-copy, drift verification)
+imported from `qwen3_flex_inference.py` and adds:
+
+- a KV-sharing sidecar dict, sized `[max_batch, n_kv, max_seq, head_dim]`
+  per store layer, populated at prefill and read by the paired shared
+  layers through eager SDPA (shared layers don't fit the paged-cache
+  block-mask shape);
+- dual RoPE precomputation — `rotary_emb(x, pos, layer_type)` called once
+  per unique layer type, indexed by `self.layer_type`;
+- a walker that threads `per_layer_inputs` from
+  `get_per_layer_inputs` + `project_per_layer_inputs` into each layer
+  and applies the `layer_scalar` multiply at layer end;
+- `tanh(logits / final_logit_softcapping) * final_logit_softcapping`
+  applied on the lm_head output.
+
+Requires `transformers>=5.5.0` for the `gemma4` module; if absent the
+script exits with a clear install hint. Gemma-4 head_dim=256 exceeds FA4
+on sm_100 (B200), so pass `--no-fa4_prefill` and small Triton blocks:
+
+```bash
+CUDA_VISIBLE_DEVICES=6 python scripts/benchmarks/gemma4_flex_inference.py \
+    --model_name unsloth/gemma-4-E2B-it \
+    --n_prompts 64 --max_new_tokens 512 --capture_cudagraph \
+    --no-fa4_prefill \
+    --prefill_kernel_options '{"FORCE_USE_FLEX_ATTENTION": true, "BLOCK_M": 32, "BLOCK_N": 32}' \
+    --decode_kernel_options '{"BLOCK_M": 16, "BLOCK_N": 16}' \
+    --stats_path logs/flex_gemma4_bf16.json
+```
+
 | GPU          | arch      | sm    | Auto FA4 | Triton flex_attention |
 |--------------|-----------|-------|----------|------------------------|
 | A100         | Ampere    | sm_80 | off (uses Triton) | Works |
