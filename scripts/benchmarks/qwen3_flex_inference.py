@@ -632,6 +632,23 @@ def main():
             "CuTeDSL FA4 kernel on Blackwell (SM100)."
         ),
     )
+    p.add_argument(
+        "--load_in_4bit",
+        action = "store_true",
+        help = (
+            "Load the base model as bitsandbytes 4-bit. When set with "
+            "--lora_adapter, the LoRA is kept as a PEFT wrapper (no merge) "
+            "because merging into 4-bit weights is not supported."
+        ),
+    )
+    p.add_argument(
+        "--model_name_4bit",
+        default = None,
+        help = (
+            "Override the 4-bit shard name. Defaults to "
+            "`{model_name}-unsloth-bnb-4bit`."
+        ),
+    )
     p.add_argument("--stats_path", required = True)
     args = p.parse_args()
 
@@ -645,26 +662,50 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.model_name)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    # Load eager; we swap attention forward below.
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        dtype = torch.bfloat16,
-        attn_implementation = "eager",
-    ).to("cuda")
+
+    if args.load_in_4bit:
+        # Load the pre-quantized Unsloth 4-bit shard. Compute dtype comes
+        # from the packaged config (bf16 for these shards).
+        bnb_model_name = args.model_name_4bit or f"{args.model_name}-unsloth-bnb-4bit"
+        print(f"[flex] loading 4-bit base: {bnb_model_name}")
+        model = AutoModelForCausalLM.from_pretrained(
+            bnb_model_name,
+            attn_implementation = "eager",
+            device_map = "cuda:0",
+        )
+        # See note in cb_vs_vllm_generation.py: tie lm_head to embed_tokens
+        # for bnb-4bit shards of tied-embedding models.
+        if getattr(model.config, "tie_word_embeddings", False):
+            model.lm_head.weight = model.model.embed_tokens.weight
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            dtype = torch.bfloat16,
+            attn_implementation = "eager",
+        ).to("cuda")
     model.eval()
 
     if args.lora_adapter:
         from peft import PeftModel
 
-        model = PeftModel.from_pretrained(
+        peft_model = PeftModel.from_pretrained(
             model,
             str(Path(args.lora_adapter).resolve()),
             is_trainable = False,
         )
-        # Merge so attention forward below sees merged weights without the
-        # PEFT wrapper mangling `self.q_proj` etc.
-        model = model.merge_and_unload()
-        model.eval()
+        if args.load_in_4bit:
+            # Can't merge LoRA into 4-bit base. Keep PEFT wrapping active --
+            # `q_proj`/etc on each layer are now LoraLayer(base_layer=Linear4bit,
+            # lora_A=..., lora_B=...). The monkey-patched attention forward
+            # calls `self.q_proj(hidden_states)` which routes through LoRA.
+            # For `patch_qwen3_model` / `call_model_with_flex_kwargs` we pass
+            # the underlying Qwen3ForCausalLM that PEFT has already modified
+            # in-place.
+            model = peft_model.base_model.model
+        else:
+            # bf16 path: merge LoRA so there's no PEFT wrapper at call time.
+            model = peft_model.merge_and_unload()
+            model.eval()
 
     from unsloth_grpo_common import (
         SYSTEM_PROMPT,

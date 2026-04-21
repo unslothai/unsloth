@@ -77,7 +77,7 @@ def run_vllm(args):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
-        load_in_4bit = False,
+        load_in_4bit = args.load_in_4bit,
         fast_inference = True,
         max_lora_rank = 32,
         gpu_memory_utilization = args.gpu_memory_utilization,
@@ -155,11 +155,26 @@ def run_tpaged(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        dtype = torch.bfloat16,
-        attn_implementation = args.attn_impl,
-    ).to("cuda")
+    if args.load_in_4bit:
+        bnb_model_name = args.model_name_4bit or f"{args.model_name}-unsloth-bnb-4bit"
+        print(f"[tpaged] loading 4-bit base: {bnb_model_name}")
+        model = AutoModelForCausalLM.from_pretrained(
+            bnb_model_name,
+            attn_implementation = args.attn_impl,
+            device_map = "cuda:0",
+        )
+        # HF transformers logs "lm_head.weight newly initialized" for
+        # bnb-4bit shards of tied-embedding models. tie_word_embeddings is
+        # True in the config but the dequant path leaves lm_head unbound.
+        # Tie manually so we don't generate gibberish.
+        if getattr(model.config, "tie_word_embeddings", False):
+            model.lm_head.weight = model.model.embed_tokens.weight
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            dtype = torch.bfloat16,
+            attn_implementation = args.attn_impl,
+        ).to("cuda")
     model.eval()
 
     if args.lora_adapter:
@@ -421,6 +436,16 @@ def parse_args():
         "--lora_adapter",
         default = None,
         help = "Path to a PEFT adapter (rank 32) applied in every backend.",
+    )
+    p.add_argument(
+        "--load_in_4bit",
+        action = "store_true",
+        help = "Load base as bitsandbytes 4-bit (Unsloth shard).",
+    )
+    p.add_argument(
+        "--model_name_4bit",
+        default = None,
+        help = "Override 4-bit shard name. Default `{model_name}-unsloth-bnb-4bit`.",
     )
     p.add_argument("--temperature", type = float, default = 0.1)
     p.add_argument("--top_p", type = float, default = 0.97)

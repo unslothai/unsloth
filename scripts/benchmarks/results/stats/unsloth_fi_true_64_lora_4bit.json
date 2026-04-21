@@ -1,0 +1,30 @@
+{
+  "backend": "vllm",
+  "lora_adapter": "outputs/lora_rank32_fresh",
+  "n_prompts": 64,
+  "n_prompt_tokens": 9129,
+  "n_decoded_tokens": 30050,
+  "wall_times_s": [
+    6.68179759796476,
+    6.6636974540306255,
+    6.6514031600090675,
+    6.653628617990762,
+    6.65495745599037
+  ],
+  "median_wall_s": 6.65495745599037,
+  "prompt_tps": 1371.7593328538342,
+  "decode_tps": 4515.430819614166,
+  "max_new_tokens": 512,
+  "sample_completions": [
+    "First, we need to find the length of the legs of the trapezoid. Since the trapezoid is isosceles, the legs are equal in length. Let's call the length of each leg $x$. We can use the Pythagorean theore",
+    "Let $P(x)$ be a monic polynomial of degree $2023$ such that $P(k) = k^{2023}P(1-\\frac{1}{k})$ for every positive integer $1 \\leq k \\leq 2023$. We want to find $P(-1)$.\n\nFirst, we can rewrite the given",
+    "First, we need to find the value of $a$ such that the graph of $y = mx + 2$ passes through no lattice point with $0 < x \\leq 100$ for all $m$ such that $\\frac{1}{2} < m < a$.\n\nLet's consider the equat"
+  ],
+  "peak_memory_gb": 159.28503799438477,
+  "sampling": {
+    "temperature": 0.1,
+    "top_p": 0.97,
+    "min_p": 0.5,
+    "top_k": 5
+  }
+}

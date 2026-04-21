@@ -56,6 +56,31 @@ At the GRPO workload flex reaches **72 % of vLLM throughput at
 3.5 × less memory**. Up from 9 % with transformers CB at the start of this
 work.
 
+### Same workload at `load_in_4bit=True` (Unsloth bnb-4bit shard)
+
+Loading base as bitsandbytes 4-bit (`unsloth/Qwen3-4B-Base-unsloth-bnb-4bit`,
+compute dtype bf16). LoRA kept as PEFT wrapper (can't merge into 4-bit).
+lm_head is tied to embed_tokens post-load because the 4-bit shard ships
+without an lm_head parameter.
+
+| Backend                         | tok/s | peak mem | output      |
+|---------------------------------|------:|---------:|:------------|
+| Unsloth fast_inference (vLLM)   |  4515 | 159 GB   | coherent    |
+| **flex** (this PR)              |**1738**| **40.6 GB** | coherent    |
+| transformers CB (sdpa)          |   504 | 124 GB   | **gibberish** |
+
+4-bit costs throughput on every backend (vLLM-path 4515 vs bf16 7775 = 58 %;
+flex 1738 vs bf16 5744 = 30 %). The regression is worse for flex because
+PEFT-without-merge doubles the number of matmuls per projection (base + LoRA
+add, separately) on top of the bnb dequant cost; the bf16 path merges LoRA
+into the base and skips both. Peak memory barely moves for vLLM because KV
+cache at `gpu_memory_utilization=0.8` dominates regardless of base size.
+
+Transformers CB at 4-bit + LoRA produces garbage tokens even with
+`model.lm_head.weight = model.model.embed_tokens.weight` tied explicitly.
+Likely a PEFT-over-bnb + batched `generate_batch` interaction bug; did not
+debug further.
+
 ## What each option did (batch 64, no LoRA, after CUDA graph capture)
 
 | Config                                                                | tok/s | vs baseline |

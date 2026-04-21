@@ -1,0 +1,30 @@
+{
+  "backend": "tpaged",
+  "lora_adapter": "outputs/lora_rank32_fresh",
+  "attn_impl": "sdpa",
+  "persistent_cb": false,
+  "n_prompts": 64,
+  "n_prompt_tokens": 9129,
+  "n_decoded_tokens": 32275,
+  "wall_times_s": [
+    61.436025188013446,
+    63.98777190799592,
+    65.29973084997619
+  ],
+  "median_wall_s": 63.98777190799592,
+  "prompt_tps": 142.66788368762124,
+  "decode_tps": 504.39324635973,
+  "max_new_tokens": 512,
+  "sample_completions": [
+    "First list list list list list list list list list list list list list list list list list<|endoftext|>",
+    "FirstFirst's???. \n,?.. and and and2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+    "First. and. and and2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+  ],
+  "peak_memory_gb": 124.05089378356934,
+  "sampling": {
+    "temperature": 0.1,
+    "top_p": 0.97,
+    "min_p": 0.5,
+    "top_k": 5
+  }
+}
