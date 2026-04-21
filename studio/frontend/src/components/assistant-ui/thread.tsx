@@ -85,7 +85,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
         )}
       >
         {!hideWelcome && (
-          <AuiIf condition={({ thread }) => thread.isEmpty}>
+          <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
             <ThreadWelcome hideComposer={hideComposer} />
           </AuiIf>
         )}
@@ -122,7 +122,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
       </ThreadPrimitive.Viewport>
 
       {!hideComposer && (
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+        <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
           <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-2 z-20">
             <div
               aria-hidden

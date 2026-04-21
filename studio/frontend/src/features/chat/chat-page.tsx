@@ -122,7 +122,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread />
+        <Thread hideWelcome={Boolean(threadId)} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -916,6 +916,7 @@ export function ChatPage(): ReactElement {
 
         {view.mode === "single" ? (
           <SingleContent
+            key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
           />
