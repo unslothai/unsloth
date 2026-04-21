@@ -123,22 +123,22 @@ except:
 del PackageNotFoundError, importlib_version
 
 # Try importing PyTorch and check version
-try:
-    import torch
-except ModuleNotFoundError:
-    if _NO_TORCH_MODE:
-        torch = None
-        warnings.warn(
-            "Unsloth: running in no-torch mode. Training and non-GGUF inference features are disabled.",
-            stacklevel = 2,
-        )
-    else:
+if _NO_TORCH_MODE:
+    torch = None
+    warnings.warn(
+        "Unsloth: running in no-torch mode. Training and non-GGUF inference features are disabled.",
+        stacklevel = 2,
+    )
+else:
+    try:
+        import torch
+    except ModuleNotFoundError:
         raise ImportError(
             "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"
             "We have some installation instructions on our Github page."
         )
-except:
-    raise
+    except:
+        raise
 
 if torch is not None:
     from unsloth_zoo.device_type import (
