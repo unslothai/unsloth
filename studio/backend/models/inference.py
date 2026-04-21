@@ -7,11 +7,39 @@ Pydantic schemas for Inference API
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+
+
+def _env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+_WIKI_MERGE_MAINTENANCE_MAX_MERGES_DEFAULT = _env_int(
+    "UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES",
+    512,
+    minimum = 1,
+    maximum = 512,
+)
 
 
 class LoadRequest(BaseModel):
@@ -769,10 +797,10 @@ class WikiMergeMaintenanceRequest(BaseModel):
         description = "Minimum candidate similarity required for merge planning",
     )
     max_merges: int = Field(
-        24,
+        _WIKI_MERGE_MAINTENANCE_MAX_MERGES_DEFAULT,
         ge = 1,
         le = 512,
-        description = "Maximum number of merges to plan/apply in a single run",
+        description = "Maximum number of merges to plan/apply in a single run (default from UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES)",
     )
 
 

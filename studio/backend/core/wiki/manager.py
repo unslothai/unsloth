@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,33 @@ from .engine import (
 
 # llm_fn receives a prompt and returns model text.
 LLMFn = Callable[[str], str]
+
+
+def _env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+_MERGE_MAINTENANCE_DEFAULT_MAX_MERGES = _env_int(
+    "UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES",
+    512,
+    minimum = 1,
+    maximum = 512,
+)
 
 
 @dataclass
@@ -148,7 +176,7 @@ class WikiManager:
         include_entities: bool = True,
         include_concepts: bool = True,
         similarity_threshold: float = 0.75,
-        max_merges: int = 24,
+        max_merges: int = _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES,
     ) -> Dict:
         """Merge duplicate entity/concept pages and rewrite wiki links."""
         return self.engine.merge_duplicate_knowledge_pages(

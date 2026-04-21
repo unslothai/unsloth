@@ -272,7 +272,12 @@ from typing import Callable
 LLMFn = Callable[[str], str]
 
 
-def _env_int(name: str, default: int, minimum: int = 1) -> int:
+def _env_int(
+    name: str,
+    default: int,
+    minimum: int = 1,
+    maximum: Optional[int] = None,
+) -> int:
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -280,7 +285,10 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         value = int(raw)
     except ValueError:
         return default
-    return max(minimum, value)
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
 def _env_float(
@@ -307,6 +315,15 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+_MERGE_MAINTENANCE_MAX_MERGES = 512
+_MERGE_MAINTENANCE_DEFAULT_MAX_MERGES = _env_int(
+    "UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES",
+    _MERGE_MAINTENANCE_MAX_MERGES,
+    minimum = 1,
+    maximum = _MERGE_MAINTENANCE_MAX_MERGES,
+)
 
 
 _TERM_STOPWORDS: Set[str] = {
@@ -895,10 +912,10 @@ class LLMWikiEngine:
         include_entities: bool = True,
         include_concepts: bool = True,
         similarity_threshold: float = 0.75,
-        max_merges: int = 24,
+        max_merges: int = _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES,
     ) -> Dict[str, Any]:
         threshold = max(0.5, min(1.0, float(similarity_threshold)))
-        merge_limit = max(1, int(max_merges))
+        merge_limit = max(1, min(_MERGE_MAINTENANCE_MAX_MERGES, int(max_merges)))
 
         candidate_pool: List[Dict[str, Any]] = []
         entity_candidates = 0

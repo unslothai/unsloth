@@ -107,9 +107,12 @@ def _env_float(name: str, default: float, min_value: float) -> float:
     return value
 
 
+_LLAMA_PREFILL_READ_TIMEOUT_DEFAULT_SECONDS = 5.0 * 60.0 * 60.0
+
+
 _LLAMA_PREFILL_READ_TIMEOUT_SECONDS = _env_float(
     "UNSLOTH_LLAMA_CPP_PREFILL_READ_TIMEOUT_SECONDS",
-    120.0,
+    _LLAMA_PREFILL_READ_TIMEOUT_DEFAULT_SECONDS,
     1.0,
 )
 
@@ -2246,7 +2249,8 @@ class LlamaCppBackend:
     ):
         """Open an httpx streaming POST with cancel support.
 
-        Sends the request once with a long read timeout (120 s) so
+        Sends the request once with a long read timeout (default: 5 hours,
+        configurable via UNSLOTH_LLAMA_CPP_PREFILL_READ_TIMEOUT_SECONDS) so
         prompt processing (prefill) can finish without triggering a
         retry storm.  The previous 0.5 s timeout caused duplicate POST
         requests every half second, forcing llama-server to restart
@@ -2383,8 +2387,8 @@ class LlamaCppBackend:
         _metadata_timings = None
 
         try:
-            # _stream_with_retry uses a 120 s read timeout so prefill
-            # can finish.  Cancel during streaming is handled by the
+            # _stream_with_retry uses the configured prefill read timeout
+            # (default: 5 hours) so prefill can finish. Cancel during streaming is handled by the
             # watcher thread (closes the response on cancel_event).
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = (
