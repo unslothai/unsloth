@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import gc
 import importlib.util
 import os
 import types
@@ -49,6 +50,12 @@ from .flex_qwen3_llama import (
     refresh_lora_merge_from_pristine,
 )
 from .flex_gemma4 import FlexGemma4Inference
+from .sleep_mode import (
+    _get_cumem_allocator,
+    kv_cache_pool,
+    sleep_mode_enabled,
+    weight_pool,
+)
 from .vllm_shim import CompletionOutput, LoRARequest, RequestOutput
 
 
@@ -242,8 +249,13 @@ class _LLMEngineStub:
     ``pass`` (rl.py:1795-1810), so a nested attribute chain that simply
     exists is enough."""
 
-    def __init__(self):
-        self.vllm_config = types.SimpleNamespace(lora_config = types.SimpleNamespace())
+    def __init__(self, sleep_enabled: bool = False):
+        self.vllm_config = types.SimpleNamespace(
+            lora_config = types.SimpleNamespace(),
+            model_config = types.SimpleNamespace(
+                enable_sleep_mode = bool(sleep_enabled),
+            ),
+        )
         self.model_executor = types.SimpleNamespace(
             driver_worker = types.SimpleNamespace(
                 model_runner = types.SimpleNamespace(
@@ -309,6 +321,22 @@ class FlexEngine:
 
         self.device = hf_model.device
 
+        # Sleep-mode setup. When ``UNSLOTH_VLLM_STANDBY=1`` is set AND
+        # vLLM is importable, we route the engine's heavy allocations
+        # (the inference deep-copies + per-layer PagedKVCache buffers)
+        # through cuMem-backed pools so ``FlexEngine.sleep`` can offload
+        # weights to pinned CPU memory without destroying captured CUDA
+        # graphs. The allocator assigns stable GPU virtual addresses, so
+        # unmapping on sleep and re-mapping on wake preserves pointer
+        # validity. ``expandable_segments:True`` on
+        # ``PYTORCH_CUDA_ALLOC_CONF`` is incompatible with cuMem; if the
+        # user has it set, ``_get_cumem_allocator`` returns None and
+        # sleep stays a no-op.
+        self._sleep_mode_enabled = sleep_mode_enabled()
+        self._cumem_allocator = (
+            _get_cumem_allocator() if self._sleep_mode_enabled else None
+        )
+
         # Colocate pattern (mirrors vLLM's "colocate" mode): the engine
         # runs on its own deep-copy of the HF model so that flex attention
         # patching + KV-cache attachment does not mutate the training
@@ -325,11 +353,18 @@ class FlexEngine:
         # defer materialising it until :meth:`bind_peft_model`, so the
         # no-LoRA path stays at 2x the base model's VRAM instead of 3x.
         if inference_model is None:
-            inference_model = copy.deepcopy(hf_model)
-            inference_model.eval()
+            with weight_pool(self._cumem_allocator):
+                inference_model = copy.deepcopy(hf_model)
+                inference_model.eval()
         self._pristine_base = base_model  # None until bind_peft_model runs
         self._inference_model = inference_model
         self._inference_peft = peft_model  # filled in by bind_peft_model
+        # ``_inference_model is hf_model`` is the 4-bit / single-copy
+        # fallback path (see ``bind_peft_model``); flex skips the second
+        # deep-copy there because bnb-4bit packed weights can't be
+        # in-place refreshed. In that mode there is no CPU-backup step
+        # to do on ``sleep`` — only the KV cache gets dropped.
+        self._single_copy_mode = inference_model is hf_model
 
         # Autocast wrapping (applied by the impl via a context manager).
         fa4_prefill, prefill_kernel_options, decode_kernel_options = (
@@ -353,6 +388,14 @@ class FlexEngine:
             inference_model = _extract_gemma4_text_shell(inference_model)
             self._inference_model = inference_model
         Impl = FlexGemma4Inference if arch == "gemma4" else FlexInference
+        # Pass the cuMem allocator through so the impl can wrap ONLY
+        # the paged-KV allocations (``PageTable`` + per-layer
+        # ``PagedKVCache``) in the ``kv_cache`` pool. Everything else
+        # the impl creates (``input_pos_buffer``, ``block_mask_logical``,
+        # captured CUDA-graph scratch / graph_vars) stays in torch's
+        # default allocator — those buffers are tiny and, critically,
+        # the captured CUDA graphs reference block_mask indices by
+        # address, so they must survive sleep / wake unchanged.
         self._impl = Impl(
             inference_model,
             tokenizer,
@@ -366,8 +409,11 @@ class FlexEngine:
             fa4_prefill = fa4_prefill,
             base_model = self._pristine_base,
             peft_model = peft_model,
+            cumem_allocator = self._cumem_allocator,
         )
-        self._llm_engine_stub = _LLMEngineStub()
+        self._llm_engine_stub = _LLMEngineStub(
+            sleep_enabled = self._sleep_mode_enabled,
+        )
 
     # ----- configuration helpers -----
 
@@ -605,20 +651,74 @@ class FlexEngine:
             self._warned_sampling = True
         return int(max_tokens), {}
 
-    # ----- sleep-mode stubs -----
+    # ----- sleep-mode -----
     #
     # vLLM's sleep mode offloads engine weights to CPU between rollouts so
-    # training can use the freed VRAM. The flex backend does not implement
-    # that yet; these stubs exist so code paths that assume the API are safe.
+    # training can use the freed VRAM. The flex backend implements level 1
+    # (weights offloaded to pinned CPU, KV cache dropped and re-zeroed on
+    # wake) via :class:`vllm.device_allocator.cumem.CuMemAllocator`.
+    # Captured CUDA graphs survive the round-trip because cuMem keeps the
+    # GPU virtual addresses stable across sleep / wake.
+    #
+    # Sleep activates only when ``UNSLOTH_VLLM_STANDBY=1`` is set AND
+    # vLLM is importable (evaluated at ``__init__`` time). Otherwise
+    # ``sleep`` / ``wake_up`` are no-ops so code that unconditionally
+    # calls the API (TRL's GRPO trainer) stays correct.
 
-    def sleep(self, level: int = 2):
-        """No-op. Real implementation in a follow-up PR (move PagedKVCache +
-        shared buffers + the inference-copy HF shell to CPU pinned memory
-        and swap back on wake_up)."""
+    def sleep(self, level: int = 1):
+        """Offload inference weights to pinned CPU memory (level 1).
+
+        ``level=2`` is not implemented on the flex backend (it would
+        require rebuilding the inference deep-copy from the training
+        model on wake); requesting it emits a warning and falls back to
+        level 1.
+
+        In the 4-bit single-copy fallback path the inference model
+        shares storage with the training model, so only the KV cache is
+        dropped on sleep; the weights stay resident.
+        """
+        if not self._sleep_mode_enabled or self._cumem_allocator is None:
+            return None
+        if level not in (1, 2):
+            raise ValueError(
+                f"FlexEngine.sleep: level must be 1 or 2, got {level}"
+            )
+        if level == 2:
+            warnings.warn(
+                "FlexEngine.sleep(level=2) is not implemented on the "
+                "flex backend; falling back to level=1 (CPU-pinned "
+                "weight offload).",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
+        if self._single_copy_mode:
+            # Weights are shared with the training model (4-bit path);
+            # only the kv_cache pool is ours to drop.
+            self._cumem_allocator.sleep(offload_tags = ())
+        else:
+            self._cumem_allocator.sleep(offload_tags = ("weights",))
+        gc.collect()
+        # NOTE: we deliberately do NOT call torch.cuda.empty_cache() here.
+        # Captured CUDA graphs may retain scratch / workspace tensors in
+        # torch's default caching allocator at fixed addresses; emptying
+        # the cache between sleep and wake can invalidate those
+        # addresses and cause the next graph replay to read freed
+        # memory. The cuMem pools have already released their physical
+        # pages; there is no additional VRAM to reclaim via empty_cache.
         return None
 
     def wake_up(self, tags: Optional[list] = None):
-        """No-op companion to :meth:`sleep`."""
+        """Re-map cuMem handles and restore offloaded weights.
+
+        ``tags=None`` wakes everything; TRL's GRPO trainer calls
+        ``wake_up(tags=["kv_cache"])`` and then ``wake_up(tags=["weights"])``
+        on consecutive steps to stagger the VRAM reclaim.
+        """
+        if not self._sleep_mode_enabled or self._cumem_allocator is None:
+            return None
+        if tags is not None and not isinstance(tags, list):
+            tags = list(tags)
+        self._cumem_allocator.wake_up(tags = tags)
         return None
 
     @property
@@ -654,8 +754,9 @@ class FlexEngine:
             # linear weights (what LoRA merges into) are still pristine,
             # so we can clone it and just not call flex attention on the
             # pristine copy.
-            self._pristine_base = copy.deepcopy(self._inference_model)
-            self._pristine_base.eval()
+            with weight_pool(self._cumem_allocator):
+                self._pristine_base = copy.deepcopy(self._inference_model)
+                self._pristine_base.eval()
             self._impl.base_model = self._pristine_base
 
         if self._inference_peft is None:
@@ -666,8 +767,11 @@ class FlexEngine:
                 # Wrap the already-patched inference copy with a fresh LoRA
                 # adapter of the same shape. LoraLayer insertion is
                 # attention-forward-agnostic; it wraps Linear modules.
-                self._inference_peft = _get_peft_model(self._inference_model, peft_cfg)
-                self._inference_peft.eval()
+                with weight_pool(self._cumem_allocator):
+                    self._inference_peft = _get_peft_model(
+                        self._inference_model, peft_cfg,
+                    )
+                    self._inference_peft.eval()
             except Exception as e:
                 warnings.warn(
                     f"FlexEngine.bind_peft_model: could not build an "
@@ -724,4 +828,211 @@ def load_flex(
     )
 
 
-__all__ = ["FlexEngine", "load_flex"]
+# ---------------------------------------------------------------------------
+# Lazy engine construction
+#
+# FlexEngine's ``max_batch_size`` drives fixed-shape GPU page tables, the
+# ``input_pos_buffer``, the ``block_mask_logical`` build, and the CUDA-graph
+# bucket list. These are allocated inside ``FlexEngine.__init__`` and there is
+# no post-init resize path. Picking the wrong value at ``from_pretrained``
+# time forces users to either overshoot (wasted KV pages + slower graph
+# capture) or undershoot (``PageTable.can_reserve`` stalls the rollout).
+#
+# ``build_flex_engine`` defers the construction until the real rollout batch
+# size is known: GRPOTrainer's ``__init__`` patch in ``unsloth/models/rl.py``
+# calls :func:`_build_flex_from_args` to pass
+# ``per_device_train_batch_size * steps_per_generation * num_generations``
+# through; the plain ``model.fast_generate`` path falls back to the
+# ``max_batch_size`` kwarg originally passed to ``from_pretrained``.
+# ---------------------------------------------------------------------------
+
+
+class _LazyFlexEngineSentinel:
+    """Placeholder for ``model.vllm_engine`` before the FlexEngine is built.
+
+    Forwards attribute access to the real engine, triggering construction
+    (with the stashed ``max_batch_size`` floor) on first access. This keeps
+    ``hasattr(model, "vllm_engine")`` True between ``from_pretrained`` and
+    the first build, which matters for ``rl.py``'s ``args.use_vllm`` setter.
+    """
+
+    __slots__ = ("_model",)
+
+    def __init__(self, model):
+        object.__setattr__(self, "_model", model)
+
+    def _resolve(self):
+        engine = getattr(self._model, "_flex_engine_instance", None)
+        if engine is None:
+            engine = build_flex_engine(self._model)
+        return engine
+
+    def __getattr__(self, name):
+        if name == "_model":
+            raise AttributeError(name)
+        return getattr(self._resolve(), name)
+
+    def __bool__(self):
+        return True
+
+    def __repr__(self):
+        engine = getattr(self._model, "_flex_engine_instance", None)
+        if engine is None:
+            return "<LazyFlexEngine (not built)>"
+        return repr(engine)
+
+
+def install_flex_sentinel(model, tokenizer):
+    """Wire the lazy ``vllm_engine`` / ``fast_generate`` placeholders.
+
+    Called from ``unsloth/models/llama.py`` and ``unsloth/models/vision.py``
+    in place of the eager ``FlexEngine(...)`` construction. The real build
+    happens inside :func:`build_flex_engine`, triggered either by the
+    GRPOTrainer patch (``_build_flex_from_args``) or by the first
+    ``model.fast_generate`` call.
+    """
+    model._unsloth_flex_tokenizer = tokenizer
+    model.vllm_engine = _LazyFlexEngineSentinel(model)
+
+    def _lazy_fast_generate(prompts = None, *gen_args, **gen_kwargs):
+        engine = getattr(model, "_flex_engine_instance", None)
+        if engine is None:
+            engine = build_flex_engine(model)
+        return engine.generate(prompts, *gen_args, **gen_kwargs)
+
+    def _lazy_fast_generate_batches(prompts = None, *gen_args, **gen_kwargs):
+        engine = getattr(model, "_flex_engine_instance", None)
+        if engine is None:
+            engine = build_flex_engine(model)
+        gen_kwargs.setdefault("use_tqdm", False)
+        return engine.generate(prompts, *gen_args, **gen_kwargs)
+
+    model.fast_generate = _lazy_fast_generate
+    model.fast_generate_batches = _lazy_fast_generate_batches
+
+
+def _construct_and_attach(model, max_batch_size: int):
+    """Construct the FlexEngine with the given batch size and wire it up."""
+    pending = model._unsloth_needs_flex_engine
+    tokenizer = getattr(model, "_unsloth_flex_tokenizer", None)
+    inference_copy = getattr(model, "_unsloth_flex_inference_copy", None)
+
+    engine_kwargs = dict(pending)
+    engine_kwargs["max_batch_size"] = int(max_batch_size)
+
+    engine = FlexEngine(
+        hf_model = model,
+        tokenizer = tokenizer,
+        inference_model = inference_copy,
+        base_model = None,
+        peft_model = None,
+        **engine_kwargs,
+    )
+    model._flex_engine_instance = engine
+
+    # Drop the sentinel (plain attribute; setting replaces it).
+    model.vllm_engine = engine
+    model.fast_generate = engine.generate
+    model.fast_generate_batches = functools.partial(engine.generate, use_tqdm = False)
+
+    # Consume the one-shot stashes: the deep-copy is owned by the engine now,
+    # and the needs-dict's role as "build spec" is over.
+    for _attr in (
+        "_unsloth_flex_inference_copy",
+        "_unsloth_flex_tokenizer",
+        "_unsloth_needs_flex_engine",
+    ):
+        if hasattr(model, _attr):
+            try:
+                delattr(model, _attr)
+            except AttributeError:
+                pass
+    return engine
+
+
+def build_flex_engine(model, max_batch_size: Optional[int] = None):
+    """Construct or return the FlexEngine attached to ``model``.
+
+    Called lazily: by the RL patch (:func:`_build_flex_from_args`) once
+    ``GRPOTrainer.args`` is resolved, or by ``model.fast_generate`` on
+    first use.
+
+    ``max_batch_size`` resolution (first build):
+      - ``floor = model._unsloth_needs_flex_engine['max_batch_size']``
+      - ``effective = max(floor, max_batch_size or 0)``
+      - A warning is emitted when ``effective > floor`` so users see the
+        GRPO-driven bump.
+
+    Once the engine is built, it is the sole source of truth for the
+    batch-size dimension. Subsequent calls are idempotent when the
+    requested size fits; requesting a larger size raises
+    :class:`RuntimeError` because the engine's fixed-shape GPU buffers
+    and captured CUDA graphs cannot be grown in place.
+    """
+    existing = getattr(model, "_flex_engine_instance", None)
+    pending = getattr(model, "_unsloth_needs_flex_engine", None)
+
+    # Non-flex model (plain HF or plain vLLM). No-op so ``rl.py``'s patch
+    # stays unconditional.
+    if existing is None and pending is None:
+        return None
+
+    requested = int(max_batch_size) if max_batch_size else 0
+
+    if existing is not None:
+        if requested <= existing.max_batch_size:
+            return existing
+        raise RuntimeError(
+            f"Unsloth: FlexEngine was built at max_batch_size="
+            f"{existing.max_batch_size}; cannot grow to {requested} after "
+            f"construction (fixed-shape GPU page tables + CUDA graphs). "
+            f"Pass max_batch_size={requested} to "
+            f"FastLanguageModel.from_pretrained before the first "
+            f"fast_generate / GRPOTrainer call."
+        )
+
+    floor = int(pending["max_batch_size"])
+    target = max(floor, requested)
+    if target > floor:
+        warnings.warn(
+            f"Unsloth: increasing FlexEngine max_batch_size {floor} -> "
+            f"{target} to fit the GRPO rollout batch "
+            f"(per_device_train_batch_size * steps_per_generation * "
+            f"num_generations). Pass max_batch_size={target} to "
+            f"FastLanguageModel.from_pretrained to silence this warning.",
+            stacklevel = 2,
+        )
+    return _construct_and_attach(model, target)
+
+
+def _build_flex_from_args(model, args):
+    """Helper used by the ``rl.py`` GRPOTrainer-init patch.
+
+    Reads the rollout batch size from the TRL args and triggers the
+    FlexEngine build. No-op when ``model`` wasn't loaded through the
+    flex-inference path (plain vLLM / plain HF).
+    """
+    if not hasattr(model, "_unsloth_needs_flex_engine") and not hasattr(
+        model, "_flex_engine_instance"
+    ):
+        return None
+    pdbs = int(getattr(args, "per_device_train_batch_size", 1) or 1)
+    spg = int(
+        getattr(args, "steps_per_generation", None)
+        or getattr(args, "gradient_accumulation_steps", 1)
+        or 1
+    )
+    ngen = int(getattr(args, "num_generations", 1) or 1)
+    # Written as ``max(A, B)`` for reviewer clarity. Reduces to the second
+    # term whenever ``num_generations >= 1`` (always).
+    grpo_target = max(pdbs * spg, pdbs * spg * ngen)
+    return build_flex_engine(model, max_batch_size = grpo_target)
+
+
+__all__ = [
+    "FlexEngine",
+    "load_flex",
+    "build_flex_engine",
+    "install_flex_sentinel",
+    "_build_flex_from_args",
+]

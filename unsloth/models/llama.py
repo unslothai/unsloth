@@ -2526,10 +2526,28 @@ class FastLlamaModel:
                 # flex inference copy uses the original transformers
                 # rotary / QKV layout. A later block (after the tokenizer is
                 # loaded) constructs the FlexEngine around this copy.
+                #
+                # If ``UNSLOTH_VLLM_STANDBY=1`` is set AND vLLM is
+                # importable, wrap the deep-copy in the cuMem
+                # ``weights`` pool so ``FlexEngine.sleep(level=1)`` can
+                # offload it to pinned CPU memory without invalidating
+                # the engine's captured CUDA graphs. This must happen at
+                # the deep-copy site, not later in FlexEngine.__init__,
+                # because the engine receives the copy as
+                # ``inference_model=`` and never re-allocates it.
                 import copy as _copy
+                from unsloth.inference.sleep_mode import (
+                    _get_cumem_allocator as _flex_get_cumem,
+                    sleep_mode_enabled as _flex_sleep_enabled,
+                    weight_pool as _flex_weight_pool,
+                )
 
-                model._unsloth_flex_inference_copy = _copy.deepcopy(model)
-                model._unsloth_flex_inference_copy.eval()
+                _flex_allocator = (
+                    _flex_get_cumem() if _flex_sleep_enabled() else None
+                )
+                with _flex_weight_pool(_flex_allocator):
+                    model._unsloth_flex_inference_copy = _copy.deepcopy(model)
+                    model._unsloth_flex_inference_copy.eval()
                 model._unsloth_needs_flex_engine = dict(
                     dtype = dtype,
                     max_seq_length = max_seq_length,
@@ -2617,31 +2635,19 @@ class FastLlamaModel:
             model, tokenizer, correct_dtype = dtype
         )
 
-        # UNSLOTH_FAST_INFERENCE=1 path: build the FlexEngine now that the
-        # tokenizer is available. The HF model itself is NOT flex-patched --
+        # UNSLOTH_FAST_INFERENCE=1 path: install the lazy ``vllm_engine``
+        # sentinel now that the tokenizer is available. The real
+        # ``FlexEngine(...)`` construction is deferred to
+        # :func:`build_flex_engine` so the batch-size dimension can be
+        # sized from the GRPO rollout shape instead of frozen here at a
+        # guessed default. The HF model itself is NOT flex-patched --
         # the engine owns its own pre-patched deep-copy (captured above
         # before Unsloth's post_patch), so `model.forward` (used by the
         # training loop) stays intact.
-        _flex_args = getattr(model, "_unsloth_needs_flex_engine", None)
-        if _flex_args is not None:
-            del model._unsloth_needs_flex_engine
-            _inference_copy = model._unsloth_flex_inference_copy
-            del model._unsloth_flex_inference_copy
-            from unsloth.inference.flex_engine import FlexEngine
+        if hasattr(model, "_unsloth_needs_flex_engine"):
+            from unsloth.inference.flex_engine import install_flex_sentinel
 
-            flex_engine = FlexEngine(
-                hf_model = model,
-                tokenizer = tokenizer,
-                inference_model = _inference_copy,
-                base_model = None,
-                peft_model = None,
-                **_flex_args,
-            )
-            model.vllm_engine = flex_engine
-            model.fast_generate = flex_engine.generate
-            model.fast_generate_batches = functools.partial(
-                flex_engine.generate, use_tqdm = False
-            )
+            install_flex_sentinel(model, tokenizer)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):

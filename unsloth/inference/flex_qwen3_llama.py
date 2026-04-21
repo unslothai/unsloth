@@ -499,6 +499,7 @@ class FlexInference:
         fa4_prefill = None,
         base_model = None,
         peft_model = None,
+        cumem_allocator = None,
     ):
         assert max_seq_length % page_size == 0
         self.model = model
@@ -558,13 +559,22 @@ class FlexInference:
             base_prefill_opts["BACKEND"] = "FLASH"
         self.prefill_kernel_options = base_prefill_opts
 
-        self.page_table = PageTable(
-            n_pages = n_pages,
-            page_size = page_size,
-            max_batch_size = max_batch_size,
-            device = self.device.type,
-        )
-        patch_model_attention_forwards(model, self.page_table)
+        # Route the paged-KV allocations through the cuMem "kv_cache"
+        # pool when sleep mode is active, so FlexEngine.sleep can drop
+        # them and wake_up can re-map fresh zeroed pages at the same
+        # virtual addresses. The block_mask / input_pos scratch below
+        # stays in the default allocator so captured CUDA graphs that
+        # reference them stay valid across sleep / wake.
+        from .sleep_mode import kv_cache_pool as _kv_cache_pool
+
+        with _kv_cache_pool(cumem_allocator):
+            self.page_table = PageTable(
+                n_pages = n_pages,
+                page_size = page_size,
+                max_batch_size = max_batch_size,
+                device = self.device.type,
+            )
+            patch_model_attention_forwards(model, self.page_table)
 
         # Pre-allocated decode state.
         self.input_pos_buffer = torch.zeros(

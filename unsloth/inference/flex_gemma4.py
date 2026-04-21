@@ -430,6 +430,7 @@ class FlexGemma4Inference:
         fa4_prefill = None,
         base_model = None,
         peft_model = None,
+        cumem_allocator = None,
     ):
         assert max_seq_length % page_size == 0
         self.model = model
@@ -477,14 +478,19 @@ class FlexGemma4Inference:
             base_prefill_opts["BACKEND"] = "FLASH"
         self.prefill_kernel_options = base_prefill_opts
 
-        self.page_table = PageTable(
-            n_pages = n_pages,
-            page_size = page_size,
-            max_batch_size = max_batch_size,
-            device = self.device.type,
-        )
+        # See ``FlexInference.__init__`` for why only the paged-KV
+        # allocations go through the cuMem ``kv_cache`` pool.
+        from .sleep_mode import kv_cache_pool as _kv_cache_pool
 
-        patch_gemma4_attention_forwards(model, self.page_table)
+        with _kv_cache_pool(cumem_allocator):
+            self.page_table = PageTable(
+                n_pages = n_pages,
+                page_size = page_size,
+                max_batch_size = max_batch_size,
+                device = self.device.type,
+            )
+
+            patch_gemma4_attention_forwards(model, self.page_table)
 
         self.input_pos_buffer = torch.zeros(
             max_batch_size, dtype = torch.int32, device = self.device

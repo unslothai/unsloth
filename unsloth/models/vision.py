@@ -1248,21 +1248,17 @@ class FastBaseModel:
                 raise _patch_err
         model = post_patch_loss_function(model)
 
-        # UNSLOTH_FAST_INFERENCE=1 path: build the FlexEngine here so that
-        # the tokenizer/processor is available. Keeps the training model's
+        # UNSLOTH_FAST_INFERENCE=1 path: install the lazy ``vllm_engine``
+        # sentinel now that the tokenizer/processor is available. The real
+        # ``FlexEngine(...)`` construction is deferred to
+        # :func:`build_flex_engine` so the batch-size dimension can be
+        # sized from the GRPO rollout shape. Keeps the training model's
         # forward intact — the engine carries its own deep-copy.
-        _flex_args = getattr(model, "_unsloth_needs_flex_engine", None)
-        if _flex_args is not None:
-            del model._unsloth_needs_flex_engine
-            from unsloth.inference.flex_engine import load_flex
+        if hasattr(model, "_unsloth_needs_flex_engine"):
+            from unsloth.inference.flex_engine import install_flex_sentinel
 
             _tok_for_flex = getattr(tokenizer, "tokenizer", tokenizer)
-            flex_engine = load_flex(model, _tok_for_flex, **_flex_args)
-            model.vllm_engine = flex_engine
-            model.fast_generate = flex_engine.generate
-            model.fast_generate_batches = functools.partial(
-                flex_engine.generate, use_tqdm = False
-            )
+            install_flex_sentinel(model, _tok_for_flex)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):

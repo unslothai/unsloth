@@ -1752,9 +1752,22 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '
                 'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
             )
-            # Replace with our vLLM engine
+            # Replace with our vLLM engine.
+            #
+            # ``_build_flex_from_args`` sizes the FlexEngine's fixed-shape
+            # page tables / CUDA-graph buckets from the GRPO rollout batch
+            # (per_device_train_batch_size * steps_per_generation *
+            # num_generations) BEFORE the first ``model.vllm_engine``
+            # access triggers the lazy build. No-op when the model wasn't
+            # loaded through the flex-inference path (plain vLLM / plain
+            # HF), so this injection is safe for every backend. The
+            # import is inlined on the same line so ``create_new_function``
+            # doesn't need a cross-module import entry.
             sampling_params = (
                 " " * 12
+                + "from unsloth.inference.flex_engine import "
+                + "_build_flex_from_args as __unsloth_build_flex_from_args; "
+                + "__unsloth_build_flex_from_args(model, args); "
                 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; "
                 + sampling_params
             )  # Add spaces
@@ -1790,9 +1803,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 )
 
         if trl_version >= Version("0.18.0"):
-            # Replace LLM init with already existing vLLM engine for colocate mode
+            # Replace LLM init with already existing vLLM engine for colocate mode.
+            # Prepend the FlexEngine build call so the engine is sized from the
+            # GRPO rollout batch before ``model.vllm_engine`` is dereferenced.
+            # Inline the import so ``create_new_function`` doesn't need a
+            # cross-module entry; the helper is a no-op on non-flex models.
             vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
-            vllm_llm_replacement = "self.llm = model.vllm_engine\n"
+            vllm_llm_replacement = (
+                "from unsloth.inference.flex_engine import "
+                "_build_flex_from_args as __unsloth_build_flex_from_args; "
+                "__unsloth_build_flex_from_args(model, args); "
+                "self.llm = model.vllm_engine\n"
+            )
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
                 vllm_llm_replacement,

@@ -14,7 +14,12 @@ Three architectures are supported today: Qwen3, Llama-3, Gemma-4-E2B-it.
 Anything else raises :class:`NotImplementedError` — there is no silent
 fallback; unset the env var or use vLLM instead."""
 
-from .flex_engine import FlexEngine, load_flex
+from .flex_engine import (
+    FlexEngine,
+    build_flex_engine,
+    install_flex_sentinel,
+    load_flex,
+)
 from .vllm_shim import (
     CompletionOutput,
     LoRARequest,
@@ -26,6 +31,8 @@ from .vllm_shim import (
 __all__ = [
     "FlexEngine",
     "load_flex",
+    "build_flex_engine",
+    "install_flex_sentinel",
     "LoRARequest",
     "RequestOutput",
     "CompletionOutput",
