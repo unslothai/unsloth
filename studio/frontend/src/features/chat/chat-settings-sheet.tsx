@@ -1271,7 +1271,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 transition-[width] duration-200 ease-linear ${open ? "w-[17rem]" : "w-0"}`}
+      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 ${open ? "w-[17rem]" : "w-0"}`}
     >
       <div className="h-full w-[17rem]">{settingsContent}</div>
     </aside>

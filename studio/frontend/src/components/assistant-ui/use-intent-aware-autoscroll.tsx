@@ -49,6 +49,12 @@ import {
 const AT_BOTTOM_THRESHOLD_PX = 2;
 const RE_ATTACH_THRESHOLD_PX = 24;
 const TOUCH_MOVE_THRESHOLD_PX = 4;
+// Cumulative upward movement (summed across scroll events) that
+// counts as a deliberate detach. Summed rather than per-event so that
+// slow 1-px-per-event sources — middle-click autoscroll, scrollbar
+// drags, some trackpads — accumulate instead of slipping under a
+// per-event threshold forever.
+const UPWARD_DETACH_THRESHOLD_PX = 2;
 // Window during which the viewport pins to the bottom through
 // layout/content races. Extends on every resize/mutation, so streaming
 // keeps the viewport pinned as long as content keeps arriving; settles
@@ -143,6 +149,7 @@ export function useIntentAwareAutoScroll(): {
       let lastScrollTop = el.scrollTop;
       let lastClientWidth = el.clientWidth;
       let lastClientHeight = el.clientHeight;
+      let upwardAccumulator = 0;
       let touchStartY = 0;
 
       const distanceFromBottom = (): number => {
@@ -232,21 +239,32 @@ export function useIntentAwareAutoScroll(): {
         const sizeChanged =
           clientWidth !== lastClientWidth || clientHeight !== lastClientHeight;
 
-        // Ignore direction signals that are a consequence of the
-        // browser clamping scrollTop during a viewport resize; only
-        // deliberate user-initiated scrolls should flip intent.
-        const scrollingUp = !sizeChanged && scrollTop < lastScrollTop - 1;
-        const scrollingDown = !sizeChanged && scrollTop > lastScrollTop + 1;
+        const delta = scrollTop - lastScrollTop;
 
-        if (scrollingUp) {
-          detach();
-        } else if (
-          userDetachedRef.current &&
-          scrollingDown &&
-          distanceFromBottom() <= RE_ATTACH_THRESHOLD_PX
-        ) {
-          userDetachedRef.current = false;
-          extendFollow();
+        // Viewport resizes can clamp scrollTop and produce spurious
+        // direction signals. Only flip intent on deliberate scrolls.
+        if (sizeChanged) {
+          upwardAccumulator = 0;
+        } else if (delta > 0) {
+          // Downward: reset the upward accumulator, and re-attach when
+          // the user has scrolled back within range of the bottom.
+          upwardAccumulator = 0;
+          if (
+            userDetachedRef.current &&
+            distanceFromBottom() <= RE_ATTACH_THRESHOLD_PX
+          ) {
+            userDetachedRef.current = false;
+            extendFollow();
+          }
+        } else if (delta < 0 && !userDetachedRef.current) {
+          // Upward: sum across events. Middle-click autoscroll and
+          // some trackpads deliver 1px-per-event scrolls that each
+          // slip under a per-event threshold; summing catches them.
+          upwardAccumulator += -delta;
+          if (upwardAccumulator >= UPWARD_DETACH_THRESHOLD_PX) {
+            detach();
+            upwardAccumulator = 0;
+          }
         }
 
         lastScrollTop = scrollTop;
