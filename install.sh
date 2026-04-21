@@ -34,7 +34,8 @@ substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
-PACKAGE_NAME="unsloth"
+PACKAGE_NAME="unsloth @ git+https://github.com/Manan17/unsloth.git@mlx-apple-silicon"
+UNSLOTH_ZOO_PACKAGE="unsloth-zoo @ git+https://github.com/Manan17/unsloth-zoo.git@mlx-apple-silicon"
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _VERBOSE=false
@@ -1504,6 +1505,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "$PACKAGE_NAME"
+        run_install_cmd "install unsloth-zoo (branch)" uv pip install --python "$_VENV_PY" "$UNSLOTH_ZOO_PACKAGE"
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
@@ -1530,7 +1532,14 @@ else
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+        run_install_cmd "install unsloth-zoo (branch)" uv pip install --python "$_VENV_PY" "$UNSLOTH_ZOO_PACKAGE"
     fi
+fi
+
+# ── Install mlx-vlm on Apple Silicon (optional, for VLM training) ──
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    substep "installing mlx-vlm (VLM training support)..."
+    run_install_cmd "install mlx-vlm" uv pip install --python "$_VENV_PY" mlx-vlm
 fi
 
 # ── Run studio setup ──

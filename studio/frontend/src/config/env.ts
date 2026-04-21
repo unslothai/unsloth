@@ -37,7 +37,7 @@ export async function fetchDeviceType(): Promise<DeviceType> {
     if (res.ok) {
       const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
       const deviceType = data.device_type ?? "linux";
-      const chatOnly = data.chat_only ?? deviceType === "mac";
+      const chatOnly = data.chat_only ?? false;
       usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
       return deviceType;
     }
