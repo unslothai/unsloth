@@ -27,6 +27,7 @@ import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version as package_version
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -76,6 +77,27 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
+
+
+def get_unsloth_version() -> str:
+    try:
+        return package_version("unsloth")
+    except PackageNotFoundError:
+        pass
+
+    version_file = (
+        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    )
+    try:
+        for line in version_file.read_text(encoding = "utf-8").splitlines():
+            if line.startswith("__version__ = "):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return "dev"
+
+
+UNSLOTH_VERSION = get_unsloth_version()
 
 
 @asynccontextmanager
@@ -140,7 +162,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title = "Unsloth UI Backend",
-    version = "1.0.0",
+    version = UNSLOTH_VERSION,
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
 )
@@ -198,6 +220,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
+        "version": UNSLOTH_VERSION,
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
     }

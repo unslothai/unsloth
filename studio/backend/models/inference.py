@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
 
 class LoadRequest(BaseModel):
@@ -338,14 +338,68 @@ class ChatMessage(BaseModel):
 
     ``content`` may be a plain string (text-only) or a list of
     content parts for multimodal messages (OpenAI vision format).
+    Assistant messages that only contain tool calls may set ``content``
+    to ``None`` with ``tool_calls`` populated. ``role="tool"`` messages
+    carry the result of a client-executed tool call and require
+    ``tool_call_id`` per the OpenAI spec.
     """
 
-    role: Literal["system", "user", "assistant"] = Field(
+    role: Literal["system", "user", "assistant", "tool"] = Field(
         ..., description = "Message role"
     )
-    content: Union[str, list[ContentPart]] = Field(
-        ..., description = "Message content (string or multimodal parts)"
+    content: Optional[Union[str, list[ContentPart]]] = Field(
+        None, description = "Message content (string or multimodal parts)"
     )
+    tool_call_id: Optional[str] = Field(
+        None,
+        description = "OpenAI tool-result messages: id of the tool call this result belongs to.",
+    )
+    tool_calls: Optional[list[dict]] = Field(
+        None,
+        description = "OpenAI assistant messages: structured tool calls the model decided to make.",
+    )
+    name: Optional[str] = Field(
+        None,
+        description = "OpenAI tool-result messages: name of the tool whose result this is.",
+    )
+
+    @model_validator(mode = "after")
+    def _validate_role_shape(self) -> "ChatMessage":
+        # Enforce the per-role OpenAI spec shape at the request boundary.
+        # Without this, malformed messages (e.g. user entries with no
+        # content, tool_calls on a user/system role, role="tool" without
+        # tool_call_id) would be silently forwarded to llama-server via
+        # the passthrough path, surfacing as opaque upstream errors or
+        # broken tool-call reconciliation downstream.
+
+        # Tool-call metadata must appear only on the appropriate role.
+        if self.tool_calls is not None and self.role != "assistant":
+            raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
+        if self.tool_call_id is not None and self.role != "tool":
+            raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
+        if self.name is not None and self.role != "tool":
+            raise ValueError('"name" is only valid on role="tool" messages.')
+
+        # Per-role content requirements.
+        if self.role == "tool":
+            if not self.tool_call_id:
+                raise ValueError(
+                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
+                )
+            if not self.content:
+                raise ValueError('role="tool" messages require non-empty "content".')
+        elif self.role == "assistant":
+            # Assistant messages may omit content when tool_calls is set.
+            if not self.content and not self.tool_calls:
+                raise ValueError(
+                    'role="assistant" messages require either "content" or "tool_calls".'
+                )
+        else:  # "user" | "system"
+            if not self.content:
+                raise ValueError(
+                    f'role="{self.role}" messages require non-empty "content".'
+                )
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -355,18 +409,49 @@ class ChatCompletionRequest(BaseModel):
     Extensions (non-OpenAI fields) are marked with 'x-unsloth'.
     """
 
+    # Accept unknown fields defensively so future OpenAI fields (seed,
+    # response_format, logprobs, frequency_penalty, etc.) don't get
+    # silently dropped by Pydantic before route code runs. Mirrors
+    # AnthropicMessagesRequest and ResponsesRequest.
+    model_config = {"extra": "allow"}
+
     model: str = Field(
         "default",
         description = "Model identifier (informational; the active model is used)",
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
-    stream: bool = Field(True, description = "Whether to stream the response via SSE")
+    stream: bool = Field(
+        False,
+        description = (
+            "Whether to stream the response via SSE. Default matches OpenAI's "
+            "spec (`false`); opt into streaming by sending `stream: true`."
+        ),
+    )
     temperature: float = Field(0.6, ge = 0.0, le = 2.0)
     top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    stop: Optional[Union[str, list[str]]] = Field(
+        None,
+        description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = (
+            "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
+            "Studio forwards the tools to the backend so the model returns structured "
+            "tool_calls for the client to execute (standard OpenAI function calling)."
+        ),
+    )
+    tool_choice: Optional[Union[str, dict]] = Field(
+        None,
+        description = (
+            "OpenAI tool choice: 'auto' | 'required' | 'none' | "
+            "{'type': 'function', 'function': {'name': ...}}"
+        ),
+    )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
@@ -514,23 +599,172 @@ class ResponsesInputImagePart(BaseModel):
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
 
 
-ResponsesContentPart = Union[ResponsesInputTextPart, ResponsesInputImagePart]
+class ResponsesOutputTextPart(BaseModel):
+    """Assistant ``output_text`` content part replayed on subsequent turns.
+
+    When a client (OpenAI Codex CLI, OpenAI Python SDK agents) loops on a
+    stateless Responses endpoint, prior assistant messages are round-tripped
+    as ``{"role":"assistant","content":[{"type":"output_text","text":...,
+    "annotations":[],"logprobs":[]}]}``. We preserve the text and ignore
+    the annotations/logprobs metadata when flattening into Chat Completions.
+    """
+
+    type: Literal["output_text"]
+    text: str
+    annotations: Optional[list] = None
+    logprobs: Optional[list] = None
+
+    model_config = {"extra": "allow"}
+
+
+class ResponsesUnknownContentPart(BaseModel):
+    """Catch-all for content-part types we don't model explicitly.
+
+    Keeps validation green when a client sends newer part types (e.g.
+    ``input_audio``, ``input_file``) we haven't mapped; these are silently
+    skipped during normalisation rather than rejected with a 422.
+    """
+
+    type: str
+
+    model_config = {"extra": "allow"}
+
+
+ResponsesContentPart = Union[
+    ResponsesInputTextPart,
+    ResponsesInputImagePart,
+    ResponsesOutputTextPart,
+    ResponsesUnknownContentPart,
+]
 
 
 class ResponsesInputMessage(BaseModel):
     """A single message in the Responses API input array."""
 
+    type: Optional[Literal["message"]] = None
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
+
+    # Codex (gpt-5.3-codex+) attaches a `phase` field ("commentary" |
+    # "final_answer") to assistant messages and requires clients to preserve
+    # it on subsequent turns. We accept and round-trip it; llama-server does
+    # not care about it.
+    model_config = {"extra": "allow"}
+
+
+class ResponsesFunctionCallInputItem(BaseModel):
+    """A prior assistant function_call being replayed in a multi-turn Responses input.
+
+    The Responses API represents tool calls as top-level input items (not
+    nested inside assistant messages), correlated across turns by ``call_id``.
+    """
+
+    type: Literal["function_call"]
+    id: Optional[str] = Field(
+        None, description = "Item id assigned by the server (e.g. fc_...)"
+    )
+    call_id: str = Field(
+        ...,
+        description = "Correlation id matching a function_call_output on the next turn.",
+    )
+    name: str
+    arguments: str = Field(
+        ..., description = "JSON string of the arguments the model produced."
+    )
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesFunctionCallOutputInputItem(BaseModel):
+    """A tool result supplied by the client for a prior function_call.
+
+    Replaces Chat Completions' ``role="tool"`` message. Correlated to the
+    originating call by ``call_id``.
+    """
+
+    type: Literal["function_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list] = Field(
+        ..., description = "String or content-array result of the tool call."
+    )
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesUnknownInputItem(BaseModel):
+    """Catch-all for Responses input item types we don't model explicitly.
+
+    Covers ``reasoning`` items (replayed from prior o-series / gpt-5 turns)
+    and any future item types the client may send. These items are dropped
+    during normalisation — llama-server-backed GGUFs cannot consume them —
+    but keeping them in the request-model union stops unrelated turns from
+    failing validation with a 422.
+    """
+
+    type: str
+
+    model_config = {"extra": "allow"}
+
+
+def _responses_input_item_discriminator(v: Any) -> str:
+    """Route a Responses input item to the correct tagged variant.
+
+    Pydantic's default smart-union matching fails when one variant in the
+    union is tagged with a strict ``Literal`` (``function_call`` /
+    ``function_call_output``) and the incoming dict uses a different
+    ``type`` — the other variants' validation errors are hidden and the
+    outer ``Union[str, list[...]]`` reports a misleading "Input should be a
+    valid string" error. An explicit discriminator makes the routing
+    deterministic and lets us fall through to the catch-all.
+    """
+    if isinstance(v, dict):
+        t = v.get("type")
+        r = v.get("role")
+    else:
+        t = getattr(v, "type", None)
+        r = getattr(v, "role", None)
+    if t == "function_call":
+        return "function_call"
+    if t == "function_call_output":
+        return "function_call_output"
+    if r is not None or t == "message":
+        return "message"
+    return "unknown"
+
+
+ResponsesInputItem = Annotated[
+    Union[
+        Annotated[ResponsesInputMessage, Tag("message")],
+        Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
+        Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesUnknownInputItem, Tag("unknown")],
+    ],
+    Discriminator(_responses_input_item_discriminator),
+]
+
+
+class ResponsesFunctionTool(BaseModel):
+    """Flat function-tool definition used by the Responses API request.
+
+    Unlike Chat Completions (which nests ``{"name": ..., "parameters": ...}``
+    inside a ``"function"`` key), the Responses API uses a flat shape with
+    ``type``, ``name``, ``description``, ``parameters``, and ``strict`` at the
+    top level of each tool entry.
+    """
+
+    type: Literal["function"]
+    name: str
+    description: Optional[str] = None
+    parameters: Optional[dict] = None
+    strict: Optional[bool] = None
 
 
 class ResponsesRequest(BaseModel):
     """OpenAI Responses API request."""
 
     model: str = Field("default", description = "Model identifier")
-    input: Union[str, list[ResponsesInputMessage]] = Field(
+    input: Union[str, list[ResponsesInputItem]] = Field(
         default = [],
-        description = "Input text or message list",
+        description = "Input text or list of messages / function_call / function_call_output items",
     )
     instructions: Optional[str] = Field(
         None, description = "System / developer instructions"
@@ -540,9 +774,31 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
-    # Accepted but ignored -- keeps SDK clients from failing on unsupported fields
-    tools: Optional[list] = None
-    tool_choice: Optional[Any] = None
+    # OpenAI function-calling fields — forwarded to llama-server via the
+    # Chat Completions pass-through (see routes/inference.py). Typed as a
+    # plain list so built-in tool shapes (``web_search``, ``file_search``,
+    # ``mcp``, ...) round-trip without validation errors — the translator
+    # picks out only ``type=="function"`` entries for forwarding.
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = (
+            "Responses-shape function tool definitions. Entries with "
+            '`type="function"` are translated to the Chat Completions nested '
+            "shape before being forwarded to llama-server; other tool types "
+            "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
+            "compatibility but ignored on the llama-server passthrough."
+        ),
+    )
+    tool_choice: Optional[Any] = Field(
+        None,
+        description = (
+            "'auto' | 'required' | 'none' | {'type': 'function', 'name': ...} — "
+            "the Responses-shape forcing object is translated to the Chat "
+            "Completions nested shape internally."
+        ),
+    )
+    parallel_tool_calls: Optional[bool] = None
+
     previous_response_id: Optional[str] = None
     store: Optional[bool] = None
     metadata: Optional[dict] = None
@@ -575,6 +831,28 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputFunctionCall(BaseModel):
+    """A function-call output item in the Responses API response.
+
+    Unlike Chat Completions (which nests tool calls inside the assistant
+    message), the Responses API emits each tool call as its own top-level
+    ``output`` item so clients can correlate results via ``call_id`` on the
+    next turn.
+    """
+
+    type: Literal["function_call"] = "function_call"
+    id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
+    call_id: str
+    name: str
+    arguments: str = Field(
+        ..., description = "JSON string of the arguments the model produced."
+    )
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+
+ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+
+
 class ResponsesUsage(BaseModel):
     """Token usage for a Responses API response (input_tokens, not prompt_tokens)."""
 
@@ -591,7 +869,7 @@ class ResponsesResponse(BaseModel):
     created_at: int = Field(default_factory = lambda: int(time.time()))
     status: Literal["completed", "in_progress", "failed"] = "completed"
     model: str = "default"
-    output: list[ResponsesOutputMessage] = Field(default_factory = list)
+    output: list[ResponsesOutputItem] = Field(default_factory = list)
     usage: ResponsesUsage = Field(default_factory = ResponsesUsage)
     error: Optional[Any] = None
     incomplete_details: Optional[Any] = None
