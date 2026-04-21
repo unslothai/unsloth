@@ -405,6 +405,37 @@ def _extract_source_ref(source_page: Path) -> Optional[str]:
     return source_ref or None
 
 
+def _source_identity_key(
+    source_page: Path,
+    source_ref: Optional[str],
+    raw_dir: Path,
+) -> str:
+    """Build a stable source identity key for stale-page grouping.
+
+    Prefer full source_ref identity (including path/url), falling back to
+    source page stem only when source_ref is missing.
+    """
+    if not source_ref:
+        return source_page.stem
+
+    normalized_ref = source_ref.strip().replace("\\", "/")
+    if not normalized_ref:
+        return source_page.stem
+
+    try:
+        raw_root = raw_dir.resolve()
+        ref_path = Path(source_ref).expanduser()
+        if ref_path.exists():
+            resolved_ref = ref_path.resolve()
+            if resolved_ref == raw_root or raw_root in resolved_ref.parents:
+                return str(resolved_ref.relative_to(raw_root)).replace("\\", "/")
+            return str(resolved_ref).replace("\\", "/")
+    except Exception:
+        pass
+
+    return normalized_ref
+
+
 def _archive_stale_wiki_pages(
     *,
     dry_run: bool,
@@ -443,10 +474,8 @@ def _archive_stale_wiki_pages(
     non_chat_pages = [p for p in source_pages if p not in to_archive]
     for p in non_chat_pages:
         source_ref = _extract_source_ref(p)
-        source_name = Path(source_ref).stem if source_ref else p.stem
-        canonical = _re.sub(r"[^a-z0-9]+", "-", source_name.lower()).strip("-")
-        canonical = canonical or p.stem.lower()
-        grouped.setdefault(canonical, []).append((p, source_ref))
+        source_key = _source_identity_key(p, source_ref, raw_dir)
+        grouped.setdefault(source_key, []).append((p, source_ref))
 
     for entries in grouped.values():
         entries.sort(key = lambda x: x[0].stat().st_mtime, reverse = True)

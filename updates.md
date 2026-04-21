@@ -682,3 +682,20 @@ Live API smoke (auth-enabled backend):
 - Dry run: `POST /api/inference/wiki/merge-maintenance` -> `HTTP 200`
 - Apply mode: `POST /api/inference/wiki/merge-maintenance` -> `HTTP 200`
 - Observed response field in both runs: `rewritten_links: 303`
+
+### 6) Post-review fixes from commit `5b4f360ff0`
+
+Addressed two correctness issues raised in automated review:
+
+- **Stale archive source grouping now uses full source identity**
+  - Prior behavior grouped by `Path(source_ref).stem`, which could collide unrelated sources such as `raw/repoA/README.md` and `raw/repoB/README.md`.
+  - `_archive_stale_wiki_pages(...)` now groups by a full source identity key derived from `source_ref` (with raw-relative normalization where possible), falling back to page stem only if `source_ref` is missing.
+  - This prevents accidental archival of unrelated sources when `keep_recent_per_source=1`.
+
+- **Wiki raw watcher now monitors recursively**
+  - `WikiIngestionWatcher.start()` now schedules watchdog with `recursive=True`.
+  - Files added under nested folders in `raw/` are now observed by the watcher path, matching recursive ingest expectations.
+
+Added regression tests:
+- `studio/backend/tests/test_wiki_archive_stale.py`
+- `studio/backend/tests/test_wiki_watcher.py::test_watcher_start_schedules_raw_dir_recursively`

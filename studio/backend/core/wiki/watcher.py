@@ -478,7 +478,7 @@ class WikiIngestionWatcher:
 
     def start(self):
         """Starts the background observer."""
-        self.observer.schedule(self.event_handler, str(self.raw_dir), recursive = False)
+        self.observer.schedule(self.event_handler, str(self.raw_dir), recursive = True)
         self.observer.start()
         logger.info(f"Started WikiIngestionWatcher monitoring: {self.raw_dir}")
 

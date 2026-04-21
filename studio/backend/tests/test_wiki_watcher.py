@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.wiki.manager import WikiManager
-from core.wiki.watcher import WikiFileEventHandler
+from core.wiki.watcher import WikiFileEventHandler, WikiIngestionWatcher
 
 
 class _FakeEngine:
@@ -117,6 +117,32 @@ class _FakeIngestor:
 
     def ingest_file(self, _file_path: Path, contributor = None):
         return "Sample Source"
+
+
+class _FakeObserver:
+    def __init__(self):
+        self.schedule_calls = []
+        self.started = False
+        self.stopped = False
+        self.joined = False
+
+    def schedule(self, event_handler, path: str, recursive: bool = False):
+        self.schedule_calls.append(
+            {
+                "event_handler": event_handler,
+                "path": path,
+                "recursive": recursive,
+            }
+        )
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def join(self):
+        self.joined = True
 
 
 def test_manager_query_rag_passes_context_override(tmp_path: Path, monkeypatch):
@@ -402,3 +428,28 @@ def test_watcher_runs_enrichment_on_same_schedule_as_lint(tmp_path: Path, monkey
     assert wiki_manager.health_calls == 1
     assert wiki_manager.retry_fallback_calls == 1
     assert wiki_manager.enrich_calls == 1
+
+
+def test_watcher_start_schedules_raw_dir_recursively(tmp_path: Path, monkeypatch):
+    wiki_manager = _FakeWikiManager(wiki_dir = tmp_path / "wiki")
+    ingestor = _FakeIngestor(wiki_manager)
+    fake_observer = _FakeObserver()
+
+    monkeypatch.setattr("core.wiki.watcher.Observer", lambda: fake_observer)
+
+    watcher = WikiIngestionWatcher(
+        ingestor = ingestor,
+        raw_dir = tmp_path / "raw",
+        contributor = "tester",
+    )
+
+    watcher.start()
+
+    assert fake_observer.started is True
+    assert len(fake_observer.schedule_calls) == 1
+    assert fake_observer.schedule_calls[0]["path"] == str(tmp_path / "raw")
+    assert fake_observer.schedule_calls[0]["recursive"] is True
+
+    watcher.stop()
+    assert fake_observer.stopped is True
+    assert fake_observer.joined is True
