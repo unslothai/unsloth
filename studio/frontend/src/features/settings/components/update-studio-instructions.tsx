@@ -39,8 +39,8 @@ function CopyableCommand({
     };
   }, []);
 
-  const handleCopy = () => {
-    if (!copyToClipboard(command)) {
+  const handleCopy = async () => {
+    if (!(await copyToClipboard(command))) {
       return;
     }
     setCopied(true);

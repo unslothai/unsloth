@@ -83,7 +83,7 @@ export function ApiKeyRow({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => copyToClipboard(prefix)}>
+          <DropdownMenuItem onClick={async () => { await copyToClipboard(prefix); }}>
             <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             Copy prefix
           </DropdownMenuItem>
