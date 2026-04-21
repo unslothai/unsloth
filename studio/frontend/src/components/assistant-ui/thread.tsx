@@ -38,7 +38,6 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   useAui,
   useAuiEvent,
@@ -183,73 +182,6 @@ const ThreadScrollToBottom: FC = () => {
     >
       <ArrowDownIcon />
     </TooltipIconButton>
-  );
-};
-
-const SUGGESTION_TOOLS: Record<
-  string,
-  Array<"thinking" | "search" | "code">
-> = {
-  "How do you fine-tune an audio model with Unsloth?": ["thinking", "search"],
-  "Create a live weather dashboard in HTML using no API key. Show me the code":
-    ["thinking", "code", "search"],
-  "Solve the integral of x·sin(x), and verify it step by step": [
-    "thinking",
-    "code",
-  ],
-  "Draw an SVG of a cute sloth & show the code": ["thinking", "code", "search"],
-};
-
-const toolIconMap = {
-  thinking: { icon: LightbulbIcon, label: "Thinking" },
-  search: { icon: GlobeIcon, label: "Web search" },
-  code: { icon: TerminalIcon, label: "Code" },
-} as const;
-
-const _SuggestionItem: FC = () => {
-  const aui = useAui();
-  const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
-  const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const tools = SUGGESTION_TOOLS[prompt] ?? [];
-
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        if (!(isDisabled || isRunning)) {
-          const store = useChatRuntimeStore.getState();
-          if (store.supportsReasoning) {
-            store.setReasoningEnabled(tools.includes("thinking"));
-          }
-          if (store.supportsTools) {
-            store.setToolsEnabled(tools.includes("search"));
-            store.setCodeToolsEnabled(tools.includes("code"));
-          }
-          aui.thread().append(prompt);
-          aui.composer().setText("");
-          return;
-        }
-        aui.composer().setText(prompt);
-      }}
-      className="fade-in slide-in-from-bottom-1 animate-in relative cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 pr-12 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
-    >
-      <SuggestionPrimitive.Title />
-      {tools.length > 0 && (
-        <div className="absolute bottom-2.5 right-3 flex items-center gap-1">
-          {tools.map((tool) => {
-            const { icon: Icon, label } = toolIconMap[tool];
-            return (
-              <Icon
-                key={tool}
-                className="size-3 text-muted-foreground/60"
-                aria-label={label}
-              />
-            );
-          })}
-        </div>
-      )}
-    </button>
   );
 };
 
@@ -725,7 +657,8 @@ const DeleteMessageButton: FC = () => {
         messageId,
         remoteId,
       });
-    } catch (_error) {
+    } catch (error) {
+      console.error("Failed to delete message", error);
       toast.error("Failed to delete message");
     }
   };

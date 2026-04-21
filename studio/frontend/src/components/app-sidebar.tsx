@@ -147,12 +147,12 @@ function NavItem({
           data-tour={dataTour}
           className={
             isNav
-              ? "h-[30px] rounded-[8px] gap-2.5 px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[30px] group-data-[collapsible=icon]:!rounded-[9px] group-data-[collapsible=icon]:mx-auto"
-              : "h-[30px] rounded-[8px] gap-2.5 px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[30px] group-data-[collapsible=icon]:!rounded-[9px] group-data-[collapsible=icon]:mx-auto"
+              ? "h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
+              : "h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
           }
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-[18px]! shrink-0 group-hover/menu-button:animate-icon-pop" />
-          <span className="text-[14.5px] leading-[18px] tracking-[0.01em]">{label}</span>
+          <span className="text-[14px] leading-[18px] tracking-[0.01em]">{label}</span>
         </SidebarMenuButton>
       </div>
       {children}
@@ -230,7 +230,7 @@ export function AppSidebar() {
     >
       <SidebarHeader className="pl-[17px] pr-3 pt-[12px] pb-[12px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
-        <div className="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
+        <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
           <Link
             to="/chat"
             onClick={(event) => {
@@ -267,7 +267,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2a2c2f] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close sidebar"
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
@@ -288,7 +288,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2a2c2f] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Open sidebar"
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
@@ -404,7 +404,7 @@ export function AppSidebar() {
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
-                      className="h-[30px] rounded-[8px] pl-2.5 pr-7 text-[14.5px] leading-[18px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white!"
+                      className="h-[32px] rounded-[10px] pl-2.5 pr-7 text-[14px] leading-[18px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
                       onClick={() => {
                         navigate({
                           to: "/chat",
@@ -425,7 +425,7 @@ export function AppSidebar() {
                         handleDeleteThread(item);
                       }}
                       title="Delete"
-                      className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[8px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/recent-item:scale-100 group-hover/recent-item:opacity-100"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[10px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/recent-item:scale-100 group-hover/recent-item:opacity-100"
                     >
                       <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
                     </button>
@@ -461,13 +461,13 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="h-auto flex-col items-start gap-0.5 py-1.5 rounded-[8px] pl-2.5 pr-7 text-[14.5px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-active:bg-[#ececec]! dark:data-active:bg-[#2e3035]! data-active:text-black! dark:data-active:text-white!"
+                          className="h-auto flex-col items-start gap-0.5 py-1.5 rounded-[10px] pl-2.5 pr-7 text-[14px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
                           }}
                         >
-                          <div className="flex w-full items-center gap-2">
+                          <div className="flex w-full items-center gap-[8.5px]">
                             <span
                               className={cn(
                                 "size-1.5 shrink-0 rounded-full",
@@ -501,7 +501,7 @@ export function AppSidebar() {
                             }
                           }}
                           title="Delete"
-                          className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[8px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/run-item:scale-100 group-hover/run-item:opacity-100"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[10px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/run-item:scale-100 group-hover/run-item:opacity-100"
                         >
                           <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
                         </button>
@@ -524,7 +524,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={`${displayTitle} account menu`}
-                  className="!h-[50px] gap-[8px] rounded-[8px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec]! dark:hover:bg-[#2e3035]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#ececec]! dark:data-[state=open]:bg-[#2e3035]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
+                  className="!h-[50px] gap-[8px] rounded-[10px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#f0f0f0]! dark:data-[state=open]:bg-[#2a2c2f]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
                 >
                   <div className="shrink-0">
                     <UserAvatar
@@ -535,8 +535,8 @@ export function AppSidebar() {
                     />
                   </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13px] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
-                    <span className="truncate text-[11px] text-muted-foreground">Studio</span>
+                    <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
+                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
@@ -544,7 +544,7 @@ export function AppSidebar() {
               <DropdownMenuContent
                 side="top"
                 align="start"
-                className="w-[15rem] py-2.5 font-heading [&_[data-slot=dropdown-menu-group]]:flex [&_[data-slot=dropdown-menu-group]]:flex-col [&_[data-slot=dropdown-menu-group]]:gap-1 [&_[data-slot=dropdown-menu-item]]:h-[30px] [&_[data-slot=dropdown-menu-item]]:px-2.5! [&_[data-slot=dropdown-menu-item]]:py-0! [&_[data-slot=dropdown-menu-item]]:gap-2.5! [&_[data-slot=dropdown-menu-item]]:rounded-[8px] [&_[data-slot=dropdown-menu-item]]:font-medium [&_[data-slot=dropdown-menu-item]]:text-[14.5px] [&_[data-slot=dropdown-menu-item]]:leading-[18px] [&_[data-slot=dropdown-menu-item]]:tracking-[0.01em] [&_[data-slot=dropdown-menu-item]]:text-[#383835] dark:[&_[data-slot=dropdown-menu-item]]:text-[#c7c7c4] [&_[data-slot=dropdown-menu-item]_svg]:!size-[18px] [&_[data-slot=dropdown-menu-item]_svg]:shrink-0 [&_[data-slot=dropdown-menu-item]:focus]:bg-[#ececec] dark:[&_[data-slot=dropdown-menu-item]:focus]:bg-[#2e3035] [&_[data-slot=dropdown-menu-item]:focus]:text-black dark:[&_[data-slot=dropdown-menu-item]:focus]:text-white [&_[data-slot=dropdown-menu-item]:focus_*]:text-black! dark:[&_[data-slot=dropdown-menu-item]:focus_*]:text-white!"
+                className="w-[15rem] py-2.5 font-heading [&_[data-slot=dropdown-menu-group]]:flex [&_[data-slot=dropdown-menu-group]]:flex-col [&_[data-slot=dropdown-menu-group]]:gap-px [&_[data-slot=dropdown-menu-item]]:h-[32px] [&_[data-slot=dropdown-menu-item]]:px-2.5! [&_[data-slot=dropdown-menu-item]]:py-0! [&_[data-slot=dropdown-menu-item]]:gap-[8.5px]! [&_[data-slot=dropdown-menu-item]]:rounded-[10px] [&_[data-slot=dropdown-menu-item]]:font-medium [&_[data-slot=dropdown-menu-item]]:text-[14px] [&_[data-slot=dropdown-menu-item]]:leading-[18px] [&_[data-slot=dropdown-menu-item]]:tracking-[0.01em] [&_[data-slot=dropdown-menu-item]]:text-[#383835] dark:[&_[data-slot=dropdown-menu-item]]:text-[#c7c7c4] [&_[data-slot=dropdown-menu-item]_svg]:!size-[18px] [&_[data-slot=dropdown-menu-item]_svg]:shrink-0 [&_[data-slot=dropdown-menu-item]:focus]:bg-[#f0f0f0] dark:[&_[data-slot=dropdown-menu-item]:focus]:bg-[#2a2c2f] [&_[data-slot=dropdown-menu-item]:focus]:text-black dark:[&_[data-slot=dropdown-menu-item]:focus]:text-white [&_[data-slot=dropdown-menu-item]:focus_*]:text-black! dark:[&_[data-slot=dropdown-menu-item]:focus_*]:text-white!"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem
@@ -577,7 +577,7 @@ export function AppSidebar() {
                     <span>Guided Tour</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5!" />
+                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuGroup>
                   <DropdownMenuItem asChild>
                     <a
@@ -618,7 +618,7 @@ export function AppSidebar() {
                     </a>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5!" />
+                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
                   <span>Shutdown</span>
