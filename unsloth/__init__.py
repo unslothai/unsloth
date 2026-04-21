@@ -94,10 +94,8 @@ _NO_TORCH_MODE = os.environ.get("UNSLOTH_NO_TORCH", "0").strip().lower() in (
     "on",
 )
 _HAS_TORCH = find_spec("torch") is not None
-if (not _HAS_TORCH) and (not _NO_TORCH_MODE):
-    # Auto-enable no-torch mode for CPU-only GGUF workflows.
+if not _HAS_TORCH:
     _NO_TORCH_MODE = True
-    os.environ["UNSLOTH_NO_TORCH"] = "1"
 
 # Check for unsloth_zoo
 try:
