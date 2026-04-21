@@ -13,11 +13,44 @@ import json
 from typing import Any, Optional, Union
 
 
+def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
+    """Translate one Anthropic ``image`` block to an OpenAI ``image_url`` part.
+
+    Accepts both source shapes:
+      - ``{"type": "base64", "media_type": "image/jpeg", "data": "..."}``
+      - ``{"type": "url", "url": "https://..."}``
+
+    Returns ``None`` when the source is malformed so the caller can skip it.
+    """
+    source = block.get("source") or {}
+    stype = source.get("type")
+    if stype == "base64":
+        data = source.get("data")
+        if not data:
+            return None
+        media_type = source.get("media_type") or "image/jpeg"
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{data}"},
+        }
+    if stype == "url":
+        url = source.get("url")
+        if not url:
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
+    return None
+
+
 def anthropic_messages_to_openai(
     messages: list[dict],
     system: Optional[Union[str, list]] = None,
 ) -> list[dict]:
-    """Convert Anthropic messages + system to OpenAI-format message dicts."""
+    """Convert Anthropic messages + system to OpenAI-format message dicts.
+
+    User messages that carry ``image`` blocks are emitted as OpenAI
+    multimodal content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``)
+    so they flow through llama-server's native vision pathway.
+    """
     result: list[dict] = []
 
     # System prompt
@@ -44,6 +77,7 @@ def anthropic_messages_to_openai(
 
         # Content is a list of blocks
         text_parts: list[str] = []
+        image_parts: list[dict] = []
         tool_calls: list[dict] = []
         tool_results: list[dict] = []
 
@@ -53,6 +87,10 @@ def anthropic_messages_to_openai(
 
             if btype == "text":
                 text_parts.append(b["text"])
+            elif btype == "image":
+                part = _anthropic_image_block_to_openai_part(b)
+                if part is not None:
+                    image_parts.append(part)
             elif btype == "tool_use":
                 tool_calls.append(
                     {
@@ -88,7 +126,16 @@ def anthropic_messages_to_openai(
                 msg_dict["tool_calls"] = tool_calls
             result.append(msg_dict)
         elif role == "user":
-            if text_parts:
+            if image_parts:
+                # Multimodal: emit a content-part array. Prepend a single
+                # joined text part so the model sees prompt + images in
+                # the order they were sent.
+                parts: list[dict] = []
+                if text_parts:
+                    parts.append({"type": "text", "text": "\n".join(text_parts)})
+                parts.extend(image_parts)
+                result.append({"role": "user", "content": parts})
+            elif text_parts:
                 result.append({"role": "user", "content": "\n".join(text_parts)})
             for tr in tool_results:
                 result.append(tr)
