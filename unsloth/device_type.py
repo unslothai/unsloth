@@ -41,9 +41,6 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    # CPU-only torch builds should still allow import-time initialization.
-    if hasattr(torch, "cuda") and not torch.cuda.is_available():
-        return "cpu"
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
