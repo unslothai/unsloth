@@ -65,7 +65,9 @@ class _FakeMod:
         return iter([])
 
 
-def test_successful_dispatch_does_not_emit_misleading_warning_when_logger_raises(monkeypatch):
+def test_successful_dispatch_does_not_emit_misleading_warning_when_logger_raises(
+    monkeypatch,
+):
     """When dispatch_model succeeds but the user's logger.info raises
     (broken handler / strict test harness), the helper must NOT emit the
     'Could not attach multi-device dispatch hooks automatically' warning,

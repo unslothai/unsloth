@@ -60,11 +60,11 @@ def test_seq_class_branch_passes_fast_inference_false():
         for body_node in if_node.body:
             hook_calls.extend(_collect_hook_calls_under(body_node))
 
-    assert hook_calls, (
-        "No _attach_bnb_multidevice_hooks call found under `if num_labels is not None:`"
-    )
+    assert (
+        hook_calls
+    ), "No _attach_bnb_multidevice_hooks call found under `if num_labels is not None:`"
     for call in hook_calls:
         v = _kwarg_literal(call, "fast_inference")
-        assert v is False, (
-            f"seq-class hook call must use fast_inference=False (got {ast.dump(call)})"
-        )
+        assert (
+            v is False
+        ), f"seq-class hook call must use fast_inference=False (got {ast.dump(call)})"
