@@ -1,0 +1,11 @@
+{
+  "mode": "verify_no_drift",
+  "n_iters": 10,
+  "noise_scale": 0.01,
+  "base_hash_before": "4ed669a411e7fc6d99ab431561fc789b1d070d1b5683ed9b8f9a8b7bfeb19924",
+  "base_hash_after": "4ed669a411e7fc6d99ab431561fc789b1d070d1b5683ed9b8f9a8b7bfeb19924",
+  "base_bit_identical": true,
+  "inference_hash_initial_merged": "7a481386b1ee93dc4893e634aa604dd839dd3b252c931013226e3cf9506bf087",
+  "inference_hash_after_restore": "7a481386b1ee93dc4893e634aa604dd839dd3b252c931013226e3cf9506bf087",
+  "inference_deterministic": true
+}

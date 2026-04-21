@@ -17,7 +17,7 @@ from torch.nn.attention.flex_attention import (
     create_block_mask,
 )
 
-create_block_mask = torch.compile(create_block_mask)
+create_block_mask = torch.compile(create_block_mask, dynamic=True)
 
 
 def _cdiv(x: int | float | torch.Tensor, multiple: int | float | torch.Tensor):
