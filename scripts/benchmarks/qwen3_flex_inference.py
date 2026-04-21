@@ -457,7 +457,7 @@ class FlexInference:
         max_new_tokens = 512,
         decode_kernel_options = None,
         prefill_kernel_options = None,
-        fa4_prefill = False,
+        fa4_prefill = None,
         base_model = None,
         peft_model = None,
     ):
@@ -477,6 +477,24 @@ class FlexInference:
         self.max_seq_length = max_seq_length
         self.page_size = page_size
         self.max_new_tokens = max_new_tokens
+        # FA4 CuTeDSL kernels ship for Hopper (sm_90) and Blackwell (sm_100,
+        # sm_120) only. `fa4_prefill=None` means auto-detect: enable where
+        # supported, silently fall back to the Triton flex_attention backend
+        # elsewhere. Explicit `fa4_prefill=True` on sub-Hopper still falls
+        # back, but warns -- the user asked for a kernel that isn't there.
+        if fa4_prefill is None or fa4_prefill:
+            major, _ = torch.cuda.get_device_capability(self.device)
+            supported = major >= 9
+            if fa4_prefill and not supported:
+                import warnings
+                warnings.warn(
+                    f"--fa4_prefill needs Hopper (sm_90) or Blackwell "
+                    f"(sm_100 / sm_120); found sm_{major}0. Falling back to "
+                    f"the Triton flex_attention backend.",
+                    RuntimeWarning,
+                    stacklevel = 2,
+                )
+            fa4_prefill = supported
         self.fa4_prefill = fa4_prefill
         # On SM100 (Blackwell), FA4 via flex_attention requires Q block = 256,
         # KV block = 128. See attention-gym `get_flash_block_size`.
@@ -866,10 +884,12 @@ def main():
     )
     p.add_argument(
         "--fa4_prefill",
-        action = "store_true",
+        default = None,
+        action = argparse.BooleanOptionalAction,
         help = (
             "Use BLOCK_SIZE=(256,128) + BACKEND=FLASH on prefill to unlock the "
-            "CuTeDSL FA4 kernel on Blackwell (SM100)."
+            "CuTeDSL FA4 kernel. Default auto-enables on Hopper (sm_90) and "
+            "Blackwell (sm_100, sm_120); use --no-fa4_prefill to force off."
         ),
     )
     p.add_argument(

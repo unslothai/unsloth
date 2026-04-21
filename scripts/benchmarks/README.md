@@ -65,11 +65,47 @@ the CB to FA integration that are unrelated to which FA version you use:
    as aliases for `max_length_q` / `max_length_k`. Without this rename CB's
    model kwargs never bind and FA is called with `max_seqlen_q=None`.
 
+## Install
+
+Prereqs: `torch >= 2.5` for `torch.nn.attention.flex_attention`. The
+Triton backend that flex_attention uses by default runs on Ampere,
+Hopper, and Blackwell -- no separate install.
+
+FA4 (CuTeDSL) targets Hopper and Blackwell only. `qwen3_flex_inference.py`
+auto-enables FA4 on supported GPUs and falls back to the Triton
+`flex_attention` backend elsewhere. `--fa4_prefill` forces on (warns +
+falls back if the GPU does not support it); `--no-fa4_prefill` forces off.
+
+CUDA 13 (recommended, used on B200 / RTX 50xx):
+
+    pip install --index-url https://download.pytorch.org/whl/cu130 torch
+    pip install "flash-attn-4[cu13]"
+
+CUDA 12 (H100 boxes still on cu12):
+
+    pip install torch  # default index is cu12
+    pip install flash-attn-4
+
+Pin `flash-attn-4==4.0.0b9` to match this benchmark. The `[cu13]`
+extra pulls in `nvidia-cutlass-dsl` built for CUDA 13.
+
+| GPU          | arch      | sm    | Auto FA4 | Triton flex_attention |
+|--------------|-----------|-------|----------|------------------------|
+| A100         | Ampere    | sm_80 | off (uses Triton) | Works |
+| H100 / H200  | Hopper    | sm_90 | on | Works |
+| RTX 50xx     | Blackwell | sm_120 | on | Works |
+| B200 / GB200 | Blackwell | sm_100 | on | Works |
+
+The transformers continuous-batching path's FA4 wiring (the
+`flash_attn_fa4_shim.py` monkey-patches and the
+`site-packages/flash_attn/__init__.py` namespace shim that makes FA4
+visible under the FA2 import name) is covered below under "Known
+integration notes".
+
 ## Reproduce
 
 ```bash
 pip install unsloth "transformers>=4.57" "trl>=0.25" peft vllm
-uv pip install --no-deps flash-attn-4==4.0.0b9
 
 # Generation microbenchmark (32 prompts, 512 new tokens each)
 CUDA_VISIBLE_DEVICES=2 python scripts/benchmarks/cb_vs_vllm_generation.py \
