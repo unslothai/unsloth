@@ -280,8 +280,7 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
 
     has_tokenizer_model = any(
-        sibling.rfilename == "tokenizer.model"
-        for sibling in (repo_info.siblings or [])
+        sibling.rfilename == "tokenizer.model" for sibling in (repo_info.siblings or [])
     )
     _TOKENIZER_MODEL_CACHE[source] = has_tokenizer_model
     return has_tokenizer_model

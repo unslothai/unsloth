@@ -23,7 +23,7 @@ def test_patch_saving_functions_no_crash_on_none_tokenizer():
 
 
 def test_patch_saving_functions_still_patches_non_none_tokenizer():
-    inner = MagicMock(spec=PreTrainedTokenizerBase)
+    inner = MagicMock(spec = PreTrainedTokenizerBase)
     inner.save_pretrained = MagicMock()
     inner.save_pretrained.__name__ = "save_pretrained"
     inner.push_to_hub = MagicMock()
