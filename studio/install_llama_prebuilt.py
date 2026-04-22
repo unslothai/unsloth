@@ -4955,6 +4955,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-rocm":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
