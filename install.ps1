@@ -770,7 +770,16 @@ shell.Run cmd, 0, False
     if (Test-Path $VenvPython) {
         # New layout already exists -- nuke for fresh install
         substep "removing existing environment for fresh install..."
-        Remove-Item -Recurse -Force $VenvDir
+        # Use cmd rd instead of Remove-Item: PowerShell's Remove-Item fails with
+        # "Access Denied" on .exe files inside freshly created venvs due to Windows
+        # file handle locking, even when no process is running. (fixes #4701)
+        cmd /c "icacls `"$VenvDir`" /grant *S-1-1-0:(F) /T /C" 2>$null | Out-Null
+        cmd /c "rd /s /q `"$VenvDir`"" | Out-Null
+        if (Test-Path $VenvDir) {
+            Write-Host " [ERROR] Could not remove stale venv: Access to the path 'python.exe' is denied." -ForegroundColor Red
+            Write-Host "         Close any running Studio/Python processes and re-run setup." -ForegroundColor Yellow
+            return
+        }
     } elseif (Test-Path (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
         # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating
         $OldVenv = Join-Path $StudioHome ".venv"
@@ -960,7 +969,26 @@ shell.Run cmd, 0, False
         } elseif ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.7" unsloth-zoo }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName" }
+            if ($PackageName -eq "unsloth") {
+                # Use the --no-deps  ONLY for the standard unsloth package
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth "$PackageName" unsloth-zoo }
+                if ($baseInstallExit -eq 0) {
+                    # Install runtime deps from requirements file if present
+                    $RuntimeReq = Find-NoTorchRuntimeFile
+                    if ($RuntimeReq) {
+                        $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython -r $RuntimeReq }
+                    }
+                }
+            } else {
+                # For custom packages (--package roland-sloth), use the original direct install 
+                # This allows uv/pip to resolve dependencies normally as they may not have a 'no-torch-runtime.txt'
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package "$PackageName" "unsloth>=2026.4.4" unsloth-zoo }
+            }
+            if ($baseInstallExit -eq 0 -and -not $SkipTorch) {
+                substep "re-pinning CUDA torch (uv strips +cuXXX suffix during unsloth resolution)..."
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            }
+
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
