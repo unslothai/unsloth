@@ -601,6 +601,47 @@ def unsloth_save_model(
 
         model.save_pretrained(**save_pretrained_settings)
 
+        # Fix issue #3726: adapter_config.json may store an absolute local
+        # cache path in base_model_name_or_path instead of the HF repo ID.
+        # This breaks GGUF export and model merging on other machines.
+        # Normalize it back to the HF repo ID if possible.
+        import json as _json
+
+        _adapter_config_path = os.path.join(
+            save_pretrained_settings["save_directory"], "adapter_config.json"
+        )
+        if os.path.isfile(_adapter_config_path):
+            with open(_adapter_config_path, "r", encoding = "utf-8") as _f:
+                _adapter_cfg = _json.load(_f)
+            _bm = _adapter_cfg.get("base_model_name_or_path", "")
+            # Detect absolute paths: Unix (/path) or Windows (C:\path or C:/path)
+            _is_absolute = _bm.startswith("/") or (
+                len(_bm) >= 2 and _bm[1] == ":" and _bm[2] in ("/", "\\")
+            )
+            if _is_absolute:
+                # HuggingFace cache layout:
+                # .../hub/models--{org}--{model}/snapshots/{sha}/
+                # Parse this to recover org/model
+                import re as _re
+
+                _hf_match = _re.search(
+                    r"models--([^/\\]+)--([^/\\]+)[/\\]snapshots", _bm
+                )
+                if _hf_match:
+                    _repo_id = f"{_hf_match.group(1)}/{_hf_match.group(2)}"
+                    _adapter_cfg["base_model_name_or_path"] = _repo_id
+                    with open(_adapter_config_path, "w", encoding = "utf-8") as _f:
+                        _json.dump(_adapter_cfg, _f, indent = 2)
+                    import warnings as _warnings
+
+                    _warnings.warn(
+                        f"Unsloth: adapter_config.json had a local absolute path "
+                        f"'{_bm}' as base_model_name_or_path. "
+                        f"Corrected to HuggingFace repo ID '{_repo_id}'. "
+                        f"(issue #3726)",
+                        UserWarning,
+                        stacklevel = 2,
+                    )
         if push_to_hub and hasattr(model, "config"):
             print(
                 "Saved to https://huggingface.co/"

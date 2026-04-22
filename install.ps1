@@ -804,7 +804,8 @@ shell.Run cmd, 0, False
     if (-not (Test-Path $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        # Quoted to handle Windows usernames containing spaces (issue #4904)
+        $venvExit = Invoke-InstallCommand { uv venv "$VenvDir" --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return
@@ -912,15 +913,15 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.5" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.5" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --no-deps -r "$NoTorchReq" }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.5" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.5" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -928,7 +929,7 @@ shell.Run cmd, 0, False
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" -e "$RepoRoot" --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return
@@ -939,7 +940,7 @@ shell.Run cmd, 0, False
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } else {
             substep "installing PyTorch ($TorchIndexUrl)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" "torch>=2.4,<2.11.0" torchvision torchaudio --index-url "$TorchIndexUrl" }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return
@@ -950,17 +951,17 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.4.5" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.4.5" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --no-deps -r "$NoTorchReq" }
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.5" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --upgrade-package unsloth "unsloth>=2026.4.5" unsloth-zoo }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" --upgrade-package unsloth "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -969,7 +970,7 @@ shell.Run cmd, 0, False
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" -e "$RepoRoot" --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return
@@ -979,19 +980,19 @@ shell.Run cmd, 0, False
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.4.5" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" unsloth-zoo "unsloth>=2026.4.5" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" -e "$RepoRoot" --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "$PackageName" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python "$VenvPython" "$PackageName" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return
