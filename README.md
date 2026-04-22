@@ -126,65 +126,13 @@ To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https:/
 
 ### CPU-Only and No-Torch Modes
 
-#### CPU-Only Mode (PyTorch installed, no GPU)
-If you have PyTorch installed but no GPU available, Unsloth will automatically detect this and run in CPU-only mode:
+**CPU-only** (PyTorch installed, no GPU): `import unsloth` and `from unsloth import FastLanguageModel` both work. Only GGUF inference is supported; fine-tuning requires a GPU.
 
-```python
-import unsloth
-from unsloth import FastLanguageModel
-
-# This will work on CPU-only machines
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="unsloth/Llama-2-7b-gguf",
-    max_seq_length=2048,
-)
-```
-
-⚠️ **Warning**: On CPU-only machines, Unsloth will display: `"No GPU detected. Unsloth running in CPU-only mode. Only GGUF inference is supported."`
-
-**Limitations:**
-- Fine-tuning is not supported on CPU
-- Only GGUF inference is available
-- Performance will be significantly slower than GPU
-
-#### No-Torch Mode (PyTorch not installed)
-If PyTorch is not installed, Unsloth can still run in no-torch mode for GGUF inference only:
-
-```python
-import unsloth
-from unsloth import FastLanguageModel
-
-# This will work without PyTorch installed
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="unsloth/Llama-2-7b-gguf",
-)
-```
-
-**To enable no-torch mode explicitly** (even if PyTorch is installed):
+**No-torch** (no PyTorch, or set `UNSLOTH_NO_TORCH=1` to disable explicitly): `import unsloth` works but model loading and training are disabled.
 ```bash
 export UNSLOTH_NO_TORCH=1  # Linux/macOS
 set UNSLOTH_NO_TORCH=1     # Windows
-python your_script.py
 ```
-
-⚠️ **Warning**: When `UNSLOTH_NO_TORCH=1` is set with PyTorch installed, Unsloth will display: `"UNSLOTH_NO_TORCH is set. Running in no-torch mode."`
-
-**Limitations:**
-- Fine-tuning is not possible
-- Training is not possible
-- Only GGUF inference is available
-- Model quantization and advanced features are not available
-
-#### Feature Availability Matrix
-
-| Feature | GPU | CPU with PyTorch | No-Torch Mode |
-|---------|-----|------------------|---------------|
-| GGUF Inference | ✅ | ✅ | ✅ |
-| Fine-tuning (QLoRA) | ✅ | ❌ | ❌ |
-| Full Fine-tuning | ✅ | ❌ | ❌ |
-| RL Training (GRPO) | ✅ | ❌ | ❌ |
-| Model Export | ✅ | ✅ | ❌ |
-| Quantization | ✅ | ✅ | ❌ |
 
 ## 📒 Free Notebooks
 
