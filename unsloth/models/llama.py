@@ -3408,7 +3408,7 @@ class FastLlamaModel:
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "falcon_h1":
             apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen3moe":
+        elif model_type == "qwen3_moe":
             apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
@@ -3482,6 +3482,16 @@ class FastLlamaModel:
 
                     # MLP patching
                     mlp_module = layer.mlp
+                    # Qwen3 MoE uses Qwen3MoeSparseMoeBlock which holds
+                    # stacked expert tensors on .experts; the dense
+                    # gate/up/down fusion does not apply. MoE LoRA is
+                    # wired through unsloth_zoo/moe_utils instead.
+                    if not (
+                        hasattr(mlp_module, "gate_proj")
+                        and hasattr(mlp_module, "up_proj")
+                        and hasattr(mlp_module, "down_proj")
+                    ):
+                        continue
                     gate_proj = mlp_module.gate_proj
                     up_proj = mlp_module.up_proj
                     down_proj = mlp_module.down_proj

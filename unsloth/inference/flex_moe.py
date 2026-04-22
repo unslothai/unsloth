@@ -85,25 +85,30 @@ def call_moe_model_with_flex_kwargs(model, input_ids, position_ids, flex_kwargs)
         _sin = _sin[position_ids]
         position_embeddings = (_cos, _sin)
     hidden_states = inputs_embeds
+    # RMSNorm + bnb-4bit Linear compute can promote activations to fp32
+    # along the Qwen3 MoE path even under autocast. Lock activations to
+    # the embed dtype so paged-KV writes (which index_put_ into a
+    # pre-allocated bf16 cache) see a matching dtype.
+    compute_dtype = inputs_embeds.dtype
     for layer in base.layers:
         # Attention block — identical to dense Qwen3 / Llama.
         residual = hidden_states
-        hidden_states = layer.input_layernorm(hidden_states)
+        hidden_states = layer.input_layernorm(hidden_states).to(compute_dtype)
         hidden_states, _ = layer.self_attn(
             hidden_states,
             position_embeddings = position_embeddings,
             **flex_kwargs,
         )
-        hidden_states = residual + hidden_states
+        hidden_states = residual + hidden_states.to(compute_dtype)
         # MoE MLP.
         residual = hidden_states
-        hidden_states = layer.post_attention_layernorm(hidden_states)
+        hidden_states = layer.post_attention_layernorm(hidden_states).to(compute_dtype)
         mlp_out = layer.mlp(hidden_states)
         if isinstance(mlp_out, tuple):
             hidden_states = mlp_out[0]
         else:
             hidden_states = mlp_out
-        hidden_states = residual + hidden_states
+        hidden_states = residual + hidden_states.to(compute_dtype)
     hidden_states = base.norm(hidden_states)
     return hidden_states
 
@@ -136,6 +141,41 @@ class FlexMoEInference:
         peft_model = None,
         cumem_allocator = None,
     ):
+        # FastQwen3MoeModel.pre_patch (unsloth/models/qwen3_moe.py) installs
+        # a legacy Qwen3MoeSparseMoeBlock_fast_forward that expects
+        # ``self.gate_proj``; transformers 5.x Qwen3MoE uses
+        # ``self.gate`` / ``self.experts`` instead, so that forward is dead
+        # code on this env. Unsloth-zoo's ``patch_qwen3_moe`` re-patches it
+        # to the correct ``sparse_moe_block_forward``, but Unsloth's
+        # pre_patch can run later and silently clobber it (patch_function
+        # bails via can_safely_patch on a second pass). Force-restore the
+        # stock HF forward here so the flex walker sees a working MLP.
+        try:
+            import transformers.models.qwen3_moe.modeling_qwen3_moe as _hf_mod
+            _BlockCls = _hf_mod.Qwen3MoeSparseMoeBlock
+            cur_forward = getattr(_BlockCls, "forward", None)
+            cur_name = getattr(cur_forward, "__name__", "")
+            if "fast_forward" in cur_name or cur_name == "Qwen3MoeSparseMoeBlock_fast_forward":
+                # Prefer unsloth_zoo's patched version if present;
+                # fall back to the stock HF forward otherwise.
+                unique = getattr(_BlockCls, "_original_forward_Qwen3MoeSparseMoeBlock", None) or getattr(_BlockCls, "_Qwen3MoeSparseMoeBlock_original_forward", None)
+                if unique is not None:
+                    _BlockCls.forward = unique
+                else:
+                    # Re-run unsloth_zoo patch to install sparse_moe_block_forward.
+                    from unsloth_zoo.temporary_patches.qwen3_moe import patch_qwen3_moe
+                    patch_qwen3_moe()
+                    # If patch_function still skipped due to can_safely_patch,
+                    # fall back to stock HF as a last resort.
+                    cur_forward_after = getattr(_BlockCls, "forward", None)
+                    cur_name_after = getattr(cur_forward_after, "__name__", "")
+                    if "fast_forward" in cur_name_after:
+                        # Lazy-load pristine forward by reloading the module.
+                        import importlib
+                        _fresh_mod = importlib.reload(_hf_mod)
+                        _BlockCls.forward = _fresh_mod.Qwen3MoeSparseMoeBlock.forward
+        except Exception:
+            pass
         assert max_seq_length % page_size == 0
         # Startup sanity checks. If any of these fail the architecture
         # isn't a Qwen3-MoE variant we know how to drive.

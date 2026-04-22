@@ -765,14 +765,32 @@ class FlexEngine:
 
         # Materialise the pristine source the first time we see a LoRA.
         if self._pristine_base is None:
-            # The inference model has already been flex-patched; its
-            # linear weights (what LoRA merges into) are still pristine,
-            # so we can clone it and just not call flex attention on the
-            # pristine copy.
-            with weight_pool(self._cumem_allocator):
-                self._pristine_base = copy.deepcopy(self._inference_model)
-                self._pristine_base.eval()
-            self._impl.base_model = self._pristine_base
+            if self.arch == "qwen3_moe":
+                # For Qwen3 MoE, LoRA lives on the stacked-expert
+                # ParamWrapper and never merges in-place into the expert
+                # tensors during training (see
+                # unsloth_zoo.temporary_patches.moe_utils
+                # _patched_param_wrapper_forward). That means the
+                # training model's expert weights ARE the pristine
+                # source — no third 30-60 GB deep-copy is needed. Point
+                # the LoRA-refresh helper at the training model's base
+                # directly. This keeps the 30B MoE model at 2x residency
+                # instead of 3x.
+                try:
+                    pristine = training_peft_model.get_base_model()
+                except AttributeError:
+                    pristine = training_peft_model
+                self._pristine_base = pristine
+                self._impl.base_model = pristine
+            else:
+                # Dense path: the inference model has already been
+                # flex-patched; its linear weights (what LoRA merges
+                # into) are still pristine, so we clone it and just do
+                # not call flex attention on the pristine copy.
+                with weight_pool(self._cumem_allocator):
+                    self._pristine_base = copy.deepcopy(self._inference_model)
+                    self._pristine_base.eval()
+                self._impl.base_model = self._pristine_base
 
         if self._inference_peft is None:
             try:

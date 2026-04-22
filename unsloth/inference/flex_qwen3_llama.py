@@ -161,7 +161,15 @@ def make_flex_attention_forward(page_table: PageTable):
         # Write to paged KV cache. For prefill, assign_prefill_no_paging
         # writes into [1, H, MAX_S, D]; for decode, assign() writes into the
         # B decode slots.
+        # Match the pre-allocated KV cache dtype; bnb-4bit Linear compute
+        # can produce fp32 k/v even under autocast, and the paged-cache
+        # index_put_ refuses mixed dtypes.
         if self._paged_cache is not None and flex_input_pos is not None:
+            cache_dtype = self._paged_cache.k_cache.dtype
+            if k.dtype != cache_dtype:
+                k = k.to(cache_dtype)
+            if v.dtype != cache_dtype:
+                v = v.to(cache_dtype)
             k, v = self._paged_cache.update(flex_input_pos, k, v, flex_batch_idx)
 
         # Flex attention. The block mask routes each query to the correct
