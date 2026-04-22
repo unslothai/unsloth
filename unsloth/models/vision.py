@@ -1792,8 +1792,6 @@ def check_dataset_for_missing_videos(dataset, column="messages", raise_error=Tru
     Raises:
         FileNotFoundError: When raise_error=True and one or more paths are absent.
     """
-    import warnings
-
     missing = []
     checked = set()
 
