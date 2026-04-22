@@ -1770,7 +1770,7 @@ class FastBaseModel:
         return model
 
 
-def check_dataset_for_missing_videos(dataset, column="messages", raise_error=True):
+def check_dataset_for_missing_videos(dataset, column = "messages", raise_error = True):
     """
     Validate that all local video file paths referenced in a dataset actually exist.
 
@@ -1813,7 +1813,9 @@ def check_dataset_for_missing_videos(dataset, column="messages", raise_error=Tru
                 if video_path.startswith(("http://", "https://")):
                     continue
                 # Strip file:// URI scheme so os.path.exists works.
-                path = video_path[7:] if video_path.startswith("file://") else video_path
+                path = (
+                    video_path[7:] if video_path.startswith("file://") else video_path
+                )
                 if path in checked:
                     continue
                 checked.add(path)
@@ -1831,6 +1833,6 @@ def check_dataset_for_missing_videos(dataset, column="messages", raise_error=Tru
         )
         if raise_error:
             raise FileNotFoundError(error_msg)
-        warnings.warn(error_msg, stacklevel=2)
+        warnings.warn(error_msg, stacklevel = 2)
 
     return missing

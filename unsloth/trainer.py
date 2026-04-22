@@ -70,7 +70,8 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if not self._video_paths_validated:
             self._video_paths_validated = True
             from unsloth.models.vision import check_dataset_for_missing_videos
-            check_dataset_for_missing_videos(examples, raise_error=True)
+
+            check_dataset_for_missing_videos(examples, raise_error = True)
         return super().__call__(examples)
 
 
