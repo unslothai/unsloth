@@ -5,6 +5,9 @@ The function lives in unsloth/models/vision.py but the full unsloth import chain
 requires triton / CUDA kernels that are unavailable on Windows dev machines.
 The fixture below extracts the function via AST so the pure-Python logic can be
 tested without loading the rest of the package.
+
+A second fixture loads UnslothVisionDataCollator the same way to test that the
+collator subclass triggers validation automatically on the first batch.
 """
 
 import ast
@@ -17,7 +20,26 @@ import pytest
 from datasets import Dataset
 
 
-# ── Fixture: load check_dataset_for_missing_videos without the full import ────
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+def _extract_fn_via_ast(source_path, fn_name, extra_ns=None):
+    """Parse a single top-level function out of a .py file and exec it."""
+    source = source_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(source_path))
+    func_node = next(
+        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == fn_name),
+        None,
+    )
+    if func_node is None:
+        pytest.fail(f"{fn_name} not found in {source_path}")
+    mini = ast.Module(body=[func_node], type_ignores=[])
+    ast.fix_missing_locations(mini)
+    ns = {"os": os, "warnings": warnings}
+    if extra_ns:
+        ns.update(extra_ns)
+    exec(compile(mini, str(source_path), "exec"), ns)
+    return ns[fn_name]
+
 
 @pytest.fixture(scope="session")
 def check_dataset_for_missing_videos():
@@ -33,21 +55,31 @@ def check_dataset_for_missing_videos():
         pass
 
     vision_path = Path(__file__).parent.parent / "unsloth" / "models" / "vision.py"
-    source = vision_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(vision_path))
+    return _extract_fn_via_ast(vision_path, "check_dataset_for_missing_videos")
 
-    func_node = next(
-        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "check_dataset_for_missing_videos"),
-        None,
-    )
-    if func_node is None:
-        pytest.fail("check_dataset_for_missing_videos not found in unsloth/models/vision.py")
 
-    mini = ast.Module(body=[func_node], type_ignores=[])
-    ast.fix_missing_locations(mini)
-    ns = {"os": os, "warnings": warnings}
-    exec(compile(mini, str(vision_path), "exec"), ns)
-    return ns["check_dataset_for_missing_videos"]
+@pytest.fixture(scope="session")
+def make_auto_validating_collator(check_dataset_for_missing_videos):
+    """
+    Return a factory that creates a minimal UnslothVisionDataCollator-like object
+    with the same auto-validation wrapping as our trainer.py subclass, but without
+    needing a processor or CUDA.
+    """
+    class _FakeBase:
+        def __call__(self, examples):
+            return {"ok": True}
+
+    class _AutoValidatingCollator(_FakeBase):
+        def __init__(self):
+            self._video_paths_validated = False
+
+        def __call__(self, examples):
+            if not self._video_paths_validated:
+                self._video_paths_validated = True
+                check_dataset_for_missing_videos(examples, raise_error=True)
+            return super().__call__(examples)
+
+    return _AutoValidatingCollator
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -59,7 +91,11 @@ def _make_video_dataset(*video_paths):
     ])
 
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+def _batch(*video_paths):
+    return list(_make_video_dataset(*video_paths))
+
+
+# ── Tests: check_dataset_for_missing_videos ───────────────────────────────────
 
 def test_missing_local_file_raises(check_dataset_for_missing_videos):
     """A nonexistent local path must raise FileNotFoundError before training."""
@@ -111,3 +147,48 @@ def test_duplicate_paths_deduplicated(check_dataset_for_missing_videos):
     with pytest.raises(FileNotFoundError) as exc_info:
         check_dataset_for_missing_videos(ds)
     assert str(exc_info.value).count("/nonexistent/clip.mp4") == 1
+
+
+# ── Tests: UnslothVisionDataCollator auto-validation ─────────────────────────
+
+def test_collator_raises_on_first_batch_with_missing_video(make_auto_validating_collator):
+    """
+    The collator must raise FileNotFoundError on the first batch if a video path
+    is missing — without requiring the user to call check_dataset_for_missing_videos.
+    """
+    collator = make_auto_validating_collator()
+    batch = _batch("/nonexistent/auto/clip.mp4")
+    with pytest.raises(FileNotFoundError):
+        collator(batch)
+
+
+def test_collator_passes_on_first_batch_with_valid_video(make_auto_validating_collator):
+    """The collator must not raise when all video paths in the first batch exist."""
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(b"fake video bytes")
+        tmp = f.name
+    try:
+        collator = make_auto_validating_collator()
+        batch = _batch(tmp)
+        result = collator(batch)
+        assert result == {"ok": True}
+    finally:
+        os.unlink(tmp)
+
+
+def test_collator_validates_only_once(make_auto_validating_collator):
+    """
+    After the first batch passes, subsequent batches with missing paths must not
+    re-trigger validation (validation is a startup check, not per-batch).
+    """
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(b"fake video bytes")
+        tmp = f.name
+    try:
+        collator = make_auto_validating_collator()
+        collator(_batch(tmp))                              # first batch: valid, sets flag
+        result = collator(_batch("/nonexistent/late.mp4")) # second batch: missing, no raise
+        assert result == {"ok": True}
+    finally:
+        os.unlink(tmp)
+

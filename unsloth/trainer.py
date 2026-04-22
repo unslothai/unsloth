@@ -34,7 +34,7 @@ from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
 from unsloth_zoo.vision_utils import (
-    UnslothVisionDataCollator,
+    UnslothVisionDataCollator as _UnslothVisionDataCollatorBase,
 )
 from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
@@ -50,6 +50,29 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
+    """
+    Drop-in replacement for the zoo's UnslothVisionDataCollator that automatically
+    validates local video file paths on the first batch.
+
+    If any referenced video files are missing from disk, a FileNotFoundError is
+    raised before any model weights are updated — preventing silent training on
+    empty video tensors (issue #5085).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._video_paths_validated = False
+
+    def __call__(self, examples):
+        if not self._video_paths_validated:
+            self._video_paths_validated = True
+            from unsloth.models.vision import check_dataset_for_missing_videos
+            check_dataset_for_missing_videos(examples, raise_error=True)
+        return super().__call__(examples)
+
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
