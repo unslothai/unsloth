@@ -3311,7 +3311,7 @@ def _unsloth_save_torchao_with_given_config(
         quantized_model.save_pretrained(
             torchao_save_directory, safe_serialization = safe_serialization
         )
-        tokenizer.save_pretrained(torchao_save_directory)
+        tokenizer.save_pretrained(torchao_save_directory, token = token)
 
     # Clean up the intermediate unquantized model
     if os.path.exists(save_directory):
@@ -3493,7 +3493,9 @@ def patch_saving_functions(model, vision = False):
             token = kwargs.get("token", None),
         )
         if push_to_hub:
-            self.push_to_hub(save_directory, **kwargs)
+            push_kwargs = dict(kwargs)
+            repo_id = push_kwargs.pop("repo_id", save_directory)
+            self.push_to_hub(repo_id, **push_kwargs)
         return result
 
     if (
