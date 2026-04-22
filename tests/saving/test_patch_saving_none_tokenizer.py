@@ -45,4 +45,3 @@ def test_patch_saving_functions_still_patches_non_none_tokenizer():
     proc = _Proc(inner)
     patch_saving_functions(proc)
     assert hasattr(inner, "original_save_pretrained")
-    assert inner.save_pretrained.__name__ == "unsloth_tokenizer_save_pretrained" or hasattr(inner, "original_save_pretrained")
