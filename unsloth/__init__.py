@@ -301,7 +301,9 @@ if torch is not None:
             # so we still run the recovery whenever we're root, regardless
             # of whether bnb is installed.
             if hasattr(os, "geteuid") and os.geteuid() == 0:
-                warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
+                warnings.warn(
+                    "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."
+                )
 
                 if os.path.exists("/usr/lib64-nvidia"):
                     os.system("ldconfig /usr/lib64-nvidia")
@@ -314,7 +316,9 @@ if torch is not None:
                     )
                     find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
                     possible_cudas = [find_cuda.search(x) for x in possible_cudas]
-                    possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
+                    possible_cudas = [
+                        x.group(1) for x in possible_cudas if x is not None
+                    ]
 
                     # Try linking cuda folder, or everything in local
                     if len(possible_cudas) == 0:
@@ -322,7 +326,10 @@ if torch is not None:
                     else:
                         find_number = re.compile(r"([\d\.]{2,})")
                         latest_cuda = np.argsort(
-                            [float(find_number.search(x).group(1)) for x in possible_cudas]
+                            [
+                                float(find_number.search(x).group(1))
+                                for x in possible_cudas
+                            ]
                         )[::-1][0]
                         latest_cuda = possible_cudas[latest_cuda]
                         os.system(f"ldconfig /usr/local/{latest_cuda}")
