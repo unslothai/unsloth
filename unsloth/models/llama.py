@@ -1397,12 +1397,26 @@ def _LlamaModel_fast_forward_inference(
                 XX2 = XX2,
                 variance = variance,
             )
-            X = mlp_fast_forward_inference(
-                decoder_layer.mlp,
-                X,
-                temp_gate = temp_gates[device_index],
-                temp_up = temp_ups[device_index],
-            )
+            # MoE blocks (Qwen3MoeSparseMoeBlock, etc.) do not have the
+            # dense gate_proj / up_proj / down_proj attributes that
+            # mlp_fast_forward_inference requires. Delegate to the
+            # class-level forward (patched by unsloth_zoo for MoE) and
+            # unpack the (hidden_states, router_logits) tuple.
+            _mlp_mod = decoder_layer.mlp
+            if not (
+                hasattr(_mlp_mod, "gate_proj")
+                and hasattr(_mlp_mod, "up_proj")
+                and hasattr(_mlp_mod, "down_proj")
+            ):
+                _mlp_out = _mlp_mod(X)
+                X = _mlp_out[0] if isinstance(_mlp_out, tuple) else _mlp_out
+            else:
+                X = mlp_fast_forward_inference(
+                    _mlp_mod,
+                    X,
+                    temp_gate = temp_gates[device_index],
+                    temp_up = temp_ups[device_index],
+                )
             X += residual
 
             next_decoder_cache.append(present_key_value)

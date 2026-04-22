@@ -137,9 +137,15 @@ def Qwen3MoeDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference(
             self.post_attention_layernorm, hidden_states
         )
-        hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(
-            self.mlp, hidden_states
-        )
+        # Use the class-level forward (patched by unsloth_zoo to
+        # sparse_moe_block_forward for transformers 5.x) instead of
+        # directly calling the legacy fast_forward, which breaks on
+        # stacked-expert MoE blocks that lack self.gate_proj.
+        mlp_out = self.mlp(hidden_states)
+        if isinstance(mlp_out, tuple):
+            hidden_states, router_logits = mlp_out[0], mlp_out[1]
+        else:
+            hidden_states, router_logits = mlp_out, None
         hidden_states += residual
     else:
         residual = hidden_states
@@ -188,7 +194,14 @@ class FastQwen3MoeModel(FastQwen3Model):
         Qwen3MoeAttention.forward = Qwen3Attention_fast_forward
         # Qwen3SdpaAttention   .forward = Qwen3Attention_fast_forward
         # Qwen3FlashAttention2 .forward = Qwen3Attention_fast_forward
-        Qwen3MoeSparseMoeBlock.forward = Qwen3MoeSparseMoeBlock_fast_forward
+        # Qwen3MoeSparseMoeBlock.forward is patched by unsloth_zoo's
+        # patch_qwen3_moe (temporary_patches) to a transformers-5.x-aware
+        # sparse_moe_block_forward that correctly handles
+        # self.gate / self.experts. The legacy
+        # Qwen3MoeSparseMoeBlock_fast_forward below assumed a flat
+        # self.gate_proj attribute which no longer exists on stacked
+        # transformers 5.x experts. Skip the legacy override.
+        # Qwen3MoeSparseMoeBlock.forward = Qwen3MoeSparseMoeBlock_fast_forward
         Qwen3MoeMLP.forward = (
             fast_swiglu_inference  # This is analogous to Dense models' MLP
         )
