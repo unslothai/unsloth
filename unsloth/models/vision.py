@@ -606,7 +606,16 @@ class FastBaseModel:
         vllm_enable_lora = True
 
         if is_vlm and fast_inference:
-            if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
+            # The UNSLOTH_FAST_INFERENCE=1 flex backend ships with text-only
+            # support for Gemma-4-E2B-it today. Allow gemma4 through the
+            # vision-model path when the flex backend is selected; the
+            # vLLM-only compat list below still gates the default path.
+            _use_flex = os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
+            _flex_allowed = {"gemma4"}
+            if not (
+                any(arch in VLLM_SUPPORTED_VLM for arch in model_types)
+                or (_use_flex and any(arch in _flex_allowed for arch in model_types))
+            ):
                 raise RuntimeError(
                     f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
                     f"Found architectures: {', '.join(model_types)}!"
@@ -912,9 +921,15 @@ class FastBaseModel:
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
-        if not fast_inference:
+        _use_flex_fast_inference = (
+            fast_inference and os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
+        )
+        if (not fast_inference) or _use_flex_fast_inference:
+            # Shared by the standard HF load and the flex-inference load.
             # Prevent load_in_fp8 from being forwarded into HF internal model loading
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
+            # ``max_batch_size`` is a FlexEngine kwarg, not an HF one.
+            _flex_max_batch_size = kwargs.pop("max_batch_size", 32)
             # Transformers 5.x @strict config classes reject unexpected kwargs.
             # Move config-level attributes onto the config object directly.
             _num_labels = kwargs.pop("num_labels", None)
@@ -944,6 +959,16 @@ class FastBaseModel:
                 fast_inference = fast_inference,
             )
             if hasattr(model, "generate"):
+                if _use_flex_fast_inference:
+                    # Defer engine construction until tokenizer/processor is
+                    # loaded; see the wiring block further down.
+                    model._unsloth_needs_flex_engine = dict(
+                        dtype = dtype,
+                        max_seq_length = max_seq_length,
+                        max_lora_rank = max_lora_rank,
+                        max_batch_size = _flex_max_batch_size,
+                        gpu_memory_utilization = gpu_memory_utilization,
+                    )
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
@@ -1222,6 +1247,18 @@ class FastBaseModel:
                 # If fallback also fails, raise the original error
                 raise _patch_err
         model = post_patch_loss_function(model)
+
+        # UNSLOTH_FAST_INFERENCE=1 path: install the lazy ``vllm_engine``
+        # sentinel now that the tokenizer/processor is available. The real
+        # ``FlexEngine(...)`` construction is deferred to
+        # :func:`build_flex_engine` so the batch-size dimension can be
+        # sized from the GRPO rollout shape. Keeps the training model's
+        # forward intact — the engine carries its own deep-copy.
+        if hasattr(model, "_unsloth_needs_flex_engine"):
+            from unsloth.inference.flex_engine import install_flex_sentinel
+
+            _tok_for_flex = getattr(tokenizer, "tokenizer", tokenizer)
+            install_flex_sentinel(model, _tok_for_flex)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
@@ -1511,6 +1548,10 @@ class FastBaseModel:
                 torch.xpu.empty_cache()
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
+
+        _engine = getattr(model, "vllm_engine", None)
+        if _engine is not None and hasattr(_engine, "bind_peft_model"):
+            _engine.bind_peft_model(model)
 
         # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
