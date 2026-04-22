@@ -18,6 +18,8 @@ interface PlatformState {
   deviceType: DeviceType;
   chatOnly: boolean;
   fetched: boolean;
+  hfEndpoint: string;
+  hfDatasetsServer: string;
   isChatOnly: () => boolean;
 }
 
@@ -25,6 +27,8 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: "linux",
   chatOnly: false,
   fetched: false,
+  hfEndpoint: "https://huggingface.co",
+  hfDatasetsServer: "https://datasets-server.huggingface.co",
   isChatOnly: () => get().chatOnly,
 }));
 
@@ -35,14 +39,25 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   try {
     const res = await fetch("/api/health");
     if (res.ok) {
-      const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
+      const data = (await res.json()) as {
+        device_type?: string;
+        chat_only?: boolean;
+        hf_endpoint?: string;
+        hf_datasets_server?: string;
+      };
       const deviceType = data.device_type ?? "linux";
       const chatOnly = data.chat_only ?? deviceType === "mac";
-      usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
+      const hfEndpoint = data.hf_endpoint ?? "https://huggingface.co";
+      const hfDatasetsServer = data.hf_datasets_server ?? "https://datasets-server.huggingface.co";
+      usePlatformStore.setState({ deviceType, chatOnly, hfEndpoint, hfDatasetsServer, fetched: true });
       return deviceType;
     }
   } catch (err) {
-    console.warn("[platform] Failed to fetch device type, will retry", err);
+    console.warn(
+      "[platform] Failed to fetch /api/health; HF_ENDPOINT configuration from the backend " +
+        "will not be applied and HuggingFace requests will use the default endpoint.",
+      err,
+    );
   }
 
   return usePlatformStore.getState().deviceType;

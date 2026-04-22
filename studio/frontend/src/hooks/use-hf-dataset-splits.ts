@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useState } from "react";
+import { getHfDatasetsServerBase } from "@/lib/hf-endpoint";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,7 +37,9 @@ export interface HfDatasetSplitsResult {
   error: string | null;
 }
 
-const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
+function getHfSplitsApi(): string {
+  return `${getHfDatasetsServerBase()}/splits`;
+}
 
 function normalizeDatasetSplitsError(message: string): string {
   const normalized = message.toLowerCase();
@@ -101,7 +104,7 @@ export function useHfDatasetSplits(
 
   const fetchSplits = useCallback(
     async (dataset: string, signal: AbortSignal) => {
-      const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(dataset)}`;
+      const url = `${getHfSplitsApi()}?dataset=${encodeURIComponent(dataset)}`;
       const headers: Record<string, string> = {};
       if (accessToken) {
         headers.Authorization = `Bearer ${accessToken}`;

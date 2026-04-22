@@ -3,6 +3,7 @@
 
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { type CachedResult, cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
@@ -146,6 +147,7 @@ async function* mergedModelIterator(
   const common = {
     additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
     fetch: withPopularitySort,
+    hubUrl: getHfEndpoint(),
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
@@ -165,6 +167,7 @@ async function* mergedModelIterator(
     ? cachedModelInfo({
         name: pinnedId,
         additionalFields: ["safetensors", "tags"],
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }).catch(() => null)
     : null;
@@ -224,6 +227,7 @@ async function* priorityThenListingIterator(
   const common = {
     additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
     fetch: withPopularitySort,
+    hubUrl: getHfEndpoint(),
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
@@ -234,6 +238,7 @@ async function* priorityThenListingIterator(
       cachedModelInfo({
         name: id,
         additionalFields: ["safetensors", "tags"],
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }),
     ),
@@ -299,6 +304,7 @@ export function useHfModelSearch(
           search: { owner: "unsloth", ...(task ? { task } : {}) },
           additionalFields: ["safetensors", "tags"],
           fetch: withPopularitySort,
+          hubUrl: getHfEndpoint(),
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }

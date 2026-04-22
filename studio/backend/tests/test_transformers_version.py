@@ -336,3 +336,152 @@ class TestGetTransformersTier:
             ),
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
+
+
+# ---------------------------------------------------------------------------
+# Network-error severity — HTTPError 404 is a legitimate fail-open (DEBUG);
+# 5xx and URLError are mirror-misconfiguration signals (WARNING).
+# ---------------------------------------------------------------------------
+
+import logging
+import urllib.error
+
+
+LOGGER_NAME = "utils.transformers_version"
+
+
+def _make_http_error(code: int, msg: str = "error") -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url = "https://example.invalid/model/raw/main/tokenizer_config.json",
+        code = code,
+        msg = msg,
+        hdrs = {},  # type: ignore[arg-type]
+        fp = None,
+    )
+
+
+class TestTokenizerConfigFetchErrorSeverity:
+    """_check_tokenizer_config_needs_v5 network-error log severity.
+
+    Covers the branches introduced to distinguish legitimate 404s from
+    mirror-misconfiguration errors so operators see the latter in logs
+    instead of them disappearing as DEBUG noise.
+    """
+
+    def setup_method(self):
+        _tokenizer_class_cache.clear()
+
+    def test_http_404_debug_and_fail_open(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = _make_http_error(404, "Not Found")
+            with caplog.at_level(logging.DEBUG, logger = LOGGER_NAME):
+                result = _check_tokenizer_config_needs_v5(str(tmp_path))
+
+        assert result is False
+        records = [r for r in caplog.records if r.name == LOGGER_NAME]
+        assert records, "expected at least one log record on 404"
+        assert all(
+            r.levelno <= logging.DEBUG for r in records
+        ), "404 must not escalate above DEBUG — it's a legitimate fail-open"
+
+    def test_http_500_warning_and_fail_open(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = _make_http_error(500, "Server Error")
+            with caplog.at_level(logging.WARNING, logger = LOGGER_NAME):
+                result = _check_tokenizer_config_needs_v5(str(tmp_path))
+
+        assert result is False
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == LOGGER_NAME and r.levelno == logging.WARNING
+        ]
+        assert warnings, "HTTP 5xx should log at WARNING"
+        assert any("500" in r.getMessage() for r in warnings)
+
+    def test_urlerror_warning_and_fail_open(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+            with caplog.at_level(logging.WARNING, logger = LOGGER_NAME):
+                result = _check_tokenizer_config_needs_v5(str(tmp_path))
+
+        assert result is False
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == LOGGER_NAME and r.levelno == logging.WARNING
+        ]
+        assert warnings, "URLError should log at WARNING"
+
+
+class TestConfigJsonFetchErrorSeverity:
+    """_check_config_needs_550 network-error log severity."""
+
+    def setup_method(self):
+        _config_needs_550_cache.clear()
+
+    def test_http_404_debug_and_fail_open(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = _make_http_error(404, "Not Found")
+            with caplog.at_level(logging.DEBUG, logger = LOGGER_NAME):
+                result = _check_config_needs_550(str(tmp_path))
+
+        assert result is False
+        records = [r for r in caplog.records if r.name == LOGGER_NAME]
+        assert records, "expected at least one log record on 404"
+        assert all(
+            r.levelno <= logging.DEBUG for r in records
+        ), "404 must not escalate above DEBUG — it's a legitimate fail-open"
+
+    def test_http_500_warning_and_fail_open(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = _make_http_error(500, "Server Error")
+            with caplog.at_level(logging.WARNING, logger = LOGGER_NAME):
+                result = _check_config_needs_550(str(tmp_path))
+
+        assert result is False
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == LOGGER_NAME and r.levelno == logging.WARNING
+        ]
+        assert warnings, "HTTP 5xx should log at WARNING"
+        assert any("500" in r.getMessage() for r in warnings)
+
+    def test_urlerror_warning_and_fail_open(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+            with caplog.at_level(logging.WARNING, logger = LOGGER_NAME):
+                result = _check_config_needs_550(str(tmp_path))
+
+        assert result is False
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == LOGGER_NAME and r.levelno == logging.WARNING
+        ]
+        assert warnings, "URLError should log at WARNING"

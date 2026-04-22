@@ -8,6 +8,7 @@ import type {
   SeedSourceType,
 } from "../../../types";
 import { isRecord, readNumberString, readString } from "../helpers";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 
 function normalizeSampling(value: unknown): SeedSamplingStrategy {
   const raw = readString(value);
@@ -28,7 +29,7 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     hf_split: "",
     hf_path: "",
     hf_token: "",
-    hf_endpoint: "https://huggingface.co",
+    hf_endpoint: getHfEndpoint(),
     local_file_name: "",
     unstructured_file_ids: [],
     unstructured_file_names: [],
@@ -71,7 +72,7 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let seed_source_type: SeedSourceType = "hf";
   let hf_path = "";
   let hf_token = "";
-  let hf_endpoint = "https://huggingface.co";
+  let hf_endpoint = getHfEndpoint();
   let hf_repo_id = "";
   let local_file_name = "";
   let unstructuredFileIds: string[] = [];

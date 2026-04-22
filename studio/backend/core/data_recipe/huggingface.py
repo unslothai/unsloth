@@ -119,6 +119,8 @@ def publish_recipe_dataset(
             builder_config_path = builder_config_path,
         )
 
-        return f"https://huggingface.co/datasets/{repo_id}"
+        from utils.hf_endpoint import get_hf_endpoint
+
+        return f"{get_hf_endpoint()}/datasets/{repo_id}"
     except HuggingFaceHubClientUploadError as exc:
         raise RecipeDatasetPublishError(str(exc)) from exc

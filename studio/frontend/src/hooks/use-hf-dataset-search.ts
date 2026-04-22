@@ -3,6 +3,7 @@
 
 import { listDatasets } from "@huggingface/hub";
 import { useCallback, useMemo } from "react";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import type { ModelType } from "@/types/training";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
@@ -360,6 +361,7 @@ export function useHfDatasetSearch(
         search: hasQuery ? { query } : {},
         additionalFields: ["cardData", "tags"],
         fetch: withTrendingSort,
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>;
     },
