@@ -87,12 +87,7 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
-_NO_TORCH_MODE = os.environ.get("UNSLOTH_NO_TORCH", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+_NO_TORCH_MODE = os.environ.get("UNSLOTH_NO_TORCH", "0") == "1"
 _HAS_TORCH = find_spec("torch") is not None
 if not _HAS_TORCH:
     _NO_TORCH_MODE = True
@@ -270,116 +265,116 @@ elif DEVICE_TYPE == "cpu":
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-if torch is not None and DEVICE_TYPE != "cpu":
-    import triton
+if torch is not None:
+    if DEVICE_TYPE != "cpu":
+        import triton
 
-if torch is not None and DEVICE_TYPE == "cuda":
-    libcuda_dirs = lambda: None
-    if Version(triton.__version__) >= Version("3.0.0"):
-        try:
-            from triton.backends.nvidia.driver import libcuda_dirs
-        except:
-            pass
-    else:
-        from triton.common.build import libcuda_dirs
-
-    # Try loading bitsandbytes and triton
-    try:
-        import bitsandbytes as bnb
-    except:
-        print(
-            "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
-        )
-        bnb = None
-    try:
-        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-        libcuda_dirs()
-    except:
-        # Only run the ldconfig recovery when we can actually run
-        # ldconfig (root). On non-root environments (shared HPC,
-        # locked-down containers, CI runners, etc.) the recovery would
-        # shell out to `ldconfig` and fail with "Permission denied",
-        # which is especially noisy for users who don't even have
-        # bitsandbytes installed and are just doing 16bit/full
-        # finetuning. libcuda_dirs() is used by both triton and bnb,
-        # so we still run the recovery whenever we're root, regardless
-        # of whether bnb is installed.
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
-
-            if os.path.exists("/usr/lib64-nvidia"):
-                os.system("ldconfig /usr/lib64-nvidia")
-            elif os.path.exists("/usr/local"):
-                # Sometimes bitsandbytes cannot be linked properly in Runpod for example
-                possible_cudas = (
-                    subprocess.check_output(["ls", "-al", "/usr/local"])
-                    .decode("utf-8")
-                    .split("\n")
-                )
-                find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
-                possible_cudas = [find_cuda.search(x) for x in possible_cudas]
-                possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
-
-                # Try linking cuda folder, or everything in local
-                if len(possible_cudas) == 0:
-                    os.system("ldconfig /usr/local/")
-                else:
-                    find_number = re.compile(r"([\d\.]{2,})")
-                    latest_cuda = np.argsort(
-                        [float(find_number.search(x).group(1)) for x in possible_cudas]
-                    )[::-1][0]
-                    latest_cuda = possible_cudas[latest_cuda]
-                    os.system(f"ldconfig /usr/local/{latest_cuda}")
-                    del find_number, latest_cuda
-                del possible_cudas, find_cuda
-
-            if bnb is not None:
-                importlib.reload(bnb)
-            importlib.reload(triton)
+    if DEVICE_TYPE == "cuda":
+        libcuda_dirs = lambda: None
+        if Version(triton.__version__) >= Version("3.0.0"):
             try:
-                libcuda_dirs = lambda: None
-                if Version(triton.__version__) >= Version("3.0.0"):
-                    try:
-                        from triton.backends.nvidia.driver import libcuda_dirs
-                    except:
-                        pass
-                else:
-                    from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = (
-                    bnb.functional.lib.cdequantize_blockwise_fp32
-                )
-                libcuda_dirs()
+                from triton.backends.nvidia.driver import libcuda_dirs
             except:
+                pass
+        else:
+            from triton.common.build import libcuda_dirs
+
+        # Try loading bitsandbytes and triton
+        try:
+            import bitsandbytes as bnb
+        except:
+            print(
+                "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
+            )
+            bnb = None
+        try:
+            cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+            libcuda_dirs()
+        except:
+            # Only run the ldconfig recovery when we can actually run
+            # ldconfig (root). On non-root environments (shared HPC,
+            # locked-down containers, CI runners, etc.) the recovery would
+            # shell out to `ldconfig` and fail with "Permission denied",
+            # which is especially noisy for users who don't even have
+            # bitsandbytes installed and are just doing 16bit/full
+            # finetuning. libcuda_dirs() is used by both triton and bnb,
+            # so we still run the recovery whenever we're root, regardless
+            # of whether bnb is installed.
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
+
+                if os.path.exists("/usr/lib64-nvidia"):
+                    os.system("ldconfig /usr/lib64-nvidia")
+                elif os.path.exists("/usr/local"):
+                    # Sometimes bitsandbytes cannot be linked properly in Runpod for example
+                    possible_cudas = (
+                        subprocess.check_output(["ls", "-al", "/usr/local"])
+                        .decode("utf-8")
+                        .split("\n")
+                    )
+                    find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
+                    possible_cudas = [find_cuda.search(x) for x in possible_cudas]
+                    possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
+
+                    # Try linking cuda folder, or everything in local
+                    if len(possible_cudas) == 0:
+                        os.system("ldconfig /usr/local/")
+                    else:
+                        find_number = re.compile(r"([\d\.]{2,})")
+                        latest_cuda = np.argsort(
+                            [float(find_number.search(x).group(1)) for x in possible_cudas]
+                        )[::-1][0]
+                        latest_cuda = possible_cudas[latest_cuda]
+                        os.system(f"ldconfig /usr/local/{latest_cuda}")
+                        del find_number, latest_cuda
+                    del possible_cudas, find_cuda
+
+                if bnb is not None:
+                    importlib.reload(bnb)
+                importlib.reload(triton)
+                try:
+                    libcuda_dirs = lambda: None
+                    if Version(triton.__version__) >= Version("3.0.0"):
+                        try:
+                            from triton.backends.nvidia.driver import libcuda_dirs
+                        except:
+                            pass
+                    else:
+                        from triton.common.build import libcuda_dirs
+                    cdequantize_blockwise_fp32 = (
+                        bnb.functional.lib.cdequantize_blockwise_fp32
+                    )
+                    libcuda_dirs()
+                except:
+                    warnings.warn(
+                        "Unsloth: CUDA is not linked properly.\n"
+                        "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"
+                        "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"
+                        "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"
+                        "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"
+                        "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+                    )
+            elif bnb is not None:
+                # Non-root + bnb installed: we can't run ldconfig ourselves,
+                # but bnb is going to crash later when the user actually uses
+                # 4bit quantization - tell them how to fix it manually so
+                # they're not surprised by an opaque error down the road.
                 warnings.warn(
                     "Unsloth: CUDA is not linked properly.\n"
-                    "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"
-                    "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"
                     "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"
                     "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"
                     "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
                 )
-        elif bnb is not None:
-            # Non-root + bnb installed: we can't run ldconfig ourselves,
-            # but bnb is going to crash later when the user actually uses
-            # 4bit quantization - tell them how to fix it manually so
-            # they're not surprised by an opaque error down the road.
-            warnings.warn(
-                "Unsloth: CUDA is not linked properly.\n"
-                "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"
-                "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"
-                "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
-            )
-    del libcuda_dirs
-elif torch is not None and DEVICE_TYPE == "hip":
-    # NO-OP for rocm device
-    pass
-elif torch is not None and DEVICE_TYPE == "xpu":
-    import bitsandbytes as bnb
+        del libcuda_dirs
+    elif DEVICE_TYPE == "hip":
+        # NO-OP for rocm device
+        pass
+    elif DEVICE_TYPE == "xpu":
+        import bitsandbytes as bnb
 
-    # TODO: check triton for intel installed properly.
-    pass
+        # TODO: check triton for intel installed properly.
+        pass
 
-if torch is not None:
     from .models import *
     from .models import __version__
     from .save import *

@@ -126,7 +126,7 @@ To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https:/
 
 ### CPU-Only and No-Torch Modes
 
-**CPU-only** (PyTorch installed, no GPU): `import unsloth` and `from unsloth import FastLanguageModel` both work. Only GGUF inference is supported; fine-tuning requires a GPU.
+**CPU-only** (PyTorch installed, no GPU): `import unsloth` and `from unsloth import FastLanguageModel` both work, but calling `FastLanguageModel.from_pretrained(...)` will raise a `RuntimeError` — model loading and training require a GPU. For GGUF inference on CPU, use [llama.cpp](https://github.com/ggerganov/llama.cpp) or [Unsloth Studio](https://unsloth.ai/docs/get-started/unsloth-studio) directly.
 
 **No-torch** (no PyTorch, or set `UNSLOTH_NO_TORCH=1` to disable explicitly): `import unsloth` works but model loading, inference, and training are disabled.
 ```bash
