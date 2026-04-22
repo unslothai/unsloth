@@ -480,7 +480,22 @@ class FlexMoEInference:
             dtype = self.model.dtype,
             device = self.device,
         )
-        self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
+        # Bucket ladder for CUDA graph capture. Default mirrors the dense
+        # FlexInference pattern. ``UNSLOTH_FLEX_GRAPH_BS=1,8,32,64`` etc
+        # lets you override (useful for tight memory or for bigger batch
+        # bench). Values > max_bs are silently skipped below.
+        _env_bs = os.environ.get("UNSLOTH_FLEX_GRAPH_BS")
+        if _env_bs:
+            try:
+                self.graph_bs = [int(x) for x in _env_bs.split(",") if x.strip()]
+            except ValueError:
+                print(
+                    f"[flex-moe] invalid UNSLOTH_FLEX_GRAPH_BS={_env_bs!r}; "
+                    f"using default bucket ladder"
+                )
+                self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
+        else:
+            self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         pool = None
         for bs in reversed(self.graph_bs):
             if bs > max_bs:
