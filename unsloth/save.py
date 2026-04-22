@@ -3496,10 +3496,7 @@ def patch_saving_functions(model, vision = False):
         )
         if push_to_hub:
             push_kwargs = dict(kwargs)
-            repo_id = push_kwargs.pop(
-                "repo_id",
-                os.path.basename(os.fspath(save_directory).rstrip(os.sep)),
-            )
+            repo_id = push_kwargs.pop("repo_id", save_directory)
             self.push_to_hub(repo_id, **push_kwargs)
         return result
 
