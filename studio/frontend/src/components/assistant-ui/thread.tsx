@@ -60,15 +60,31 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FC,
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
+export const Thread: FC<{
+  hideComposer?: boolean;
+  hideWelcome?: boolean;
+  targetThreadId?: string;
+}> = ({
   hideComposer,
   hideWelcome,
+  targetThreadId,
 }) => {
+  const isComposerAttachPending = useAuiState(({ threads }) =>
+    targetThreadId ? threads.mainThreadId !== targetThreadId : false,
+  );
+
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
@@ -85,7 +101,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
         )}
       >
         {!hideWelcome && (
-          <AuiIf condition={({ thread }) => thread.isEmpty}>
+          <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
             <ThreadWelcome hideComposer={hideComposer} />
           </AuiIf>
         )}
@@ -102,14 +118,14 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
             sticky scroll-to-bottom button (and the floating composer in
             single mode). Without this, content would butt against the
             sticky footer and feel cramped. */}
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+        <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
           <div
             className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
             aria-hidden
           />
         </AuiIf>
 
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+        <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
           <ThreadPrimitive.ViewportFooter
             className={cn(
               "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
@@ -122,7 +138,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
       </ThreadPrimitive.Viewport>
 
       {!hideComposer && (
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+        <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
           <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-2 z-20">
             <div
               aria-hidden
@@ -130,7 +146,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
             />
             <div className="relative px-5 pb-2">
               <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                <ComposerAnimated />
+                <ComposerAnimated disabled={isComposerAttachPending} />
               </div>
               <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
                 LLMs can make mistakes. Double-check all responses.
@@ -268,7 +284,7 @@ const GeneratingSpinner: FC = () => {
   );
 };
 
-const ComposerAnimated: FC = () => {
+const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <motion.div
@@ -277,7 +293,7 @@ const ComposerAnimated: FC = () => {
         transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
         className="relative z-10 w-full"
       >
-        <Composer />
+        <Composer disabled={disabled} />
       </motion.div>
     </div>
   );
@@ -305,9 +321,22 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC = () => {
+const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const handleSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      if (disabled) {
+        event.preventDefault();
+      }
+    },
+    [disabled],
+  );
+
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <ComposerPrimitive.Root
+      className="aui-composer-root relative flex w-full flex-col"
+      aria-disabled={disabled}
+      onSubmit={handleSubmit}
+    >
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <PendingAudioChip />
@@ -317,10 +346,11 @@ const Composer: FC = () => {
           className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           minRows={1}
           maxRows={6}
-          autoFocus={true}
+          autoFocus={!disabled}
+          disabled={disabled}
           aria-label="Message input"
         />
-        <ComposerAction />
+        <ComposerAction disabled={disabled} />
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
@@ -537,7 +567,7 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
@@ -578,6 +608,7 @@ const ComposerAction: FC = () => {
               type="submit"
               variant="default"
               size="icon"
+              disabled={disabled}
               className="aui-composer-send size-8 rounded-full"
               aria-label="Send message"
             >
