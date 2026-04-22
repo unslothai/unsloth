@@ -3508,7 +3508,7 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained = types.MethodType(
             unsloth_tokenizer_save_pretrained, model
         )
-    elif hasattr(model, "tokenizer"):
+    elif getattr(model, "tokenizer", None) is not None:
         patch_saving_functions(model.tokenizer)
 
     original_model = model
