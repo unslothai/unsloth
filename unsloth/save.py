@@ -258,7 +258,7 @@ def check_if_sentencepiece_model(
     return sentencepiece_model
 
 
-_TOKENIZER_MODEL_CACHE = set()
+_TOKENIZER_MODEL_CACHE = {}
 
 
 def _has_tokenizer_model(tokenizer, token = None):
@@ -272,7 +272,7 @@ def _has_tokenizer_model(tokenizer, token = None):
     if os.path.isdir(source):
         return os.path.isfile(os.path.join(source, "tokenizer.model"))
     if source in _TOKENIZER_MODEL_CACHE:
-        return True
+        return _TOKENIZER_MODEL_CACHE[source]
 
     try:
         repo_info = HfApi(token = token).model_info(source, files_metadata = False)
@@ -280,10 +280,10 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
 
     has_tokenizer_model = any(
-        sibling.rfilename == "tokenizer.model" for sibling in repo_info.siblings
+        sibling.rfilename == "tokenizer.model"
+        for sibling in (repo_info.siblings or [])
     )
-    if has_tokenizer_model:
-        _TOKENIZER_MODEL_CACHE.add(source)
+    _TOKENIZER_MODEL_CACHE[source] = has_tokenizer_model
     return has_tokenizer_model
 
 
@@ -3350,6 +3350,9 @@ def unsloth_save_pretrained_torchao(
       `push_to_hub` (bool): whether to push to huggingface hub or save locally
       `token`: HuggingFace token for pushing to hub
     """
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+
     if token is None and push_to_hub:
         token = get_token()
 
@@ -3481,15 +3484,16 @@ def patch_saving_functions(model, vision = False):
             save_directory,
             legacy_format = legacy_format,
             filename_prefix = filename_prefix,
-            push_to_hub = push_to_hub,
+            push_to_hub = False,
             **kwargs,
         )
-        if not push_to_hub:
-            _preserve_sentencepiece_tokenizer_assets(
-                self,
-                save_directory,
-                token = kwargs.get("token", None),
-            )
+        _preserve_sentencepiece_tokenizer_assets(
+            self,
+            save_directory,
+            token = kwargs.get("token", None),
+        )
+        if push_to_hub:
+            self.push_to_hub(save_directory, **kwargs)
         return result
 
     if (
