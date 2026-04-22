@@ -3281,6 +3281,8 @@ def _unsloth_save_torchao_with_given_config(
     auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
     tokenizer = auto_processor.from_pretrained(save_directory)
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
 
     # TorchAO must only use bfloat16 for loading (float16 fails)
     if HAS_TORCH_DTYPE:
@@ -3494,7 +3496,10 @@ def patch_saving_functions(model, vision = False):
         )
         if push_to_hub:
             push_kwargs = dict(kwargs)
-            repo_id = push_kwargs.pop("repo_id", save_directory)
+            repo_id = push_kwargs.pop(
+                "repo_id",
+                os.path.basename(os.fspath(save_directory).rstrip(os.sep)),
+            )
             self.push_to_hub(repo_id, **push_kwargs)
         return result
 
