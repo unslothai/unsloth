@@ -414,7 +414,12 @@ class WikiIngestor:
                     raw_mtime = 0.0
 
                 source_is_up_to_date = source_mtime >= raw_mtime
-                if previous_hash == current_hash or source_is_up_to_date:
+                if previous_hash == current_hash:
+                    continue
+
+                # Backfill missing hash state for already-ingested sources, but
+                # do not skip when we have evidence of changed raw content.
+                if previous_hash is None and source_is_up_to_date:
                     if state.get(key) != current_hash:
                         state[key] = current_hash
                         state_changed = True

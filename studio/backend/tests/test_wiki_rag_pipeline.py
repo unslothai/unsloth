@@ -143,6 +143,39 @@ def test_ingest_pending_raw_files_backfills_hash_for_existing_source_page(
     assert str(raw_file.resolve()) in state
 
 
+def test_ingest_pending_raw_files_reingests_changed_content_when_source_mtime_is_newer(
+    tmp_path: Path,
+):
+    manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    raw_file = tmp_path / "raw" / "notes.txt"
+    raw_file.write_text("initial content", encoding = "utf-8")
+
+    first = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    assert len(first) == 1
+
+    state_path = tmp_path / "raw" / ".ingest_state.json"
+    first_state = json.loads(state_path.read_text(encoding = "utf-8"))
+    previous_hash = first_state[str(raw_file.resolve())]
+
+    source_slug = manager.engine._slug(ingestor._local_source_title(raw_file))
+    source_page = tmp_path / "wiki" / "sources" / f"{source_slug}.md"
+    assert source_page.exists()
+    source_mtime = source_page.stat().st_mtime
+
+    raw_file.write_text("updated content", encoding = "utf-8")
+    # Simulate coarse timestamp resolution where source appears as new or newer.
+    os.utime(raw_file, (source_mtime, source_mtime))
+
+    second = ingestor.ingest_pending_raw_files(max_files = 8, contributor = "tester")
+    assert len(second) == 1
+
+    second_state = json.loads(state_path.read_text(encoding = "utf-8"))
+    assert second_state[str(raw_file.resolve())] != previous_hash
+    assert "updated content" in source_page.read_text(encoding = "utf-8")
+
+
 def _load_route_stream_merge_helper() -> object:
     route_file = Path(__file__).resolve().parents[1] / "routes" / "inference.py"
     src = route_file.read_text(encoding = "utf-8")
