@@ -50,6 +50,7 @@ from .flex_qwen3_llama import (
     refresh_lora_merge_from_pristine,
 )
 from .flex_gemma4 import FlexGemma4Inference
+from .flex_moe import FlexMoEInference
 from .sleep_mode import (
     _get_cumem_allocator,
     kv_cache_pool,
@@ -176,7 +177,7 @@ def _auto_kernel_options(
 
 
 def _detect_arch(hf_model) -> str:
-    """Return one of ``"gemma4"``, ``"qwen3"``, ``"llama3"`` or raises."""
+    """Return one of ``"gemma4"``, ``"qwen3_moe"``, ``"qwen3"``, ``"llama3"`` or raises."""
     # Look at the inner base model's class; PEFT wrappers delegate to
     # ``.base_model.model``.
     target = hf_model
@@ -192,13 +193,18 @@ def _detect_arch(hf_model) -> str:
     lowered = " ".join(n.lower() for n in candidates)
     if "gemma4" in lowered or "gemma_4" in lowered or "gemma-4" in lowered:
         return "gemma4"
+    # Check MoE before dense; ``Qwen3MoeForCausalLM`` contains both
+    # ``"qwen3moe"`` and ``"qwen3"`` substrings.
+    if "qwen3moe" in lowered or "qwen3_moe" in lowered:
+        return "qwen3_moe"
     if "qwen3" in lowered:
         return "qwen3"
     if "llama" in lowered:
         return "llama3"
     raise NotImplementedError(
-        "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Llama-3, Gemma-4 "
-        f"today; got {type(hf_model).__name__}. Unset the env var or use vLLM."
+        "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Qwen3-MoE, Llama-3, "
+        f"Gemma-4 today; got {type(hf_model).__name__}. Unset the env var "
+        "or use vLLM."
     )
 
 
@@ -387,7 +393,18 @@ class FlexEngine:
         if arch == "gemma4":
             inference_model = _extract_gemma4_text_shell(inference_model)
             self._inference_model = inference_model
-        Impl = FlexGemma4Inference if arch == "gemma4" else FlexInference
+        if arch == "gemma4":
+            Impl = FlexGemma4Inference
+        elif arch == "qwen3_moe":
+            Impl = FlexMoEInference
+            # MoE decode uses bincount + Python expert loops inside
+            # ``forward_moe_backend`` (unsloth_zoo moe_utils), which is
+            # not CUDA-graph capturable. Force eager decode so a stray
+            # ``capture_cudagraph=True`` does not fail inside a captured
+            # graph on the first token.
+            self.capture_cudagraph = False
+        else:
+            Impl = FlexInference
         # Pass the cuMem allocator through so the impl can wrap ONLY
         # the paged-KV allocations (``PageTable`` + per-layer
         # ``PagedKVCache``) in the ``kv_cache`` pool. Everything else

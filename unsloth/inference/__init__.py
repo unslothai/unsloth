@@ -10,9 +10,9 @@ Unsloth / TRL GRPO (``.generate``, ``.chat``, ``.sleep``, ``.wake_up``,
 ``.llm_engine``, plus ``save_lora`` / ``load_lora`` via the module
 shim).
 
-Three architectures are supported today: Qwen3, Llama-3, Gemma-4-E2B-it.
-Anything else raises :class:`NotImplementedError` — there is no silent
-fallback; unset the env var or use vLLM instead."""
+Four architectures are supported today: Qwen3 (dense), Qwen3-MoE,
+Llama-3, Gemma-4-E2B-it. Anything else raises
+:class:`NotImplementedError`; unset the env var or use vLLM instead."""
 
 from .flex_engine import (
     FlexEngine,
@@ -20,6 +20,7 @@ from .flex_engine import (
     install_flex_sentinel,
     load_flex,
 )
+from .flex_moe import FlexMoEInference
 from .vllm_shim import (
     CompletionOutput,
     LoRARequest,
@@ -30,6 +31,7 @@ from .vllm_shim import (
 
 __all__ = [
     "FlexEngine",
+    "FlexMoEInference",
     "load_flex",
     "build_flex_engine",
     "install_flex_sentinel",
