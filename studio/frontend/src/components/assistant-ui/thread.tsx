@@ -102,14 +102,14 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
             sticky scroll-to-bottom button (and the floating composer in
             single mode). Without this, content would butt against the
             sticky footer and feel cramped. */}
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+        <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
           <div
             className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
             aria-hidden
           />
         </AuiIf>
 
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
+        <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
           <ThreadPrimitive.ViewportFooter
             className={cn(
               "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
