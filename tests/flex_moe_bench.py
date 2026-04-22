@@ -74,12 +74,14 @@ def main():
         if tokenizer.pad_token_id is None or tokenizer.pad_token == "<|PAD_TOKEN|>":
             tokenizer.pad_token = "<|vision_pad|>"
         tokenizer.padding_side = "left"
+        attn_impl = os.environ.get("HF_ATTN_IMPL", "eager")
+        print(f"[bench] HF attn_implementation={attn_impl}")
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
             dtype=dtype,
             quantization_config=quant_cfg,
             device_map="cuda",
-            attn_implementation="eager",
+            attn_implementation=attn_impl,
         )
         model.eval()
         print(f"[bench] pure transformers (no unsloth patches)")

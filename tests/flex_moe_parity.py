@@ -41,6 +41,17 @@ def _run_flex(prompts, args, dtype, *, capture: bool):
         from unsloth.inference.flex_moe import FlexMoEInference
         FlexMoEInference.capture_decode_cudagraph = lambda self: None
 
+    # Opt-in torch.compile wrap of the decode walker for parity check
+    # — enabled via env var to avoid cluttering the CLI further.
+    if os.environ.get("FLEX_MOE_COMPILE_WALKER") == "1":
+        import torch as _torch
+        from unsloth.inference import flex_moe as _flex_moe_mod
+        _orig = _flex_moe_mod.call_moe_model_with_flex_kwargs
+        _flex_moe_mod.call_moe_model_with_flex_kwargs = _torch.compile(
+            _orig, fullgraph=False, dynamic=False
+        )
+        print("[parity] torch.compile(call_moe_model_with_flex_kwargs) enabled")
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model,
         max_seq_length=args.max_seq_length,
