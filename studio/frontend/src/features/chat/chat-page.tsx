@@ -502,9 +502,7 @@ export function ChatPage(): ReactElement {
       .get(threadId)
       .then((thread) => {
         if (canceled || thread) return;
-        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
-          useChatRuntimeStore.getState().setActiveThreadId(null);
-        }
+        useChatRuntimeStore.getState().setActiveThreadId(null);
         toast.info("Chat not found", {
           description: "That thread no longer exists, so we opened a new chat.",
         });
