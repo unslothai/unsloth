@@ -41,7 +41,7 @@ import {
   MessageSearch01Icon,
   Search01Icon,
   NewReleasesIcon,
-  PowerIcon,
+  EcoPowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
@@ -621,7 +621,7 @@ export function AppSidebar() {
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} className="size-4" />
+                  <HugeiconsIcon icon={EcoPowerIcon} className="size-4" />
                   <span>Shutdown</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
