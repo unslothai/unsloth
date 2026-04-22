@@ -56,6 +56,8 @@ const PREFS_KEYS: string[] = [
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
+  // Profile personalization
+  "unsloth_user_profile",
   // Guided tour flags
   "tour:studio:v1",
 ];
