@@ -505,6 +505,9 @@ export function ChatPage(): ReactElement {
         if (useChatRuntimeStore.getState().activeThreadId === threadId) {
           useChatRuntimeStore.getState().setActiveThreadId(null);
         }
+        toast.info("Chat not found", {
+          description: "That thread no longer exists, so we opened a new chat.",
+        });
         navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
