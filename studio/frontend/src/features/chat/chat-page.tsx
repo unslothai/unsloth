@@ -117,7 +117,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -487,6 +487,37 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     return () => setSettingsOpen(false);
   }, [setSettingsOpen]);
+
+  useEffect(() => {
+    const threadId = search.thread;
+    if (!threadId) return;
+
+    let canceled = false;
+    void db.threads
+      .get(threadId)
+      .then((thread) => {
+        if (canceled || thread) return;
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        toast.info("Chat not found", {
+          description: "That thread no longer exists, so we opened a new chat.",
+        });
+        navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+          replace: true,
+        });
+      })
+      .catch(() => {
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [navigate, search.thread]);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
