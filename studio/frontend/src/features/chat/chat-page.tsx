@@ -492,6 +492,36 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     return () => setSettingsOpen(false);
   }, [setSettingsOpen]);
+
+  useEffect(() => {
+    const threadId = search.thread;
+    if (!threadId) return;
+
+    let canceled = false;
+    void db.threads
+      .get(threadId)
+      .then((thread) => {
+        if (canceled || thread) return;
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+        navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+          replace: true,
+        });
+      })
+      .catch(() => {
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [navigate, search.thread]);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);

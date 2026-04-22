@@ -681,9 +681,16 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
-      aui.threads().switchToThread(threadId);
+      const switchResult = aui.threads().switchToThread(threadId) as unknown;
+      if (switchResult && typeof (switchResult as Promise<void>).catch === "function") {
+        void (switchResult as Promise<void>).catch(() => {
+          if (syncActiveThreadId) {
+            useChatRuntimeStore.getState().setActiveThreadId(null);
+          }
+        });
+      }
     }
-  }, [aui, isLoading, mainThreadId, threadId]);
+  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
 
   useEffect(() => {
     if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
