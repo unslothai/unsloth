@@ -166,7 +166,17 @@ def Qwen3MoeDecoderLayer_fast_forward(
         # MoE Router MLP
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states, router_logits = self.mlp(hidden_states)
+        # unsloth_zoo's sparse_moe_block_forward returns a plain tensor
+        # for transformers 5.x stacked experts; the legacy patched
+        # forward returned a (hidden_states, router_logits) tuple.
+        # Handle both.
+        mlp_out = self.mlp(hidden_states)
+        if isinstance(mlp_out, tuple):
+            hidden_states = mlp_out[0]
+            router_logits = mlp_out[1] if len(mlp_out) > 1 else None
+        else:
+            hidden_states = mlp_out
+            router_logits = None
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
