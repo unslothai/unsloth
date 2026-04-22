@@ -16,9 +16,33 @@
 
 @font-face {
 	font-family: "Hellix";
+	src: url("/fonts/Hellix-Regular.woff") format("woff");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-Medium.woff") format("woff");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
 	src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
 		url("/fonts/Hellix-SemiBold.woff") format("woff");
 	font-weight: 600;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Fira Code";
+	src: url("/fonts/FiraCode-VariableFont_wght.ttf") format("truetype-variations");
+	font-weight: 300 700;
 	font-style: normal;
 	font-display: swap;
 }
@@ -100,39 +124,44 @@
 }
 
 .dark {
-	--background: oklch(0.24 0 0);
-	--foreground: oklch(0.98 0 0);
-	--card: oklch(0.28 0 0);
-	--card-foreground: oklch(0.98 0 0);
-	--popover: oklch(0.28 0 0);
-	--popover-foreground: oklch(0.98 0 0);
+	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
+	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
+	   drifted ~3% darker and shifted the neutral hue. */
+	--background: #1a1b1e;
+	--foreground: #d4d4d4;
+	--card: #222427;
+	--card-foreground: #d4d4d4;
+	--popover: #222427;
+	--popover-foreground: #d4d4d4;
 	--primary: oklch(0.6929 0.1396 166.5513);
 	--primary-foreground: oklch(1 0 0);
-	--secondary: oklch(0.33 0 0);
-	--secondary-foreground: oklch(0.98 0 0);
-	--muted: oklch(0.33 0 0);
-	--muted-foreground: oklch(0.70 0 0);
-	--accent: oklch(0.33 0 0);
-	--accent-foreground: oklch(0.98 0 0);
+	--secondary: #2e3035;
+	--secondary-foreground: #d4d4d4;
+	--muted: #2e3035;
+	--muted-foreground: #999999;
+	--accent: #2e3035;
+	--accent-foreground: #d4d4d4;
 	--destructive: oklch(0.6368 0.2078 25.3313);
-	--border: oklch(0.38 0 0);
-	--input: oklch(0.38 0 0);
+	--border: #2e3035;
+	/* --input one step lighter than --muted so form borders stay visible on
+	   muted surfaces (right config panel) and keep subtle contrast on card. */
+	--input: #3a3d42;
 	--ring: oklch(0.6929 0.1396 166.5513);
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	--sidebar: oklch(0.24 0 0);
-	--sidebar-foreground: oklch(0.98 0 0);
+	--sidebar: #222427;
+	--sidebar-foreground: #d4d4d4;
 	--sidebar-primary: oklch(0.6929 0.1396 166.5513);
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: oklch(0.33 0 0);
-	--sidebar-accent-foreground: oklch(0.98 0 0);
-	--sidebar-border: oklch(0.38 0 0);
+	--sidebar-accent: #2e3035;
+	--sidebar-accent-foreground: #d4d4d4;
+	--sidebar-border: #2e3035;
 	--sidebar-ring: oklch(0.6929 0.1396 166.5513);
 	--destructive-foreground: oklch(1 0 0);
-	--radius: 1.1rem;
+	--radius: 0.625rem;
 	--font-sans: Geist, ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -252,6 +281,22 @@
 		}
 	}
 
+	--animate-icon-pop: icon-pop 0.3s ease-out;
+
+	@keyframes icon-pop {
+		0% {
+			transform: scale(1);
+		}
+
+		45% {
+			transform: scale(1.08);
+		}
+
+		100% {
+			transform: scale(1);
+		}
+	}
+
 	--animate-shine: shine var(--duration) infinite linear;
 
 	@keyframes shine {
@@ -277,6 +322,9 @@
 	body {
 		@apply font-sans bg-background text-foreground;
 		letter-spacing: var(--tracking-normal);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
 	}
 
 	html {
@@ -305,9 +353,13 @@
 
 @layer utilities {
 
-	/* Heading font utility */
+	/* Heading font utility — the logo applies its own dark-mode tracking
+	   to offset optical bloom at large sizes. For small UI text (menus,
+	   nav items) we keep a single tight tracking in both themes, relying
+	   on global antialiased font-smoothing to neutralize the bloom. */
 	.font-heading {
 		font-family: var(--font-heading);
+		letter-spacing: -0.01em;
 	}
 
 	/* Elevated surface shadow (use ring-* for borders) */
@@ -332,11 +384,8 @@
 	}
 
 	.dark .chat-composer-surface {
-		border-color: oklch(0.38 0 0 / 1);
-		box-shadow:
-			0 1px 2px oklch(0 0 0 / 0.2),
-			0 8px 20px oklch(0 0 0 / 0.25),
-			0 22px 48px oklch(0 0 0 / 0.22);
+		border-color: #2e3035;
+		box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
 	}
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
@@ -375,8 +424,8 @@
 	}
 
 	[data-streamdown="code-block"] {
-		gap: 0;
-		padding: 0.5rem;
+		gap: 0.25rem;
+		padding: 0.75rem 1rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
 		min-width: 0;
@@ -384,7 +433,14 @@
 	}
 
 	[data-streamdown="code-block-header"] {
-		padding-left: 0.75rem;
+		padding-left: 0;
+	}
+
+	.aui-thread-root [data-streamdown="code-block"] code > span::before {
+		content: none !important;
+		display: none !important;
+		margin: 0 !important;
+		width: 0 !important;
 	}
 
 	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
@@ -416,11 +472,11 @@
 	/* Keep monospace for code fences and inline code (not KaTeX). */
 	.aui-thread-root [data-streamdown="code-block"] pre,
 	.aui-thread-root [data-streamdown="code-block"] code {
-		font-family: var(--font-mono), ui-monospace, monospace;
+		font-family: "Fira Code", ui-monospace, monospace;
 	}
 
 	.aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
-		font-family: var(--font-mono), ui-monospace, monospace;
+		font-family: "Fira Code", ui-monospace, monospace;
 	}
 
 	/* Align fenced code blocks with the main chat column even when nested in lists. */
@@ -478,6 +534,9 @@
    full-height rail flush to the right edge, without a separate decorative strip. */
 .aui-thread-viewport {
 	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
+	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
+	   can stop flush with the gutter edge without covering the scrollbar. */
+	scrollbar-gutter: stable;
 }
 
 .dark .aui-thread-viewport {
@@ -489,11 +548,19 @@
 }
 
 [data-sidebar="content"] {
-	scrollbar-color: oklch(0.5 0 0 / 0.7) transparent;
+	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
 }
 
 .dark [data-sidebar="content"] {
-	scrollbar-color: oklch(0.72 0 0 / 0.65) transparent;
+	scrollbar-color: oklch(0.72 0 0 / 0.25) transparent;
+}
+
+[data-sidebar="content"]::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.22);
+}
+
+.dark [data-sidebar="content"]::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.25);
 }
 
 /*---break---*/

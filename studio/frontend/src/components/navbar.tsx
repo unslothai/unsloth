@@ -7,13 +7,13 @@ export function Navbar() {
   const { isMobile } = useSidebar();
   if (!isMobile) {
     return (
-      <header className="absolute top-0 inset-x-0 z-40 h-11 pointer-events-none" />
+      <header className="absolute top-0 inset-x-0 z-40 h-[48px] pointer-events-none" />
     );
   }
   return (
-    <header className="absolute top-0 inset-x-0 z-40 h-11 pointer-events-none">
-      <div className="flex h-full items-center pl-2">
-        <SidebarTrigger className="pointer-events-auto" />
+    <header className="absolute top-0 inset-x-0 z-40 h-[48px] pointer-events-none">
+      <div className="flex h-full items-start pt-[11px] pl-2">
+        <SidebarTrigger className="pointer-events-auto !size-[34px]" />
       </div>
     </header>
   );

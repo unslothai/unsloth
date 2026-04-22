@@ -12,3 +12,4 @@ export { useHfDatasetSplits } from "./use-hf-dataset-splits";
 export { useHfTokenValidation } from "./use-hf-token-validation";
 export { useInfiniteScroll } from "./use-infinite-scroll";
 export { useTauriBackend } from "./use-tauri-backend";
+export { useCollapseScrollLock } from "./use-collapse-scroll-lock";

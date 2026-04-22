@@ -137,6 +137,7 @@ from .import_fixes import (
     fix_vllm_aimv2_issue,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
+    fix_trl_vllm_ascend,
     fix_vllm_pdl_blackwell,
     fix_triton_compiled_kernel_missing_attrs,
     patch_trunc_normal_precision_issue,
@@ -159,6 +160,7 @@ fix_vllm_aimv2_issue()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
+fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_triton_compiled_kernel_missing_attrs()
 patch_trunc_normal_precision_issue()
@@ -179,6 +181,7 @@ del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
+del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_triton_compiled_kernel_missing_attrs
 del patch_trunc_normal_precision_issue
