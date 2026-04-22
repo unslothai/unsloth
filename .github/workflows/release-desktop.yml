@@ -17,15 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # - platform: macos-latest
-          #   args: '--target aarch64-apple-darwin'
-          #   label: macOS (Apple Silicon)
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            label: macOS (Apple Silicon)
           # - platform: macos-latest
           #   args: '--target x86_64-apple-darwin'
           #   label: macOS (Intel)
-          # - platform: ubuntu-22.04
-          #   args: ''
-          #   label: Linux (x64)
+          - platform: ubuntu-22.04
+            args: ''
+            label: Linux (x64)
           - platform: windows-latest
             args: ''
             label: Windows (x64)

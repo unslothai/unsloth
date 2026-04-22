@@ -54,28 +54,12 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
-    "windows": {
-      "signCommand": {
-        "cmd": "trusted-signing-cli",
-        "args": ["-e", "https://eus.codesigning.azure.net", "-d", "Unsloth Studio", "%1"]
-      },
-      "nsis": {
-        "installerHooks": "./windows/hooks.nsh"
-      }
-    },
     "linux": {
       "deb": {
         "postRemoveScript": "./linux/postremove.sh"
       },
       "rpm": {
         "postRemoveScript": "./linux/postremove.sh"
-      }
-    },
-    "macOS": {
-      "entitlements": "./Entitlements.plist",
-      "dmg": {
-        "appPosition": { "x": 180, "y": 220 },
-        "applicationFolderPosition": { "x": 480, "y": 220 }
       }
     }
   }
