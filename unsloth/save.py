@@ -258,7 +258,7 @@ def check_if_sentencepiece_model(
     return sentencepiece_model
 
 
-_TOKENIZER_MODEL_CACHE = {}
+_TOKENIZER_MODEL_CACHE = set()
 
 
 def _has_tokenizer_model(tokenizer, token = None):
@@ -271,16 +271,20 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
     if os.path.isdir(source):
         return os.path.isfile(os.path.join(source, "tokenizer.model"))
+    if source in _TOKENIZER_MODEL_CACHE:
+        return True
 
-    if source not in _TOKENIZER_MODEL_CACHE:
-        try:
-            repo_info = HfApi(token = token).model_info(source, files_metadata = False)
-            _TOKENIZER_MODEL_CACHE[source] = any(
-                sibling.rfilename == "tokenizer.model" for sibling in repo_info.siblings
-            )
-        except Exception:
-            _TOKENIZER_MODEL_CACHE[source] = False
-    return _TOKENIZER_MODEL_CACHE[source]
+    try:
+        repo_info = HfApi(token = token).model_info(source, files_metadata = False)
+    except Exception:
+        return False
+
+    has_tokenizer_model = any(
+        sibling.rfilename == "tokenizer.model" for sibling in repo_info.siblings
+    )
+    if has_tokenizer_model:
+        _TOKENIZER_MODEL_CACHE.add(source)
+    return has_tokenizer_model
 
 
 def _preserve_sentencepiece_tokenizer_assets(
