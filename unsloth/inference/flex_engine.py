@@ -397,12 +397,11 @@ class FlexEngine:
             Impl = FlexGemma4Inference
         elif arch == "qwen3_moe":
             Impl = FlexMoEInference
-            # MoE decode uses bincount + Python expert loops inside
-            # ``forward_moe_backend`` (unsloth_zoo moe_utils), which is
-            # not CUDA-graph capturable. Force eager decode so a stray
-            # ``capture_cudagraph=True`` does not fail inside a captured
-            # graph on the first token.
-            self.capture_cudagraph = False
+            # CUDA graph capture is supported on the ``grouped_mm`` MoE
+            # backend only. ``FlexMoEInference.capture_decode_cudagraph``
+            # re-checks the active backend at capture time and skips
+            # capture on any other backend, leaving ``capture_cudagraph``
+            # alone here.
         else:
             Impl = FlexInference
         # Pass the cuMem allocator through so the impl can wrap ONLY

@@ -380,26 +380,100 @@ class FlexMoEInference:
     def _decode_step(
         self, batch_idx: torch.Tensor, input_ids: torch.Tensor, input_pos: torch.Tensor
     ):
-        # MoE path is always eager — no CUDA graph replay. See capture
-        # docstring below.
         self.input_pos_buffer.zero_()
         self.input_pos_buffer[batch_idx] = input_pos
-        return self._decode_step_eager(batch_idx, input_ids)
+        if not self.cudagraph_captured:
+            return self._decode_step_eager(batch_idx, input_ids)
+        bs = input_ids.size(0)
+        key = next(x for x in self.graph_bs if x >= bs)
+        graph = self.graphs[key]
+        gv = self.graph_vars
+        # batch_idx=0 is the reserved no-op slot. Zero out the unused part
+        # of each capture-shape buffer so padded entries don't write into
+        # real KV pages.
+        for k, v in gv.items():
+            if k != "outputs":
+                v.zero_()
+        gv["input_ids"][:bs] = input_ids
+        gv["batch_idx"][:bs] = batch_idx
+        graph.replay()
+        return gv["outputs"][:bs]
 
     def capture_decode_cudagraph(self):
-        """Not supported for MoE. ``Qwen3MoeExperts.forward`` uses
-        ``torch.where`` + a data-dependent Python for-loop over experts
-        (shapes depend on routing), which cannot be captured. Raising
-        here so a stray ``capture_cudagraph=True`` fails loudly.
+        """Capture one CUDA graph per batch-size bucket for MoE decode.
 
-        Future: a padded-fixed-shape dispatch can be gated behind
-        ``UNSLOTH_MOE_STATIC_DISPATCH=1`` to make capture viable — out
-        of scope for the first cut.
+        Supported on the ``grouped_mm`` MoE backend only. On that backend
+        the decode path is fixed-shape:
+        ``bincount(minlength=num_experts) → cumsum → argsort →
+        torch._grouped_mm × 2 → index_add_``. Python control flow in
+        ``sparse_moe_block_forward`` runs once at capture time; only the
+        recorded CUDA kernels replay.
+
+        For any other backend (``unsloth_triton``, ``native_torch``) this
+        method logs a warning and returns without enabling replay, so
+        ``generate(capture_cudagraph=True)`` silently falls back to eager
+        decode instead of failing inside the captured graph.
+
+        Pre-reserves a page for every ``batch_idx`` slot so the paged-KV
+        ``index_put_`` during capture hits valid physical addresses. The
+        reservations are erased after capture — replay reads / writes the
+        same physical pages regardless of the logical batch state,
+        because ``batch_idx = 0`` is reserved as a padding slot.
         """
-        raise NotImplementedError(
-            "FlexMoEInference does not support CUDA graph capture: MoE "
-            "expert routing has data-dependent shapes. Run with "
-            "capture_cudagraph=False."
+        try:
+            from unsloth_zoo.temporary_patches.moe_utils import select_moe_backend
+            backend = select_moe_backend()
+        except Exception:
+            backend = None
+        if backend != "grouped_mm":
+            print(
+                f"[flex] MoE CUDA graph capture requires the 'grouped_mm' "
+                f"backend (got {backend!r}); skipping capture, decode stays "
+                f"eager."
+            )
+            return
+
+        max_bs = self.max_batch_size
+        reserved_batches = []
+        for bi in range(1, max_bs):
+            try:
+                allocated = self.page_table.allocate()
+                self.page_table.reserve(
+                    allocated,
+                    torch.tensor([allocated], device = self.device, dtype = torch.long),
+                    self.page_size,
+                )
+                reserved_batches.append(allocated)
+            except Exception:
+                break
+
+        input_ids = torch.zeros(max_bs, dtype = torch.int64, device = self.device)
+        batch_idx = torch.arange(max_bs, dtype = torch.int64, device = self.device)
+        outputs = torch.zeros(
+            (max_bs, self.model.config.vocab_size),
+            dtype = self.model.dtype,
+            device = self.device,
+        )
+        self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
+        pool = None
+        for bs in reversed(self.graph_bs):
+            if bs > max_bs:
+                continue
+            print(f"[flex-moe] capturing CUDA graph for bs={bs}")
+            torch.cuda.synchronize()
+            _ = self._decode_step_eager(batch_idx[:bs], input_ids[:bs])
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, pool):
+                outputs[:bs] = self._decode_step_eager(batch_idx[:bs], input_ids[:bs])
+            if pool is None:
+                pool = graph.pool()
+            self.graphs[bs] = graph
+            torch.cuda.synchronize()
+        for bi in reserved_batches:
+            self.page_table.erase(bi)
+        self.graph_vars = dict(
+            input_ids = input_ids, batch_idx = batch_idx, outputs = outputs
         )
 
     def refresh_inference_from_base(self):
@@ -430,12 +504,21 @@ class FlexMoEInference:
 
     @torch.inference_mode()
     def generate(self, sequences: list[Sequence], capture_cudagraph = False):
-        """Decode loop. ``capture_cudagraph`` is ignored for MoE —
-        always runs eager."""
+        """Decode loop. Captures one CUDA graph per bucket on first call
+        when ``capture_cudagraph=True`` and the ``grouped_mm`` MoE
+        backend is active; otherwise falls back to eager decode."""
         self.tokenize(sequences)
         waiting = deque(sequences)
         running = deque()
         done = []
+
+        if capture_cudagraph and not self.cudagraph_captured:
+            self.capture_decode_cudagraph()
+            # ``capture_decode_cudagraph`` leaves ``cudagraph_captured``
+            # alone when it skips (non-grouped_mm backend), so only flip
+            # the flag when at least one bucket was actually captured.
+            if self.graphs:
+                self.cudagraph_captured = True
 
         while waiting or running:
             batch = []

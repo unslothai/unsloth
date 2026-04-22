@@ -31,7 +31,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--backend", choices = ["flex", "hf"], default = "flex")
+    p.add_argument("--backend", choices = ["flex", "hf", "hf_naive"], default = "flex")
     p.add_argument("--model", default = "unsloth/Qwen3-30B-A3B-Instruct-2507")
     p.add_argument("--dtype", choices = ["bf16", "fp16"], default = "bf16")
     p.add_argument("--load_in_4bit", action = "store_true")
@@ -49,21 +49,52 @@ def main():
         os.environ["UNSLOTH_FAST_INFERENCE"] = "1"
     os.environ.setdefault("UNSLOTH_MOE_BACKEND", "grouped_mm")
 
-    import unsloth
-    print(f"[bench] unsloth={unsloth.__file__}")
-    from unsloth import FastLanguageModel
-
     dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
-
     torch.cuda.reset_peak_memory_stats()
     t_load0 = time.perf_counter()
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = args.model,
-        max_seq_length = args.max_seq_length,
-        dtype = dtype,
-        load_in_4bit = args.load_in_4bit,
-        fast_inference = args.backend == "flex",
-    )
+
+    if args.backend == "hf_naive":
+        # Pure transformers path: NO ``import unsloth`` so none of
+        # Unsloth's Qwen3 MoE attention / MLP patches run. This is the
+        # fair naive reference to compare flex fast-inference against.
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+        )
+        quant_cfg = None
+        if args.load_in_4bit:
+            quant_cfg = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        if tokenizer.pad_token_id is None or tokenizer.pad_token == "<|PAD_TOKEN|>":
+            tokenizer.pad_token = "<|vision_pad|>"
+        tokenizer.padding_side = "left"
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            dtype=dtype,
+            quantization_config=quant_cfg,
+            device_map="cuda",
+            attn_implementation="eager",
+        )
+        model.eval()
+        print(f"[bench] pure transformers (no unsloth patches)")
+    else:
+        import unsloth
+        print(f"[bench] unsloth={unsloth.__file__}")
+        from unsloth import FastLanguageModel
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name = args.model,
+            max_seq_length = args.max_seq_length,
+            dtype = dtype,
+            load_in_4bit = args.load_in_4bit,
+            fast_inference = args.backend == "flex",
+        )
+
     t_load = time.perf_counter() - t_load0
     peak_load = torch.cuda.max_memory_reserved() / 1024**3
     print(f"[bench] loaded in {t_load:.1f}s peak {peak_load:.1f} GB")
@@ -91,7 +122,7 @@ def main():
                 sum(len(o.outputs[0].token_ids) for o in outs)
             )
     else:
-        # HF generate
+        # HF generate (shared for "hf" unsloth-patched and "hf_naive" pure).
         inputs = tokenizer(prompts, return_tensors = "pt", padding = True).to("cuda")
         gen_kwargs = dict(
             max_new_tokens = args.max_new_tokens,
