@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
-from typing import Optional
+from typing import Any, Optional, Union
 import json
 import httpx
 import structlog
@@ -25,6 +25,58 @@ import re as _re
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
+
+
+def _install_httpcore_asyncgen_silencer() -> None:
+    """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
+
+    When Studio proxies a streaming response from llama-server via httpx,
+    the innermost ``HTTP11ConnectionByteStream.__aiter__`` async generator
+    is finalised by Python's asyncgen GC hook on a task different from the
+    one that opened it. Its ``aclose`` path then calls
+    ``anyio.Lock.acquire`` → ``cancel_shielded_checkpoint`` which enters a
+    ``CancelScope`` on the finaliser task — Python 3.13 flags the
+    cross-task exit as ``"Attempted to exit cancel scope in a different
+    task"`` and prints ``"async generator ignored GeneratorExit"`` as an
+    unraisable warning.
+
+    This is a known httpx + httpcore + anyio interaction (see MCP SDK
+    python-sdk#831, agno #3556, chainlit #2361, langchain-mcp-adapters
+    #254). It is benign: the response has already been delivered with a
+    200. The streaming pass-throughs (``/v1/chat/completions``,
+    ``/v1/messages``, ``/v1/responses``, ``/v1/completions``) already
+    manage their httpx lifecycle inside a single task with explicit
+    ``aclose()`` of the lines iterator, response, and client; the errant
+    generator is not one we hold a reference to and therefore cannot
+    close ourselves.
+
+    We install a single process-wide unraisable hook that swallows just
+    this specific interaction — identified by the tuple of (RuntimeError
+    mentioning cancel scope / GeneratorExit) + (object repr referencing
+    HTTP11ConnectionByteStream) — and defers to the default hook for
+    everything else. The filter is idempotent.
+    """
+    prior_hook = sys.unraisablehook
+    if getattr(prior_hook, "_unsloth_httpcore_silencer", False):
+        return
+
+    def _hook(unraisable):
+        exc_value = getattr(unraisable, "exc_value", None)
+        obj = getattr(unraisable, "object", None)
+        obj_repr = repr(obj) if obj is not None else ""
+        if (
+            isinstance(exc_value, RuntimeError)
+            and "HTTP11ConnectionByteStream" in obj_repr
+            and ("cancel scope" in str(exc_value) or "GeneratorExit" in str(exc_value))
+        ):
+            return
+        prior_hook(unraisable)
+
+    _hook._unsloth_httpcore_silencer = True  # type: ignore[attr-defined]
+    sys.unraisablehook = _hook
+
+
+_install_httpcore_asyncgen_silencer()
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -109,8 +161,14 @@ from models.inference import (
     ResponsesInputMessage,
     ResponsesInputTextPart,
     ResponsesInputImagePart,
+    ResponsesOutputTextPart,
+    ResponsesUnknownContentPart,
+    ResponsesUnknownInputItem,
+    ResponsesFunctionCallInputItem,
+    ResponsesFunctionCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
+    ResponsesOutputFunctionCall,
     ResponsesUsage,
     ResponsesResponse,
     AnthropicMessagesRequest,
@@ -2259,49 +2317,229 @@ async def openai_embeddings(
 # =====================================================================
 
 
+def _translate_responses_tools_to_chat(
+    tools: Optional[list[dict]],
+) -> Optional[list[dict]]:
+    """Translate Responses-shape function tools to the Chat Completions nested shape.
+
+    Responses uses a flat shape per tool entry::
+
+        {"type": "function", "name": "...", "description": "...",
+         "parameters": {...}, "strict": true}
+
+    The Chat Completions / llama-server passthrough expects the nested shape::
+
+        {"type": "function",
+         "function": {"name": "...", "description": "...",
+                      "parameters": {...}, "strict": true}}
+
+    Only ``type=="function"`` entries are forwarded. Built-in Responses tools
+    (``web_search``, ``file_search``, ``mcp``, ...) are dropped because
+    llama-server does not implement them server-side; keeping them in the
+    request would produce an opaque upstream 400.
+    """
+    if not tools:
+        return None
+    out: list[dict] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+        fn: dict = {}
+        if "name" in tool:
+            fn["name"] = tool["name"]
+        if tool.get("description") is not None:
+            fn["description"] = tool["description"]
+        if tool.get("parameters") is not None:
+            fn["parameters"] = tool["parameters"]
+        if tool.get("strict") is not None:
+            fn["strict"] = tool["strict"]
+        out.append({"type": "function", "function": fn})
+    return out or None
+
+
+def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
+    """Translate a Responses-shape ``tool_choice`` to the Chat Completions shape.
+
+    String values (``"auto"``/``"none"``/``"required"``) pass through unchanged.
+    The Responses forcing object ``{"type": "function", "name": "X"}`` is
+    converted to Chat Completions' ``{"type": "function", "function": {"name": "X"}}``.
+    Unknown / built-in tool choices are forwarded as-is; llama-server ignores
+    what it doesn't recognise.
+    """
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        return tool_choice
+    if (
+        isinstance(tool_choice, dict)
+        and tool_choice.get("type") == "function"
+        and "name" in tool_choice
+        and "function" not in tool_choice
+    ):
+        return {"type": "function", "function": {"name": tool_choice["name"]}}
+    return tool_choice
+
+
+def _responses_message_text(content: Union[str, list]) -> str:
+    """Flatten a ResponsesInputMessage ``content`` into a plain text string.
+
+    Used for system/developer message hoisting and for assistant-replay
+    (``output_text``) messages when images/unknown parts are irrelevant.
+    Returns an empty string for empty input.
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for part in content or []:
+        if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):
+            parts.append(part.text)
+    return "\n".join(parts)
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
-    """Convert a ResponsesRequest into a list of ChatMessage for the completions backend."""
+    """Convert a ResponsesRequest's ``input`` into Chat-format ``ChatMessage`` list.
+
+    Handles the three input item shapes allowed by the Responses API:
+
+    - ``ResponsesInputMessage`` — regular chat messages (text or multimodal).
+    - ``ResponsesFunctionCallInputItem`` — a prior assistant tool call replayed
+      on a follow-up turn. Converted into an assistant message carrying a
+      Chat Completions ``tool_calls`` entry keyed by ``call_id``.
+    - ``ResponsesFunctionCallOutputInputItem`` — a tool result the client is
+      returning. Converted into a ``role="tool"`` message with ``tool_call_id``
+      set to the originating ``call_id`` so llama-server can reconcile the
+      call with its result.
+
+    System / developer content is collected from ``instructions`` *and* from
+    any ``role="system"`` / ``role="developer"`` entries in ``input``, then
+    merged into a single ``role="system"`` message placed at the top of the
+    returned list. This satisfies strict chat templates (harmony / gpt-oss,
+    Qwen3, ...) whose Jinja raises ``"System message must be at the
+    beginning."`` when more than one system message is present or when a
+    system message appears after a user turn — the exact pattern the OpenAI
+    Codex CLI hits, since Codex sets ``instructions`` *and* also sends a
+    developer message in ``input``.
+    """
+    system_parts: list[str] = []
     messages: list[ChatMessage] = []
 
-    # System / developer instructions
     if payload.instructions:
-        messages.append(ChatMessage(role = "system", content = payload.instructions))
+        system_parts.append(payload.instructions)
 
     # Simple string input
     if isinstance(payload.input, str):
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
+        if system_parts:
+            merged = "\n\n".join(p for p in system_parts if p)
+            return [ChatMessage(role = "system", content = merged), *messages]
         return messages
 
-    # List of ResponsesInputMessage
-    for msg in payload.input:
-        role = "system" if msg.role == "developer" else msg.role
+    for item in payload.input:
+        if isinstance(item, ResponsesFunctionCallInputItem):
+            messages.append(
+                ChatMessage(
+                    role = "assistant",
+                    content = None,
+                    tool_calls = [
+                        {
+                            "id": item.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.name,
+                                "arguments": item.arguments,
+                            },
+                        }
+                    ],
+                )
+            )
+            continue
 
-        if isinstance(msg.content, str):
-            messages.append(ChatMessage(role = role, content = msg.content))
-        else:
-            # Convert Responses content parts -> Chat content parts
-            parts = []
-            for part in msg.content:
-                if isinstance(part, ResponsesInputTextPart):
-                    parts.append(TextContentPart(type = "text", text = part.text))
-                elif isinstance(part, ResponsesInputImagePart):
-                    parts.append(
-                        ImageContentPart(
-                            type = "image_url",
-                            image_url = ImageUrl(url = part.image_url, detail = part.detail),
-                        )
+        if isinstance(item, ResponsesFunctionCallOutputInputItem):
+            # Chat Completions `role="tool"` requires a string content; if a
+            # Responses client sends a content-array output, serialize it.
+            output = item.output
+            if not isinstance(output, str):
+                output = json.dumps(output)
+            messages.append(
+                ChatMessage(
+                    role = "tool",
+                    tool_call_id = item.call_id,
+                    content = output,
+                )
+            )
+            continue
+
+        if isinstance(item, ResponsesUnknownInputItem):
+            # Reasoning items and any other unmodelled top-level Responses
+            # item types are silently dropped — llama-server-backed GGUFs
+            # cannot consume them and our lenient validation let them in so
+            # unrelated turns don't 422.
+            continue
+
+        # ResponsesInputMessage — hoist system/developer to the top, merge.
+        if item.role in ("system", "developer"):
+            hoisted = _responses_message_text(item.content)
+            if hoisted:
+                system_parts.append(hoisted)
+            continue
+
+        if isinstance(item.content, str):
+            messages.append(ChatMessage(role = item.role, content = item.content))
+            continue
+
+        # Assistant-replay turns come back as content = [output_text, ...].
+        # Chat Completions' assistant role expects a plain string, not a
+        # multimodal content array, so flatten output_text (and any stray
+        # input_text / unknown text) to a single string.
+        if item.role == "assistant":
+            text = _responses_message_text(item.content)
+            if text:
+                messages.append(ChatMessage(role = "assistant", content = text))
+            continue
+
+        # User (and any other remaining roles) — keep multimodal when
+        # present, drop unknown content parts silently.
+        parts: list = []
+        for part in item.content:
+            if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):
+                parts.append(TextContentPart(type = "text", text = part.text))
+            elif isinstance(part, ResponsesInputImagePart):
+                parts.append(
+                    ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = part.image_url, detail = part.detail),
                     )
-            messages.append(ChatMessage(role = role, content = parts if parts else ""))
+                )
+            # ResponsesUnknownContentPart and anything else: drop.
+        if parts:
+            # Collapse single-text-part content to a plain string so roles
+            # that reject multimodal arrays (e.g. legacy templates) still
+            # accept the message.
+            if len(parts) == 1 and isinstance(parts[0], TextContentPart):
+                messages.append(ChatMessage(role = item.role, content = parts[0].text))
+            else:
+                messages.append(ChatMessage(role = item.role, content = parts))
 
+    if system_parts:
+        merged = "\n\n".join(p for p in system_parts if p)
+        return [ChatMessage(role = "system", content = merged), *messages]
     return messages
 
 
 def _build_chat_request(
     payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
 ) -> ChatCompletionRequest:
-    """Build a ChatCompletionRequest from a ResponsesRequest."""
-    chat_kwargs = dict(
+    """Build a ChatCompletionRequest from a ResponsesRequest.
+
+    Tools and ``tool_choice`` are translated from the flat Responses shape to
+    the nested Chat Completions shape here so the existing #5099
+    ``/v1/chat/completions`` client-side pass-through picks them up without
+    further modification.
+    """
+    chat_kwargs: dict = dict(
         model = payload.model,
         messages = messages,
         stream = stream,
@@ -2312,7 +2550,46 @@ def _build_chat_request(
         chat_kwargs["top_p"] = payload.top_p
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
-    return ChatCompletionRequest(**chat_kwargs)
+
+    chat_tools = _translate_responses_tools_to_chat(payload.tools)
+    if chat_tools is not None:
+        chat_kwargs["tools"] = chat_tools
+
+    chat_tool_choice = _translate_responses_tool_choice_to_chat(payload.tool_choice)
+    if chat_tool_choice is not None:
+        chat_kwargs["tool_choice"] = chat_tool_choice
+
+    req = ChatCompletionRequest(**chat_kwargs)
+    # `parallel_tool_calls` is not a first-class field on ChatCompletionRequest,
+    # but the model allows extras and _build_openai_passthrough_body forwards
+    # only explicitly-known fields. Llama-server does not currently implement
+    # parallel_tool_calls semantics, so we accept-and-ignore it on the
+    # Responses side to avoid breaking SDK clients that always send it.
+    return req
+
+
+def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
+    """Map Chat Completions ``tool_calls`` into Responses ``function_call`` output items.
+
+    The Chat Completions id (``call_xxx``) is the shared correlation key across
+    turns in the OpenAI Responses API — it is stored as ``call_id`` on the
+    output item and must be echoed back by the client as
+    ``function_call_output.call_id`` on the next turn.
+    """
+    items: list[dict] = []
+    for tc in tool_calls:
+        if tc.get("type") != "function":
+            continue
+        fn = tc.get("function") or {}
+        items.append(
+            ResponsesOutputFunctionCall(
+                call_id = tc.get("id", ""),
+                name = fn.get("name", ""),
+                arguments = fn.get("arguments", "") or "",
+                status = "completed",
+            ).model_dump()
+        )
+    return items
 
 
 async def _responses_non_streaming(
@@ -2332,35 +2609,44 @@ async def _responses_non_streaming(
     else:
         body = result
 
-    # Extract content and usage from the Chat Completions response
     choices = body.get("choices", [])
     text = ""
+    tool_calls: list[dict] = []
     if choices:
-        msg = choices[0].get("message", {})
+        msg = choices[0].get("message", {}) or {}
         text = msg.get("content", "") or ""
+        tool_calls = msg.get("tool_calls") or []
 
     usage_data = body.get("usage", {})
     input_tokens = usage_data.get("prompt_tokens", 0)
     output_tokens = usage_data.get("completion_tokens", 0)
 
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+
+    # Responses API emits each tool call as its own top-level output item,
+    # alongside an optional assistant text message. Emit the text message
+    # only when the model actually produced content, so clients that expect
+    # a pure tool-call turn (finish_reason="tool_calls") don't see a spurious
+    # empty message item.
+    output_items: list[dict] = []
+    if text:
+        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+        output_items.append(
+            ResponsesOutputMessage(
+                id = msg_id,
+                status = "completed",
+                role = "assistant",
+                content = [ResponsesOutputTextContent(text = text)],
+            ).model_dump()
+        )
+    output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
 
     response = ResponsesResponse(
         id = resp_id,
         created_at = int(time.time()),
         status = "completed",
         model = body.get("model", payload.model),
-        output = [
-            ResponsesOutputMessage(
-                id = msg_id,
-                status = "completed",
-                role = "assistant",
-                content = [
-                    ResponsesOutputTextContent(text = text),
-                ],
-            ),
-        ],
+        output = output_items,
         usage = ResponsesUsage(
             input_tokens = input_tokens,
             output_tokens = output_tokens,
@@ -2379,24 +2665,100 @@ async def _responses_stream(
     messages: list[ChatMessage],
     request: Request,
 ):
-    """Handle a streaming Responses API call, emitting named SSE events."""
+    """Handle a streaming Responses API call, emitting named SSE events.
+
+    For GGUF models the request goes directly to llama-server's
+    ``/v1/chat/completions`` endpoint from inside the StreamingResponse
+    child task — a single httpx lifecycle, a single async generator.
+    Wrapping the existing ``openai_chat_completions`` pass-through (which
+    already does its own httpx lifecycle) stacks two generators: Python
+    3.13 + httpcore 1.0.x then loses the close-propagation chain on the
+    innermost ``HTTP11ConnectionByteStream`` at asyncgen finalisation,
+    tripping "Attempted to exit cancel scope in a different task" /
+    "async generator ignored GeneratorExit". The direct path avoids that
+    altogether. Non-GGUF falls back to the wrapper (which doesn't use
+    httpx, so the issue doesn't apply).
+
+    Text deltas arrive as ``response.output_text.delta`` on a single
+    ``message`` output item at ``output_index=0``. Each tool call from
+    ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
+    output item (one per distinct ``tool_calls[].index``), and relayed as
+    ``response.function_call_arguments.delta`` / ``.done`` events so clients
+    (Codex, OpenAI Python SDK) can reconstruct the call incrementally and
+    reply with a ``function_call_output`` item on the next turn.
+    """
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-    item_id = f"item_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
-    result = await openai_chat_completions(chat_req, request)
+
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        # The direct pass-through is GGUF-only. Non-GGUF /v1/responses
+        # streaming isn't a Codex-compatible path today and wrapping the
+        # transformers backend's streaming generator here would re-
+        # introduce the double-layer asyncgen close pattern that produces
+        # "Attempted to exit cancel scope in a different task" on Python
+        # 3.13. Surface a typed 400 so the client sees a useful error
+        # instead of a dangling stream.
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Streaming /v1/responses requires a GGUF model loaded via "
+                "llama-server. Use non-streaming /v1/responses, "
+                "/v1/chat/completions, or load a GGUF model."
+            ),
+        )
+
+    body = _build_openai_passthrough_body(chat_req)
+    target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
         full_text = ""
         input_tokens = 0
         output_tokens = 0
+        # Per-tool-call state keyed by the Chat Completions `tool_calls[].index`
+        # which stays stable across chunks for the same call. Values are:
+        #   {output_index, item_id, call_id, name, arguments, opened}
+        tool_call_state: dict[int, dict] = {}
+        # Text message lives at output_index 0; tool calls claim 1, 2, ...
+        next_output_index = 1
+
+        def _snapshot_output() -> list[dict]:
+            """Snapshot of all completed output items for response.completed."""
+            items: list[dict] = [
+                {
+                    "type": "message",
+                    "id": msg_id,
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": full_text,
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ]
+            for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+                items.append(
+                    {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": st["arguments"],
+                    }
+                )
+            return items
 
         # ── Preamble events ──
         yield f"event: response.created\ndata: {json.dumps({'type': 'response.created', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'in_progress', 'model': payload.model, 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}})}\n\n"
 
-        # output_item.added
+        # output_item.added (text message at output_index 0)
         output_item = {
             "type": "message",
             "id": msg_id,
@@ -2410,62 +2772,215 @@ async def _responses_stream(
         content_part = {"type": "output_text", "text": "", "annotations": []}
         yield f"event: response.content_part.added\ndata: {json.dumps({'type': 'response.content_part.added', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': content_part})}\n\n"
 
-        # ── Stream delta events from the inner chat completions stream ──
-        if isinstance(result, StreamingResponse):
-            async for raw_chunk in result.body_iterator:
-                if isinstance(raw_chunk, bytes):
-                    raw_chunk = raw_chunk.decode("utf-8", errors = "replace")
+        # ── Direct httpx lifecycle to llama-server ──
+        # Full same-task open + close, identical pattern to
+        # _openai_passthrough_stream and _anthropic_passthrough_stream:
+        # no `async with`, explicit aclose of lines_iter BEFORE resp /
+        # client so the innermost httpcore byte stream is finalised in
+        # this task (not via Python's asyncgen GC in a sibling task).
+        client = httpx.AsyncClient(timeout = 600)
+        resp = None
+        lines_iter = None
+        try:
+            req = client.build_request("POST", target_url, json = body)
+            try:
+                resp = await client.send(req, stream = True)
+            except httpx.RequestError as e:
+                logger.error("responses stream: upstream unreachable: %s", e)
+                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': 502, 'message': _friendly_error(e)}}})}\n\n"
+                return
 
-                for line in raw_chunk.split("\n"):
-                    line = line.strip()
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str == "[DONE]":
-                        continue
-                    try:
-                        chunk_data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+            if resp.status_code != 200:
+                err_bytes = await resp.aread()
+                err_text = err_bytes.decode("utf-8", errors = "replace")
+                logger.error(
+                    "responses stream upstream error: status=%s body=%s",
+                    resp.status_code,
+                    err_text[:500],
+                )
+                yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
+                return
 
-                    choices = chunk_data.get("choices", [])
-                    if not choices:
-                        # Check for usage in final chunk
-                        usage = chunk_data.get("usage")
-                        if usage:
-                            input_tokens = usage.get("prompt_tokens", input_tokens)
-                            output_tokens = usage.get(
-                                "completion_tokens", output_tokens
-                            )
-                        continue
+            lines_iter = resp.aiter_lines()
+            async for raw_line in lines_iter:
+                if await request.is_disconnected():
+                    break
+                if not raw_line:
+                    continue
+                if not raw_line.startswith("data: "):
+                    continue
+                data_str = raw_line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk_data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
 
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content")
-                    if content:
-                        full_text += content
-                        delta_event = {
-                            "type": "response.output_text.delta",
-                            "item_id": msg_id,
-                            "output_index": 0,
-                            "content_index": 0,
-                            "delta": content,
-                        }
-                        yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
-
-                    # Check for usage in chunk
+                choices = chunk_data.get("choices", [])
+                if not choices:
                     usage = chunk_data.get("usage")
                     if usage:
                         input_tokens = usage.get("prompt_tokens", input_tokens)
                         output_tokens = usage.get("completion_tokens", output_tokens)
+                    continue
 
-        # ── Closing events ──
-        # output_text.done
+                delta = choices[0].get("delta", {}) or {}
+                content = delta.get("content")
+                if content:
+                    full_text += content
+                    delta_event = {
+                        "type": "response.output_text.delta",
+                        "item_id": msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": content,
+                    }
+                    yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    st = tool_call_state.get(idx)
+                    fn = tc.get("function") or {}
+                    if st is None:
+                        # First chunk for this tool call — allocate an
+                        # output_index and emit output_item.added.
+                        st = {
+                            "output_index": next_output_index,
+                            "item_id": f"fc_{uuid.uuid4().hex[:12]}",
+                            "call_id": tc.get("id") or "",
+                            "name": fn.get("name") or "",
+                            "arguments": "",
+                            "opened": False,
+                        }
+                        next_output_index += 1
+                        tool_call_state[idx] = st
+                    else:
+                        # Later chunks sometimes carry the id/name only
+                        # once; merge when present.
+                        if tc.get("id") and not st["call_id"]:
+                            st["call_id"] = tc["id"]
+                        if fn.get("name") and not st["name"]:
+                            st["name"] = fn["name"]
+
+                    if not st["opened"] and st["call_id"] and st["name"]:
+                        item_added = {
+                            "type": "response.output_item.added",
+                            "output_index": st["output_index"],
+                            "item": {
+                                "type": "function_call",
+                                "id": st["item_id"],
+                                "status": "in_progress",
+                                "call_id": st["call_id"],
+                                "name": st["name"],
+                                "arguments": "",
+                            },
+                        }
+                        yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                        st["opened"] = True
+
+                    arg_delta = fn.get("arguments") or ""
+                    if arg_delta and st["opened"]:
+                        st["arguments"] += arg_delta
+                        args_delta_event = {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": st["item_id"],
+                            "output_index": st["output_index"],
+                            "delta": arg_delta,
+                        }
+                        yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(args_delta_event)}\n\n"
+                    elif arg_delta:
+                        # Buffer the args until we can open the item
+                        # (id/name arrive in the same chunk as the first
+                        # arg delta for some models — but if not, stash).
+                        st["arguments"] += arg_delta
+
+                usage = chunk_data.get("usage")
+                if usage:
+                    input_tokens = usage.get("prompt_tokens", input_tokens)
+                    output_tokens = usage.get("completion_tokens", output_tokens)
+        except Exception as e:
+            logger.error("responses stream error: %s", e)
+        finally:
+            if lines_iter is not None:
+                try:
+                    await lines_iter.aclose()
+                except Exception:
+                    pass
+            if resp is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+        # ── Closing events for tool calls ──
+        for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
+            # If id/name never arrived (malformed upstream), synthesise so
+            # the client still sees a coherent frame sequence.
+            if not st["opened"]:
+                if not st["call_id"]:
+                    st["call_id"] = f"call_{uuid.uuid4().hex[:12]}"
+                item_added = {
+                    "type": "response.output_item.added",
+                    "output_index": st["output_index"],
+                    "item": {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "in_progress",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": "",
+                    },
+                }
+                yield f"event: response.output_item.added\ndata: {json.dumps(item_added)}\n\n"
+                if st["arguments"]:
+                    yield (
+                        "event: response.function_call_arguments.delta\n"
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": st["item_id"],
+                                "output_index": st["output_index"],
+                                "delta": st["arguments"],
+                            }
+                        )
+                        + "\n\n"
+                    )
+                st["opened"] = True
+
+            args_done = {
+                "type": "response.function_call_arguments.done",
+                "item_id": st["item_id"],
+                "output_index": st["output_index"],
+                "name": st["name"],
+                "arguments": st["arguments"],
+            }
+            yield f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done)}\n\n"
+
+            item_done = {
+                "type": "response.output_item.done",
+                "output_index": st["output_index"],
+                "item": {
+                    "type": "function_call",
+                    "id": st["item_id"],
+                    "status": "completed",
+                    "call_id": st["call_id"],
+                    "name": st["name"],
+                    "arguments": st["arguments"],
+                },
+            }
+            yield f"event: response.output_item.done\ndata: {json.dumps(item_done)}\n\n"
+
+        # ── Closing events for text message ──
         yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"
 
-        # content_part.done
         yield f"event: response.content_part.done\ndata: {json.dumps({'type': 'response.content_part.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'part': {'type': 'output_text', 'text': full_text, 'annotations': []}})}\n\n"
 
-        # output_item.done
         yield f"event: response.output_item.done\ndata: {json.dumps({'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'message', 'id': msg_id, 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]}})}\n\n"
 
         # response.completed
@@ -2478,21 +2993,7 @@ async def _responses_stream(
                 "created_at": created_at,
                 "status": "completed",
                 "model": payload.model,
-                "output": [
-                    {
-                        "type": "message",
-                        "id": msg_id,
-                        "status": "completed",
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": full_text,
-                                "annotations": [],
-                            }
-                        ],
-                    }
-                ],
+                "output": _snapshot_output(),
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
@@ -2541,6 +3042,64 @@ async def openai_responses(
 # =====================================================================
 
 
+def _normalize_anthropic_openai_images(
+    openai_messages: list[dict], is_vision: bool
+) -> bool:
+    """Enforce the vision guard on translated Anthropic messages and
+    normalize any ``image_url`` parts with base64 data URLs to PNG.
+
+    llama-server's stb_image only handles a few formats (JPEG/PNG/BMP/…);
+    Anthropic clients commonly send JPEG or WebP, and Claude Code sends
+    WebP. Re-encoding everything to PNG mirrors the behavior of
+    `_openai_messages_for_passthrough` / the GGUF branch of
+    `/v1/chat/completions` so the two endpoints agree.
+
+    Mutates ``openai_messages`` in place. Returns ``True`` when any
+    image part was seen (so the caller can skip a second scan). Raises
+    HTTPException(400) when images are present but the active model is
+    not a vision model, or when an image cannot be decoded.
+    """
+    from PIL import Image
+
+    has_image = False
+    for msg in openai_messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") != "image_url":
+                continue
+
+            has_image = True
+            if not is_vision:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Image provided but current GGUF model does not support vision.",
+                )
+
+            url = (part.get("image_url") or {}).get("url", "")
+            if not url.startswith("data:"):
+                # Remote URLs are forwarded as-is; llama-server will
+                # fetch (or fail) per its own support matrix.
+                continue
+
+            try:
+                _, b64data = url.split(",", 1)
+                raw = base64.b64decode(b64data)
+                img = Image.open(io.BytesIO(raw)).convert("RGB")
+                buf = io.BytesIO()
+                img.save(buf, format = "PNG")
+                png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"Failed to process image: {e}",
+                )
+            part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
+
+    return has_image
+
+
 @router.post("/messages")
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
@@ -2571,6 +3130,12 @@ async def anthropic_messages(
         payload.system,
     )
 
+    # Enforce vision guard + re-encode embedded images to PNG so the
+    # Anthropic endpoint matches the behavior of /v1/chat/completions.
+    _has_image = _normalize_anthropic_openai_images(
+        openai_messages, llama_backend.is_vision
+    )
+
     temperature = payload.temperature if payload.temperature is not None else 0.6
     top_p = payload.top_p if payload.top_p is not None else 0.95
     top_k = payload.top_k if payload.top_k is not None else 20
@@ -2597,7 +3162,11 @@ async def anthropic_messages(
     # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
-    server_tools = payload.enable_tools and llama_backend.supports_tools
+    # Server-side agentic loop doesn't support multimodal input — matches
+    # the `not image_b64` gate in /v1/chat/completions.
+    server_tools = (
+        payload.enable_tools and llama_backend.supports_tools and not _has_image
+    )
     client_tools = (
         not server_tools
         and payload.tools

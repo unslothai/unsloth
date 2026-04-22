@@ -146,6 +146,7 @@ type ChatRuntimeStore = {
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
+  cancelByThreadId: Record<string, () => void>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
@@ -189,6 +190,8 @@ type ChatRuntimeStore = {
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
+  registerThreadCancel: (threadId: string, cancel: () => void) => void;
+  clearThreadCancel: (threadId: string) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
@@ -218,6 +221,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   models: [],
   loras: [],
   runningByThreadId: {},
+  cancelByThreadId: {},
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
@@ -276,6 +280,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
         delete next[threadId];
       }
       return { runningByThreadId: next };
+    }),
+  registerThreadCancel: (threadId, cancel) =>
+    set((state) => {
+      const next = { ...state.cancelByThreadId };
+      next[threadId] = cancel;
+      return { cancelByThreadId: next };
+    }),
+  clearThreadCancel: (threadId) =>
+    set((state) => {
+      if (!(threadId in state.cancelByThreadId)) return state;
+      const next = { ...state.cancelByThreadId };
+      delete next[threadId];
+      return { cancelByThreadId: next };
     }),
   setAutoTitle: (autoTitle) =>
     set(() => {

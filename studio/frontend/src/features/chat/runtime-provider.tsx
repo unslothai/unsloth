@@ -681,9 +681,16 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
-      aui.threads().switchToThread(threadId);
+      const switchResult = aui.threads().switchToThread(threadId) as unknown;
+      if (switchResult && typeof (switchResult as Promise<void>).catch === "function") {
+        void (switchResult as Promise<void>).catch(() => {
+          if (syncActiveThreadId) {
+            useChatRuntimeStore.getState().setActiveThreadId(null);
+          }
+        });
+      }
     }
-  }, [aui, isLoading, mainThreadId, threadId]);
+  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
 
   useEffect(() => {
     if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
@@ -730,6 +737,34 @@ function ActiveThreadSync({
   return null;
 }
 
+// Exposes the current thread's cancelRun() via the shared store so external
+// surfaces (e.g. the sidebar trash button) can stop an in-flight stream
+// before deleting the thread — mirroring the Stop → Trash sequence.
+function CancelRegistrar(): ReactElement | null {
+  const aui = useAui();
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const isRunning = useChatRuntimeStore((s) =>
+    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
+  );
+
+  useEffect(() => {
+    if (!mainThreadId || !isRunning) return;
+    const cancel = () => {
+      try {
+        aui.thread().cancelRun();
+      } catch {
+        // Run may have already ended between the caller's read and this call.
+      }
+    };
+    useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
+    return () => {
+      useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
+    };
+  }, [aui, mainThreadId, isRunning]);
+
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -762,6 +797,7 @@ export function ChatRuntimeProvider({
       <ActiveThreadSync
         enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
       />
+      <CancelRegistrar />
       {initialThreadId && (
         <ThreadAutoSwitch
           threadId={initialThreadId}
