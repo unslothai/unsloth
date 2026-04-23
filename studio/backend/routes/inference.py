@@ -1697,12 +1697,13 @@ async def openai_chat_completions(
                     _think_match = _re.search(
                         r"<think>(.*?)</think>\s*",
                         full_text,
-                        flags=_re.DOTALL,
+                        flags = _re.DOTALL,
                     )
                     if _think_match:
                         reasoning_text = _think_match.group(1).strip() or None
                         full_text = (
-                            full_text[: _think_match.start()] + full_text[_think_match.end() :]
+                            full_text[: _think_match.start()]
+                            + full_text[_think_match.end() :]
                         ).strip()
 
                 response = ChatCompletion(
@@ -1894,12 +1895,13 @@ async def openai_chat_completions(
                 _think_match_ns = _re.search(
                     r"<think>(.*?)</think>\s*",
                     full_text,
-                    flags=_re.DOTALL,
+                    flags = _re.DOTALL,
                 )
                 if _think_match_ns:
                     reasoning_text_ns = _think_match_ns.group(1).strip() or None
                     full_text = (
-                        full_text[: _think_match_ns.start()] + full_text[_think_match_ns.end() :]
+                        full_text[: _think_match_ns.start()]
+                        + full_text[_think_match_ns.end() :]
                     ).strip()
 
             response = ChatCompletion(

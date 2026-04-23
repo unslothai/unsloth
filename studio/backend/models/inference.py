@@ -549,7 +549,7 @@ class CompletionMessage(BaseModel):
     content: str
     reasoning_content: Optional[str] = Field(
         None,
-        description=(
+        description = (
             "Reasoning/thinking text split out of `content`. Populated for non-streaming "
             "responses when the model emits <think>...</think> blocks. Follows the DeepSeek / "
             "llama-server --reasoning-format convention so OpenAI-compatible consumers "
