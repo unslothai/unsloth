@@ -206,6 +206,13 @@ def _detect_arch(hf_model) -> str:
         return "gemma4"
     # Check MoE before dense; ``Qwen3MoeForCausalLM`` contains both
     # ``"qwen3moe"`` and ``"qwen3"`` substrings.
+    # Same for Qwen3.5 / Qwen3.6 — check qwen3_5 variants BEFORE
+    # plain qwen3 so ``Qwen3_5MoeForConditionalGeneration`` doesn't get
+    # dispatched to the Qwen3 backend.
+    if "qwen3_5moe" in lowered or "qwen3_5_moe" in lowered or "qwen35moe" in lowered:
+        return "qwen3_5_moe"
+    if "qwen3_5" in lowered or "qwen35" in lowered:
+        return "qwen3_5"
     if "qwen3moe" in lowered or "qwen3_moe" in lowered:
         return "qwen3_moe"
     if "qwen3" in lowered:
@@ -215,8 +222,9 @@ def _detect_arch(hf_model) -> str:
     if "llama" in lowered:
         return "llama3"
     raise NotImplementedError(
-        "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Qwen3-MoE, gpt-oss, "
-        f"Llama-3, Gemma-4 (dense + MoE) today; got {type(hf_model).__name__}. "
+        "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Qwen3-MoE, "
+        "Qwen3.5 / Qwen3.6 (dense + MoE), gpt-oss, Llama-3, Gemma-4 "
+        f"(dense + MoE) today; got {type(hf_model).__name__}. "
         "Unset the env var or use vLLM."
     )
 
@@ -421,6 +429,9 @@ class FlexEngine:
         elif arch == "gpt_oss":
             from .flex_gpt_oss import FlexGptOssInference
             Impl = FlexGptOssInference
+        elif arch in ("qwen3_5", "qwen3_5_moe"):
+            from .flex_qwen3_5 import FlexQwen3_5Inference
+            Impl = FlexQwen3_5Inference
         else:
             Impl = FlexInference
         # Pass the cuMem allocator through so the impl can wrap ONLY
@@ -783,7 +794,7 @@ class FlexEngine:
 
         # Materialise the pristine source the first time we see a LoRA.
         if self._pristine_base is None:
-            if self.arch in ("qwen3_moe", "gpt_oss", "gemma4_moe"):
+            if self.arch in ("qwen3_moe", "gpt_oss", "gemma4_moe", "qwen3_5_moe"):
                 # For MoE architectures (Qwen3-MoE, gpt-oss, gemma4-MoE),
                 # LoRA lives on the stacked-expert ParamWrapper and never
                 # merges in-place into the expert tensors during training

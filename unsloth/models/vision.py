@@ -614,7 +614,7 @@ class FastBaseModel:
             # vision-model path when the flex backend is selected; the
             # vLLM-only compat list below still gates the default path.
             _use_flex = os.environ.get("UNSLOTH_FAST_INFERENCE", "0") == "1"
-            _flex_allowed = {"gemma4"}
+            _flex_allowed = {"gemma4", "qwen3_5", "qwen3_5_moe"}
             if not (
                 any(arch in VLLM_SUPPORTED_VLM for arch in model_types)
                 or (_use_flex and any(arch in _flex_allowed for arch in model_types))
