@@ -466,6 +466,14 @@ class FlexQwen3_5Inference:
         self.base_model = base_model
         self.peft_model = peft_model
         self.max_batch_size = max_batch_size
+        # PageTable reserves batch_idx=0 as a no-op slot, so the first
+        # ``max_batch_size`` user-allocatable slots are 1..max_batch_size.
+        # Bump the page table's capacity by 1 so the user actually gets
+        # ``max_batch_size`` concurrent sequences (otherwise bs=N requests
+        # serialise into bs=N-1 + bs=1, collapsing throughput — see
+        # commit on this file for the bs=8 regression diagnosis).
+        page_table_cap = max_batch_size + 1
+        self._page_table_cap = page_table_cap
         self.max_seq_length = max_seq_length
         self.page_size = page_size
         self.max_new_tokens = max_new_tokens
@@ -505,16 +513,16 @@ class FlexQwen3_5Inference:
             self.page_table = PageTable(
                 n_pages=n_pages,
                 page_size=page_size,
-                max_batch_size=max_batch_size,
+                max_batch_size=page_table_cap,
                 device=self.device.type,
             )
             _patch_qwen3_5_full_attn_forwards(self.text_model, self.page_table)
 
         self.input_pos_buffer = torch.zeros(
-            max_batch_size, dtype=torch.int32, device=self.device,
+            page_table_cap, dtype=torch.int32, device=self.device,
         )
         self.block_mask_logical = self.page_table.create_causal_blockmask(
-            B=max_batch_size, L=max_seq_length,
+            B=page_table_cap, L=max_seq_length,
         )
 
         # Pre-allocate per-slot LinearAttention caches. Each sequence's
@@ -522,7 +530,7 @@ class FlexQwen3_5Inference:
         # we reset it via .reset() at prefill so the conv/recurrent
         # states start clean.
         self._linear_caches = [
-            self._build_linear_cache() for _ in range(max_batch_size)
+            self._build_linear_cache() for _ in range(page_table_cap)
         ]
 
         # Static state buffers for CUDA-graph-captured batched decode.
@@ -541,11 +549,11 @@ class FlexQwen3_5Inference:
         for layer_idx in self._linear_layer_indices:
             la = self.text_model.layers[layer_idx].linear_attn
             self._linear_conv_states[layer_idx] = torch.zeros(
-                max_batch_size, la.conv_dim, la.conv_kernel_size,
+                page_table_cap, la.conv_dim, la.conv_kernel_size,
                 dtype=la.conv1d.weight.dtype, device=self.device,
             )
             self._linear_recurrent_states[layer_idx] = torch.zeros(
-                max_batch_size, la.num_v_heads, la.head_k_dim, la.head_v_dim,
+                page_table_cap, la.num_v_heads, la.head_k_dim, la.head_v_dim,
                 dtype=torch.float32, device=self.device,
             )
             try:
