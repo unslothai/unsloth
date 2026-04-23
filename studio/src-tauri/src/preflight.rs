@@ -57,20 +57,15 @@ fn release_auto_repair() -> bool {
 }
 
 fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPreflightResult {
-    let managed_bin = match &managed {
-        ManagedProbe::Ready { bin } | ManagedProbe::Stale { bin, .. } => Some(bin.clone()),
-        ManagedProbe::Missing => None,
-    };
-
-    match backend {
-        BackendProbe::Ready { port } => DesktopPreflightResult {
+    match (backend, managed) {
+        (BackendProbe::Ready { port }, ManagedProbe::Ready { bin }) => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::AttachedReady,
             reason: None,
             port: Some(port),
             can_auto_repair: false,
-            managed_bin,
+            managed_bin: Some(bin),
         },
-        BackendProbe::Old { .. } | BackendProbe::Missing => match managed {
+        (_, managed) => match managed {
             ManagedProbe::Ready { bin } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedReady,
                 reason: None,
@@ -359,7 +354,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn compatible_backend_wins_over_stale_managed_install() {
+    fn compatible_backend_does_not_win_over_stale_managed_install() {
         let result = choose_preflight(
             ManagedProbe::Stale {
                 bin: PathBuf::from("/managed/unsloth"),
@@ -370,11 +365,11 @@ mod tests {
 
         assert_eq!(
             result.disposition,
-            DesktopPreflightDisposition::AttachedReady
+            DesktopPreflightDisposition::ManagedStale
         );
-        assert_eq!(result.port, Some(8000));
-        assert_eq!(result.reason, None);
-        assert!(!result.can_auto_repair);
+        assert_eq!(result.port, None);
+        assert_eq!(result.reason, Some("old cli".to_string()));
+        assert_eq!(result.can_auto_repair, release_auto_repair());
         assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
     }
 
@@ -397,14 +392,14 @@ mod tests {
     }
 
     #[test]
-    fn compatible_backend_wins_over_missing_managed_install() {
+    fn compatible_backend_does_not_win_over_missing_managed_install() {
         let result = choose_preflight(ManagedProbe::Missing, BackendProbe::Ready { port: 8000 });
 
         assert_eq!(
             result.disposition,
-            DesktopPreflightDisposition::AttachedReady
+            DesktopPreflightDisposition::NotInstalled
         );
-        assert_eq!(result.port, Some(8000));
+        assert_eq!(result.port, None);
         assert_eq!(result.managed_bin, None);
         assert!(!result.can_auto_repair);
     }
