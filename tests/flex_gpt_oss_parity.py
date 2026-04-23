@@ -32,11 +32,16 @@ CHAT_PROMPTS = [
 ]
 
 
-def _run_flex(args, dtype):
+def _run_flex(args, dtype, *, capture: bool, lora_path=None):
     import torch
     os.environ["UNSLOTH_FAST_INFERENCE"] = "1"
     import unsloth  # noqa
     from unsloth import FastLanguageModel
+
+    if not capture:
+        # Force the eager decode path by stubbing capture_decode_cudagraph.
+        from unsloth.inference.flex_gpt_oss import FlexGptOssInference
+        FlexGptOssInference.capture_decode_cudagraph = lambda self: None
 
     model, tok = FastLanguageModel.from_pretrained(
         model_name=args.model,
@@ -47,6 +52,10 @@ def _run_flex(args, dtype):
         max_batch_size=4,
         gpu_memory_utilization=0.6,
     )
+
+    if lora_path is not None:
+        model.load_adapter(lora_path, adapter_name="default")
+        print(f"[parity-flex] LoRA attached from {lora_path}")
 
     prompts = [
         tok.apply_chat_template(
@@ -69,7 +78,7 @@ def _run_flex(args, dtype):
     return token_ids, texts, tok
 
 
-def _run_hf(args, dtype):
+def _run_hf(args, dtype, *, lora_path=None):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -79,6 +88,12 @@ def _run_hf(args, dtype):
         attn_implementation="eager",
     )
     model.eval()
+
+    if lora_path is not None:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, lora_path)
+        model.eval()
+        print(f"[parity-hf] LoRA attached from {lora_path}")
 
     if tok.pad_token_id is None:
         tok.pad_token_id = tok.eos_token_id
@@ -117,8 +132,10 @@ def _run_hf(args, dtype):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="unsloth/gpt-oss-20b-BF16")
-    p.add_argument("--backend", choices=["flex", "hf"], required=True)
-    p.add_argument("--max_new_tokens", type=int, default=24)
+    p.add_argument("--backend", choices=["flex", "flex_eager", "hf"], required=True)
+    p.add_argument("--max_new_tokens", type=int, default=64)
+    p.add_argument("--lora_path", default=None,
+                   help="optional LoRA adapter dir to attach before decode")
     p.add_argument("--max_seq_length", type=int, default=1024)
     p.add_argument("--out_dir", default="async_task_outputs/qwen3_moe_grpo_bench_v2")
     args = p.parse_args()
@@ -127,13 +144,16 @@ def main():
     dtype = torch.bfloat16
 
     if args.backend == "flex":
-        token_ids, texts, _ = _run_flex(args, dtype)
+        token_ids, texts, _ = _run_flex(args, dtype, capture=True, lora_path=args.lora_path)
+    elif args.backend == "flex_eager":
+        token_ids, texts, _ = _run_flex(args, dtype, capture=False, lora_path=args.lora_path)
     else:
-        token_ids, texts, _ = _run_hf(args, dtype)
+        token_ids, texts, _ = _run_hf(args, dtype, lora_path=args.lora_path)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"parity_gptoss_{args.backend}.json"
+    suffix = "_lora" if args.lora_path else ""
+    out_path = out_dir / f"parity_gptoss_{args.backend}{suffix}.json"
     with open(out_path, "w") as f:
         json.dump(
             {
