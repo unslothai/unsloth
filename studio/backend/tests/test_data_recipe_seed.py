@@ -151,6 +151,4 @@ def test_unstructured_upload_quota_ignores_client_supplied_ids(monkeypatch):
         assert first.status == "ok"
 
         with pytest.raises(HTTPException, match = "Total upload limit"):
-            asyncio.run(
-                do_upload("b.txt", b"B" * 9, "deadbeef,cafebabe,not_a_real_id")
-            )
+            asyncio.run(do_upload("b.txt", b"B" * 9, "deadbeef,cafebabe,not_a_real_id"))
