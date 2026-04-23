@@ -87,6 +87,84 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 
+_TOOL_TEMPLATE_MARKERS = (
+    "{%- if tools %}",
+    "{%- if tools -%}",
+    "{% if tools %}",
+    "{% if tools -%}",
+    '"role" == "tool"',
+    "'role' == 'tool'",
+    'message.role == "tool"',
+    "message.role == 'tool'",
+)
+
+
+def detect_reasoning_flags(
+    chat_template: Optional[str],
+    model_identifier: Optional[str] = None,
+    *,
+    log_source: Optional[str] = None,
+) -> dict:
+    """Classify a chat template's reasoning and tool-calling capabilities.
+
+    Returns a dict with the same five keys populated by the GGUF sniffer:
+    ``supports_reasoning``, ``reasoning_style``
+    (``"enable_thinking"`` | ``"reasoning_effort"``),
+    ``reasoning_always_on``, ``supports_preserve_thinking``, and
+    ``supports_tools``. Used by both the llama-server backend at load
+    time and the safetensors/transformers paths in ``routes/inference``
+    so the two agree on what the frontend will see.
+    """
+    flags = {
+        "supports_reasoning": False,
+        "reasoning_style": "enable_thinking",
+        "reasoning_always_on": False,
+        "supports_preserve_thinking": False,
+        "supports_tools": False,
+    }
+    if not chat_template:
+        return flags
+    tpl = chat_template
+    prefix = f"{log_source}: " if log_source else ""
+
+    if "enable_thinking" in tpl:
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking"
+        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+    elif "reasoning_effort" in tpl:
+        # gpt-oss / Harmony templates use reasoning_effort
+        # ("low" | "medium" | "high") instead of a boolean.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "reasoning_effort"
+        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+    elif "thinking" in tpl:
+        # DeepSeek uses 'thinking' instead of 'enable_thinking'
+        normalized_id = (model_identifier or "").lower()
+        if "deepseek" in normalized_id:
+            flags["supports_reasoning"] = True
+            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+
+    # Hardcoded <think> tags or reasoning_content in the template mean
+    # thinking is always on (no toggle to disable it).
+    if not flags["supports_reasoning"]:
+        if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
+            flags["supports_reasoning"] = True
+            flags["reasoning_always_on"] = True
+            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+
+    # preserve_thinking is an independent kwarg on some Qwen templates
+    # that keeps historical <think> blocks in prior assistant turns.
+    if "preserve_thinking" in tpl:
+        flags["supports_preserve_thinking"] = True
+        logger.info(f"{prefix}model supports preserve_thinking")
+
+    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+        flags["supports_tools"] = True
+        logger.info(f"{prefix}model supports tool calling")
+
+    return flags
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -942,63 +1020,16 @@ class LlamaCppBackend:
                     f"GGUF metadata: chat_template={len(self._chat_template)} chars"
                 )
                 # Detect thinking/reasoning support from chat template
-                tpl = self._chat_template
-                if "enable_thinking" in tpl:
-                    self._supports_reasoning = True
-                    self._reasoning_style = "enable_thinking"
-                    logger.info(
-                        "GGUF metadata: model supports reasoning (enable_thinking)"
-                    )
-                elif "reasoning_effort" in tpl:
-                    # gpt-oss / Harmony templates use reasoning_effort
-                    # ("low" | "medium" | "high") instead of a boolean.
-                    self._supports_reasoning = True
-                    self._reasoning_style = "reasoning_effort"
-                    logger.info(
-                        "GGUF metadata: model supports reasoning (reasoning_effort)"
-                    )
-                elif "thinking" in tpl:
-                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
-                    normalized_id = (self._model_identifier or "").lower()
-                    if "deepseek" in normalized_id:
-                        self._supports_reasoning = True
-                        logger.info(
-                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
-                        )
-                # Models with hardcoded <think> tags or reasoning_content
-                # in their chat template always produce thinking output
-                # (no toggle to disable it).
-                if not self._supports_reasoning:
-                    if (
-                        "<think>" in tpl
-                        and "</think>" in tpl
-                        or "reasoning_content" in tpl
-                    ):
-                        self._supports_reasoning = True
-                        self._reasoning_always_on = True
-                        logger.info(
-                            "GGUF metadata: model always reasons (<think> tags in template)"
-                        )
-                # Some Qwen templates also support `preserve_thinking` — an
-                # independent kwarg that keeps historical <think> blocks in
-                # prior assistant turns instead of stripping them.
-                if "preserve_thinking" in tpl:
-                    self._supports_preserve_thinking = True
-                    logger.info("GGUF metadata: model supports preserve_thinking")
-                # Detect tool calling support from chat template
-                tool_markers = [
-                    "{%- if tools %}",
-                    "{%- if tools -%}",
-                    "{% if tools %}",
-                    "{% if tools -%}",
-                    '"role" == "tool"',
-                    "'role' == 'tool'",
-                    'message.role == "tool"',
-                    "message.role == 'tool'",
-                ]
-                if any(marker in tpl for marker in tool_markers):
-                    self._supports_tools = True
-                    logger.info("GGUF metadata: model supports tool calling")
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF metadata",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 

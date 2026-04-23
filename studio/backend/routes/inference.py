@@ -113,7 +113,7 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend, detect_reasoning_flags
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -122,7 +122,7 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend, detect_reasoning_flags
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -297,15 +297,9 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
-                _supports_reasoning = False
-                _reasoning_style = "enable_thinking"
-                if hasattr(backend, "_is_gpt_oss_model"):
-                    try:
-                        if backend._is_gpt_oss_model():
-                            _supports_reasoning = True
-                            _reasoning_style = "reasoning_effort"
-                    except Exception:
-                        pass
+                _reasoning_flags = detect_reasoning_flags(
+                    _chat_template, backend.active_model_name, log_source = "Safetensors"
+                )
                 return LoadResponse(
                     status = "already_loaded",
                     model = backend.active_model_name,
@@ -320,9 +314,13 @@ async def load_model(
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
                     ),
-                    supports_reasoning = _supports_reasoning,
-                    reasoning_style = _reasoning_style,
-                    supports_preserve_thinking = False,
+                    supports_reasoning = _reasoning_flags["supports_reasoning"],
+                    reasoning_style = _reasoning_flags["reasoning_style"],
+                    reasoning_always_on = _reasoning_flags["reasoning_always_on"],
+                    supports_preserve_thinking = _reasoning_flags[
+                        "supports_preserve_thinking"
+                    ],
+                    supports_tools = _reasoning_flags["supports_tools"],
                     chat_template = _chat_template,
                 )
 
@@ -561,6 +559,10 @@ async def load_model(
         except Exception:
             pass
 
+        _reasoning_flags = detect_reasoning_flags(
+            _chat_template, config.identifier, log_source = "Safetensors"
+        )
+
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -575,6 +577,11 @@ async def load_model(
             requires_trust_remote_code = bool(
                 inference_config.get("trust_remote_code", False)
             ),
+            supports_reasoning = _reasoning_flags["supports_reasoning"],
+            reasoning_style = _reasoning_flags["reasoning_style"],
+            reasoning_always_on = _reasoning_flags["reasoning_always_on"],
+            supports_preserve_thinking = _reasoning_flags["supports_preserve_thinking"],
+            supports_tools = _reasoning_flags["supports_tools"],
             chat_template = _chat_template,
         )
 
@@ -799,20 +806,35 @@ async def get_status(
         is_audio = False
         audio_type = None
         has_audio_input = False
+        chat_template = None
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+            try:
+                chat_template = model_info.get("chat_template_info", {}).get("template")
+            except Exception:
+                chat_template = None
 
-        # gpt-oss safetensors models support reasoning via harmony channels
-        supports_reasoning = False
-        reasoning_style = "enable_thinking"
-        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
-            supports_reasoning = backend._is_gpt_oss_model()
-            if supports_reasoning:
-                reasoning_style = "reasoning_effort"
+        reasoning_flags = detect_reasoning_flags(
+            chat_template, backend.active_model_name, log_source = None
+        )
+        # gpt-oss safetensors models emit Harmony channels even when the
+        # tokenizer.chat_template is unavailable; fall back to the
+        # backend-level detector so the UI still surfaces the Think control.
+        if (
+            not reasoning_flags["supports_reasoning"]
+            and backend.active_model_name
+            and hasattr(backend, "_is_gpt_oss_model")
+        ):
+            try:
+                if backend._is_gpt_oss_model():
+                    reasoning_flags["supports_reasoning"] = True
+                    reasoning_flags["reasoning_style"] = "reasoning_effort"
+            except Exception:
+                pass
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -832,9 +854,9 @@ async def get_status(
             requires_trust_remote_code = bool(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
-            supports_reasoning = supports_reasoning,
-            reasoning_style = reasoning_style,
-            supports_preserve_thinking = False,
+            supports_reasoning = reasoning_flags["supports_reasoning"],
+            reasoning_style = reasoning_flags["reasoning_style"],
+            supports_preserve_thinking = reasoning_flags["supports_preserve_thinking"],
         )
 
     except Exception as e:

@@ -10,6 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
@@ -627,16 +628,7 @@ export function SharedComposer({
                 if (reasoningAlwaysOn) return;
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
-                // Qwen3/3.5/3.6: adjust params for thinking on/off
-                const store = useChatRuntimeStore.getState();
-                const cp = store.params.checkpoint?.toLowerCase() ?? "";
-                if (cp.includes("qwen3")) {
-                  const needsPresencePenalty = cp.includes("qwen3.5") || cp.includes("qwen3.6");
-                  const p = next
-                    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
-                    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
-                  store.setParams({ ...store.params, ...p });
-                }
+                applyQwenThinkingParams(next);
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",

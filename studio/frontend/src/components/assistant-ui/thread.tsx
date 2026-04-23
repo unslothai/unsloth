@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -379,18 +380,6 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-/** Qwen3/3.5 recommended params differ between thinking on/off. */
-function applyQwenThinkingParams(thinkingOn: boolean): void {
-  const store = useChatRuntimeStore.getState();
-  const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
-  if (!checkpoint.includes("qwen3")) {
-    return;
-  }
-  const params = thinkingOn
-    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-  store.setParams({ ...store.params, ...params });
-}
 
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
