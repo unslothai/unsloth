@@ -21,6 +21,7 @@ from .flex_engine import (
     load_flex,
 )
 from .flex_moe import FlexMoEInference
+from .flex_gemma4_moe import FlexGemma4MoEInference
 from .vllm_shim import (
     CompletionOutput,
     LoRARequest,
@@ -32,6 +33,7 @@ from .vllm_shim import (
 __all__ = [
     "FlexEngine",
     "FlexMoEInference",
+    "FlexGemma4MoEInference",
     "load_flex",
     "build_flex_engine",
     "install_flex_sentinel",

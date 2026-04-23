@@ -177,7 +177,7 @@ def _auto_kernel_options(
 
 
 def _detect_arch(hf_model) -> str:
-    """Return one of ``"gemma4"``, ``"qwen3_moe"``, ``"qwen3"``, ``"gpt_oss"``, ``"llama3"`` or raises."""
+    """Return one of ``"gemma4"``, ``"gemma4_moe"``, ``"qwen3_moe"``, ``"qwen3"``, ``"gpt_oss"``, ``"llama3"`` or raises."""
     # Look at the inner base model's class; PEFT wrappers delegate to
     # ``.base_model.model``.
     target = hf_model
@@ -192,6 +192,17 @@ def _detect_arch(hf_model) -> str:
     candidates = set(names + [name])
     lowered = " ".join(n.lower() for n in candidates)
     if "gemma4" in lowered or "gemma_4" in lowered or "gemma-4" in lowered:
+        # Gemma 4 26B-A4B carries ``Gemma4TextConfig.num_experts > 1`` — the
+        # text class name is the same for dense/MoE variants, so we distinguish
+        # on the config. Dense E2B/E4B/31B fall through to ``"gemma4"``.
+        cfg = getattr(hf_model, "config", None)
+        text_cfg = getattr(cfg, "text_config", None) if cfg is not None else None
+        # Some PEFT / shell wrappers surface the text config directly.
+        if text_cfg is None:
+            text_cfg = cfg
+        num_experts = getattr(text_cfg, "num_experts", 0) if text_cfg is not None else 0
+        if num_experts and num_experts > 1:
+            return "gemma4_moe"
         return "gemma4"
     # Check MoE before dense; ``Qwen3MoeForCausalLM`` contains both
     # ``"qwen3moe"`` and ``"qwen3"`` substrings.
@@ -205,8 +216,8 @@ def _detect_arch(hf_model) -> str:
         return "llama3"
     raise NotImplementedError(
         "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Qwen3-MoE, gpt-oss, "
-        f"Llama-3, Gemma-4 today; got {type(hf_model).__name__}. Unset the "
-        "env var or use vLLM."
+        f"Llama-3, Gemma-4 (dense + MoE) today; got {type(hf_model).__name__}. "
+        "Unset the env var or use vLLM."
     )
 
 
@@ -392,11 +403,14 @@ class FlexEngine:
 
         arch = _detect_arch(inference_model)
         self.arch = arch
-        if arch == "gemma4":
+        if arch in ("gemma4", "gemma4_moe"):
             inference_model = _extract_gemma4_text_shell(inference_model)
             self._inference_model = inference_model
         if arch == "gemma4":
             Impl = FlexGemma4Inference
+        elif arch == "gemma4_moe":
+            from .flex_gemma4_moe import FlexGemma4MoEInference
+            Impl = FlexGemma4MoEInference
         elif arch == "qwen3_moe":
             Impl = FlexMoEInference
             # CUDA graph capture is supported on the ``grouped_mm`` MoE
@@ -769,11 +783,11 @@ class FlexEngine:
 
         # Materialise the pristine source the first time we see a LoRA.
         if self._pristine_base is None:
-            if self.arch in ("qwen3_moe", "gpt_oss"):
-                # For MoE architectures (Qwen3-MoE + gpt-oss), LoRA lives
-                # on the stacked-expert ParamWrapper and never merges
-                # in-place into the expert tensors during training (see
-                # unsloth_zoo.temporary_patches.moe_utils
+            if self.arch in ("qwen3_moe", "gpt_oss", "gemma4_moe"):
+                # For MoE architectures (Qwen3-MoE, gpt-oss, gemma4-MoE),
+                # LoRA lives on the stacked-expert ParamWrapper and never
+                # merges in-place into the expert tensors during training
+                # (see unsloth_zoo.temporary_patches.moe_utils
                 # _patched_param_wrapper_forward). That means the
                 # training model's expert weights ARE the pristine
                 # source — no third 20-60 GB deep-copy is needed. Point
