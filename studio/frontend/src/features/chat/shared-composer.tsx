@@ -4,6 +4,13 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
@@ -245,6 +252,12 @@ export function SharedComposer({
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
+  const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
+  const supportsPreserveThinking = useChatRuntimeStore((s) => s.supportsPreserveThinking);
+  const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
+  const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
@@ -391,6 +404,13 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        useChatRuntimeStore.setState({
+          supportsReasoning: resp.supports_reasoning ?? false,
+          reasoningAlwaysOn: resp.reasoning_always_on ?? false,
+          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+          supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+          supportsTools: resp.supports_tools ?? false,
+        });
         return resp.status;
       }
 
@@ -566,41 +586,93 @@ export function SharedComposer({
               </TooltipIconButton>
             </>
           )}
-          <button
-            type="button"
-            disabled={reasoningDisabled}
-            onClick={() => {
-              if (reasoningAlwaysOn) return;
-              const next = !reasoningEnabled;
-              setReasoningEnabled(next);
-              // Qwen3/3.5/3.6: adjust params for thinking on/off
-              const store = useChatRuntimeStore.getState();
-              const cp = store.params.checkpoint?.toLowerCase() ?? "";
-              if (cp.includes("qwen3")) {
-                const needsPresencePenalty = cp.includes("qwen3.5") || cp.includes("qwen3.6");
-                const p = next
-                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
-                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
-                store.setParams({ ...store.params, ...p });
+          {reasoningStyle === "reasoning_effort" ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <button
+                  type="button"
+                  disabled={reasoningDisabled}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                    reasoningDisabled
+                      ? "cursor-not-allowed opacity-40"
+                      : "bg-primary/10 text-primary hover:bg-primary/20",
+                  )}
+                  aria-label={`Reasoning effort: ${reasoningEffort}`}
+                >
+                  <LightbulbIcon className="size-3.5" />
+                  <span>
+                    Think:{" "}
+                    {reasoningEffort.charAt(0).toUpperCase() +
+                      reasoningEffort.slice(1)}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {(["low", "medium", "high"] as const).map((level) => (
+                  <DropdownMenuItem
+                    key={level}
+                    onSelect={() => setReasoningEffort(level)}
+                  >
+                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                    {reasoningEffort === level ? " \u2713" : ""}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <button
+              type="button"
+              disabled={reasoningDisabled}
+              onClick={() => {
+                if (reasoningAlwaysOn) return;
+                const next = !reasoningEnabled;
+                setReasoningEnabled(next);
+                applyQwenThinkingParams(next);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                reasoningDisabled
+                  ? "cursor-not-allowed opacity-40"
+                  : (reasoningEnabled || reasoningAlwaysOn)
+                    ? "bg-primary/10 text-primary hover:bg-primary/20"
+                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+              )}
+              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+            >
+              {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
+                <LightbulbIcon className="size-3.5" />
+              ) : (
+                <LightbulbOffIcon className="size-3.5" />
+              )}
+              <span>Think</span>
+            </button>
+          )}
+          {supportsPreserveThinking && (
+            <button
+              type="button"
+              disabled={!modelLoaded}
+              onClick={() => setPreserveThinking(!preserveThinking)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                !modelLoaded
+                  ? "cursor-not-allowed opacity-40"
+                  : preserveThinking
+                    ? "bg-primary/10 text-primary hover:bg-primary/20"
+                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+              )}
+              aria-label={
+                preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
               }
-            }}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-              reasoningDisabled
-                ? "cursor-not-allowed opacity-40"
-                : (reasoningEnabled || reasoningAlwaysOn)
-                  ? "bg-primary/10 text-primary hover:bg-primary/20"
-                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-            )}
-            aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
-          >
-            {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
-              <LightbulbIcon className="size-3.5" />
-            ) : (
-              <LightbulbOffIcon className="size-3.5" />
-            )}
-            <span>Think</span>
-          </button>
+            >
+              {preserveThinking && modelLoaded ? (
+                <LightbulbIcon className="size-3.5" />
+              ) : (
+                <LightbulbOffIcon className="size-3.5" />
+              )}
+              <span>Preserve Thinking</span>
+            </button>
+          )}
           <button
             type="button"
             disabled={toolsDisabled}
