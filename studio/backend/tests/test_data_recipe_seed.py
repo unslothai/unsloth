@@ -128,3 +128,29 @@ def test_unstructured_multi_file_upload_quota_is_server_side(monkeypatch):
         )
         assert raw_total == 9
         assert seed._get_block_total_size(seed.UNSTRUCTURED_UPLOAD_ROOT / "block1") == 9
+
+
+def test_unstructured_upload_quota_ignores_client_supplied_ids(monkeypatch):
+    seed = _load_seed_module(monkeypatch)
+
+    with tempfile.TemporaryDirectory() as td:
+        seed.UNSTRUCTURED_UPLOAD_ROOT = Path(td) / "uploads"
+        seed.MAX_FILE_SIZE = 10
+        seed.MAX_TOTAL_SIZE = 15
+        seed._extract_text_from_file = lambda file_path, ext: "ok"
+
+        async def do_upload(name: str, payload: bytes, existing_ids: str):
+            upload = UploadFile(filename = name, file = io.BytesIO(payload))
+            return await seed.upload_unstructured_file(
+                file = upload,
+                block_id = "block1",
+                existing_file_ids = existing_ids,
+            )
+
+        first = asyncio.run(do_upload("a.txt", b"A" * 9, "spoofed_id_1,spoofed_id_2"))
+        assert first.status == "ok"
+
+        with pytest.raises(HTTPException, match = "Total upload limit"):
+            asyncio.run(
+                do_upload("b.txt", b"B" * 9, "deadbeef,cafebabe,not_a_real_id")
+            )
