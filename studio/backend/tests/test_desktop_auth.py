@@ -541,3 +541,48 @@ def test_provision_desktop_auth_keeps_existing_admin_password(tmp_path, monkeypa
         "jwt_secret": "existing-jwt",
         "must_change_password": 0,
     }
+
+
+def test_update_password_clears_desktop_secret():
+    seed_user()
+    raw = storage.create_desktop_secret()
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+
+    changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
+    assert changed is True
+    assert storage.validate_desktop_secret(raw) is None
+
+
+def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
+    seed_user()
+    raw = storage.create_desktop_secret()
+
+    changed = storage.update_password("not-a-user", "irrelevant")
+    assert changed is False
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+
+
+def test_desktop_auth_provision_has_bounded_timeout():
+    rs_path = Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
+    src = rs_path.read_text()
+    start = src.index("async fn provision_desktop_auth(")
+    depth = 0
+    body_start = src.index("{", start)
+    body_end = None
+    for i in range(body_start, len(src)):
+        c = src[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                body_end = i + 1
+                break
+    assert body_end is not None
+    body = src[start:body_end]
+    assert "tokio::time::timeout" in body
+    import re
+    m = re.search(r"Duration::from_secs\(\s*(\d+)\s*\)", body)
+    assert m is not None
+    seconds = int(m.group(1))
+    assert 5 <= seconds <= 120
