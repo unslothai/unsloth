@@ -95,9 +95,9 @@ def test_outer_handler_misspelled_name_returns_404(
 
     monkeypatch.setattr(ds, "get_dataset_config_names", _raise)
 
-    req = DatasetSplitsRequest(dataset_name="misspelled/name")
+    req = DatasetSplitsRequest(dataset_name = "misspelled/name")
     with pytest.raises(HTTPException) as ei:
-        rd.get_dataset_splits(req, current_subject="t")
+        rd.get_dataset_splits(req, current_subject = "t")
     assert ei.value.status_code == 404
     assert "was not found" in ei.value.detail.lower()
 

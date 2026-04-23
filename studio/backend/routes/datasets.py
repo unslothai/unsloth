@@ -535,9 +535,7 @@ def get_dataset_splits(
             detail = _user_safe_split_error(request.dataset_name, status_code),
         )
     except Exception as e:
-        logger.error(
-            f"Unexpected dataset split error: {type(e).__name__}"
-        )
+        logger.error(f"Unexpected dataset split error: {type(e).__name__}")
         raise HTTPException(
             status_code = 500,
             detail = "Failed to fetch dataset splits.",
