@@ -405,12 +405,7 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
 
 
 def _get_block_total_size(block_dir: Path) -> int:
-    """Sum raw upload sizes for the current block from server state only.
-
-    The quota must be derived from the files that actually exist on disk,
-    not from client-provided upload history, otherwise a client can omit
-    previously uploaded IDs and undercount the total.
-    """
+    """Sum raw upload sizes from disk; a client-supplied ID list would let callers omit prior uploads and undercount."""
     if not block_dir.exists():
         return 0
     total = 0
