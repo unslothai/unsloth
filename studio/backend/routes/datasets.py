@@ -33,6 +33,38 @@ def _remap_hf_status(hf_status: int) -> int:
     return 403 if hf_status == 401 else hf_status
 
 
+_GATED_KEYWORDS = (
+    "gated",
+    "is private",
+    "ask for access",
+    "must be authenticated",
+    "cannot be accessed",
+    "cannot access",
+)
+
+
+def _classify_dataset_not_found_status(err: Exception) -> int:
+    text = str(err).lower()
+    response = getattr(err, "response", None) or getattr(
+        getattr(err, "__cause__", None), "response", None
+    )
+    http_status = getattr(response, "status_code", None)
+    if http_status in (401, 403) or any(k in text for k in _GATED_KEYWORDS):
+        return 403
+    return 404
+
+
+def _user_safe_split_error(dataset_name: str, status_code: int) -> str:
+    if status_code == 403:
+        return (
+            "Unable to load dataset splits. This dataset may be private or gated. "
+            "Add a Hugging Face token with access and try again."
+        )
+    if status_code == 404:
+        return f"Dataset '{dataset_name}' was not found on the Hub."
+    return "Failed to fetch dataset splits."
+
+
 _dataset_size_cache: dict[str, int] = {}
 
 
@@ -427,23 +459,7 @@ def get_dataset_splits(
                 )
                 return config, None, str(err), _remap_hf_status(hf_status)
             except DatasetNotFoundError as err:
-                text = str(err)
-                response = getattr(err, "response", None) or getattr(
-                    getattr(err, "__cause__", None), "response", None
-                )
-                http_status = response.status_code if response is not None else None
-                lowered = text.lower()
-                if http_status in (401, 403) or any(
-                    k in lowered
-                    for k in (
-                        "gated",
-                        "is private",
-                        "ask for access",
-                        "must be authenticated",
-                    )
-                ):
-                    return config, None, text, 403
-                return config, None, text, 404
+                return config, None, str(err), _classify_dataset_not_found_status(err)
             except Exception as err:
                 return config, None, str(err), 500
 
@@ -466,7 +482,7 @@ def get_dataset_splits(
                     )
             else:
                 logger.warning(
-                    f"Could not fetch splits for config '{config}': {err_text}"
+                    f"Could not fetch splits for config '{config}' (status={err_status})"
                 )
                 if last_config_error is None or _better(last_config_status, err_status):
                     last_config_error = err_text
@@ -475,10 +491,7 @@ def get_dataset_splits(
         if not all_splits and last_config_error is not None:
             raise HTTPException(
                 status_code = last_config_status,
-                detail = (
-                    f"Failed to fetch splits for any config of '{dataset_name}' "
-                    f"(HTTP {last_config_status}): {last_config_error[:500]}"
-                ),
+                detail = _user_safe_split_error(dataset_name, last_config_status),
             )
 
         if not all_splits:
@@ -506,42 +519,29 @@ def get_dataset_splits(
     except HTTPException:
         raise
     except DatasetNotFoundError as e:
-        text = str(e)
-        response = getattr(e, "response", None) or getattr(
-            getattr(e, "__cause__", None), "response", None
-        )
-        http_status = response.status_code if response is not None else None
-        lowered = text.lower()
-        if http_status in (401, 403) or any(
-            k in lowered
-            for k in (
-                "gated",
-                "is private",
-                "ask for access",
-                "must be authenticated",
-            )
-        ):
-            raise HTTPException(status_code = 403, detail = text[:500])
+        status = _classify_dataset_not_found_status(e)
         raise HTTPException(
-            status_code = 404,
-            detail = f"Dataset '{request.dataset_name}' was not found on the Hub.",
+            status_code = status,
+            detail = _user_safe_split_error(request.dataset_name, status),
         )
     except HfHubHTTPError as e:
         hf_status = e.response.status_code if e.response is not None else 500
         status_code = _remap_hf_status(hf_status)
         logger.error(
-            f"Error fetching dataset splits: {type(e).__name__}: {str(e)[:200]}"
+            f"Error fetching dataset splits: {type(e).__name__} (status={status_code})"
         )
         raise HTTPException(
             status_code = status_code,
-            detail = f"Failed to fetch dataset splits (HTTP {status_code}): {str(e)[:500]}",
+            detail = _user_safe_split_error(request.dataset_name, status_code),
         )
     except Exception as e:
         logger.error(
-            f"Error fetching dataset splits: {type(e).__name__}: {str(e)[:200]}"
+            f"Unexpected dataset split error: {type(e).__name__}"
         )
-        detail = str(e)[:500] or "Failed to fetch dataset splits."
-        raise HTTPException(status_code = 500, detail = detail)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to fetch dataset splits.",
+        )
 
 
 @router.get("/download-progress")
