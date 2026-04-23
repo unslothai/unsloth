@@ -49,6 +49,7 @@ from unsloth.chat_templates import get_chat_template
 import json
 import threading
 import math
+import subprocess
 import structlog
 from loggers import get_logger
 import time
@@ -68,6 +69,10 @@ from utils.paths import (
     resolve_tensorboard_dir,
 )
 from trl import SFTTrainer, SFTConfig
+
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
 
 logger = get_logger(__name__)
 
@@ -1765,6 +1770,7 @@ class UnslothTrainer:
                     spark_code_dir,
                 ],
                 check = True,
+                **_windows_hidden_subprocess_kwargs(),
             )
 
         if spark_code_dir not in sys.path:
@@ -1982,8 +1988,6 @@ class UnslothTrainer:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Clone OuteTTS repo (same as audio_codecs._load_dac)
-        import subprocess
-
         base_dir = os.path.dirname(os.path.abspath(__file__))
         outetts_code_dir = os.path.join(base_dir, "inference", "OuteTTS")
         outetts_pkg = os.path.join(outetts_code_dir, "outetts")
@@ -2000,6 +2004,7 @@ class UnslothTrainer:
                     outetts_code_dir,
                 ],
                 check = True,
+                **_windows_hidden_subprocess_kwargs(),
             )
             for fpath in [
                 os.path.join(outetts_pkg, "models", "gguf_model.py"),

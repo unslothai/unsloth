@@ -5,6 +5,7 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
+import { openLink } from "@/lib/open-link";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -32,9 +33,13 @@ const STREAMDOWN_COMPONENTS = {
   }: React.ComponentProps<"a">) => (
     <a
       href={href}
-      target="_blank"
       rel="noopener noreferrer"
-      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors"
+      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer"
+      onClick={(e) => {
+        if (href && openLink(href)) {
+          e.preventDefault();
+        }
+      }}
       {...props}
     >
       {children}

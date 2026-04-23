@@ -3,8 +3,8 @@
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { usePlatformStore } from "@/config/env";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -33,7 +33,10 @@ function isChatOnlyAllowed(pathname: string): boolean {
 }
 
 export const Route = createRootRoute({
-  beforeLoad: ({ location }) => {
+  beforeLoad: async ({ location }) => {
+    // Ensure platform info is fetched before checking chat-only guard.
+    // fetchDeviceType caches after first call, so subsequent navigations are instant.
+    await fetchDeviceType();
     const chatOnly = usePlatformStore.getState().isChatOnly();
     if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
       throw redirect({ to: "/chat" });
