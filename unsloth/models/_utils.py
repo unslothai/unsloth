@@ -411,21 +411,25 @@ def _set_attn_impl(config, impl):
 
 
 def resolve_model_class(auto_model, config):
-     mapping = getattr(auto_model, "_model_mapping", {})
-     try:
-         result = mapping[config.__class__]
-     except Exception:
-         result = None
-         for config_class in list(mapping._config_mapping.values()) if hasattr(mapping, "_config_mapping") else []:
-             try:
-                 if isinstance(config, config_class):
-                     result = mapping[config_class]
-                     break
-             except Exception:
-                 continue
-         if result is None:
-             return None
-     return result[0] if isinstance(result, (list, tuple)) else result
+    mapping = getattr(auto_model, "_model_mapping", {})
+    try:
+        result = mapping[config.__class__]
+    except Exception:
+        result = None
+        for config_class in (
+            list(mapping._config_mapping.values())
+            if hasattr(mapping, "_config_mapping")
+            else []
+        ):
+            try:
+                if isinstance(config, config_class):
+                    result = mapping[config_class]
+                    break
+            except Exception:
+                continue
+        if result is None:
+            return None
+    return result[0] if isinstance(result, (list, tuple)) else result
 
 
 def resolve_attention_implementation(
