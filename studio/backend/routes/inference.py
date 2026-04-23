@@ -273,7 +273,9 @@ async def load_model(
                     max_context_length = llama_backend.max_context_length,
                     native_context_length = llama_backend.native_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
+                    reasoning_style = llama_backend.reasoning_style,
                     reasoning_always_on = llama_backend.reasoning_always_on,
+                    supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.speculative_type,
                 )
@@ -422,7 +424,9 @@ async def load_model(
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_style = llama_backend.reasoning_style,
                 reasoning_always_on = llama_backend.reasoning_always_on,
+                supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
@@ -766,7 +770,9 @@ async def get_status(
                     (_inference_cfg or {}).get("trust_remote_code", False)
                 ),
                 supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_style = llama_backend.reasoning_style,
                 reasoning_always_on = llama_backend.reasoning_always_on,
+                supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
@@ -790,8 +796,11 @@ async def get_status(
 
         # gpt-oss safetensors models support reasoning via harmony channels
         supports_reasoning = False
+        reasoning_style = "enable_thinking"
         if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
             supports_reasoning = backend._is_gpt_oss_model()
+            if supports_reasoning:
+                reasoning_style = "reasoning_effort"
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -812,6 +821,8 @@ async def get_status(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
             supports_reasoning = supports_reasoning,
+            reasoning_style = reasoning_style,
+            supports_preserve_thinking = False,
         )
 
     except Exception as e:
@@ -1393,6 +1404,8 @@ async def openai_chat_completions(
                     presence_penalty = payload.presence_penalty,
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
+                    reasoning_effort = payload.reasoning_effort,
+                    preserve_thinking = payload.preserve_thinking,
                     auto_heal_tool_calls = payload.auto_heal_tool_calls
                     if payload.auto_heal_tool_calls is not None
                     else True,
@@ -1562,6 +1575,8 @@ async def openai_chat_completions(
                 presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
+                reasoning_effort = payload.reasoning_effort,
+                preserve_thinking = payload.preserve_thinking,
             )
 
         _gguf_sentinel = object()

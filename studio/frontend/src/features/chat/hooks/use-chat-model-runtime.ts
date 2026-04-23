@@ -253,7 +253,9 @@ export function useChatModelRuntime() {
             max_context_length: statusRes.max_context_length,
             native_context_length: statusRes.native_context_length,
             supports_reasoning: statusRes.supports_reasoning,
+            reasoning_style: statusRes.reasoning_style,
             reasoning_always_on: statusRes.reasoning_always_on,
+            supports_preserve_thinking: statusRes.supports_preserve_thinking,
             supports_tools: statusRes.supports_tools,
             speculative_type: statusRes.speculative_type,
           };
@@ -265,6 +267,8 @@ export function useChatModelRuntime() {
         // Restore reasoning/tools support flags and context length
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
+        const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
+        const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         const currentGgufContextLength = statusRes.is_gguf
           ? (statusRes.context_length ?? null)
@@ -279,6 +283,8 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
+          reasoningStyle,
+          supportsPreserveThinking,
           supportsTools,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
@@ -498,6 +504,8 @@ export function useChatModelRuntime() {
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
+              reasoningStyle: loadResponse.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: loadResponse.supports_tools ?? false,
               codeToolsEnabled: loadResponse.supports_tools ?? false,
