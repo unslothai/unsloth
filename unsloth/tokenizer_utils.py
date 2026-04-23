@@ -480,13 +480,16 @@ def fix_sentencepiece_gguf(saved_location):
     for token_id in special_token_ids:
         if 0 <= token_id < sentence_piece_size:
             piece = tokenizer_file.pieces[token_id]
-            if piece.type == SentencePieceTokenTypes.NORMAL:
+            if piece.type in (
+                SentencePieceTokenTypes.NORMAL,
+                SentencePieceTokenTypes.USER_DEFINED,
+            ):
                 piece.type = SentencePieceTokenTypes.CONTROL
                 patched += 1
     if patched > 0:
         logger.warning(
             f"Unsloth: Patched {patched} special token(s) in {saved_location}/tokenizer.model "
-            f"from NORMAL to CONTROL type so llama.cpp / GGUF chat inference works correctly."
+            f"to CONTROL type so llama.cpp / GGUF chat inference works correctly."
         )
 
     # Load added_tokens_json
