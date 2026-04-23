@@ -530,7 +530,7 @@ export function ChatSettingsPanel({
       return;
     }
     const usedNames = new Set([
-      ...BUILTIN_PRESETS.map((preset) => preset.name),
+      ...BUILTIN_PRESET_NAMES,
       ...customPresets.map((preset) => preset.name),
     ]);
     const saveName = BUILTIN_PRESET_NAMES.has(trimmed)

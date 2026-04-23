@@ -425,6 +425,7 @@ export function useChatModelRuntime() {
               ggufContextLength,
               speculativeType,
               activePresetSource,
+              activeGgufVariant,
             } = useChatRuntimeStore.getState();
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
@@ -432,8 +433,7 @@ export function useChatModelRuntime() {
               customContextLength,
               ggufContextLength,
               currentCheckpoint,
-              activeGgufVariant:
-                useChatRuntimeStore.getState().activeGgufVariant,
+              activeGgufVariant,
               maxSeqLength,
               presetSource: activePresetSource,
             });
