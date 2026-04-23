@@ -659,11 +659,11 @@ export function SharedComposer({
           {supportsPreserveThinking && (
             <button
               type="button"
-              disabled={reasoningDisabled}
+              disabled={!modelLoaded}
               onClick={() => setPreserveThinking(!preserveThinking)}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                reasoningDisabled
+                !modelLoaded
                   ? "cursor-not-allowed opacity-40"
                   : preserveThinking
                     ? "bg-primary/10 text-primary hover:bg-primary/20"
@@ -673,7 +673,7 @@ export function SharedComposer({
                 preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
               }
             >
-              {preserveThinking && !reasoningDisabled ? (
+              {preserveThinking && modelLoaded ? (
                 <LightbulbIcon className="size-3.5" />
               ) : (
                 <LightbulbOffIcon className="size-3.5" />

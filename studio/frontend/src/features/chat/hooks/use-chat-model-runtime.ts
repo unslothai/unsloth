@@ -286,6 +286,11 @@ export function useChatModelRuntime() {
           reasoningStyle,
           supportsPreserveThinking,
           supportsTools,
+          // Reset per-turn reasoning flag so models that do not support
+          // reasoning do not inherit a stale off state from a prior model.
+          reasoningEnabled: supportsReasoning
+            ? useChatRuntimeStore.getState().reasoningEnabled
+            : true,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,

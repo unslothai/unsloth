@@ -297,6 +297,15 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
+                _supports_reasoning = False
+                _reasoning_style = "enable_thinking"
+                if hasattr(backend, "_is_gpt_oss_model"):
+                    try:
+                        if backend._is_gpt_oss_model():
+                            _supports_reasoning = True
+                            _reasoning_style = "reasoning_effort"
+                    except Exception:
+                        pass
                 return LoadResponse(
                     status = "already_loaded",
                     model = backend.active_model_name,
@@ -311,6 +320,9 @@ async def load_model(
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
                     ),
+                    supports_reasoning = _supports_reasoning,
+                    reasoning_style = _reasoning_style,
+                    supports_preserve_thinking = False,
                     chat_template = _chat_template,
                 )
 

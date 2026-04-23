@@ -157,7 +157,7 @@ class LoadResponse(BaseModel):
     )
     supports_reasoning: bool = Field(
         False,
-        description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+        description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
     reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
         "enable_thinking",

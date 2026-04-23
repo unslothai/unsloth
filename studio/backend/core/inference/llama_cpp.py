@@ -860,6 +860,7 @@ class LlamaCppBackend:
         self._supports_reasoning = False
         self._reasoning_always_on = False
         self._reasoning_style = "enable_thinking"
+        self._reasoning_default = True
         self._supports_preserve_thinking = False
         self._supports_tools = False
         self._n_layers = None
@@ -983,9 +984,7 @@ class LlamaCppBackend:
                 # prior assistant turns instead of stripping them.
                 if "preserve_thinking" in tpl:
                     self._supports_preserve_thinking = True
-                    logger.info(
-                        "GGUF metadata: model supports preserve_thinking"
-                    )
+                    logger.info("GGUF metadata: model supports preserve_thinking")
                 # Detect tool calling support from chat template
                 tool_markers = [
                     "{%- if tools %}",
@@ -1598,9 +1597,7 @@ class LlamaCppBackend:
                         json.dumps(reasoning_kw),
                     ]
                 )
-                logger.info(
-                    f"Reasoning model: {reasoning_kw} by default"
-                )
+                logger.info(f"Reasoning model: {reasoning_kw} by default")
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -1829,6 +1826,7 @@ class LlamaCppBackend:
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_style = "enable_thinking"
+            self._reasoning_default = True
             self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
