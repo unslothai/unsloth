@@ -442,6 +442,15 @@ def fix_sentencepiece_gguf(saved_location):
     only matches CONTROL tokens.
     """
     from copy import deepcopy
+    import sys
+    try:
+        from transformers.convert_slow_tokenizer import import_protobuf
+        sys.modules.setdefault(
+            "transformers.utils.sentencepiece_model_pb2",
+            import_protobuf(),
+        )
+    except Exception:
+        pass
     from transformers.utils import sentencepiece_model_pb2
     import json
     from enum import IntEnum
@@ -471,8 +480,9 @@ def fix_sentencepiece_gguf(saved_location):
         with open(f"{saved_location}/tokenizer.json", "r", encoding = "utf-8") as f:
             tokenizer_json = json.load(f)
         for entry in tokenizer_json.get("added_tokens", []):
-            if entry.get("special", False):
-                special_token_ids.add(entry["id"])
+            token_id = entry.get("id")
+            if entry.get("special", False) and isinstance(token_id, int):
+                special_token_ids.add(token_id)
 
     # Fix existing sentencepiece tokens that are marked as special in tokenizer.json
     # but have the wrong type (NORMAL instead of CONTROL) in the sentencepiece model.
@@ -480,16 +490,13 @@ def fix_sentencepiece_gguf(saved_location):
     for token_id in special_token_ids:
         if 0 <= token_id < sentence_piece_size:
             piece = tokenizer_file.pieces[token_id]
-            if piece.type in (
-                SentencePieceTokenTypes.NORMAL,
-                SentencePieceTokenTypes.USER_DEFINED,
-            ):
+            if piece.type == SentencePieceTokenTypes.NORMAL:
                 piece.type = SentencePieceTokenTypes.CONTROL
                 patched += 1
     if patched > 0:
         logger.warning(
             f"Unsloth: Patched {patched} special token(s) in {saved_location}/tokenizer.model "
-            f"to CONTROL type so llama.cpp / GGUF chat inference works correctly."
+            f"from NORMAL to CONTROL type so llama.cpp / GGUF chat inference works correctly."
         )
 
     # Load added_tokens_json

@@ -2291,9 +2291,9 @@ def unsloth_save_pretrained_gguf(
     try:
         from .tokenizer_utils import fix_sentencepiece_gguf
         fix_sentencepiece_gguf(save_directory)
-    except ImportError as e:
+    except Exception as e:
         logger.warning(
-            f"Unsloth: fix_sentencepiece_gguf skipped (import failure): {e}"
+            f"Unsloth: fix_sentencepiece_gguf skipped ({type(e).__name__}): {e}"
         )
 
     try:
