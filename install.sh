@@ -1587,8 +1587,15 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
+    # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
+    # value inherited from the parent shell (e.g. a previous --local run in
+    # the same session) does not silently flip a normal install onto the
+    # local-dev path in setup.sh and install_python_stack.py. Mirrors the
+    # reset already done in install.ps1 for PowerShell.
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    STUDIO_LOCAL_INSTALL=0 \
+    STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
