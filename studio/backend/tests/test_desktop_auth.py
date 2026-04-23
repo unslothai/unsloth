@@ -548,7 +548,9 @@ def test_update_password_clears_desktop_secret():
     raw = storage.create_desktop_secret()
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
-    changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
+    changed = storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME, "new-admin-password"
+    )
     assert changed is True
     assert storage.validate_desktop_secret(raw) is None
 
@@ -563,7 +565,13 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
 
 
 def test_desktop_auth_provision_has_bounded_timeout():
-    rs_path = Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
+    rs_path = (
+        Path(__file__).resolve().parents[3]
+        / "studio"
+        / "src-tauri"
+        / "src"
+        / "desktop_auth.rs"
+    )
     src = rs_path.read_text()
     start = src.index("async fn provision_desktop_auth(")
     depth = 0
@@ -582,6 +590,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
     body = src[start:body_end]
     assert "tokio::time::timeout" in body
     import re
+
     m = re.search(r"Duration::from_secs\(\s*(\d+)\s*\)", body)
     assert m is not None
     seconds = int(m.group(1))
