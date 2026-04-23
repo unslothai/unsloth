@@ -547,6 +547,16 @@ class CompletionMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: str
+    reasoning_content: Optional[str] = Field(
+        None,
+        description=(
+            "Reasoning/thinking text split out of `content`. Populated for non-streaming "
+            "responses when the model emits <think>...</think> blocks. Follows the DeepSeek / "
+            "llama-server --reasoning-format convention so OpenAI-compatible consumers "
+            "(e.g. NeMo DataDesigner with extract_reasoning_content=true) can capture "
+            "reasoning without the think block polluting the fenced JSON in `content`."
+        ),
+    )
 
 
 class CompletionChoice(BaseModel):
