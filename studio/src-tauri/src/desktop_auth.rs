@@ -199,9 +199,9 @@ async fn provision_desktop_auth() -> Result<(), String> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let output = cmd
-        .output()
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output())
         .await
+        .map_err(|_| "Desktop auth provisioning timed out after 30s".to_string())?
         .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
     if output.status.success() {
         return Ok(());

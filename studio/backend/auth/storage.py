@@ -441,6 +441,7 @@ def update_password(username: str, new_password: str) -> bool:
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
+            clear_desktop_secret()
         return cursor.rowcount > 0
     finally:
         conn.close()
