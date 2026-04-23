@@ -587,11 +587,28 @@ const ToolStatusDisplay: FC = () => {
 const BenchmarkToggle: FC = () => {
   const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
   const toggleBenchmarkMode = useBenchmarkStore((s) => s.toggleBenchmarkMode);
+  const toggleModelSelection = useBenchmarkStore((s) => s.toggleModelSelection);
+
+  const handleToggle = () => {
+    // When enabling benchmark mode, auto-add the currently loaded model
+    if (!benchmarkMode) {
+      const { params, activeGgufVariant } = useChatRuntimeStore.getState();
+      const checkpoint = params.checkpoint;
+      if (checkpoint) {
+        const storeId = activeGgufVariant ? `${checkpoint}::${activeGgufVariant}` : checkpoint;
+        const currentIds = useBenchmarkStore.getState().benchmarkSelectedModelIds;
+        if (!currentIds.includes(storeId)) {
+          toggleModelSelection(storeId);
+        }
+      }
+    }
+    toggleBenchmarkMode();
+  };
 
   return (
     <button
       type="button"
-      onClick={toggleBenchmarkMode}
+      onClick={handleToggle}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
         benchmarkMode

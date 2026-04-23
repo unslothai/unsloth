@@ -967,7 +967,7 @@ export function HubModelPicker({
                     label={c.repo_id}
                     meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
-                    benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(c.repo_id)}
+                    benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === c.repo_id || sid.startsWith(c.repo_id + "::"))}
                     onClick={() =>
                       setExpandedGguf((prev) =>
                         prev === c.repo_id ? null : c.repo_id,
@@ -1000,7 +1000,7 @@ export function HubModelPicker({
                         label={c.repo_id}
                         meta={formatBytes(c.size_bytes)}
                         selected={value === c.repo_id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(c.repo_id)}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === c.repo_id || sid.startsWith(c.repo_id + "::"))}
                         onClick={() =>
                           effectiveSelect(c.repo_id, {
                             source: "hub",
@@ -1236,7 +1236,7 @@ export function HubModelPicker({
                       label={m.model_id ?? m.display_name}
                       meta={isGguf ? "GGUF" : "Local"}
                       selected={value === m.id}
-                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(m.id)}
+                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === m.id || sid.startsWith(m.id + "::"))}
                       onClick={() => {
                         if (isGguf && !isGgufFile) {
                           setExpandedGguf((prev) =>
@@ -1294,7 +1294,7 @@ export function HubModelPicker({
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(id)}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
                         onClick={() => handleModelClick(id)}
                         vramStatus={
                           isKnownGgufRepo(id) ? null : (vram?.status ?? null)
@@ -1344,7 +1344,7 @@ export function HubModelPicker({
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(id)}
+                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
                       onClick={() => handleModelClick(id)}
                       vramStatus={
                         isKnownGgufRepo(id) ? null : (vram?.status ?? null)
@@ -1395,7 +1395,7 @@ export function HubModelPicker({
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(id)}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
                         onClick={() => handleModelClick(id)}
                         vramStatus={
                           isSearchGguf ? null : (vram?.status ?? null)

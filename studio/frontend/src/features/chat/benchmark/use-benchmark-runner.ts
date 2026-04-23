@@ -135,9 +135,10 @@ export function useBenchmarkRunner() {
           phase: "loading",
         });
 
-        const currentCheckpoint =
-          useChatRuntimeStore.getState().params.checkpoint;
-        if (currentCheckpoint !== baseModelId) {
+        const runtimeState = useChatRuntimeStore.getState();
+        const currentCheckpoint = runtimeState.params.checkpoint;
+        const currentGgufVariant = runtimeState.activeGgufVariant;
+        if (currentCheckpoint !== baseModelId || currentGgufVariant !== ggufVariant) {
           try {
             await loadModel({
               model_path: baseModelId,
@@ -173,8 +174,9 @@ export function useBenchmarkRunner() {
           phase: "generating",
         });
 
-        handle.appendMessage([{ type: "text", text: promptText }]);
-        handle.startRun();
+        // Use append (not appendMessage+startRun) so the user message and run
+        // start atomically — startRun reads stale getState().messages otherwise.
+        handle.append([{ type: "text", text: promptText }]);
         await handle.waitForRunEnd();
       }
 
