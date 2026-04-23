@@ -1770,7 +1770,7 @@ class FastBaseModel:
         return model
 
 
-def check_dataset_for_missing_videos(dataset, column="messages", raise_error=True):
+def check_dataset_for_missing_videos(dataset, column = "messages", raise_error = True):
     """
     Validate that all local video file paths referenced in a dataset actually exist.
 
@@ -1831,6 +1831,6 @@ def check_dataset_for_missing_videos(dataset, column="messages", raise_error=Tru
         )
         if raise_error:
             raise FileNotFoundError(error_msg)
-        warnings.warn(error_msg, stacklevel=2)
+        warnings.warn(error_msg, stacklevel = 2)
 
     return missing
