@@ -486,10 +486,10 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
     use regex::Regex;
+    use std::path::Path;
     use std::process::Command as StdCommand;
 
     // Validate package names to prevent injection via elevated command.
-    // Only allow standard Debian package name characters.
     let valid_pkg = Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$").unwrap();
     for pkg in packages {
         if !valid_pkg.is_match(pkg) {
@@ -497,13 +497,31 @@ pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
         }
     }
 
+    // AppImage bundles run on non-Debian distros too. Pick the first package
+    // manager we find. Names in `packages` are Debian-style; callers that want
+    // cross-distro support should translate before invoking.
+    let (program, base_args): (&str, &[&str]) = if Path::new("/usr/bin/apt-get").exists() {
+        ("apt-get", &["install", "-y"])
+    } else if Path::new("/usr/bin/dnf").exists() {
+        ("dnf", &["install", "-y"])
+    } else if Path::new("/usr/bin/zypper").exists() {
+        ("zypper", &["install", "-y"])
+    } else if Path::new("/usr/bin/pacman").exists() {
+        ("pacman", &["-S", "--noconfirm"])
+    } else {
+        return Err(
+            "No supported system package manager found (apt-get, dnf, zypper, pacman)".to_string(),
+        );
+    };
+
     info!(
-        "[install] Elevated install of packages: {}",
+        "[install] Elevated install of packages via {}: {}",
+        program,
         packages.join(", ")
     );
 
-    let mut cmd = StdCommand::new("apt-get");
-    cmd.args(["install", "-y"]).args(packages);
+    let mut cmd = StdCommand::new(program);
+    cmd.args(base_args).args(packages);
 
     let elevated = elevated_command::Command::new(cmd)
         .output()

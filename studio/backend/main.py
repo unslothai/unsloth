@@ -187,7 +187,7 @@ if _api_only:
         "http://tauri.localhost",  # Windows Tauri webview
         "http://localhost",  # dev fallback
     ]
-    _cors_origin_regex = r"^https?://localhost(:\d+)?$"
+    _cors_origin_regex = None
 else:
     _cors_origin_regex = None
 

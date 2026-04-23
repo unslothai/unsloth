@@ -116,6 +116,7 @@ async fn run_cli_probe(bin: &std::path::Path, args: &[&str]) -> bool {
         Ok(Ok(status)) => status.success(),
         _ => {
             let _ = child.kill().await;
+            let _ = child.wait().await;
             false
         }
     }
@@ -326,12 +327,29 @@ async fn probe_existing_backends() -> BackendProbe {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };
-    let mut first_old = None;
 
-    for port in 8888..=8908 {
-        let Some(health) = backend_health(&client, port).await else {
-            continue;
-        };
+    // Fan out health probes concurrently. The desktop-auth probe is still
+    // sequential per candidate because it has auth-log side effects.
+    let ports: Vec<u16> = (8888u16..=8908).collect();
+    let mut health_futs = Vec::with_capacity(ports.len());
+    for port in ports {
+        // why: reqwest::Client is internally Arc-wrapped; clone is a refcount bump
+        // (documented cheap). tokio::spawn needs 'static, so each task owns its own clone.
+        let c = client.clone();
+        health_futs.push(tokio::spawn(async move {
+            backend_health(&c, port).await.map(|h| (port, h))
+        }));
+    }
+
+    let mut candidates: Vec<(u16, BackendHealth)> = Vec::new();
+    for fut in health_futs {
+        if let Ok(Some(pair)) = fut.await {
+            candidates.push(pair);
+        }
+    }
+
+    let mut first_old = None;
+    for (port, health) in candidates {
         match backend_desktop_auth_status(&client, port, &health).await {
             ready @ BackendProbe::Ready { .. } => return ready,
             old @ BackendProbe::Old { .. } if first_old.is_none() => first_old = Some(old),

@@ -190,14 +190,13 @@ def _load_backend_auth_storage():
 
 def _write_auth_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
-    if platform.system() == "Windows":
-        path.write_text(secret)
-        return
-
     fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
     tmp_path = Path(tmp_name)
     try:
-        os.chmod(tmp_path, 0o600)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
         with os.fdopen(fd, "w") as f:
             fd = -1
             f.write(secret)
@@ -207,7 +206,10 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             os.close(fd)
         tmp_path.unlink(missing_ok = True)
         raise
-    os.chmod(path, 0o600)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _connect_auth_db() -> sqlite3.Connection:

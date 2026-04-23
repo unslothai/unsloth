@@ -113,9 +113,8 @@ function Source({
         href={href}
         rel="noopener noreferrer"
         onClick={(e) => {
-          if (href) {
+          if (href && openLink(href)) {
             e.preventDefault();
-            openLink(href);
           }
           onClick?.(e);
         }}

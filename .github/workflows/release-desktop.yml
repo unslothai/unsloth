@@ -15,7 +15,6 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest
@@ -36,6 +35,15 @@ jobs:
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      RELEASE_BODY: |
+        Desktop app for Unsloth Studio.
+
+        **macOS**: Download the Apple Silicon `.dmg`.
+        **Windows**: Download the `-setup.exe` installer.
+        **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+
+        > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+        > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
 
 
     steps:
@@ -114,15 +122,7 @@ jobs:
           projectPath: studio
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
-          releaseBody: |
-            Desktop app for Unsloth Studio.
-
-            **macOS**: Download the Apple Silicon `.dmg`.
-            **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
-
-            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+          releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}
@@ -143,15 +143,7 @@ jobs:
           projectPath: studio
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
-          releaseBody: |
-            Desktop app for Unsloth Studio.
-
-            **macOS**: Download the Apple Silicon `.dmg`.
-            **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
-
-            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+          releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}
@@ -173,15 +165,7 @@ jobs:
           projectPath: studio
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
-          releaseBody: |
-            Desktop app for Unsloth Studio.
-
-            **macOS**: Download the Apple Silicon `.dmg`.
-            **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
-
-            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+          releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}

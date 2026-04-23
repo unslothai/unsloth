@@ -85,9 +85,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = crate::install::stop_install(&install_state);
                 let update_state = app.state::<crate::update::UpdateState>();
                 let _ = crate::update::stop_update(&update_state);
-                let shutdown = app.state::<crate::process::ShutdownFlag>();
-                let state = app.state::<crate::process::BackendState>();
-                let _ = crate::process::stop_backend(&state, &shutdown);
+                // Detach the 5s graceful-wait so the tray click does not
+                // block the Tauri main loop. Exit runs the RunEvent::Exit
+                // safety net which also calls stop_backend synchronously.
+                let shutdown = app.state::<crate::process::ShutdownFlag>().inner().clone();
+                let backend_state = app.state::<crate::process::BackendState>().inner().clone();
+                crate::process::stop_backend_detached(backend_state, shutdown);
                 app.exit(0);
             }
             _ => {}

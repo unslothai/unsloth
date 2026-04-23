@@ -56,10 +56,11 @@ export async function fetchDeviceType(): Promise<DeviceType> {
     }
   } catch {
     // Backend not ready — use client-side detection so chat-only guard
-    // still works on initial load (important for macOS).
+    // still works on initial load (important for macOS). Keep fetched=false
+    // so a later call retries against the backend.
     const deviceType = detectLocalPlatform();
     const chatOnly = deviceType === "mac";
-    usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
+    usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
     return deviceType;
   }
 

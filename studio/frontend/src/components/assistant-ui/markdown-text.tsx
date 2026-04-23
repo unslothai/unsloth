@@ -36,9 +36,8 @@ const STREAMDOWN_COMPONENTS = {
       rel="noopener noreferrer"
       className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer"
       onClick={(e) => {
-        if (href) {
+        if (href && openLink(href)) {
           e.preventDefault();
-          openLink(href);
         }
       }}
       {...props}

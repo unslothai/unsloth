@@ -526,3 +526,12 @@ pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(),
         Ok(())
     }
 }
+
+/// Spawn `stop_backend` on a background thread and return immediately.
+/// Used by the tray "quit" path so the 5s graceful-wait does not block
+/// the Tauri main event loop before `app.exit(0)` fires.
+pub fn stop_backend_detached(state: BackendState, shutdown: ShutdownFlag) {
+    std::thread::spawn(move || {
+        let _ = stop_backend(&state, &shutdown);
+    });
+}
