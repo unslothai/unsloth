@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
-import { loadModel } from "./api/chat-api";
+import { loadModel, validateModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -267,6 +268,21 @@ export function SharedComposer({
     return () => clearInterval(id);
   }, [handlesRef]);
 
+  // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const styles = window.getComputedStyle(ta);
+    const lineHeight = parseFloat(styles.lineHeight) || 20;
+    const paddingY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const borderY = parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
+    const maxHeight = lineHeight * 6 + paddingY + borderY;
+    const next = Math.min(ta.scrollHeight, maxHeight);
+    ta.style.height = `${next}px`;
+    ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [text]);
+
   const addFiles = useCallback((files: FileList | null) => {
     if (!files?.length) return;
     const next: PendingImage[] = [];
@@ -336,6 +352,27 @@ export function SharedComposer({
 
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
+        const currentStore = useChatRuntimeStore.getState();
+        const isAlreadyActive =
+          currentStore.params.checkpoint === sel.id &&
+          (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
+        if (!isAlreadyActive) {
+          const validation = await validateModel({
+            model_path: sel.id,
+            hf_token: currentStore.hfToken || null,
+            max_seq_length: maxSeqLength,
+            load_in_4bit: true,
+            is_lora: sel.isLora,
+            gguf_variant: sel.ggufVariant ?? null,
+            trust_remote_code: trustRemoteCode,
+            chat_template_override: chatTemplateOverride,
+          });
+          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+            );
+          }
+        }
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
@@ -346,9 +383,13 @@ export function SharedComposer({
           trust_remote_code: trustRemoteCode,
           chat_template_override: chatTemplateOverride,
         });
-        useChatRuntimeStore.getState().setCheckpoint(
+        const store = useChatRuntimeStore.getState();
+        store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+        );
+        store.setModelRequiresTrustRemoteCode(
+          resp.requires_trust_remote_code ?? false,
         );
         return resp.status;
       }
@@ -430,7 +471,7 @@ export function SharedComposer({
 
   return (
     <div
-      className={`shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "ring-ring bg-accent/50" : ""}`}
+      className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -473,7 +514,7 @@ export function SharedComposer({
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="Send to both models..."
-        className="mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground"
+        className="mb-1 min-h-12 w-full resize-none overflow-y-hidden bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
         rows={1}
       />
       <div className="relative mx-2 mb-2 flex items-center justify-between">
@@ -490,13 +531,13 @@ export function SharedComposer({
             }}
           />
           <TooltipIconButton
-            tooltip="Add attachment"
+            tooltip="Add Attachment"
             side="bottom"
             variant="ghost"
             size="icon"
-            className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Add attachment"
+            aria-label="Add Attachment"
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />
           </TooltipIconButton>
@@ -517,11 +558,11 @@ export function SharedComposer({
                 side="bottom"
                 variant="ghost"
                 size="icon"
-                className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+                className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
                 onClick={() => audioInputRef.current?.click()}
                 aria-label="Upload audio"
               >
-                <HeadphonesIcon className="size-4 stroke-[1.5px]" />
+                <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
               </TooltipIconButton>
             </>
           )}
@@ -532,18 +573,19 @@ export function SharedComposer({
               if (reasoningAlwaysOn) return;
               const next = !reasoningEnabled;
               setReasoningEnabled(next);
-              // Qwen3/3.5: adjust params for thinking on/off
+              // Qwen3/3.5/3.6: adjust params for thinking on/off
               const store = useChatRuntimeStore.getState();
               const cp = store.params.checkpoint?.toLowerCase() ?? "";
               if (cp.includes("qwen3")) {
+                const needsPresencePenalty = cp.includes("qwen3.5") || cp.includes("qwen3.6");
                 const p = next
-                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
+                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
                 store.setParams({ ...store.params, ...p });
               }
             }}
             className={cn(
-              "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
               reasoningDisabled
                 ? "cursor-not-allowed opacity-40"
                 : (reasoningEnabled || reasoningAlwaysOn)
@@ -553,9 +595,9 @@ export function SharedComposer({
             aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
           >
             {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
-              <LightbulbIcon className="size-3" />
+              <LightbulbIcon className="size-3.5" />
             ) : (
-              <LightbulbOffIcon className="size-3" />
+              <LightbulbOffIcon className="size-3.5" />
             )}
             <span>Think</span>
           </button>
@@ -590,7 +632,7 @@ export function SharedComposer({
             )}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
-            <TerminalIcon className="size-3.5" />
+            <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
           </button>
         </div>
@@ -603,7 +645,7 @@ export function SharedComposer({
                   side="bottom"
                   variant="ghost"
                   size="icon"
-                  className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+                  className="size-8 rounded-full text-muted-foreground"
                   onClick={startDictation}
                   aria-label="Dictate"
                 >

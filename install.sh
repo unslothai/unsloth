@@ -112,15 +112,24 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
+    # uv rejects the continuous-release_main bitsandbytes wheel because the
+    # filename version (1.33.7rc0) does not match the embedded metadata version
+    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
+    if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
+        if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
+            run_maybe_quiet uv pip install --python "$_venv_py" pip || \
+                substep "[WARN] could not bootstrap pip; bitsandbytes install will likely fail" "$C_WARN"
+        fi
+    fi
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        if run_install_cmd "$_label (pre-release)" uv pip install --python "$_venv_py" \
+        if run_install_cmd "$_label (pre-release)" "$_venv_py" -m pip install \
             --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
             return 0
         fi
-        substep "[WARN] bnb pre-release unreachable; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
-    run_install_cmd "$_label (pypi fallback)" uv pip install --python "$_venv_py" \
+    run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
         --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
 }
 
@@ -1044,7 +1053,8 @@ _has_usable_nvidia_gpu() {
 # On CPU-only machines this returns the cpu index, avoiding the solver
 # dead-end where --torch-backend=auto resolves to unsloth==2024.8.
 get_torch_index_url() {
-    _base="https://download.pytorch.org/whl"
+    _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+    _base="${_base%/}"
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.
@@ -1306,7 +1316,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.4" unsloth-zoo
+            "unsloth>=2026.4.7" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1314,7 +1324,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.4" unsloth-zoo
+            "unsloth>=2026.4.7" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -1477,7 +1487,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.4.4" unsloth-zoo
+            "unsloth>=2026.4.7" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1488,7 +1498,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.4.4" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.4.7" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
@@ -1515,7 +1525,7 @@ else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.4" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.7" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else

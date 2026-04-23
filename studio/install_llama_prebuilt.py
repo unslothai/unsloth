@@ -2576,8 +2576,14 @@ def detect_host() -> HostInfo:
     has_rocm = False
     if is_linux:
         for _cmd, _check in (
-            # rocminfo: look for "gfxNNNN" with nonzero first digit (gfx000 is CPU agent)
-            (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
+            # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
+            # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
+            # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
+            # the dash and must not be treated as a real GPU.
+            (
+                ["rocminfo"],
+                lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
+            ),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
@@ -3634,6 +3640,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         return [
             "llama-server",
             "llama-quantize",
+            "libllama-common.so*",
             "libllama.so*",
             "libggml.so*",
             "libggml-base.so*",
@@ -4923,6 +4930,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "linux-cpu":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4931,6 +4939,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-cuda":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4946,6 +4955,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-rocm":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
