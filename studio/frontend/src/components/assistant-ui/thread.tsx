@@ -32,6 +32,7 @@ import {
   downloadBenchmarkCsv,
   downloadBenchmarkJsonl,
 } from "@/features/chat/benchmark/utils/export-benchmark";
+import { PromptStorageDialog } from "@/features/chat/benchmark/prompt-storage-dialog";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -65,6 +66,7 @@ import {
   LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
+  BookmarkIcon,
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -294,6 +296,24 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
   const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
   const benchmarkName = useBenchmarkStore((s) => s.benchmarkName);
   const setBenchmarkName = useBenchmarkStore((s) => s.setBenchmarkName);
+  const pendingComposerText = useBenchmarkStore((s) => s.pendingComposerText);
+  const setPendingComposerText = useBenchmarkStore((s) => s.setPendingComposerText);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+
+  // When a prompt is loaded from Prompt Storage, inject it into the textarea
+  useEffect(() => {
+    if (!pendingComposerText) return;
+    const textarea = document.querySelector<HTMLTextAreaElement>(".aui-composer-input");
+    if (textarea) {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      if (nativeSetter) {
+        nativeSetter.call(textarea, pendingComposerText);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.focus();
+      }
+    }
+    setPendingComposerText(null);
+  }, [pendingComposerText, setPendingComposerText]);
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -321,38 +341,50 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
   );
 
   return (
-    <ComposerPrimitive.Root
-      className="aui-composer-root relative flex w-full flex-col"
-      aria-disabled={disabled}
-      onSubmit={handleSubmit}
-    >
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-        {benchmarkMode && (
-          <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
-            <label className="text-xs font-medium text-primary whitespace-nowrap">Run name:</label>
-            <input
-              value={benchmarkName}
-              onChange={(e) => setBenchmarkName(e.target.value)}
-              className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-              placeholder="Benchmark run name..."
-            />
-          </div>
-        )}
-        <ComposerAttachments />
-        <PendingAudioChip />
-        <ToolStatusDisplay />
-        <ComposerPrimitive.Input
-          placeholder={benchmarkMode ? "Send prompt to all selected models..." : "Send a message..."}
-          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
-          minRows={1}
-          maxRows={6}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label="Message input"
-        />
-        <ComposerAction disabled={disabled} />
-      </ComposerPrimitive.AttachmentDropzone>
-    </ComposerPrimitive.Root>
+    <>
+      <PromptStorageDialog open={promptStorageOpen} onOpenChange={setPromptStorageOpen} />
+      <ComposerPrimitive.Root
+        className="aui-composer-root relative flex w-full flex-col"
+        aria-disabled={disabled}
+        onSubmit={handleSubmit}
+      >
+        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          {benchmarkMode && (
+            <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
+              <label className="text-xs font-medium text-primary whitespace-nowrap">Benchmark name:</label>
+              <input
+                value={benchmarkName}
+                onChange={(e) => setBenchmarkName(e.target.value)}
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                placeholder="Benchmark name..."
+              />
+              <button
+                type="button"
+                onClick={() => setPromptStorageOpen(true)}
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-primary/80 hover:bg-primary/10 hover:text-primary transition-colors shrink-0"
+                title="Open Prompt Storage"
+              >
+                <BookmarkIcon className="size-3.5" />
+                Prompt Storage
+              </button>
+            </div>
+          )}
+          <ComposerAttachments />
+          <PendingAudioChip />
+          <ToolStatusDisplay />
+          <ComposerPrimitive.Input
+            placeholder={benchmarkMode ? "Send prompt to all selected models..." : "Send a message..."}
+            className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+            minRows={1}
+            maxRows={6}
+            autoFocus={!disabled}
+            disabled={disabled}
+            aria-label="Message input"
+          />
+          <ComposerAction disabled={disabled} />
+        </ComposerPrimitive.AttachmentDropzone>
+      </ComposerPrimitive.Root>
+    </>
   );
 };
 

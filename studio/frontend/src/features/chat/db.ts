@@ -5,9 +5,28 @@ import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useRef, useState } from "react";
 import type { MessageRecord, ThreadRecord } from "./types";
 
+export interface PromptEntry {
+  id: string;
+  name: string;
+  text: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PromptListEntry {
+  id: string;
+  name: string;
+  /** Ordered list of prompt texts in this list */
+  items: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 const db = new Dexie("unsloth-chat") as Dexie & {
   threads: EntityTable<ThreadRecord, "id">;
   messages: EntityTable<MessageRecord, "id">;
+  promptEntries: EntityTable<PromptEntry, "id">;
+  promptLists: EntityTable<PromptListEntry, "id">;
 };
 
 db.version(1).stores({
@@ -39,6 +58,13 @@ db.version(3)
 db.version(4).stores({
   threads: "id, modelType, pairId, benchmarkId, archived, createdAt",
   messages: "id, threadId, createdAt",
+});
+
+db.version(5).stores({
+  threads: "id, modelType, pairId, benchmarkId, archived, createdAt",
+  messages: "id, threadId, createdAt",
+  promptEntries: "id, createdAt",
+  promptLists: "id, createdAt",
 });
 
 export { db };

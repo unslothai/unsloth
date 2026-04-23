@@ -14,8 +14,10 @@ export interface BenchmarkStore {
   activeBenchmarkId: string | null;
   /** Maps modelId → threadId for the current benchmark run */
   activeBenchmarkThreadIds: Record<string, string>;
-  /** Callback set by chat-page so the thread composer can trigger a benchmark send */
-  benchmarkSendFn: ((text: string) => void) | null;
+  /** Callback set by chat-page so other components can trigger a multi-prompt benchmark run */
+  benchmarkSendFn: ((texts: string[]) => void) | null;
+  /** Text to pre-fill in the composer (set by Prompt Storage when loading a single prompt) */
+  pendingComposerText: string | null;
 
   toggleBenchmarkMode: () => void;
   disableBenchmarkMode: () => void;
@@ -24,7 +26,8 @@ export interface BenchmarkStore {
   clearModelSelection: () => void;
   setActiveBenchmark: (id: string, threadIds: Record<string, string>) => void;
   clearActiveBenchmark: () => void;
-  setBenchmarkSendFn: (fn: ((text: string) => void) | null) => void;
+  setBenchmarkSendFn: (fn: ((texts: string[]) => void) | null) => void;
+  setPendingComposerText: (text: string | null) => void;
 }
 
 export const useBenchmarkStore = create<BenchmarkStore>((set, get) => ({
@@ -34,6 +37,7 @@ export const useBenchmarkStore = create<BenchmarkStore>((set, get) => ({
   activeBenchmarkId: null,
   activeBenchmarkThreadIds: {},
   benchmarkSendFn: null,
+  pendingComposerText: null,
 
   toggleBenchmarkMode: () => {
     const next = !get().benchmarkMode;
@@ -77,4 +81,5 @@ export const useBenchmarkStore = create<BenchmarkStore>((set, get) => ({
     set({ activeBenchmarkId: null, activeBenchmarkThreadIds: {} }),
 
   setBenchmarkSendFn: (fn) => set({ benchmarkSendFn: fn }),
+  setPendingComposerText: (text) => set({ pendingComposerText: text }),
 }));

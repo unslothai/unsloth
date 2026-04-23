@@ -1,51 +1,67 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef } from "react";
-import {
-  CompareHandlesProvider,
-  RegisterCompareHandle,
-  type CompareHandle,
-  type CompareHandles,
-} from "../shared-composer";
-import { ChatRuntimeProvider } from "../runtime-provider";
+import { useAui } from "@assistant-ui/react";
+import { useEffect } from "react";
+import type { CompareHandle } from "../shared-composer";
 
 /**
- * Invisible orchestration mount. Exists only while a benchmark run is active.
- * Registers a CompareHandle under the name "bench" so useBenchmarkRunner can
- * drive appendMessage / startRun / waitForRunEnd against the current thread.
- *
- * The user watches generation live in the normal SingleContent view.
- * This component renders nothing visible.
+ * Registers a CompareHandle into a ref provided by the benchmark runner.
+ * Must be rendered INSIDE the visible SingleContent's ChatRuntimeProvider so
+ * that handle.append() drives the thread the user is actually watching,
+ * causing messages to stream live in the UI.
  */
-export function BenchmarkOrchestrator({
-  currentThreadId,
-  onHandleReady,
+export function RegisterBenchmarkHandle({
+  setHandle,
 }: {
-  currentThreadId: string | undefined;
-  onHandleReady: (getHandle: () => CompareHandle | null) => void;
-}) {
-  const handlesRef = useRef<Record<string, CompareHandle>>({}) as CompareHandles;
+  setHandle: (handle: CompareHandle | null) => void;
+}): null {
+  const aui = useAui();
 
-  // Stable callback — parent must wrap in useCallback to avoid re-firing
   useEffect(() => {
-    onHandleReady(() => handlesRef.current["bench"] ?? null);
-  }, [onHandleReady]);
+    const handle: CompareHandle = {
+      append: (content) =>
+        aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
+      appendMessage: (content) =>
+        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
+      startRun: () => {
+        const msgs = aui.thread().getState().messages;
+        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+        aui.thread().startRun({ parentId: lastId });
+      },
+      cancel: () => aui.thread().cancelRun(),
+      isRunning: () => aui.thread().getState().isRunning,
+      /**
+       * Polls the AUI thread state directly to detect run completion.
+       * This is more reliable than subscribing to useChatRuntimeStore because
+       * the AUI thread state updates synchronously, eliminating race conditions
+       * where the run completes before a Zustand subscription fires.
+       */
+      waitForRunEnd: () =>
+        new Promise<void>((resolve) => {
+          const startTime = Date.now();
+          let wasRunning = false;
+          const poll = () => {
+            const running = aui.thread().getState().isRunning;
+            if (running) wasRunning = true;
+            if (wasRunning && !running) {
+              resolve();
+              return;
+            }
+            // Safety timeout: if the run never starts within 10s, continue
+            if (!wasRunning && Date.now() - startTime > 10_000) {
+              resolve();
+              return;
+            }
+            setTimeout(poll, 100);
+          };
+          // Allow ~150ms for the AUI thread to start the run before we begin polling
+          setTimeout(poll, 150);
+        }),
+    };
+    setHandle(handle);
+    return () => setHandle(null);
+  }, [aui, setHandle]);
 
-  if (!currentThreadId) return null;
-
-  return (
-    // style= is more reliable than className="hidden" — avoids Tailwind purge edge cases
-    <div style={{ display: "none" }} aria-hidden="true">
-      <CompareHandlesProvider handlesRef={handlesRef}>
-        <ChatRuntimeProvider
-          modelType="base"
-          initialThreadId={currentThreadId}
-          syncActiveThreadId={false}
-        >
-          <RegisterCompareHandle name="bench" />
-        </ChatRuntimeProvider>
-      </CompareHandlesProvider>
-    </div>
-  );
+  return null;
 }

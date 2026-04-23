@@ -48,7 +48,7 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useBenchmarkStore } from "./stores/use-benchmark-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
-import { BenchmarkOrchestrator } from "./benchmark/benchmark-content";
+import { RegisterBenchmarkHandle } from "./benchmark/benchmark-content";
 import { BenchmarkProgressPill } from "./benchmark/benchmark-progress-pill";
 import { useBenchmarkRunner } from "./benchmark/use-benchmark-runner";
 
@@ -114,7 +114,13 @@ const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
   onBenchmarkSend,
-}: { threadId?: string; newThreadNonce?: string; onBenchmarkSend?: (text: string) => void }): ReactElement {
+  onHandleChange,
+}: {
+  threadId?: string;
+  newThreadNonce?: string;
+  onBenchmarkSend?: (text: string) => void;
+  onHandleChange?: (handle: CompareHandle | null) => void;
+}): ReactElement {
   return (
     <ChatRuntimeProvider
       modelType="base"
@@ -123,6 +129,7 @@ const SingleContent = memo(function SingleContent({
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onBenchmarkSend={onBenchmarkSend} />
+        {onHandleChange && <RegisterBenchmarkHandle setHandle={onHandleChange} />}
       </div>
     </ChatRuntimeProvider>
   );
@@ -569,13 +576,14 @@ export function ChatPage(): ReactElement {
     cancel: cancelBenchmark,
     progress: benchmarkProgress,
     running: benchmarkRunning,
-    activeThreadId: benchmarkActiveThreadId,
   } = useBenchmarkRunner();
-  const benchmarkHandleGetterRef = useRef<(() => CompareHandle | null) | null>(null);
+  // Holds the handle registered by RegisterBenchmarkHandle inside SingleContent.
+  // Updated whenever SingleContent mounts/remounts for a new thread.
+  const benchmarkHandleRef = useRef<CompareHandle | null>(null);
 
-  const onBenchmarkHandleReady = useCallback(
-    (getter: () => CompareHandle | null) => {
-      benchmarkHandleGetterRef.current = getter;
+  const handleBenchmarkHandleChange = useCallback(
+    (handle: CompareHandle | null) => {
+      benchmarkHandleRef.current = handle;
     },
     [],
   );
@@ -583,8 +591,20 @@ export function ChatPage(): ReactElement {
   const onBenchmarkSend = useCallback(
     (text: string) => {
       void runBenchmark(
-        text,
-        () => benchmarkHandleGetterRef.current?.() ?? null,
+        [text],
+        () => benchmarkHandleRef.current,
+        (threadId: string) =>
+          navigate({ to: "/chat", search: { thread: threadId } }),
+      );
+    },
+    [navigate, runBenchmark],
+  );
+
+  const onBenchmarkRunMultiple = useCallback(
+    (texts: string[]) => {
+      void runBenchmark(
+        texts,
+        () => benchmarkHandleRef.current,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
@@ -593,9 +613,9 @@ export function ChatPage(): ReactElement {
   );
 
   useEffect(() => {
-    setBenchmarkSendFn(onBenchmarkSend);
+    setBenchmarkSendFn(onBenchmarkRunMultiple);
     return () => setBenchmarkSendFn(null);
-  }, [onBenchmarkSend, setBenchmarkSendFn]);
+  }, [onBenchmarkRunMultiple, setBenchmarkSendFn]);
 
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
@@ -1009,6 +1029,7 @@ export function ChatPage(): ReactElement {
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             onBenchmarkSend={onBenchmarkSend}
+            onHandleChange={benchmarkRunning ? handleBenchmarkHandleChange : undefined}
           />
         ) : (
           <CompareContent
@@ -1040,13 +1061,6 @@ export function ChatPage(): ReactElement {
         }}
       />
 
-      {/* Benchmark invisible orchestrator — mounts when a run is in progress */}
-      {benchmarkRunning && (
-        <BenchmarkOrchestrator
-          currentThreadId={benchmarkActiveThreadId ?? undefined}
-          onHandleReady={onBenchmarkHandleReady}
-        />
-      )}
     </div>
   );
 }

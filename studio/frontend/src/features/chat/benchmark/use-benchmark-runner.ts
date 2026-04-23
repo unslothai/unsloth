@@ -32,19 +32,22 @@ export function useBenchmarkRunner() {
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
-   * Run one prompt against all selected models, creating or reusing threads.
+   * Run one or more prompts against all selected models sequentially.
+   * For each model: load it (if needed), then send each prompt in order
+   * waiting for the response before sending the next.
    * Called by the shared benchmarkSendFn each time the user submits in
-   * benchmark mode.
+   * benchmark mode, or by the prompt list runner with multiple texts.
    */
   const run = useCallback(
     async (
-      promptText: string,
+      promptTexts: string[],
       getHandle: () => CompareHandle | null,
       navigateToThread: (threadId: string) => void,
     ) => {
       const store = useBenchmarkStore.getState();
       const selectedIds = store.benchmarkSelectedModelIds;
       if (selectedIds.length === 0) return;
+      if (promptTexts.length === 0) return;
 
       // Clear any pending dismiss timer
       if (dismissTimerRef.current !== null) {
@@ -101,7 +104,7 @@ export function useBenchmarkRunner() {
         useBenchmarkStore.getState().setActiveBenchmark(benchmarkId, threadIds);
       }
 
-      // Run the prompt through each selected model
+      // Run the prompt(s) through each selected model
       for (let mi = 0; mi < selectedIds.length; mi++) {
         if (cancelRef.current) break;
         const modelId = selectedIds[mi];
@@ -125,11 +128,11 @@ export function useBenchmarkRunner() {
         const isLora = (modelEntry as { isLora?: boolean })?.isLora ?? false;
         const ggufVariant = quantVariant ?? (modelEntry as { ggufVariant?: string })?.ggufVariant ?? null;
 
-        // 1. Load the model
+        // 1. Load the model (skip if already loaded)
         setProgress({
           promptIdx: 0,
           modelIdx: mi,
-          totalPrompts: 1,
+          totalPrompts: promptTexts.length,
           totalModels: selectedIds.length,
           currentModelName: modelName,
           phase: "loading",
@@ -157,27 +160,31 @@ export function useBenchmarkRunner() {
             .setCheckpoint(baseModelId, ggufVariant ?? null);
         }
 
-        // 2. Navigate to the thread and wait for the orchestrator handle
+        // 2. Navigate to this model's thread (user sees it live)
         setActiveThreadId(threadId);
         navigateToThread(threadId);
 
+        // 3. Wait for the visible thread's handle to be ready after navigation
         const handle = await waitForHandle(getHandle);
         if (!handle || cancelRef.current) break;
 
-        // 3. Send the prompt
-        setProgress({
-          promptIdx: 0,
-          modelIdx: mi,
-          totalPrompts: 1,
-          totalModels: selectedIds.length,
-          currentModelName: modelName,
-          phase: "generating",
-        });
+        // 4. Send each prompt in order, waiting for each response to complete
+        for (let pi = 0; pi < promptTexts.length; pi++) {
+          if (cancelRef.current) break;
+          const promptText = promptTexts[pi];
 
-        // Use append (not appendMessage+startRun) so the user message and run
-        // start atomically — startRun reads stale getState().messages otherwise.
-        handle.append([{ type: "text", text: promptText }]);
-        await handle.waitForRunEnd();
+          setProgress({
+            promptIdx: pi,
+            modelIdx: mi,
+            totalPrompts: promptTexts.length,
+            totalModels: selectedIds.length,
+            currentModelName: modelName,
+            phase: "generating",
+          });
+
+          handle.append([{ type: "text", text: promptText }]);
+          await handle.waitForRunEnd();
+        }
       }
 
       setProgress((p) =>
