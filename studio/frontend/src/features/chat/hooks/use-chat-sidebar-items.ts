@@ -6,7 +6,7 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 
 export interface SidebarItem {
-  type: "single" | "compare";
+  type: "single" | "compare" | "benchmark";
   id: string;
   title: string;
   createdAt: number;
@@ -15,9 +15,22 @@ export interface SidebarItem {
 export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
   const items: SidebarItem[] = [];
   const seenPairs = new Set<string>();
+  const seenBenchmarks = new Set<string>();
 
   for (const t of threads) {
     if (t.archived) {
+      continue;
+    }
+    // Benchmark folders — handled before pairId so child threads don't fall through
+    if (t.benchmarkId) {
+      if (seenBenchmarks.has(t.benchmarkId)) continue;
+      seenBenchmarks.add(t.benchmarkId);
+      items.push({
+        type: "benchmark",
+        id: t.benchmarkId,
+        title: t.benchmarkName ?? "Benchmark",
+        createdAt: t.createdAt,
+      });
       continue;
     }
     if (t.pairId) {
@@ -31,7 +44,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         title: t.title,
         createdAt: t.createdAt,
       });
-    } else if (!t.pairId) {
+    } else {
       items.push({
         type: "single",
         id: t.id,
@@ -73,9 +86,9 @@ export async function deleteChatItem(
   const threadIds: string[] =
     item.type === "single"
       ? [item.id]
-      : (await db.threads.where("pairId").equals(item.id).toArray()).map(
-          (t) => t.id,
-        );
+      : item.type === "benchmark"
+        ? (await db.threads.where("benchmarkId").equals(item.id).toArray()).map((t) => t.id)
+        : (await db.threads.where("pairId").equals(item.id).toArray()).map((t) => t.id);
 
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
@@ -88,7 +101,8 @@ export async function deleteChatItem(
     }
   });
 
-  if (activeId === item.id) {
+  // For benchmark items, activeId is a child threadId, not the benchmarkId itself
+  if (activeId === item.id || threadIds.includes(activeId ?? "")) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }

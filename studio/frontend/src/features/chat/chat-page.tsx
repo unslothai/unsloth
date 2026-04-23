@@ -45,8 +45,14 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useBenchmarkStore } from "./stores/use-benchmark-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import { BenchmarkSetupDialog } from "./benchmark/benchmark-setup-dialog";
+import { BenchmarkOrchestrator } from "./benchmark/benchmark-content";
+import { BenchmarkProgressPill } from "./benchmark/benchmark-progress-pill";
+import { useBenchmarkRunner } from "./benchmark/use-benchmark-runner";
+import type { BenchmarkConfig } from "./benchmark/types";
 
 type LoraCandidate = {
   id: string;
@@ -554,6 +560,37 @@ export function ChatPage(): ReactElement {
     return Boolean(inferenceParams.checkpoint);
   }, [inferenceParams.checkpoint]);
 
+  // Benchmark runner
+  const benchmarkDialogOpen = useBenchmarkStore((s) => s.dialogOpen);
+  const closeBenchmarkDialog = useBenchmarkStore((s) => s.closeDialog);
+  const {
+    run: runBenchmark,
+    cancel: cancelBenchmark,
+    progress: benchmarkProgress,
+    running: benchmarkRunning,
+    activeThreadId: benchmarkActiveThreadId,
+  } = useBenchmarkRunner();
+  const benchmarkHandleGetterRef = useRef<(() => CompareHandle | null) | null>(null);
+
+  const onBenchmarkHandleReady = useCallback(
+    (getter: () => CompareHandle | null) => {
+      benchmarkHandleGetterRef.current = getter;
+    },
+    [],
+  );
+
+  const startBenchmark = useCallback(
+    (config: BenchmarkConfig) => {
+      void runBenchmark(
+        config,
+        () => benchmarkHandleGetterRef.current?.() ?? null,
+        (threadId: string) =>
+          navigate({ to: "/chat", search: { thread: threadId } }),
+      );
+    },
+    [navigate, runBenchmark],
+  );
+
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
     if (search.compare) {
@@ -889,7 +926,12 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] sm:max-w-none !h-[34px]"
               />
             )}
-            {loadingModel && loadToastDismissed ? (
+            {benchmarkRunning && benchmarkProgress ? (
+              <BenchmarkProgressPill
+                progress={benchmarkProgress}
+                onCancel={cancelBenchmark}
+              />
+            ) : loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
                 label={
                   loadProgress?.phase === "starting"
@@ -981,6 +1023,25 @@ export function ChatPage(): ReactElement {
               loadingDescription: "Reloading with updated chat template.",
             });
           }
+        }}
+      />
+
+      {/* Benchmark invisible orchestrator — mounts when a run is in progress */}
+      {benchmarkRunning && (
+        <BenchmarkOrchestrator
+          currentThreadId={benchmarkActiveThreadId ?? undefined}
+          onHandleReady={onBenchmarkHandleReady}
+        />
+      )}
+
+      <BenchmarkSetupDialog
+        open={benchmarkDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) closeBenchmarkDialog();
+        }}
+        onStart={(config) => {
+          closeBenchmarkDialog();
+          startBenchmark(config);
         }}
       />
     </div>

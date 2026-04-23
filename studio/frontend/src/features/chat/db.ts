@@ -36,6 +36,11 @@ db.version(3)
       }),
   );
 
+db.version(4).stores({
+  threads: "id, modelType, pairId, benchmarkId, archived, createdAt",
+  messages: "id, threadId, createdAt",
+});
+
 export { db };
 
 /**
