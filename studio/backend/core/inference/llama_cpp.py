@@ -403,7 +403,9 @@ class LlamaCppBackend:
         ``preserve_thinking`` kwarg when the template supports it.
         """
         kwargs: dict = {}
-        if self._supports_reasoning:
+        # Always-on reasoning models hardcode <think> tags in their template
+        # and do not consume enable_thinking / reasoning_effort -- skip.
+        if self._supports_reasoning and not self._reasoning_always_on:
             if self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("low", "medium", "high"):
                     kwargs["reasoning_effort"] = reasoning_effort
@@ -1613,7 +1615,8 @@ class LlamaCppBackend:
             # For reasoning models, set default thinking mode.
             # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
             # Only 9B and larger enable thinking.
-            if self._supports_reasoning:
+            # Always-on templates ignore the kwarg entirely, so skip.
+            if self._supports_reasoning and not self._reasoning_always_on:
                 thinking_default = True
                 mid = (model_identifier or "").lower()
                 if "qwen3.5" in mid or "qwen3.6" in mid:

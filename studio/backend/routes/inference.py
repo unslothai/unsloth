@@ -297,19 +297,19 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
-                _reasoning_flags = detect_reasoning_flags(
-                    _chat_template, backend.active_model_name, log_source = "Safetensors"
-                )
-                # gpt-oss safetensors emit Harmony channels even when no
-                # chat template is stored on the model record; fall back so
-                # the UI still surfaces the Think control.
-                if not _reasoning_flags["supports_reasoning"] and hasattr(
-                    backend, "_is_gpt_oss_model"
-                ):
+                # Non-GGUF: only advertise reasoning for gpt-oss Harmony,
+                # which emits reasoning via channels at the tokenizer level.
+                # Template-level chat_template_kwargs (enable_thinking /
+                # preserve_thinking / tools) are not yet forwarded through
+                # the transformers generation path, so avoid advertising
+                # controls the server cannot honour outside GGUF.
+                _sf_supports_reasoning = False
+                _sf_reasoning_style = "enable_thinking"
+                if hasattr(backend, "_is_gpt_oss_model"):
                     try:
                         if backend._is_gpt_oss_model():
-                            _reasoning_flags["supports_reasoning"] = True
-                            _reasoning_flags["reasoning_style"] = "reasoning_effort"
+                            _sf_supports_reasoning = True
+                            _sf_reasoning_style = "reasoning_effort"
                     except Exception:
                         pass
                 return LoadResponse(
@@ -326,13 +326,11 @@ async def load_model(
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
                     ),
-                    supports_reasoning = _reasoning_flags["supports_reasoning"],
-                    reasoning_style = _reasoning_flags["reasoning_style"],
-                    reasoning_always_on = _reasoning_flags["reasoning_always_on"],
-                    supports_preserve_thinking = _reasoning_flags[
-                        "supports_preserve_thinking"
-                    ],
-                    supports_tools = _reasoning_flags["supports_tools"],
+                    supports_reasoning = _sf_supports_reasoning,
+                    reasoning_style = _sf_reasoning_style,
+                    reasoning_always_on = False,
+                    supports_preserve_thinking = False,
+                    supports_tools = False,
                     chat_template = _chat_template,
                 )
 
@@ -571,9 +569,19 @@ async def load_model(
         except Exception:
             pass
 
-        _reasoning_flags = detect_reasoning_flags(
-            _chat_template, config.identifier, log_source = "Safetensors"
-        )
+        # Non-GGUF: gpt-oss Harmony surfaces reasoning via tokenizer-level
+        # channels; other safetensors reasoning/tools/preserve-thinking
+        # knobs are not forwarded to tokenizer.apply_chat_template yet, so
+        # we only advertise support for the Harmony case here.
+        _sf_supports_reasoning = False
+        _sf_reasoning_style = "enable_thinking"
+        if hasattr(backend, "_is_gpt_oss_model"):
+            try:
+                if backend._is_gpt_oss_model():
+                    _sf_supports_reasoning = True
+                    _sf_reasoning_style = "reasoning_effort"
+            except Exception:
+                pass
 
         return LoadResponse(
             status = "loaded",
@@ -589,11 +597,11 @@ async def load_model(
             requires_trust_remote_code = bool(
                 inference_config.get("trust_remote_code", False)
             ),
-            supports_reasoning = _reasoning_flags["supports_reasoning"],
-            reasoning_style = _reasoning_flags["reasoning_style"],
-            reasoning_always_on = _reasoning_flags["reasoning_always_on"],
-            supports_preserve_thinking = _reasoning_flags["supports_preserve_thinking"],
-            supports_tools = _reasoning_flags["supports_tools"],
+            supports_reasoning = _sf_supports_reasoning,
+            reasoning_style = _sf_reasoning_style,
+            reasoning_always_on = False,
+            supports_preserve_thinking = False,
+            supports_tools = False,
             chat_template = _chat_template,
         )
 
@@ -818,33 +826,23 @@ async def get_status(
         is_audio = False
         audio_type = None
         has_audio_input = False
-        chat_template = None
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
-            try:
-                chat_template = model_info.get("chat_template_info", {}).get("template")
-            except Exception:
-                chat_template = None
 
-        reasoning_flags = detect_reasoning_flags(
-            chat_template, backend.active_model_name, log_source = "Safetensors status"
-        )
-        # gpt-oss safetensors models emit Harmony channels even when the
-        # tokenizer.chat_template is unavailable; fall back to the
-        # backend-level detector so the UI still surfaces the Think control.
-        if (
-            not reasoning_flags["supports_reasoning"]
-            and backend.active_model_name
-            and hasattr(backend, "_is_gpt_oss_model")
-        ):
+        # Non-GGUF: only gpt-oss Harmony is wired through the transformers
+        # generation path. Other template-level reasoning / tool kwargs
+        # are not yet forwarded, so we do not advertise them here.
+        supports_reasoning = False
+        reasoning_style = "enable_thinking"
+        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
             try:
                 if backend._is_gpt_oss_model():
-                    reasoning_flags["supports_reasoning"] = True
-                    reasoning_flags["reasoning_style"] = "reasoning_effort"
+                    supports_reasoning = True
+                    reasoning_style = "reasoning_effort"
             except Exception:
                 pass
         inference_config = (
@@ -866,11 +864,11 @@ async def get_status(
             requires_trust_remote_code = bool(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
-            supports_reasoning = reasoning_flags["supports_reasoning"],
-            reasoning_style = reasoning_flags["reasoning_style"],
-            reasoning_always_on = reasoning_flags["reasoning_always_on"],
-            supports_preserve_thinking = reasoning_flags["supports_preserve_thinking"],
-            supports_tools = reasoning_flags["supports_tools"],
+            supports_reasoning = supports_reasoning,
+            reasoning_style = reasoning_style,
+            reasoning_always_on = False,
+            supports_preserve_thinking = False,
+            supports_tools = False,
         )
 
     except Exception as e:
