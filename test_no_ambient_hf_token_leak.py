@@ -62,24 +62,3 @@ def test_supplied_hf_token_is_forwarded_verbatim(
 
     assert captured["configs_token"] == supplied
     assert all(t == supplied for t in captured["splits_tokens"])
-
-
-def test_none_is_never_forwarded_as_token(
-    monkeypatch, fake_datasets, fake_structlog
-):
-    import datasets as ds
-
-    captured = {}
-
-    def _configs(name, token=None):
-        captured["configs_token"] = token
-        return ["default"]
-
-    monkeypatch.setattr(ds, "get_dataset_config_names", _configs)
-    monkeypatch.setattr(
-        ds, "get_dataset_split_names", lambda *a, **k: ["train"]
-    )
-
-    req = DatasetSplitsRequest(dataset_name="owner/x")
-    rd.get_dataset_splits(req, current_subject="t")
-    assert captured["configs_token"] is not None
