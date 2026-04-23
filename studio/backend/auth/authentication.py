@@ -52,6 +52,8 @@ def _decode_subject_without_verification(token: str) -> Optional[str]:
 def create_access_token(
     subject: str,
     expires_delta: Optional[timedelta] = None,
+    *,
+    desktop: bool = False,
 ) -> str:
     """
     Create a signed JWT for the given subject (e.g. username).
@@ -59,6 +61,8 @@ def create_access_token(
     Tokens are valid across restarts because the signing secret is stored in SQLite.
     """
     to_encode = {"sub": subject}
+    if desktop:
+        to_encode["desktop"] = True
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes = ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -70,7 +74,29 @@ def create_access_token(
     )
 
 
-def create_refresh_token(subject: str) -> str:
+def is_desktop_access_token(token: str) -> bool:
+    """Return true only for a valid desktop-issued JWT access token."""
+    if token.startswith(API_KEY_PREFIX):
+        return False
+
+    subject = _decode_subject_without_verification(token)
+    if subject is None:
+        return False
+
+    record = get_user_and_secret(subject)
+    if record is None:
+        return False
+
+    _salt, _pwd_hash, jwt_secret, _must_change_password = record
+    try:
+        payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
+    except jwt.InvalidTokenError:
+        return False
+
+    return payload.get("sub") == subject and payload.get("desktop") is True
+
+
+def create_refresh_token(subject: str, *, desktop: bool = False) -> str:
     """
     Create a random refresh token, store its hash in SQLite, and return it.
 
@@ -78,21 +104,28 @@ def create_refresh_token(subject: str) -> str:
     """
     token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
-    save_refresh_token(token, subject, expires_at.isoformat())
+    save_refresh_token(token, subject, expires_at.isoformat(), is_desktop = desktop)
     return token
 
 
-def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[str]]:
+def refresh_access_token(
+    refresh_token: str,
+) -> Tuple[Optional[str], Optional[str], bool]:
     """
     Validate a refresh token and issue a new access token.
 
     The refresh token itself is NOT consumed — it stays valid until expiry.
     Returns a new access_token or None if the refresh token is invalid/expired.
     """
-    username = verify_refresh_token(refresh_token)
-    if username is None:
-        return None, None
-    return create_access_token(subject = username), username
+    verified = verify_refresh_token(refresh_token)
+    if verified is None:
+        return None, None, False
+    username, is_desktop = verified
+    return (
+        create_access_token(subject = username, desktop = is_desktop),
+        username,
+        is_desktop,
+    )
 
 
 def reload_secret() -> None:
@@ -173,7 +206,8 @@ async def _get_current_subject(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid token payload",
             )
-        if must_change_password and not allow_password_change:
+        is_desktop = payload.get("desktop") is True
+        if must_change_password and not allow_password_change and not is_desktop:
             raise HTTPException(
                 status_code = status.HTTP_403_FORBIDDEN,
                 detail = "Password change required",

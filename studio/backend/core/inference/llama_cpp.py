@@ -18,6 +18,7 @@ from loggers import get_logger
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -26,7 +27,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
+
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
 # Forward-looking intent signals that indicate the model is
@@ -440,6 +446,7 @@ class LlamaCppBackend:
                 capture_output = True,
                 text = True,
                 timeout = 10,
+                **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode != 0:
                 return []
@@ -1658,6 +1665,7 @@ class LlamaCppBackend:
                 stderr = subprocess.STDOUT,
                 text = True,
                 env = env,
+                **_windows_hidden_subprocess_kwargs(),
             )
 
             # Start background thread to drain stdout and prevent pipe deadlock
