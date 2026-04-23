@@ -369,6 +369,7 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3.5-0.8B",
         "unsloth/Qwen3.5-2B",
         "unsloth/Qwen3.5-4B",
+        "unsloth/Qwen3.5-9B",
         "unsloth/Qwen3.5-27B",
         "unsloth/Qwen3.5-35B-A3B",
     ),
