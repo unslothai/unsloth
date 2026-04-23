@@ -246,6 +246,8 @@ VLLM_SUPPORTED_VLM = [
     "qwen3_vl",
     "qwen3_vl_moe",
     "gemma4",
+    "qwen3_5",
+    "qwen3_5_moe",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -1061,7 +1063,13 @@ class FastBaseModel:
             # back to compilation_config=0 (no piecewise compile) for gemma4
             # so fast_inference still loads. Runtime is slower than -O3 but
             # correctness is preserved.
-            if any(arch == "gemma4" for arch in (model_types or [])):
+            #
+            # The same FX splitter bug reproduces on Qwen3.5 / Qwen3.6
+            # (qwen3_5 dense, qwen3_5_moe). The hybrid GatedDeltaNet +
+            # full-attention layers defeat piecewise compile's node erasure
+            # heuristics. Force eager for these archs too.
+            _eager_arches = {"gemma4", "qwen3_5", "qwen3_5_moe"}
+            if any(arch in _eager_arches for arch in (model_types or [])):
                 load_vllm_kwargs.setdefault("compilation_config", 0)
                 load_vllm_kwargs.setdefault("enforce_eager", True)
             for allowed_arg in allowed_args:
