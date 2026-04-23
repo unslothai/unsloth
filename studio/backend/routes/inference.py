@@ -1694,17 +1694,14 @@ async def openai_chat_completions(
 
                 reasoning_text: Optional[str] = None
                 if "<think>" in full_text:
-                    _think_match = _re.search(
+                    reasoning_parts: list[str] = []
+                    full_text = _re.sub(
                         r"<think>(.*?)</think>\s*",
+                        lambda m: reasoning_parts.append(m.group(1).strip()) or "",
                         full_text,
                         flags = _re.DOTALL,
-                    )
-                    if _think_match:
-                        reasoning_text = _think_match.group(1).strip() or None
-                        full_text = (
-                            full_text[: _think_match.start()]
-                            + full_text[_think_match.end() :]
-                        ).strip()
+                    ).strip()
+                    reasoning_text = "\n\n".join(p for p in reasoning_parts if p) or None
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -1892,17 +1889,14 @@ async def openai_chat_completions(
 
             reasoning_text_ns: Optional[str] = None
             if "<think>" in full_text:
-                _think_match_ns = _re.search(
+                reasoning_parts_ns: list[str] = []
+                full_text = _re.sub(
                     r"<think>(.*?)</think>\s*",
+                    lambda m: reasoning_parts_ns.append(m.group(1).strip()) or "",
                     full_text,
                     flags = _re.DOTALL,
-                )
-                if _think_match_ns:
-                    reasoning_text_ns = _think_match_ns.group(1).strip() or None
-                    full_text = (
-                        full_text[: _think_match_ns.start()]
-                        + full_text[_think_match_ns.end() :]
-                    ).strip()
+                ).strip()
+                reasoning_text_ns = "\n\n".join(p for p in reasoning_parts_ns if p) or None
 
             response = ChatCompletion(
                 id = completion_id,
