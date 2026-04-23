@@ -415,13 +415,10 @@ export function PromptStorageDialog({
   const promptLists = useLiveQuery(() =>
     db.promptLists.orderBy("createdAt").reverse().toArray(), []);
 
-  const { benchmarkMode, benchmarkSelectedModelIds, benchmarkSendFn, setPendingComposerText } =
-    useBenchmarkStore((s) => ({
-      benchmarkMode: s.benchmarkMode,
-      benchmarkSelectedModelIds: s.benchmarkSelectedModelIds,
-      benchmarkSendFn: s.benchmarkSendFn,
-      setPendingComposerText: s.setPendingComposerText,
-    }));
+  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
+  const benchmarkSelectedModelIds = useBenchmarkStore((s) => s.benchmarkSelectedModelIds);
+  const benchmarkSendFn = useBenchmarkStore((s) => s.benchmarkSendFn);
+  const setPendingComposerText = useBenchmarkStore((s) => s.setPendingComposerText);
 
   const handleUsePrompt = useCallback(
     (text: string) => {

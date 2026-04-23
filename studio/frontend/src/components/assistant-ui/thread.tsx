@@ -342,7 +342,9 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
 
   return (
     <>
-      <PromptStorageDialog open={promptStorageOpen} onOpenChange={setPromptStorageOpen} />
+      {benchmarkMode && (
+        <PromptStorageDialog open={promptStorageOpen} onOpenChange={setPromptStorageOpen} />
+      )}
       <ComposerPrimitive.Root
         className="aui-composer-root relative flex w-full flex-col"
         aria-disabled={disabled}
