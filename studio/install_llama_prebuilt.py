@@ -3640,6 +3640,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         return [
             "llama-server",
             "llama-quantize",
+            "libllama-common.so*",
             "libllama.so*",
             "libggml.so*",
             "libggml-base.so*",
@@ -4929,6 +4930,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "linux-cpu":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4937,6 +4939,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-cuda":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4952,6 +4955,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-rocm":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],

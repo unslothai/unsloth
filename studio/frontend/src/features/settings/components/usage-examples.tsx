@@ -67,8 +67,8 @@ export function UsageExamples() {
     [],
   );
 
-  const handleCopy = () => {
-    if (copyToClipboard(snippets[lang])) {
+  const handleCopy = async () => {
+    if (await copyToClipboard(snippets[lang])) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     }

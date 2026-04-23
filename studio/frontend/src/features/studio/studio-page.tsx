@@ -25,8 +25,6 @@ import { LiveTrainingView } from "./live-training-view";
 import { HistoricalTrainingView } from "./historical-training-view";
 import { HistoryCardGrid } from "./history-card-grid";
 
-const STUDIO_TOUR_KEY = "tour:studio:v1";
-
 export function StudioPage(): ReactElement {
   useTrainingRuntimeLifecycle();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
@@ -85,8 +83,6 @@ export function StudioPage(): ReactElement {
     id: "studio",
     steps: tourSteps,
     enabled: tourEnabled,
-    autoKey: isConfigTour ? STUDIO_TOUR_KEY : undefined,
-    autoWhen: isConfigTour,
   });
 
   const setTourOpen = tour.setOpen;
