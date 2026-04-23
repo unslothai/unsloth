@@ -1701,7 +1701,9 @@ async def openai_chat_completions(
                         full_text,
                         flags = _re.DOTALL,
                     ).strip()
-                    reasoning_text = "\n\n".join(p for p in reasoning_parts if p) or None
+                    reasoning_text = (
+                        "\n\n".join(p for p in reasoning_parts if p) or None
+                    )
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -1896,7 +1898,9 @@ async def openai_chat_completions(
                     full_text,
                     flags = _re.DOTALL,
                 ).strip()
-                reasoning_text_ns = "\n\n".join(p for p in reasoning_parts_ns if p) or None
+                reasoning_text_ns = (
+                    "\n\n".join(p for p in reasoning_parts_ns if p) or None
+                )
 
             response = ChatCompletion(
                 id = completion_id,
