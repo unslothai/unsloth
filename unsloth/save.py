@@ -3493,6 +3493,8 @@ def patch_saving_functions(model, vision = False):
             save_directory,
             token = kwargs.get("token", None),
         )
+        from .tokenizer_utils import fix_sentencepiece_gguf
+        fix_sentencepiece_gguf(save_directory)
         if push_to_hub:
             push_kwargs = dict(kwargs)
             repo_id = push_kwargs.pop("repo_id", save_directory)

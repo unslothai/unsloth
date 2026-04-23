@@ -510,6 +510,12 @@ def fix_sentencepiece_gguf(saved_location):
 
     # Confirm added_tokens_json is correct
     added_tokens_ids = np.array(list(added_tokens_json.values()))
+    # why safe: np.diff on <2 elements returns [] and .min() raises ValueError; preserve any in-vocab CONTROL patch before returning
+    if len(added_tokens_ids) < 2:
+        if patched > 0:
+            with open(f"{saved_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
+        return
     diff = np.diff(added_tokens_ids)
     if diff.min() != 1 or diff.max() != 1:
         if patched > 0:
