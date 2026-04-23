@@ -177,7 +177,7 @@ def _auto_kernel_options(
 
 
 def _detect_arch(hf_model) -> str:
-    """Return one of ``"gemma4"``, ``"qwen3_moe"``, ``"qwen3"``, ``"llama3"`` or raises."""
+    """Return one of ``"gemma4"``, ``"qwen3_moe"``, ``"qwen3"``, ``"gpt_oss"``, ``"llama3"`` or raises."""
     # Look at the inner base model's class; PEFT wrappers delegate to
     # ``.base_model.model``.
     target = hf_model
@@ -199,12 +199,14 @@ def _detect_arch(hf_model) -> str:
         return "qwen3_moe"
     if "qwen3" in lowered:
         return "qwen3"
+    if "gptoss" in lowered or "gpt_oss" in lowered:
+        return "gpt_oss"
     if "llama" in lowered:
         return "llama3"
     raise NotImplementedError(
-        "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Qwen3-MoE, Llama-3, "
-        f"Gemma-4 today; got {type(hf_model).__name__}. Unset the env var "
-        "or use vLLM."
+        "UNSLOTH_FAST_INFERENCE=1 only supports Qwen3, Qwen3-MoE, gpt-oss, "
+        f"Llama-3, Gemma-4 today; got {type(hf_model).__name__}. Unset the "
+        "env var or use vLLM."
     )
 
 
@@ -402,6 +404,9 @@ class FlexEngine:
             # re-checks the active backend at capture time and skips
             # capture on any other backend, leaving ``capture_cudagraph``
             # alone here.
+        elif arch == "gpt_oss":
+            from .flex_gpt_oss import FlexGptOssInference
+            Impl = FlexGptOssInference
         else:
             Impl = FlexInference
         # Pass the cuMem allocator through so the impl can wrap ONLY
@@ -764,17 +769,17 @@ class FlexEngine:
 
         # Materialise the pristine source the first time we see a LoRA.
         if self._pristine_base is None:
-            if self.arch == "qwen3_moe":
-                # For Qwen3 MoE, LoRA lives on the stacked-expert
-                # ParamWrapper and never merges in-place into the expert
-                # tensors during training (see
+            if self.arch in ("qwen3_moe", "gpt_oss"):
+                # For MoE architectures (Qwen3-MoE + gpt-oss), LoRA lives
+                # on the stacked-expert ParamWrapper and never merges
+                # in-place into the expert tensors during training (see
                 # unsloth_zoo.temporary_patches.moe_utils
                 # _patched_param_wrapper_forward). That means the
                 # training model's expert weights ARE the pristine
-                # source — no third 30-60 GB deep-copy is needed. Point
+                # source — no third 20-60 GB deep-copy is needed. Point
                 # the LoRA-refresh helper at the training model's base
-                # directly. This keeps the 30B MoE model at 2x residency
-                # instead of 3x.
+                # directly. This keeps the model at 2x residency instead
+                # of 3x.
                 try:
                     pristine = training_peft_model.get_base_model()
                 except AttributeError:
@@ -903,7 +908,24 @@ class _LazyFlexEngineSentinel:
     def __getattr__(self, name):
         if name == "_model":
             raise AttributeError(name)
+        # Keep dunder lookups out of the resolve path so ``copy.deepcopy``
+        # (which probes ``__deepcopy__``, ``__reduce_ex__``, ...) doesn't
+        # recursively trigger an engine build. This matters when FlexEngine
+        # itself calls ``copy.deepcopy(hf_model)`` to build its inference
+        # copy — the training model still holds the sentinel, and without
+        # this guard the copy.deepcopy attribute probe infinite-loops.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         return getattr(self._resolve(), name)
+
+    def __deepcopy__(self, memo):
+        # The sentinel is bound to the training ``model`` object; a copy
+        # that points at a different model would be meaningless. Treat it
+        # as a singleton for copy purposes.
+        return self
+
+    def __copy__(self):
+        return self
 
     def __bool__(self):
         return True
