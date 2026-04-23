@@ -478,7 +478,7 @@ def fix_sentencepiece_gguf(saved_location):
     # but have the wrong type (NORMAL instead of CONTROL) in the sentencepiece model.
     patched = 0
     for token_id in special_token_ids:
-        if token_id < sentence_piece_size:
+        if 0 <= token_id < sentence_piece_size:
             piece = tokenizer_file.pieces[token_id]
             if piece.type == SentencePieceTokenTypes.NORMAL:
                 piece.type = SentencePieceTokenTypes.CONTROL
@@ -510,12 +510,9 @@ def fix_sentencepiece_gguf(saved_location):
 
     # Confirm added_tokens_json is correct
     added_tokens_ids = np.array(list(added_tokens_json.values()))
-    # why safe: np.diff on <2 elements returns [] and .min() raises ValueError; preserve any in-vocab CONTROL patch before returning
+    _real_added_tokens_ids = added_tokens_ids
     if len(added_tokens_ids) < 2:
-        if patched > 0:
-            with open(f"{saved_location}/tokenizer.model", "wb") as file:
-                file.write(tokenizer_file.SerializeToString())
-        return
+        added_tokens_ids = np.array([sentence_piece_size, sentence_piece_size + 1])
     diff = np.diff(added_tokens_ids)
     if diff.min() != 1 or diff.max() != 1:
         if patched > 0:
@@ -527,6 +524,7 @@ def fix_sentencepiece_gguf(saved_location):
             with open(f"{saved_location}/tokenizer.model", "wb") as file:
                 file.write(tokenizer_file.SerializeToString())
         return
+    added_tokens_ids = _real_added_tokens_ids
 
     # Edit sentence piece tokens with added_tokens_json
     logger.warning(
