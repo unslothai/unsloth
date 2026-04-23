@@ -2289,6 +2289,14 @@ def unsloth_save_pretrained_gguf(
             quantization_methods.append(quant_method.lower())
 
     try:
+        from .tokenizer_utils import fix_sentencepiece_gguf
+        fix_sentencepiece_gguf(save_directory)
+    except Exception as e:
+        logger.warning(
+            f"Unsloth: fix_sentencepiece_gguf failed, continuing with GGUF conversion: {e}"
+        )
+
+    try:
         all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
             model_name = model_name,
             model_type = model_type,
@@ -3493,8 +3501,6 @@ def patch_saving_functions(model, vision = False):
             save_directory,
             token = kwargs.get("token", None),
         )
-        from .tokenizer_utils import fix_sentencepiece_gguf
-        fix_sentencepiece_gguf(save_directory)
         if push_to_hub:
             push_kwargs = dict(kwargs)
             repo_id = push_kwargs.pop("repo_id", save_directory)
