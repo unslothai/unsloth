@@ -416,14 +416,15 @@ def resolve_model_class(auto_model, config):
         result = mapping[config.__class__]
     except Exception:
         result = None
-        for config_class in (
-            list(mapping._config_mapping.values())
-            if hasattr(mapping, "_config_mapping")
-            else []
-        ):
+        for key in list(getattr(mapping, "_model_mapping", {})):
             try:
+                config_class = mapping._load_attr_from_module(
+                    key, mapping._config_mapping[key]
+                )
                 if isinstance(config, config_class):
-                    result = mapping[config_class]
+                    result = mapping._load_attr_from_module(
+                        key, mapping._model_mapping[key]
+                    )
                     break
             except Exception:
                 continue
