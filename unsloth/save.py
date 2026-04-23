@@ -2289,6 +2289,15 @@ def unsloth_save_pretrained_gguf(
             quantization_methods.append(quant_method.lower())
 
     try:
+        from .tokenizer_utils import fix_sentencepiece_gguf
+
+        fix_sentencepiece_gguf(save_directory)
+    except Exception as e:
+        logger.warning(
+            f"Unsloth: fix_sentencepiece_gguf skipped ({type(e).__name__}): {e}"
+        )
+
+    try:
         all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
             model_name = model_name,
             model_type = model_type,
