@@ -43,6 +43,14 @@ interface ModelSelectorProps {
   onOpenChange?: (open: boolean) => void;
   triggerDataTour?: string;
   contentDataTour?: string;
+  /** When true, clicking models toggles their benchmark selection instead of loading them */
+  benchmarkMode?: boolean;
+  /** Model IDs currently selected for the benchmark */
+  benchmarkSelectedIds?: string[];
+  /** Called when a model is toggled in benchmark mode */
+  onBenchmarkToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  /** Called when the user confirms benchmark model selection */
+  onBenchmarkConfirm?: () => void;
 }
 
 function ModelSelectorTrigger({
@@ -105,6 +113,10 @@ function ModelSelectorContent({
   onFoldersChange,
   className,
   dataTour,
+  benchmarkMode,
+  benchmarkSelectedIds,
+  onBenchmarkToggle,
+  onBenchmarkConfirm,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -114,9 +126,14 @@ function ModelSelectorContent({
   onFoldersChange?: () => void;
   className?: string;
   dataTour?: string;
+  benchmarkMode?: boolean;
+  benchmarkSelectedIds?: string[];
+  onBenchmarkToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onBenchmarkConfirm?: () => void;
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const selectedCount = benchmarkSelectedIds?.length ?? 0;
 
   return (
     <PopoverContent
@@ -128,7 +145,15 @@ function ModelSelectorContent({
       )}
     >
       {chatOnly ? (
-        <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+        <HubModelPicker
+          models={models}
+          value={value}
+          onSelect={onSelect}
+          onFoldersChange={onFoldersChange}
+          benchmarkMode={benchmarkMode}
+          benchmarkSelectedIds={benchmarkSelectedIds}
+          onBenchmarkToggle={onBenchmarkToggle}
+        />
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
@@ -137,7 +162,15 @@ function ModelSelectorContent({
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+            <HubModelPicker
+              models={models}
+              value={value}
+              onSelect={onSelect}
+              onFoldersChange={onFoldersChange}
+              benchmarkMode={benchmarkMode}
+              benchmarkSelectedIds={benchmarkSelectedIds}
+              onBenchmarkToggle={onBenchmarkToggle}
+            />
           </TabsContent>
 
           <TabsContent value="lora" className="m-0">
@@ -150,7 +183,29 @@ function ModelSelectorContent({
         </Tabs>
       )}
 
-      {hasSelection && onEject ? (
+      {/* Benchmark confirmation button — only when benchmark mode is active */}
+      {benchmarkMode && (
+        <div className="mt-2 border-t border-border/70 pt-2">
+          <button
+            type="button"
+            onClick={onBenchmarkConfirm}
+            disabled={selectedCount === 0}
+            className={cn(
+              "flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              selectedCount === 0
+                ? "cursor-not-allowed opacity-40 text-muted-foreground"
+                : "text-primary hover:bg-primary/10",
+            )}
+          >
+            {selectedCount > 0
+              ? `Load ${selectedCount} selected model${selectedCount !== 1 ? "s" : ""} for benchmark`
+              : "Select models above for benchmark"}
+          </button>
+        </div>
+      )}
+
+      {/* Eject button — hidden when benchmark mode is active */}
+      {!benchmarkMode && hasSelection && onEject ? (
         <div className="mt-2 border-t border-border/70 pt-2">
           <button
             type="button"
@@ -184,6 +239,10 @@ export function ModelSelector({
   onOpenChange,
   triggerDataTour,
   contentDataTour,
+  benchmarkMode,
+  benchmarkSelectedIds,
+  onBenchmarkToggle,
+  onBenchmarkConfirm,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -253,11 +312,24 @@ export function ModelSelector({
     setOpen(false);
   }
 
+  function handleBenchmarkConfirm() {
+    onBenchmarkConfirm?.();
+    setOpen(false);
+  }
+
+  // In benchmark mode show the count of selected models in the trigger
+  const benchmarkCount = benchmarkSelectedIds?.length ?? 0;
+  const benchmarkTriggerModel: ModelOption | undefined = benchmarkMode
+    ? benchmarkCount > 0
+      ? { id: "__bench__", name: `${benchmarkCount} model${benchmarkCount !== 1 ? "s" : ""} selected` }
+      : { id: "__bench__", name: "Select models" }
+    : undefined;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
-        currentModel={currentModel}
-        isLoaded={isLoaded}
+        currentModel={benchmarkTriggerModel ?? currentModel}
+        isLoaded={benchmarkMode ? benchmarkCount > 0 : isLoaded}
         variant={variant}
         size={size}
         className={className}
@@ -272,6 +344,10 @@ export function ModelSelector({
         onFoldersChange={onFoldersChange}
         className={contentClassName}
         dataTour={contentDataTour}
+        benchmarkMode={benchmarkMode}
+        benchmarkSelectedIds={benchmarkSelectedIds}
+        onBenchmarkToggle={onBenchmarkToggle}
+        onBenchmarkConfirm={handleBenchmarkConfirm}
       />
     </Popover>
   );

@@ -48,11 +48,9 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useBenchmarkStore } from "./stores/use-benchmark-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
-import { BenchmarkSetupDialog } from "./benchmark/benchmark-setup-dialog";
 import { BenchmarkOrchestrator } from "./benchmark/benchmark-content";
 import { BenchmarkProgressPill } from "./benchmark/benchmark-progress-pill";
 import { useBenchmarkRunner } from "./benchmark/use-benchmark-runner";
-import type { BenchmarkConfig } from "./benchmark/types";
 
 type LoraCandidate = {
   id: string;
@@ -115,7 +113,8 @@ function messageHasImage(message: MessageRecord): boolean {
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
-}: { threadId?: string; newThreadNonce?: string }): ReactElement {
+  onBenchmarkSend,
+}: { threadId?: string; newThreadNonce?: string; onBenchmarkSend?: (text: string) => void }): ReactElement {
   return (
     <ChatRuntimeProvider
       modelType="base"
@@ -123,7 +122,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onBenchmarkSend={onBenchmarkSend} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -561,8 +560,10 @@ export function ChatPage(): ReactElement {
   }, [inferenceParams.checkpoint]);
 
   // Benchmark runner
-  const benchmarkDialogOpen = useBenchmarkStore((s) => s.dialogOpen);
-  const closeBenchmarkDialog = useBenchmarkStore((s) => s.closeDialog);
+  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
+  const benchmarkSelectedModelIds = useBenchmarkStore((s) => s.benchmarkSelectedModelIds);
+  const toggleModelSelection = useBenchmarkStore((s) => s.toggleModelSelection);
+  const setBenchmarkSendFn = useBenchmarkStore((s) => s.setBenchmarkSendFn);
   const {
     run: runBenchmark,
     cancel: cancelBenchmark,
@@ -579,10 +580,10 @@ export function ChatPage(): ReactElement {
     [],
   );
 
-  const startBenchmark = useCallback(
-    (config: BenchmarkConfig) => {
+  const onBenchmarkSend = useCallback(
+    (text: string) => {
       void runBenchmark(
-        config,
+        text,
         () => benchmarkHandleGetterRef.current?.() ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
@@ -590,6 +591,11 @@ export function ChatPage(): ReactElement {
     },
     [navigate, runBenchmark],
   );
+
+  useEffect(() => {
+    setBenchmarkSendFn(onBenchmarkSend);
+    return () => setBenchmarkSendFn(null);
+  }, [onBenchmarkSend, setBenchmarkSendFn]);
 
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
@@ -924,6 +930,10 @@ export function ChatPage(): ReactElement {
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 className="max-w-[62vw] sm:max-w-none !h-[34px]"
+                benchmarkMode={benchmarkMode}
+                benchmarkSelectedIds={benchmarkSelectedModelIds}
+                onBenchmarkToggle={(id) => toggleModelSelection(id)}
+                onBenchmarkConfirm={closeModelSelector}
               />
             )}
             {benchmarkRunning && benchmarkProgress ? (
@@ -995,6 +1005,7 @@ export function ChatPage(): ReactElement {
             key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
+            onBenchmarkSend={onBenchmarkSend}
           />
         ) : (
           <CompareContent
@@ -1033,17 +1044,6 @@ export function ChatPage(): ReactElement {
           onHandleReady={onBenchmarkHandleReady}
         />
       )}
-
-      <BenchmarkSetupDialog
-        open={benchmarkDialogOpen}
-        onOpenChange={(open) => {
-          if (!open) closeBenchmarkDialog();
-        }}
-        onStart={(config) => {
-          closeBenchmarkDialog();
-          startBenchmark(config);
-        }}
-      />
     </div>
   );
 }

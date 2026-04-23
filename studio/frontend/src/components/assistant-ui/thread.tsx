@@ -25,7 +25,13 @@ import {
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { db, useLiveQuery } from "@/features/chat/db";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useBenchmarkStore } from "@/features/chat/stores/use-benchmark-store";
+import {
+  downloadBenchmarkCsv,
+  downloadBenchmarkJsonl,
+} from "@/features/chat/benchmark/utils/export-benchmark";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -46,6 +52,7 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BarChartIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -80,10 +87,12 @@ export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
+  onBenchmarkSend?: (text: string) => void;
 }> = ({
   hideComposer,
   hideWelcome,
   targetThreadId,
+  onBenchmarkSend,
 }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
@@ -119,7 +128,7 @@ export const Thread: FC<{
         >
           {!hideWelcome && (
             <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
-              <ThreadWelcome hideComposer={hideComposer} />
+              <ThreadWelcome hideComposer={hideComposer} onBenchmarkSend={onBenchmarkSend} />
             </AuiIf>
           )}
 
@@ -163,7 +172,7 @@ export const Thread: FC<{
               />
               <div className="relative px-5 pb-2">
                 <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                  <ComposerAnimated disabled={isComposerAttachPending} />
+                  <ComposerAnimated disabled={isComposerAttachPending} onBenchmarkSend={onBenchmarkSend} />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
                   LLMs can make mistakes. Double-check all responses.
@@ -201,7 +210,7 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
-const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+const ThreadWelcome: FC<{ hideComposer?: boolean; onBenchmarkSend?: (text: string) => void }> = ({ hideComposer, onBenchmarkSend }) => {
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
@@ -220,7 +229,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
             </p>
           </div>
           <GeneratingSpinner />
-          {!hideComposer && <ComposerAnimated />}
+          {!hideComposer && <ComposerAnimated onBenchmarkSend={onBenchmarkSend} />}
         </div>
       </div>
     </div>
@@ -242,7 +251,7 @@ const GeneratingSpinner: FC = () => {
   );
 };
 
-const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAnimated: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => void }> = ({ disabled, onBenchmarkSend }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <motion.div
@@ -251,7 +260,7 @@ const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
         transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
         className="relative z-10 w-full"
       >
-        <Composer disabled={disabled} />
+        <Composer disabled={disabled} onBenchmarkSend={onBenchmarkSend} />
       </motion.div>
     </div>
   );
@@ -281,14 +290,34 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => void }> = ({ disabled, onBenchmarkSend }) => {
+  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
+  const benchmarkName = useBenchmarkStore((s) => s.benchmarkName);
+  const setBenchmarkName = useBenchmarkStore((s) => s.setBenchmarkName);
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       if (disabled) {
         event.preventDefault();
+        return;
+      }
+      if (benchmarkMode && onBenchmarkSend) {
+        const textarea = event.currentTarget.querySelector('textarea') as HTMLTextAreaElement | null;
+        const text = textarea?.value?.trim() ?? "";
+        if (text) {
+          event.preventDefault();
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+          if (nativeSetter && textarea) {
+            nativeSetter.call(textarea, '');
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          onBenchmarkSend(text);
+        } else {
+          event.preventDefault();
+        }
       }
     },
-    [disabled],
+    [disabled, benchmarkMode, onBenchmarkSend],
   );
 
   return (
@@ -298,11 +327,22 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       onSubmit={handleSubmit}
     >
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+        {benchmarkMode && (
+          <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
+            <label className="text-xs font-medium text-primary whitespace-nowrap">Run name:</label>
+            <input
+              value={benchmarkName}
+              onChange={(e) => setBenchmarkName(e.target.value)}
+              className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              placeholder="Benchmark run name..."
+            />
+          </div>
+        )}
         <ComposerAttachments />
         <PendingAudioChip />
         <ToolStatusDisplay />
         <ComposerPrimitive.Input
-          placeholder="Send a message..."
+          placeholder={benchmarkMode ? "Send prompt to all selected models..." : "Send a message..."}
           className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           minRows={1}
           maxRows={6}
@@ -544,6 +584,97 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
+const BenchmarkToggle: FC = () => {
+  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
+  const toggleBenchmarkMode = useBenchmarkStore((s) => s.toggleBenchmarkMode);
+
+  return (
+    <button
+      type="button"
+      onClick={toggleBenchmarkMode}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        benchmarkMode
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
+          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={benchmarkMode ? "Disable benchmark mode" : "Enable benchmark mode"}
+    >
+      <BarChartIcon className="size-3.5" />
+      <span>Benchmark</span>
+    </button>
+  );
+};
+
+const ExportBenchmarkButton: FC = () => {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const thread = useLiveQuery(
+    () => (activeThreadId ? db.threads.get(activeThreadId) : Promise.resolve(undefined)),
+    [activeThreadId],
+  );
+  const [open, setOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const benchmarkId = thread?.benchmarkId;
+
+  if (!benchmarkId) return null;
+
+  const handleExport = async (format: "jsonl" | "csv") => {
+    setExporting(true);
+    try {
+      if (format === "jsonl") {
+        await downloadBenchmarkJsonl(benchmarkId);
+      } else {
+        await downloadBenchmarkCsv(benchmarkId);
+      }
+    } catch {
+      // user cancelled file picker — ignore
+    } finally {
+      setExporting(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <TooltipIconButton
+        tooltip="Export benchmark"
+        variant="ghost"
+        className="size-8 rounded-full text-muted-foreground"
+        onClick={() => setOpen((v) => !v)}
+        type="button"
+      >
+        <DownloadIcon className="size-4" />
+      </TooltipIconButton>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-10 right-0 z-50 flex flex-col gap-1 rounded-xl border border-border bg-popover p-2 shadow-md">
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={() => { void handleExport("jsonl"); }}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium hover:bg-accent"
+            >
+              <DownloadIcon className="size-3.5" />
+              Export JSONL
+            </button>
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={() => { void handleExport("csv"); }}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium hover:bg-accent"
+            >
+              <DownloadIcon className="size-3.5" />
+              Export CSV
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
@@ -553,8 +684,10 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <ReasoningToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
+        <BenchmarkToggle />
       </div>
       <div className="flex items-center gap-1">
+        <ExportBenchmarkButton />
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton

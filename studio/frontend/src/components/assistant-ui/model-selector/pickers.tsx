@@ -120,6 +120,7 @@ function ModelRow({
   label,
   meta,
   selected,
+  benchmarkSelected,
   onClick,
   vramStatus,
   vramEst,
@@ -129,6 +130,8 @@ function ModelRow({
   label: string;
   meta?: string;
   selected?: boolean;
+  /** When true, renders a green squircle ring (benchmark multi-select mode) */
+  benchmarkSelected?: boolean;
   onClick: () => void;
   vramStatus?: VramFitStatus | null;
   vramEst?: number;
@@ -153,7 +156,8 @@ function ModelRow({
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
-        selected && "bg-[#ececec] dark:bg-[#2e3035]",
+        selected && !benchmarkSelected && "bg-[#ececec] dark:bg-[#2e3035]",
+        benchmarkSelected && "ring-2 ring-primary bg-primary/5",
       )}
     >
       <span
@@ -470,11 +474,17 @@ export function HubModelPicker({
   value,
   onSelect,
   onFoldersChange,
+  benchmarkMode,
+  benchmarkSelectedIds,
+  onBenchmarkToggle,
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
+  benchmarkMode?: boolean;
+  benchmarkSelectedIds?: string[];
+  onBenchmarkToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
@@ -882,6 +892,18 @@ export function HubModelPicker({
     };
   }, [recommendedSentinel, hasMoreRecommended, recommendedPage, scrollRef]);
 
+  /** In benchmark mode, route model clicks to onBenchmarkToggle instead of onSelect. */
+  const effectiveSelect = useCallback(
+    (id: string, meta: ModelSelectorChangeMeta) => {
+      if (benchmarkMode && onBenchmarkToggle) {
+        onBenchmarkToggle(id, meta);
+      } else {
+        onSelect(id, meta);
+      }
+    },
+    [benchmarkMode, onBenchmarkToggle, onSelect],
+  );
+
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
@@ -889,10 +911,10 @@ export function HubModelPicker({
         // Toggle GGUF variant expander
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        onSelect(id, { source: "hub", isLora: false });
+        effectiveSelect(id, { source: "hub", isLora: false });
       }
     },
-    [onSelect, isKnownGgufRepo],
+    [effectiveSelect, isKnownGgufRepo],
   );
 
   return (
@@ -937,6 +959,7 @@ export function HubModelPicker({
                     label={c.repo_id}
                     meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
+                    benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((id) => id.startsWith(c.repo_id))}
                     onClick={() =>
                       setExpandedGguf((prev) =>
                         prev === c.repo_id ? null : c.repo_id,
@@ -947,7 +970,7 @@ export function HubModelPicker({
                   {expandedGguf === c.repo_id && (
                     <GgufVariantExpander
                       repoId={c.repo_id}
-                      onSelect={onSelect}
+                      onSelect={effectiveSelect}
                       gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       systemRamGb={
                         gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -967,8 +990,9 @@ export function HubModelPicker({
                         label={c.repo_id}
                         meta={formatBytes(c.size_bytes)}
                         selected={value === c.repo_id}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(c.repo_id)}
                         onClick={() =>
-                          onSelect(c.repo_id, {
+                          effectiveSelect(c.repo_id, {
                             source: "hub",
                             isLora: false,
                             isDownloaded: true,
@@ -1194,28 +1218,20 @@ export function HubModelPicker({
                   isGgufFile ||
                   isGgufRepo(m.id) ||
                   isGgufRepo(m.display_name);
-                // Single .gguf files (e.g. Ollama blobs) load directly;
-                // GGUF repos/directories expand to pick a variant.
-                const isDirectGguf = isGgufFile;
                 return (
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={isGguf ? "GGUF" : "Local"}
                       selected={value === m.id}
+                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(m.id)}
                       onClick={() => {
-                        if (isDirectGguf) {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                          });
-                        } else if (isGguf) {
+                        if (isGguf && !isGgufFile) {
                           setExpandedGguf((prev) =>
                             prev === m.id ? null : m.id,
                           );
                         } else {
-                          onSelect(m.id, {
+                          effectiveSelect(m.id, {
                             source: "local",
                             isLora: false,
                             isDownloaded: true,
@@ -1227,7 +1243,7 @@ export function HubModelPicker({
                     {expandedGguf === m.id && (
                       <GgufVariantExpander
                         repoId={m.id}
-                        onSelect={onSelect}
+                        onSelect={effectiveSelect}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1264,13 +1280,8 @@ export function HubModelPicker({
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => {
-                          if (isKnownGgufRepo(id)) {
-                            setExpandedGguf((prev) => (prev === id ? null : id));
-                          } else {
-                            handleModelClick(id);
-                          }
-                        }}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + ":"))}
+                        onClick={() => handleModelClick(id)}
                         vramStatus={
                           isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                         }
@@ -1280,7 +1291,7 @@ export function HubModelPicker({
                       {expandedGguf === id && (
                         <GgufVariantExpander
                           repoId={id}
-                          onSelect={onSelect}
+                          onSelect={effectiveSelect}
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1317,13 +1328,8 @@ export function HubModelPicker({
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      onClick={() => {
-                        if (isKnownGgufRepo(id)) {
-                          setExpandedGguf((prev) => (prev === id ? null : id));
-                        } else {
-                          handleModelClick(id);
-                        }
-                      }}
+                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + ":"))}
+                      onClick={() => handleModelClick(id)}
                       vramStatus={
                         isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                       }
@@ -1333,7 +1339,7 @@ export function HubModelPicker({
                     {expandedGguf === id && (
                       <GgufVariantExpander
                         repoId={id}
-                        onSelect={onSelect}
+                        onSelect={effectiveSelect}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1371,13 +1377,8 @@ export function HubModelPicker({
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => {
-                          if (isSearchGguf) {
-                            setExpandedGguf((prev) => (prev === id ? null : id));
-                          } else {
-                            handleModelClick(id);
-                          }
-                        }}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + ":"))}
+                        onClick={() => handleModelClick(id)}
                         vramStatus={
                           isSearchGguf ? null : (vram?.status ?? null)
                         }
@@ -1387,7 +1388,7 @@ export function HubModelPicker({
                       {expandedGguf === id && (
                         <GgufVariantExpander
                           repoId={id}
-                          onSelect={onSelect}
+                          onSelect={effectiveSelect}
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined

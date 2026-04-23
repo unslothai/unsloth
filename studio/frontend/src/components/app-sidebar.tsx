@@ -32,7 +32,6 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   Book03Icon,
-  ChartLineData02Icon,
   ChefHatIcon,
   ColumnInsertIcon,
   CursorInfo02Icon,
@@ -69,13 +68,12 @@ import {
 import type { SidebarItem } from "@/features/chat/hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
-import { useBenchmarkStore } from "@/features/chat/stores/use-benchmark-store";
 import { db, useLiveQuery } from "@/features/chat/db";
 import { downloadBenchmarkJsonl } from "@/features/chat/benchmark/utils/export-benchmark";
 import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 
@@ -171,11 +169,23 @@ function BenchmarkFolderItem({
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(true);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [editTitle, setEditTitle] = useState(item.title);
   const children = useLiveQuery(
     () => db.threads.where("benchmarkId").equals(item.id).sortBy("createdAt"),
     [item.id],
   );
   const anyActive = children?.some((t) => t.id === activeThreadId);
+
+  const saveRename = useCallback(async () => {
+    if (editTitle.trim() && editTitle !== item.title) {
+      await db.threads
+        .where("benchmarkId")
+        .equals(item.id)
+        .modify({ benchmarkName: editTitle.trim() });
+    }
+    setIsRenaming(false);
+  }, [editTitle, item.id, item.title]);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -191,7 +201,31 @@ function BenchmarkFolderItem({
                 open && "rotate-90",
               )}
             />
-            <span className="flex-1 truncate">{item.title}</span>
+            {isRenaming ? (
+              <input
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onBlur={() => { void saveRename(); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { void saveRename(); }
+                  if (e.key === "Escape") setIsRenaming(false);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+                className="flex-1 bg-transparent text-sm outline-none"
+              />
+            ) : (
+              <span
+                className="flex-1 truncate"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditTitle(item.title);
+                  setIsRenaming(true);
+                }}
+              >
+                {item.title}
+              </span>
+            )}
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 ml-1">
               bench
             </span>
@@ -418,17 +452,6 @@ export function AppSidebar() {
               }}
             />
             <NavItem
-              icon={ChartLineData02Icon}
-              label="Benchmark"
-              active={false}
-              disabled={chatDisabled}
-              onClick={() => {
-                if (chatDisabled) return;
-                useBenchmarkStore.getState().openDialog();
-                closeMobileIfOpen();
-              }}
-            />
-            <NavItem
               icon={Search01Icon}
               label="Search"
               active={false}
@@ -502,7 +525,7 @@ export function AppSidebar() {
                   item.type === "benchmark" ? (
                     <BenchmarkFolderItem
                       key={item.id}
-                      item={item}
+                      item={item as SidebarItem & { type: "benchmark" }}
                       activeThreadId={activeThreadId}
                       onNavigate={(threadId) => {
                         navigate({ to: "/chat", search: { thread: threadId } });
