@@ -1817,7 +1817,7 @@ def check_dataset_for_missing_videos(dataset, column = "messages", raise_error =
                 if path in checked:
                     continue
                 checked.add(path)
-                if not os.path.exists(path):
+                if not os.path.isfile(path):
                     missing.append(path)
 
     if missing:
