@@ -60,8 +60,18 @@ def main():
     p.add_argument("--lora_path", default=None,
                    help="path to a LoRA adapter dir to load per-request")
     p.add_argument("--max_lora_rank", type=int, default=16)
+    p.add_argument("--enforce_eager", action="store_true",
+                   help="disable vLLM CUDA graph capture (diagnostic)")
     p.add_argument("--tag", default=None,
                    help="extra label for the output json filename")
+    p.add_argument("--chat_template", action="store_true",
+                   help="wrap each prompt with the tokenizer's chat "
+                        "template (needed for chat-tuned models like "
+                        "gpt-oss that produce gibberish on raw strings)")
+    p.add_argument("--user_prompt",
+                   default="Continue this sentence: The quick brown fox jumps over fence {i}, then",
+                   help="user-message template when --chat_template is set "
+                        "(``{i}`` gets replaced with the prompt index)")
     args = p.parse_args()
 
     import torch
@@ -91,7 +101,7 @@ def main():
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
         max_num_seqs=max(args.n_prompts, 8),
-        enforce_eager=False,  # default — use cuda graphs
+        enforce_eager=args.enforce_eager,
         trust_remote_code=False,
     )
     if args.enable_lora:
@@ -111,8 +121,23 @@ def main():
     peak_load = _gpu_mem_used_gb()
     print(f"[vllm] loaded in {t_load:.1f}s peak {peak_load:.1f} GB")
 
-    prompts = [f"The quick brown fox jumps over fence {i}, then"
-               for i in range(args.n_prompts)]
+    # Use vLLM's native ``llm.chat`` when chat-template is requested —
+    # it threads harmony-aware templating + tokenization through vLLM's
+    # chat_utils, which is what gpt-oss needs (hand-rolled
+    # apply_chat_template + raw ``llm.generate`` was producing gibberish
+    # on gpt-oss-20b-BF16 no-LoRA).
+    if args.chat_template:
+        chat_messages = [
+            [{"role": "user", "content": args.user_prompt.format(i=i)}]
+            for i in range(args.n_prompts)
+        ]
+        print(f"[vllm] chat mode: llm.chat() with {args.n_prompts} single-turn "
+              f"messages. first: {chat_messages[0][0]['content']!r}")
+        prompts = None
+    else:
+        prompts = [f"The quick brown fox jumps over fence {i}, then"
+                   for i in range(args.n_prompts)]
+        chat_messages = None
 
     sp = SamplingParams(max_tokens=args.max_new_tokens, temperature=0.0)
 
@@ -126,9 +151,16 @@ def main():
         )
         print(f"[vllm] LoRA enabled: path={args.lora_path} rank<={args.max_lora_rank}")
 
+    def _run_once():
+        if chat_messages is not None:
+            return llm.chat(chat_messages, sampling_params=sp,
+                            use_tqdm=False, **gen_kwargs)
+        return llm.generate(prompts, sampling_params=sp,
+                            use_tqdm=False, **gen_kwargs)
+
     # Warmup.
     for _ in range(args.warmup_rounds):
-        _ = llm.generate(prompts, sampling_params=sp, use_tqdm=False, **gen_kwargs)
+        _ = _run_once()
 
     # Timed.
     wall = []
@@ -136,7 +168,7 @@ def main():
     for _ in range(args.timed_rounds):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        outs = llm.generate(prompts, sampling_params=sp, use_tqdm=False, **gen_kwargs)
+        outs = _run_once()
         torch.cuda.synchronize()
         wall.append(time.perf_counter() - t0)
         tok_counts.append(sum(len(o.outputs[0].token_ids) for o in outs))

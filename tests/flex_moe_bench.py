@@ -41,6 +41,10 @@ def main():
     p.add_argument("--warmup_rounds", type = int, default = 1)
     p.add_argument("--timed_rounds", type = int, default = 2)
     p.add_argument("--out_dir", default = "async_task_outputs/qwen3_moe_grpo_bench")
+    p.add_argument("--chat_template", action = "store_true",
+                   help = "wrap each prompt with tokenizer.apply_chat_template")
+    p.add_argument("--user_prompt",
+                   default = "Continue this sentence: The quick brown fox jumps over fence {i}, then")
     args = p.parse_args()
 
     import torch
@@ -101,8 +105,18 @@ def main():
     peak_load = torch.cuda.max_memory_reserved() / 1024**3
     print(f"[bench] loaded in {t_load:.1f}s peak {peak_load:.1f} GB")
 
-    prompts = [f"The quick brown fox jumps over fence {i}, then"
-               for i in range(args.n_prompts)]
+    if args.chat_template:
+        prompts = []
+        for i in range(args.n_prompts):
+            msg = [{"role": "user", "content": args.user_prompt.format(i=i)}]
+            prompts.append(tokenizer.apply_chat_template(
+                msg, tokenize = False, add_generation_prompt = True,
+            ))
+        print(f"[bench] chat_template enabled. prompt[0] (first 200 chars):\n"
+              f"  {prompts[0][:200]!r}")
+    else:
+        prompts = [f"The quick brown fox jumps over fence {i}, then"
+                   for i in range(args.n_prompts)]
 
     if args.backend == "flex":
         class _SP:
