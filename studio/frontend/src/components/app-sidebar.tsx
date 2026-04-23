@@ -69,7 +69,7 @@ import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
 import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 
@@ -142,10 +142,10 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
+          className="h-[35px] rounded-[14px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2d2f33]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2d2f33]! data-active:text-black! dark:data-active:text-white! group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[11px] group-data-[collapsible=icon]:mx-auto"
         >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-[18px]! shrink-0 group-hover/menu-button:animate-icon-pop" />
-          <span className="text-[14px] leading-[18px] tracking-[0.01em]">{label}</span>
+          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-[19px]! shrink-0 group-hover/menu-button:animate-icon-pop" />
+          <span className="text-[14.5px] leading-[19px] tracking-[0.015em] dark:tracking-[0.03em]">{label}</span>
         </SidebarMenuButton>
       </div>
       {children}
@@ -181,6 +181,17 @@ export function AppSidebar() {
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
   useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handler = () => setScrolled(el.scrollTop > 0);
+    handler();
+    el.addEventListener("scroll", handler, { passive: true });
+    return () => el.removeEventListener("scroll", handler);
+  }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
@@ -221,7 +232,7 @@ export function AppSidebar() {
       variant="sidebar"
       className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
     >
-      <SidebarHeader className="pl-[17px] pr-3 pt-[12px] pb-[12px] group-data-[collapsible=icon]:px-0">
+      <SidebarHeader className="pl-[17px] pr-3 pt-[12px] pb-[8px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
         <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
           <Link
@@ -260,10 +271,10 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2a2c2f] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close sidebar"
                 >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[19px]" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="bottom" sideOffset={6}>
@@ -281,10 +292,10 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2a2c2f] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Open sidebar"
                 >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[19px]" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="right" sideOffset={8}>
@@ -295,7 +306,7 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 pt-[10px] pb-[14px] shrink-0">
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 pt-[10px] pb-[8px] shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -338,66 +349,65 @@ export function AppSidebar() {
         </SidebarGroupContent>
       </SidebarGroup>
 
-      <SidebarContent className="gap-0 overflow-y-auto overscroll-contain min-h-0">
-        {/* Navigate (no header) */}
-        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[10px] pb-[14px]">
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <NavItem
-                icon={GemIcon}
-                label="Train"
-                active={pathname === "/studio" || pathname.startsWith("/studio/")}
-                disabled={chatOnly}
-                onClick={() => {
-                  if (chatOnly) return;
-                  navigate({ to: "/studio" });
-                  closeMobileIfOpen();
-                }}
-              />
+      <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[10px] pb-[22px] shrink-0">
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <NavItem
+              icon={GemIcon}
+              label="Train"
+              active={pathname === "/studio" || pathname.startsWith("/studio/")}
+              disabled={chatOnly}
+              onClick={() => {
+                if (chatOnly) return;
+                navigate({ to: "/studio" });
+                closeMobileIfOpen();
+              }}
+            />
 
-              <NavItem
-                icon={ChefHatIcon}
-                label="Recipes"
-                active={isRecipesRoute}
-                onClick={() => {
-                  navigate({ to: "/data-recipes" });
-                  closeMobileIfOpen();
-                }}
-              />
+            <NavItem
+              icon={ChefHatIcon}
+              label="Recipes"
+              active={isRecipesRoute}
+              onClick={() => {
+                navigate({ to: "/data-recipes" });
+                closeMobileIfOpen();
+              }}
+            />
 
-              <NavItem
-                icon={Download03Icon}
-                label="Export"
-                active={pathname === "/export" || pathname.startsWith("/export/")}
-                disabled={chatOnly}
-                onClick={() => {
-                  if (chatOnly) return;
-                  navigate({ to: "/export" });
-                  closeMobileIfOpen();
-                }}
-              />
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+            <NavItem
+              icon={Download03Icon}
+              label="Export"
+              active={pathname === "/export" || pathname.startsWith("/export/")}
+              disabled={chatOnly}
+              onClick={() => {
+                if (chatOnly) return;
+                navigate({ to: "/export" });
+                closeMobileIfOpen();
+              }}
+            />
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
 
+      <SidebarContent ref={scrollRef} className="gap-0 overflow-y-auto overscroll-contain min-h-0 [scrollbar-gutter:stable]">
         {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
         {!isStudioRoute && chatItems.length > 0 && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-2 py-0">
-            <SidebarGroupLabel className="pt-2 pb-1.5 pl-2.5 pr-2 text-[12.5px]! font-normal normal-case tracking-normal text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none" asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150", scrolled && "shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)]")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
                 Recents
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-            <SidebarGroupContent>
+            <SidebarGroupContent className="px-2">
               <SidebarMenu>
                 {chatItems.map((item) => (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
-                      className="h-[32px] rounded-[10px] pl-2.5 pr-7 text-[14px] leading-[18px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                      className="h-[32px] rounded-[14px] pl-2.5 pr-7 text-[14.5px] leading-[19px] tracking-[0.015em] dark:tracking-[0.03em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2d2f33]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2d2f33]! data-active:text-black! dark:data-active:text-white!"
                       onClick={() => {
                         navigate({
                           to: "/chat",
@@ -434,15 +444,15 @@ export function AppSidebar() {
         {/* Recent Runs */}
         {isStudioRoute && runItems.length > 0 && !chatOnly && (
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-2 py-0">
-            <SidebarGroupLabel className="pt-2 pb-1.5 pl-2.5 pr-2 text-[12.5px]! font-normal normal-case tracking-normal text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none" asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150", scrolled && "shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)]")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
                 Recents
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent>
+              <SidebarGroupContent className="px-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     const isActiveRun =
@@ -454,7 +464,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="h-auto flex-col items-start gap-0.5 py-1.5 rounded-[10px] pl-2.5 pr-7 text-[14px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                          className="h-auto flex-col items-start gap-0.5 py-[5px] rounded-[10px] pl-2.5 pr-7 text-[14.5px] tracking-[0.015em] dark:tracking-[0.03em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2d2f33]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2d2f33]! data-active:text-black! dark:data-active:text-white!"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
@@ -517,7 +527,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={`${displayTitle} account menu`}
-                  className="!h-[50px] gap-[8px] rounded-[10px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#f0f0f0]! dark:data-[state=open]:bg-[#2a2c2f]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
+                  className="!h-[50px] gap-[8px] px-2 py-[9px] rounded-[10px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2d2f33]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#f0f0f0]! dark:data-[state=open]:bg-[#2d2f33]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
                 >
                   <div className="shrink-0">
                     <UserAvatar
@@ -528,8 +538,8 @@ export function AppSidebar() {
                     />
                   </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
-                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
+                    <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
+                    <span className="truncate text-[11.5px] tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground">Studio</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
@@ -537,13 +547,13 @@ export function AppSidebar() {
               <DropdownMenuContent
                 side="top"
                 align="start"
-                className="w-[15rem] py-2.5 font-heading [&_[data-slot=dropdown-menu-group]]:flex [&_[data-slot=dropdown-menu-group]]:flex-col [&_[data-slot=dropdown-menu-group]]:gap-px [&_[data-slot=dropdown-menu-item]]:h-[32px] [&_[data-slot=dropdown-menu-item]]:px-2.5! [&_[data-slot=dropdown-menu-item]]:py-0! [&_[data-slot=dropdown-menu-item]]:gap-[8.5px]! [&_[data-slot=dropdown-menu-item]]:rounded-[10px] [&_[data-slot=dropdown-menu-item]]:font-medium [&_[data-slot=dropdown-menu-item]]:text-[14px] [&_[data-slot=dropdown-menu-item]]:leading-[18px] [&_[data-slot=dropdown-menu-item]]:tracking-[0.01em] [&_[data-slot=dropdown-menu-item]]:text-[#383835] dark:[&_[data-slot=dropdown-menu-item]]:text-[#c7c7c4] [&_[data-slot=dropdown-menu-item]_svg]:!size-[18px] [&_[data-slot=dropdown-menu-item]_svg]:shrink-0 [&_[data-slot=dropdown-menu-item]:focus]:bg-[#f0f0f0] dark:[&_[data-slot=dropdown-menu-item]:focus]:bg-[#2a2c2f] [&_[data-slot=dropdown-menu-item]:focus]:text-black dark:[&_[data-slot=dropdown-menu-item]:focus]:text-white [&_[data-slot=dropdown-menu-item]:focus_*]:text-black! dark:[&_[data-slot=dropdown-menu-item]:focus_*]:text-white!"
+                className="w-[15rem] py-2.5 font-heading rounded-[14px] border-0 dark:bg-[#2d2f33] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.06),0_-6px_28px_-8px_rgba(0,0,0,0.18)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_-6px_28px_-8px_rgba(0,0,0,0.28)][&_[data-slot=dropdown-menu-group]]:flex [&_[data-slot=dropdown-menu-group]]:flex-col [&_[data-slot=dropdown-menu-group]]:gap-px [&_[data-slot=dropdown-menu-item]]:h-[32px] [&_[data-slot=dropdown-menu-item]]:px-2.5! [&_[data-slot=dropdown-menu-item]]:py-0! [&_[data-slot=dropdown-menu-item]]:gap-[8.5px]! [&_[data-slot=dropdown-menu-item]]:rounded-[10px] [&_[data-slot=dropdown-menu-item]]:font-medium [&_[data-slot=dropdown-menu-item]]:text-[14.5px] [&_[data-slot=dropdown-menu-item]]:leading-[19px] [&_[data-slot=dropdown-menu-item]]:tracking-[0.015em] dark:[&_[data-slot=dropdown-menu-item]]:tracking-[0.03em] [&_[data-slot=dropdown-menu-item]]:text-[#383835] dark:[&_[data-slot=dropdown-menu-item]]:text-[#c7c7c4] [&_[data-slot=dropdown-menu-item]_svg]:!size-[19px] [&_[data-slot=dropdown-menu-item]_svg]:shrink-0 [&_[data-slot=dropdown-menu-item]:focus]:bg-[#f0f0f0] dark:[&_[data-slot=dropdown-menu-item]:focus]:bg-[#2d2f33] [&_[data-slot=dropdown-menu-item]:focus]:text-black dark:[&_[data-slot=dropdown-menu-item]:focus]:text-white [&_[data-slot=dropdown-menu-item]:focus_*]:text-black! dark:[&_[data-slot=dropdown-menu-item]:focus_*]:text-white!"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[18px]" />
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[19px]" />
                     <span>Settings</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
@@ -551,7 +561,7 @@ export function AppSidebar() {
                     ref={anchorRef as React.Ref<HTMLDivElement>}
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                   >
-                    {isDark ? <Sun strokeWidth={1.75} className="size-[18px]" /> : <Moon strokeWidth={1.75} className="size-[18px]" />}
+                    {isDark ? <Sun strokeWidth={1.75} className="size-[19px]" /> : <Moon strokeWidth={1.75} className="size-[19px]" />}
                     <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -566,11 +576,11 @@ export function AppSidebar() {
                       );
                     }}
                   >
-                    <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-[18px]" />
+                    <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-[19px]" />
                     <span>Guided Tour</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t-[0.5px] border-border/70 dark:border-white/6 bg-transparent!" />
                 <DropdownMenuGroup>
                   <DropdownMenuItem asChild>
                     <a
@@ -578,7 +588,7 @@ export function AppSidebar() {
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-[18px]" />
+                      <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-[19px]" />
                       <span>Learn More</span>
                     </a>
                   </DropdownMenuItem>
@@ -591,7 +601,7 @@ export function AppSidebar() {
                       <HugeiconsIcon
                         icon={NewReleasesIcon}
                         strokeWidth={1.75}
-                        className="size-[18px]"
+                        className="size-[19px]"
                       />
                       <span>What's New</span>
                     </a>
@@ -605,15 +615,15 @@ export function AppSidebar() {
                       <HugeiconsIcon
                         icon={MessageSearch01Icon}
                         strokeWidth={1.75}
-                        className="size-[18px]"
+                        className="size-[19px]"
                       />
                       <span>Feedback</span>
                     </a>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t-[0.5px] border-border/70 dark:border-white/6 bg-transparent!" />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[19px]" />
                   <span>Shutdown</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>

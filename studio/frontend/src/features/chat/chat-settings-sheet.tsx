@@ -49,20 +49,19 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
-  CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
-  Settings02Icon,
-  Settings05Icon,
-  SlidersHorizontalIcon,
-  Wrench01Icon,
+  InformationCircleIcon,
+  LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Tooltip,
   TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -346,6 +345,33 @@ function getPresetSaveState({
   };
 }
 
+function InfoHint({ children }: { children: ReactNode }) {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="More info"
+          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#383835] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="left"
+        sideOffset={8}
+        className="[&_span>svg]:hidden! duration-0 max-w-64 rounded-2xl border-transparent bg-black px-2 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md"
+      >
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ParamSlider({
   label,
   value,
@@ -365,9 +391,11 @@ function ParamSlider({
 }) {
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium">{label}</span>
-        <span className="text-xs tabular-nums text-muted-foreground">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+          {label}
+        </span>
+        <span className="text-[13px] font-medium tabular-nums text-[#383835] dark:text-[#9a9a9d]">
           {displayValue ?? value}
         </span>
       </div>
@@ -377,6 +405,7 @@ function ParamSlider({
         step={step}
         value={[value]}
         onValueChange={([v]) => onChange(v)}
+        className="[&_[data-slot=slider-track]]:!h-1 [&_[data-slot=slider-track]]:!bg-black/10 dark:[&_[data-slot=slider-track]]:!bg-white/[0.08] [&_.bg-primary]:!bg-[#8a8a8c] dark:[&_.bg-primary]:!bg-[#8d8d90] [&_[data-slot=slider-thumb]]:!size-3.5 [&_[data-slot=slider-thumb]]:!bg-[#8a8a8c] [&_[data-slot=slider-thumb]]:!shadow-none dark:[&_[data-slot=slider-thumb]]:!bg-[#8d8d90]"
       />
     </div>
   );
@@ -420,15 +449,15 @@ function saveCollapsibleOpen(label: string, open: boolean) {
 }
 
 function CollapsibleSection({
-  icon,
   label,
   children,
   defaultOpen = false,
+  first = false,
 }: {
-  icon: Parameters<typeof HugeiconsIcon>[0]["icon"];
   label: string;
   children?: ReactNode;
   defaultOpen?: boolean;
+  first?: boolean;
 }) {
   const [open, setOpen] = useState(() => {
     const saved = loadCollapsibleState();
@@ -436,7 +465,12 @@ function CollapsibleSection({
   });
 
   return (
-    <div>
+    <div
+      className={cn(
+        !first &&
+          "border-t border-black/[0.13] dark:border-white/[0.09]",
+      )}
+    >
       <button
         type="button"
         onClick={() => {
@@ -444,19 +478,19 @@ function CollapsibleSection({
           setOpen(next);
           saveCollapsibleOpen(label, next);
         }}
-        className="flex w-full items-center corner-squircle gap-2.5 rounded-md px-2 py-2 text-sm transition-colors hover:bg-accent"
+        className={cn(
+          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-[#74726a] dark:text-[#808185] transition-colors hover:text-[#4f4d48] dark:hover:text-[#b0b1b4] focus-visible:outline-none focus-visible:ring-0",
+          first ? "pt-2.5 pb-4" : "py-4",
+        )}
       >
-        <HugeiconsIcon icon={icon} className="size-4 text-muted-foreground" />
-        <span className="flex-1 text-left font-medium">{label}</span>
-        <motion.div
-          animate={{ rotate: open ? 180 : 0 }}
-          transition={{ duration: 0.15 }}
+        <span className="leading-none">{label}</span>
+        <motion.span
+          animate={{ rotate: open ? 0 : -90 }}
+          transition={{ duration: 0.2 }}
+          className="flex shrink-0 items-center leading-none"
         >
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            className="size-3.5 text-muted-foreground"
-          />
-        </motion.div>
+          <ChevronDown className="size-3.5" />
+        </motion.span>
       </button>
       <AnimatePresence initial={false}>
         {open && (
@@ -467,7 +501,7 @@ function CollapsibleSection({
             transition={{ duration: 0.2, ease: "easeInOut" }}
             className="overflow-hidden"
           >
-            <div className="px-2 pb-3 pt-1">{children}</div>
+            <div className="pt-2 pb-4">{children}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -744,42 +778,217 @@ export function ChatSettingsPanel({
   const settingsContent = (
     <>
       <div className="aui-thread-viewport relative h-full overflow-y-auto">
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 pl-2 pr-2 pt-[11px] backdrop-blur">
+      <div className="sticky top-0 z-10 flex h-[48px] items-center gap-2 pl-[18px] pr-[14px] backdrop-blur">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center pl-1 text-base font-semibold tracking-tight">
+          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-[#383835] dark:text-[#9a9a9d]">
             Configuration
           </span>
         ) : (
           <>
+            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-[#383835] dark:text-[#9a9a9d]">
+              Configuration
+            </span>
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#ebebeb] dark:hover:bg-[#3a3c42] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close configuration"
                 >
-                  <HugeiconsIcon icon={Settings05Icon} className="size-5" />
+                  <HugeiconsIcon
+                    icon={LayoutAlignRightIcon}
+                    strokeWidth={1.75}
+                    className="size-[19px]"
+                  />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="bottom" sideOffset={6}>
                 Close configuration
               </TooltipContent>
             </Tooltip>
-            <span className="flex h-[34px] flex-1 items-center text-base font-semibold tracking-tight">
-              Configuration
-            </span>
           </>
         )}
       </div>
 
-      <div className="px-1.5">
-        {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
-        <div className="mt-4 px-2 pb-3">
-          <div className="space-y-1.5">
+      <div className="px-[18px] pt-3">
+        <CollapsibleSection label="Model" defaultOpen={true} first>
+          <div className="flex flex-col gap-4 pt-1">
+            {isGguf && (
+              <>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+                      Context Length
+                    </span>
+                    <Input
+                      type="number"
+                      value={
+                        typeof ctxDisplayValue === "number"
+                          ? ctxDisplayValue
+                          : (ggufContextLength ?? "")
+                      }
+                      placeholder="..."
+                      min={128}
+                      max={ctxMaxValue ?? undefined}
+                      step={1024}
+                      className="h-7 w-[86px] rounded-full px-2.5 text-right text-[13px]! font-medium tabular-nums text-[#383835] focus-visible:ring-[1px] md:text-[13px]! dark:text-[#9a9a9d] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw === "") {
+                          setCustomContextLength(null);
+                          return;
+                        }
+                        const v = Number.parseInt(raw, 10);
+                        if (!Number.isNaN(v) && v >= 0) {
+                          const maxCtx =
+                            ctxMaxValue ?? Number.POSITIVE_INFINITY;
+                          const clamped = Math.min(v, maxCtx);
+                          setCustomContextLength(
+                            clamped === (ggufContextLength ?? 0)
+                              ? null
+                              : clamped,
+                          );
+                        }
+                      }}
+                    />
+                  </div>
+                  <Slider
+                    min={1024}
+                    max={ctxMaxValue ?? 4096}
+                    step={1024}
+                    value={[
+                      Math.min(
+                        typeof ctxDisplayValue === "number"
+                          ? ctxDisplayValue
+                          : (ggufContextLength ?? 4096),
+                        ctxMaxValue ?? 4096,
+                      ),
+                    ]}
+                    onValueChange={([v]) => {
+                      setCustomContextLength(
+                        v === (ggufContextLength ?? 0) ? null : v,
+                      );
+                    }}
+                    className="[&_[data-slot=slider-track]]:!h-1 [&_[data-slot=slider-track]]:!bg-black/10 dark:[&_[data-slot=slider-track]]:!bg-white/[0.08] [&_.bg-primary]:!bg-[#8a8a8c] dark:[&_.bg-primary]:!bg-[#8d8d90] [&_[data-slot=slider-thumb]]:!size-3.5 [&_[data-slot=slider-thumb]]:!bg-[#8a8a8c] [&_[data-slot=slider-thumb]]:!shadow-none dark:[&_[data-slot=slider-thumb]]:!bg-[#8d8d90]"
+                  />
+                  {ggufMaxContextLength != null &&
+                    typeof ctxDisplayValue === "number" &&
+                    ctxDisplayValue > ggufMaxContextLength && (
+                      <p className="text-[11px] text-amber-500">
+                        Exceeds estimated VRAM capacity (
+                        {ggufMaxContextLength.toLocaleString()} tokens). The
+                        model may use system RAM.
+                      </p>
+                    )}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+                    KV Cache Dtype
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <InfoHint>Quantize KV cache to reduce VRAM.</InfoHint>
+                    <Select
+                      value={kvCacheDtype ?? "f16"}
+                      onValueChange={(v) => {
+                        setKvCacheDtype(v === "f16" ? null : v);
+                      }}
+                    >
+                      <SelectTrigger className="grid h-7 w-[72px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full px-2.5 py-0 text-[13px]! font-medium text-[#383835] focus-visible:ring-[1px] dark:text-[#9a9a9d] [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="f16">f16</SelectItem>
+                        <SelectItem value="bf16">bf16</SelectItem>
+                        <SelectItem value="q8_0">q8_0</SelectItem>
+                        <SelectItem value="q5_1">q5_1</SelectItem>
+                        <SelectItem value="q4_1">q4_1</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {!currentModelIsVision && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+                      Speculative Decoding
+                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <InfoHint>Speed up generation with no VRAM cost.</InfoHint>
+                      <Switch
+                        checked={speculativeType != null}
+                        onCheckedChange={(checked) => {
+                          setSpeculativeType(checked ? "ngram-mod" : null);
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {modelSettingsDirty && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    <Button
+                      type="button"
+                      onClick={() => onReloadModel?.()}
+                      size="sm"
+                      className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] bg-primary/92 text-primary-foreground hover:bg-primary"
+                    >
+                      Apply
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setCustomContextLength(null);
+                        setKvCacheDtype(loadedKvCacheDtype);
+                        setSpeculativeType(loadedSpeculativeType);
+                      }}
+                      className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground"
+                    >
+                      Reset
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+            {!isGguf && params.checkpoint && (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+                    Enable custom code
+                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <InfoHint>
+                      Allow models with custom code (e.g. Nemotron). Only
+                      enable if sure.
+                    </InfoHint>
+                    <Switch
+                      checked={params.trustRemoteCode ?? false}
+                      onCheckedChange={set("trustRemoteCode")}
+                    />
+                  </div>
+                </div>
+                {trustRemoteCodeMissing && (
+                  <Alert className="rounded-[14px] border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
+                    <AlertTitle className="text-[12px] font-medium">
+                      Keep custom code enabled for this model
+                    </AlertTitle>
+                    <AlertDescription className="text-[11.5px] leading-[1.45] text-amber-800 dark:text-amber-200">
+                      This model requires custom code to load. You can edit the
+                      toggle, but loading will stay blocked until it is turned
+                      back on.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </>
+            )}
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection label="Preset" defaultOpen={true}>
+          <div className="flex flex-col gap-2 pt-1">
             <div ref={presetControlRowRef} className="w-full min-w-0">
               <DropdownMenu>
-                <InputGroup className="!h-8 min-h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
+                <InputGroup className="!h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full border-input bg-input/30 pr-0 transition-colors focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-ring has-[[data-slot=input-group-control]:focus-visible]:ring-ring/40 has-[[data-slot=input-group-control]:focus-visible]:ring-[1px] has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
                   <InputGroupInput
                     id="inference-preset-name"
                     value={presetNameInput}
@@ -794,22 +1003,22 @@ export function ChatSettingsPanel({
                     maxLength={80}
                     autoComplete="off"
                     className={cn(
-                      "!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm",
+                      "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 text-[13px] font-medium leading-none text-[#383835] dark:text-[#9a9a9d] md:text-[13px]",
                       presetSaveState.isSaveReady &&
-                        "text-foreground placeholder:text-primary/45",
+                        "placeholder:text-primary/50",
                     )}
                     aria-label="Inference preset name"
                   />
                   <InputGroupAddon
                     align="inline-end"
-                    className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-0 has-[>button]:mr-0"
+                    className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0"
                   >
                     <DropdownMenuTrigger asChild={true}>
                       <InputGroupButton
                         type="button"
                         variant="ghost"
                         size="icon-sm"
-                        className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
+                        className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center rounded-full border-0 px-0 text-[#a0a097] dark:text-[#9a9a9d] transition-colors hover:bg-[#ebebeb] hover:text-black dark:hover:bg-[#3a3c42] dark:hover:text-white data-[state=open]:bg-[#ebebeb] data-[state=open]:text-black dark:data-[state=open]:bg-[#3a3c42] dark:data-[state=open]:text-white"
                         title="Choose a preset"
                         aria-label="Open preset list"
                       >
@@ -853,16 +1062,18 @@ export function ChatSettingsPanel({
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
-                  "h-8 w-full text-xs",
+                  "h-9 w-full text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em]",
                   presetSaveState.isSaveReady &&
                     "bg-primary/92 text-primary-foreground hover:bg-primary",
                 )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
               >
-                <span className="inline-flex shrink-0 items-center pr-1.5">
-                  <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-                </span>
+                <HugeiconsIcon
+                  icon={FloppyDiskIcon}
+                  strokeWidth={1.75}
+                  className="mr-1 size-[15px] shrink-0"
+                />
                 {presetSaveState.buttonLabel}
               </Button>
               <Button
@@ -871,7 +1082,7 @@ export function ChatSettingsPanel({
                 disabled={!activeCustomPreset}
                 variant="outline"
                 size="sm"
-                className="h-8 w-full text-xs text-muted-foreground"
+                className="h-9 w-full text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -880,232 +1091,39 @@ export function ChatSettingsPanel({
                     : "No saved override to delete"
                 }
               >
-                <span className="inline-flex shrink-0 items-center pr-1.5">
-                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                </span>
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  strokeWidth={1.75}
+                  className="mr-1 size-[15px] shrink-0"
+                />
                 Delete
               </Button>
             </div>
           </div>
-        </div>
-
-        <div className="px-2 pb-4">
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <label
-              htmlFor="system-prompt"
-              className="block text-xs font-medium"
-            >
-              System Prompt
-            </label>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-6 px-2 text-[11px]"
-              onClick={openSystemPromptEditor}
-              title="Open the full system prompt editor"
-            >
-              Edit
-            </Button>
-          </div>
-          <Textarea
-            id="system-prompt"
-            value={params.systemPrompt}
-            onChange={(e) => set("systemPrompt")(e.target.value)}
-            placeholder="You are a helpful assistant..."
-            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle focus-visible:ring-[1px]"
-            rows={3}
-          />
-        </div>
-
-        <CollapsibleSection
-          icon={Settings02Icon}
-          label="Model"
-          defaultOpen={true}
-        >
-          <div className="flex flex-col gap-3 py-1">
-            {isGguf && (
-              <>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">Context Length</span>
-                    <Input
-                      type="number"
-                      value={
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (ggufContextLength ?? "")
-                      }
-                      placeholder="..."
-                      min={128}
-                      max={ctxMaxValue ?? undefined}
-                      step={1024}
-                      className="h-6 w-[100px] text-right text-xs tabular-nums"
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
-                          setCustomContextLength(null);
-                          return;
-                        }
-                        const v = Number.parseInt(raw, 10);
-                        if (!Number.isNaN(v) && v >= 0) {
-                          const maxCtx =
-                            ctxMaxValue ?? Number.POSITIVE_INFINITY;
-                          const clamped = Math.min(v, maxCtx);
-                          setCustomContextLength(
-                            clamped === (ggufContextLength ?? 0)
-                              ? null
-                              : clamped,
-                          );
-                        }
-                      }}
-                    />
-                  </div>
-                  <Slider
-                    min={1024}
-                    max={ctxMaxValue ?? 4096}
-                    step={1024}
-                    value={[
-                      Math.min(
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (ggufContextLength ?? 4096),
-                        ctxMaxValue ?? 4096,
-                      ),
-                    ]}
-                    onValueChange={([v]) => {
-                      setCustomContextLength(
-                        v === (ggufContextLength ?? 0) ? null : v,
-                      );
-                    }}
-                  />
-                  {ggufMaxContextLength != null &&
-                    typeof ctxDisplayValue === "number" &&
-                    ctxDisplayValue > ggufMaxContextLength && (
-                      <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity (
-                        {ggufMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
-                      </p>
-                    )}
-                </div>
-                <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">KV Cache Dtype</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Quantize KV cache to reduce VRAM.
-                    </div>
-                  </div>
-                  <div className="w-full min-w-0">
-                    <Select
-                      value={kvCacheDtype ?? "f16"}
-                      onValueChange={(v) => {
-                        setKvCacheDtype(v === "f16" ? null : v);
-                      }}
-                    >
-                      <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="f16">f16</SelectItem>
-                        <SelectItem value="bf16">bf16</SelectItem>
-                        <SelectItem value="q8_0">q8_0</SelectItem>
-                        <SelectItem value="q5_1">q5_1</SelectItem>
-                        <SelectItem value="q4_1">q4_1</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                {!currentModelIsVision && (
-                  <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium">
-                        Speculative Decoding
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        Speed up generation with no VRAM cost.
-                      </div>
-                    </div>
-                    <div className="w-full min-w-0">
-                      <Select
-                        value={speculativeType ?? "off"}
-                        onValueChange={(v) => {
-                          setSpeculativeType(v === "off" ? null : v);
-                        }}
-                      >
-                        <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="ngram-mod">On</SelectItem>
-                          <SelectItem value="off">Off</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                )}
-                {modelSettingsDirty && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => onReloadModel?.()}
-                      className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                    >
-                      Apply
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomContextLength(null);
-                        setKvCacheDtype(loadedKvCacheDtype);
-                        setSpeculativeType(loadedSpeculativeType);
-                      }}
-                      className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
-                    >
-                      Reset
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-            {!isGguf && params.checkpoint && (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">Enable custom code</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only
-                      enable if sure.
-                    </div>
-                  </div>
-                  <Switch
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-                {trustRemoteCodeMissing && (
-                  <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
-                    <AlertTitle className="text-[11px] font-medium">
-                      Keep custom code enabled for this model
-                    </AlertTitle>
-                    <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </>
-            )}
-          </div>
         </CollapsibleSection>
 
-        <CollapsibleSection
-          icon={SlidersHorizontalIcon}
-          label="Sampling"
-          defaultOpen={true}
-        >
-          <div className="flex flex-col gap-5">
+        <CollapsibleSection label="System Prompt" defaultOpen={true}>
+          <button
+            type="button"
+            onClick={openSystemPromptEditor}
+            title="Edit system prompt"
+            aria-label="Edit system prompt"
+            className={cn(
+              "mt-1 flex w-full min-h-20 cursor-pointer items-start rounded-[14px] border border-input bg-input/30 px-3 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle transition-colors hover:bg-input/50 focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
+              params.systemPrompt
+                ? "text-[#383835] dark:text-[#9a9a9d]"
+                : "text-muted-foreground",
+            )}
+          >
+            <span className="block line-clamp-3 whitespace-pre-wrap break-words">
+              {params.systemPrompt ||
+                "Example: You are a helpful assistant..."}
+            </span>
+          </button>
+        </CollapsibleSection>
+
+        <CollapsibleSection label="Sampling" defaultOpen={true}>
+          <div className="flex flex-col gap-5 pt-1">
             <ParamSlider
               label="Temperature"
               value={params.temperature}
@@ -1186,8 +1204,8 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection icon={Wrench01Icon} label="Tools">
-          <div className="flex flex-col gap-3 py-1">
+        <CollapsibleSection label="Tools">
+          <div className="flex flex-col gap-4 pt-1">
             <AutoHealToolCallsToggle />
             <MaxToolCallsSlider />
             <ToolCallTimeoutSlider />
@@ -1258,7 +1276,7 @@ export function ChatSettingsPanel({
   if (isMobile) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[18rem] p-0">
+        <SheetContent side="right" className="w-[18rem] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Configuration</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
@@ -1271,7 +1289,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 ${open ? "w-[17rem]" : "w-0"}`}
+      className={`relative z-50 shrink-0 h-full overflow-hidden bg-background font-heading ${open ? "w-[17rem]" : "w-0"}`}
     >
       <div className="h-full w-[17rem]">{settingsContent}</div>
     </aside>
@@ -1337,16 +1355,18 @@ function AutoHealToolCallsToggle() {
 
   return (
     <div className="flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <div className="text-xs font-medium">Auto Heal Tool Calls 🦥</div>
-        <div className="text-[11px] text-muted-foreground">
+      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+        Auto Heal Tool Calls 🦥
+      </span>
+      <div className="flex shrink-0 items-center gap-2">
+        <InfoHint>
           Fix malformed tool calls from the model automatically.
-        </div>
+        </InfoHint>
+        <Switch
+          checked={autoHealToolCalls}
+          onCheckedChange={setAutoHealToolCalls}
+        />
       </div>
-      <Switch
-        checked={autoHealToolCalls}
-        onCheckedChange={setAutoHealToolCalls}
-      />
     </div>
   );
 }
@@ -1366,37 +1386,38 @@ function ChatTemplateSection({
   const isModified = override !== null;
 
   return (
-    <CollapsibleSection icon={CodeIcon} label="Chat Template">
-      <div className="flex flex-col gap-2 py-1">
+    <CollapsibleSection label="Chat Template">
+      <div className="flex flex-col gap-2 pt-1">
         <Textarea
           value={displayValue}
           onChange={(e) => setOverride(e.target.value)}
-          className="min-h-32 max-h-64 overflow-y-auto font-mono text-[10px] leading-relaxed md:text-[10px] corner-squircle"
+          className="min-h-32 max-h-64 overflow-y-auto rounded-[14px] border-input bg-input/30 px-3 py-2.5 font-mono text-[10.5px] font-medium leading-relaxed md:text-[10.5px] corner-squircle focus-visible:ring-[1px]"
           rows={6}
           spellCheck={false}
         />
-        <div className="flex flex-wrap gap-1.5">
-          {isModified && (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  onReloadModel?.();
-                }}
-                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                Apply & Reload
-              </button>
-              <button
-                type="button"
-                onClick={() => setOverride(null)}
-                className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
-              >
-                Revert changes
-              </button>
-            </>
-          )}
-        </div>
+        {isModified && (
+          <div className="flex flex-wrap gap-1.5 pt-0.5">
+            <Button
+              type="button"
+              onClick={() => {
+                onReloadModel?.();
+              }}
+              size="sm"
+              className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] bg-primary/92 text-primary-foreground hover:bg-primary"
+            >
+              Apply & Reload
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setOverride(null)}
+              className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground"
+            >
+              Revert changes
+            </Button>
+          </div>
+        )}
       </div>
     </CollapsibleSection>
   );

@@ -247,7 +247,7 @@ function CompareShell({
           {children}
         </div>
         <div className="shrink-0 bg-background px-5 pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[44rem]">{composer}</div>
+          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
             LLMs can make mistakes. Double-check all responses.
           </p>

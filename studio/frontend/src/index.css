@@ -81,13 +81,13 @@
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
 	--radius: 1.1rem;
-	--sidebar: oklch(0.99 0 0);
+	--sidebar: #f9faf9;
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: oklch(0.6929 0.1396 166.5513);
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-	--sidebar-border: oklch(0.9208 0.0101 164.8536);
+	--sidebar-border: oklch(0.945 0.0101 164.8536);
 	--sidebar-ring: oklch(0.6929 0.1396 166.5513);
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -127,20 +127,20 @@
 	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
 	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
 	   drifted ~3% darker and shifted the neutral hue. */
-	--background: #1a1b1e;
-	--foreground: #d4d4d4;
-	--card: #222427;
-	--card-foreground: #d4d4d4;
-	--popover: #222427;
-	--popover-foreground: #d4d4d4;
+	--background: #1e1f22;
+	--foreground: #e0e0e0;
+	--card: #292b2f;
+	--card-foreground: #e0e0e0;
+	--popover: #292b2f;
+	--popover-foreground: #e0e0e0;
 	--primary: oklch(0.6929 0.1396 166.5513);
 	--primary-foreground: oklch(1 0 0);
 	--secondary: #2e3035;
-	--secondary-foreground: #d4d4d4;
+	--secondary-foreground: #e0e0e0;
 	--muted: #2e3035;
 	--muted-foreground: #999999;
 	--accent: #2e3035;
-	--accent-foreground: #d4d4d4;
+	--accent-foreground: #e0e0e0;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	--border: #2e3035;
 	/* --input one step lighter than --muted so form borders stay visible on
@@ -152,13 +152,13 @@
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	--sidebar: #222427;
-	--sidebar-foreground: #d4d4d4;
+	--sidebar: #17181b;
+	--sidebar-foreground: #e0e0e0;
 	--sidebar-primary: oklch(0.6929 0.1396 166.5513);
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2e3035;
-	--sidebar-accent-foreground: #d4d4d4;
-	--sidebar-border: #2e3035;
+	--sidebar-accent-foreground: #e0e0e0;
+	--sidebar-border: #232528;
 	--sidebar-ring: oklch(0.6929 0.1396 166.5513);
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
@@ -384,8 +384,8 @@
 	}
 
 	.dark .chat-composer-surface {
-		border-color: #2e3035;
-		box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+		border-color: #34363a;
+		box-shadow: 0 -6px 36px -14px rgba(0, 0, 0, 0.15);
 	}
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
@@ -426,6 +426,7 @@
 	[data-streamdown="code-block"] {
 		gap: 0.25rem;
 		padding: 0.75rem 1rem;
+		border-radius: 1.5rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
 		min-width: 0;
@@ -491,7 +492,7 @@
 		/* Streamdown `pre` uses `dark:bg-[var(--shiki-dark-bg,...)]`; keep one surface on the outer shell. */
 		--shiki-dark-bg: transparent;
 		background: var(--color-code-block);
-		border: 1px solid oklch(1 0 0 / 0.07);
+		border: 1px solid oklch(1 0 0 / 0.08);
 	}
 }
 
@@ -540,19 +541,31 @@
 }
 
 .dark .aui-thread-viewport {
-	scrollbar-color: oklch(0.67 0 0 / 0.5) var(--sidebar);
+	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
+}
+
+.dark .aui-thread-viewport::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.25);
 }
 
 .aui-thread-viewport::-webkit-scrollbar-track {
 	background: var(--sidebar);
 }
 
+.dark .aui-thread-viewport::-webkit-scrollbar-track {
+	background: #23252a;
+}
+
 [data-sidebar="content"] {
-	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
+	scrollbar-color: oklch(0.5 0 0 / 0.22) var(--sidebar);
 }
 
 .dark [data-sidebar="content"] {
-	scrollbar-color: oklch(0.72 0 0 / 0.25) transparent;
+	scrollbar-color: oklch(0.72 0 0 / 0.25) var(--sidebar);
+}
+
+[data-sidebar="content"]::-webkit-scrollbar-track {
+	background: var(--sidebar);
 }
 
 [data-sidebar="content"]::-webkit-scrollbar-thumb {

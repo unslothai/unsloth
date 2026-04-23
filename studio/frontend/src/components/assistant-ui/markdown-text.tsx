@@ -6,7 +6,7 @@
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
-import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createCodePlugin } from "./code-plugin";
 import { createMathPlugin } from "@streamdown/math";
@@ -45,9 +45,9 @@ const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
-  "pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur dark:border-white/10 dark:bg-code-block dark:supports-[backdrop-filter]:bg-code-block";
+  "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
-  "cursor-pointer p-1 text-muted-foreground transition-all hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
+  "flex size-8 cursor-pointer items-center justify-center rounded-md text-foreground/70 dark:text-white/75 transition-all hover:bg-sidebar-accent hover:text-sidebar-accent-foreground dark:hover:bg-[#2d2f33] dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-50";
 
 type CodeFence = {
   language: string | null;
@@ -284,8 +284,9 @@ function MermaidCopyButton({ source }: { source: string }) {
       }}
     >
       <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy02Icon}
-        className="size-5"
+        icon={copied ? Tick02Icon : Copy01Icon}
+        strokeWidth={1.75}
+        className="size-[18px]"
       />
     </button>
   );
@@ -303,7 +304,7 @@ function CodeBlockActions({
   const { copied, showCopied } = useCopiedState();
 
   return (
-    <div className="pointer-events-none absolute top-3.5 right-3 z-20 flex items-center justify-end">
+    <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end">
       <div className={ACTION_PANEL_CLASS}>
         <button
           type="button"
@@ -318,8 +319,9 @@ function CodeBlockActions({
           }}
         >
           <HugeiconsIcon
-            icon={copied ? Tick02Icon : Copy02Icon}
-            className="size-3.5"
+            icon={copied ? Tick02Icon : Copy01Icon}
+            strokeWidth={1.75}
+            className="size-[18px]"
           />
         </button>
         <button
@@ -331,7 +333,7 @@ function CodeBlockActions({
             downloadTextFile(getCodeFilename(language), source);
           }}
         >
-          <DownloadIcon className="size-3.5" />
+          <DownloadIcon className="size-[18px]" />
         </button>
       </div>
     </div>

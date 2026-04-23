@@ -47,10 +47,10 @@ import {
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Delete02Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
-import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon, Trash2Icon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -416,7 +416,7 @@ function GgufVariantExpander({
                 }}
                 className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
               >
-                <Trash2Icon className="size-3" />
+                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-3" />
               </button>
             )}
           </div>
@@ -985,7 +985,7 @@ export function HubModelPicker({
                       }}
                       className="shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
                     >
-                      <Trash2Icon className="size-3.5" />
+                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-3.5" />
                     </button>
                   </div>
                 ))}

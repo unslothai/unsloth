@@ -46,10 +46,8 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  CopyIcon,
   DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
@@ -62,9 +60,10 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
-  Trash2Icon,
   XIcon,
 } from "lucide-react";
+import { Copy01Icon, Delete02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
 import {
   type FC,
@@ -100,9 +99,9 @@ export const Thread: FC<{
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       style={{
-        ["--thread-max-width" as string]: "44rem",
+        ["--thread-max-width" as string]: "48rem",
         ["--thread-content-max-width" as string]:
-          "calc(var(--thread-max-width) - 2.5rem)",
+          "calc(var(--thread-max-width) - 1.5rem)",
       }}
     >
       <IntentAwareScrollProvider value={autoScrollContext}>
@@ -156,7 +155,7 @@ export const Thread: FC<{
 
         {!hideComposer && (
           <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-            <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-2 z-20">
+            <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px] z-20">
               <div
                 aria-hidden={true}
                 className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
@@ -196,7 +195,7 @@ const ThreadScrollToBottom: FC = () => {
         isAtBottom && "invisible pointer-events-none",
       )}
     >
-      <ArrowDownIcon />
+      <ArrowDownIcon strokeWidth={1.75} className="size-[18px]" />
     </TooltipIconButton>
   );
 };
@@ -297,7 +296,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-[24px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <PendingAudioChip />
         <ToolStatusDisplay />
@@ -635,7 +634,7 @@ const GeneratingIndicator: FC = () => {
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] font-[450] duration-150"
+      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in pt-0.5 pb-4 text-[15.5px] font-[450] duration-150"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
@@ -661,7 +660,7 @@ const AssistantMessage: FC = () => {
         <MessageError />
       </div>
 
-      <div className="aui-assistant-message-footer mt-1 flex">
+      <div className="aui-assistant-message-footer mt-1 flex min-h-6">
         <BranchPicker />
         <AssistantActionBar />
       </div>
@@ -699,9 +698,13 @@ const DeleteMessageButton: FC = () => {
       tooltip="Delete message"
       disabled={isRunning}
       onClick={handleDelete}
-      className="text-muted-foreground hover:text-destructive"
+      className="text-foreground hover:text-destructive"
     >
-      <Trash2Icon className="size-4" />
+      <HugeiconsIcon
+        icon={Delete02Icon}
+        strokeWidth={1.75}
+        className="size-[18px]"
+      />
     </TooltipIconButton>
   );
 };
@@ -727,7 +730,11 @@ const CopyButton: FC = () => {
 
   return (
     <TooltipIconButton tooltip="Copy" onClick={handleCopy}>
-      {copied ? <CheckIcon /> : <CopyIcon />}
+      <HugeiconsIcon
+        icon={copied ? Tick02Icon : Copy01Icon}
+        strokeWidth={1.75}
+        className="size-[18px]"
+      />
     </TooltipIconButton>
   );
 };
@@ -736,40 +743,39 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      autohide="always"
-      autohideFloat="single-branch"
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-floating:absolute"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-sidebar-foreground [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:rounded-md [&_button:hover]:bg-sidebar-accent [&_button:hover]:text-sidebar-accent-foreground"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
+          <RefreshCwIcon strokeWidth={1.75} className="size-[18px]" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <DeleteMessageButton />
-      <MessageTiming side="top" />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
           <TooltipIconButton
             tooltip="More"
             className="data-[state=open]:bg-accent"
           >
-            <MoreHorizontalIcon />
+            <MoreHorizontalIcon strokeWidth={1.75} className="size-[18px]" />
           </TooltipIconButton>
         </ActionBarMorePrimitive.Trigger>
         <ActionBarMorePrimitive.Content
           side="bottom"
           align="start"
+          onCloseAutoFocus={(e) => e.preventDefault()}
           className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <DownloadIcon className="size-4" />
+              <DownloadIcon strokeWidth={1.75} className="size-[18px]" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
+      <MessageTiming side="top" className="h-8 px-2" />
     </ActionBarPrimitive.Root>
   );
 };
@@ -794,17 +800,17 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] font-[450] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] font-[450] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-[16px] rounded-tr-[4px] bg-[#f5f5f5] px-4 py-2.5 text-foreground dark:bg-card">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
-        <div className="mt-1 flex min-h-6">
+        <div className="mt-2 flex min-h-8">
           <UserActionBar />
         </div>
       </div>
@@ -818,12 +824,12 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root -mr-1 flex gap-1 text-muted-foreground"
+      className="aui-user-action-bar-root flex gap-1 text-sidebar-foreground [&_button]:size-8 [&_button]:rounded-md [&_button:hover]:bg-sidebar-accent [&_button:hover]:text-sidebar-accent-foreground"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
+          <PencilIcon strokeWidth={1.75} className="size-[18px]" />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
       <DeleteMessageButton />
@@ -898,7 +904,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     >
       <BranchPickerPrimitive.Previous asChild={true}>
         <TooltipIconButton tooltip="Previous">
-          <ChevronLeftIcon />
+          <ChevronLeftIcon strokeWidth={1.75} className="size-[18px]" />
         </TooltipIconButton>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-medium">
@@ -906,7 +912,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
         <TooltipIconButton tooltip="Next">
-          <ChevronRightIcon />
+          <ChevronRightIcon strokeWidth={1.75} className="size-[18px]" />
         </TooltipIconButton>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>

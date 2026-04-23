@@ -62,7 +62,7 @@ export const MessageTiming: FC<{
         side={side}
         sideOffset={8}
         data-slot="message-timing-popover"
-        className="[&_span>svg]:hidden! rounded-lg border bg-popover px-3 py-2 text-popover-foreground shadow-md"
+        className="[&_span>svg]:hidden! rounded-2xl border border-border dark:border-[#34363a] bg-popover px-4 py-3 text-popover-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.22)]"
       >
         <div className="grid min-w-40 gap-1.5 text-xs">
           {st ? (
