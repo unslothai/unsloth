@@ -443,8 +443,10 @@ def fix_sentencepiece_gguf(saved_location):
     """
     from copy import deepcopy
     import sys
+
     try:
         from transformers.convert_slow_tokenizer import import_protobuf
+
         sys.modules.setdefault(
             "transformers.utils.sentencepiece_model_pb2",
             import_protobuf(),

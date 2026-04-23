@@ -37,11 +37,17 @@ def _read(path):
 
 
 def test_user_defined_special_piece_is_not_retyped(tmp_path):
-    pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL), ("<ud_special>", -1.0, USER_DEFINED)]
+    pieces = [
+        ("<s>", 0.0, CONTROL),
+        ("a", -1.0, NORMAL),
+        ("<ud_special>", -1.0, USER_DEFINED),
+    ]
     (tmp_path / "tokenizer.model").write_bytes(_build(pieces))
-    (tmp_path / "tokenizer.json").write_text(json.dumps({
-        "added_tokens": [{"id": 2, "content": "<ud_special>", "special": True}]
-    }))
+    (tmp_path / "tokenizer.json").write_text(
+        json.dumps(
+            {"added_tokens": [{"id": 2, "content": "<ud_special>", "special": True}]}
+        )
+    )
     fix_sentencepiece_gguf(str(tmp_path))
     got = dict(_read(str(tmp_path / "tokenizer.model")))
     assert got["<ud_special>"] == USER_DEFINED
@@ -50,12 +56,16 @@ def test_user_defined_special_piece_is_not_retyped(tmp_path):
 def test_malformed_entry_missing_id_does_not_raise(tmp_path):
     pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL), ("<sot>", -1.0, NORMAL)]
     (tmp_path / "tokenizer.model").write_bytes(_build(pieces))
-    (tmp_path / "tokenizer.json").write_text(json.dumps({
-        "added_tokens": [
-            {"content": "no_id_entry", "special": True},
-            {"id": 2, "content": "<sot>", "special": True},
-        ]
-    }))
+    (tmp_path / "tokenizer.json").write_text(
+        json.dumps(
+            {
+                "added_tokens": [
+                    {"content": "no_id_entry", "special": True},
+                    {"id": 2, "content": "<sot>", "special": True},
+                ]
+            }
+        )
+    )
     fix_sentencepiece_gguf(str(tmp_path))
     got = dict(_read(str(tmp_path / "tokenizer.model")))
     assert got["<sot>"] == CONTROL
@@ -64,9 +74,9 @@ def test_malformed_entry_missing_id_does_not_raise(tmp_path):
 def test_entry_with_non_int_id_is_skipped(tmp_path):
     pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL)]
     (tmp_path / "tokenizer.model").write_bytes(_build(pieces))
-    (tmp_path / "tokenizer.json").write_text(json.dumps({
-        "added_tokens": [{"id": "oops", "content": "x", "special": True}]
-    }))
+    (tmp_path / "tokenizer.json").write_text(
+        json.dumps({"added_tokens": [{"id": "oops", "content": "x", "special": True}]})
+    )
     before = (tmp_path / "tokenizer.model").read_bytes()
     fix_sentencepiece_gguf(str(tmp_path))
     after = (tmp_path / "tokenizer.model").read_bytes()
@@ -77,7 +87,10 @@ def test_save_py_except_clause_is_broad_exception():
     with open(_SAVE_PY) as f:
         tree = ast.parse(f.read())
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_save_pretrained_gguf":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "unsloth_save_pretrained_gguf"
+        ):
             for subnode in ast.walk(node):
                 if isinstance(subnode, ast.Try):
                     body_src = "\n".join(ast.unparse(s) for s in subnode.body)
@@ -88,7 +101,9 @@ def test_save_py_except_clause_is_broad_exception():
                     assert isinstance(handler.type, ast.Name)
                     assert handler.type.id == "Exception"
                     return
-    raise AssertionError("fix_sentencepiece_gguf try block not found in unsloth_save_pretrained_gguf")
+    raise AssertionError(
+        "fix_sentencepiece_gguf try block not found in unsloth_save_pretrained_gguf"
+    )
 
 
 def test_tokenizer_utils_uses_import_protobuf_fallback_pattern():
