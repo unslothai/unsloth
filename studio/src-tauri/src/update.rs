@@ -87,6 +87,7 @@ fn spawn_update(
 
 fn stream_output(
     app: &AppHandle,
+    progress_event: &'static str,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -100,7 +101,7 @@ fn stream_output(
                 match line {
                     Ok(text) => {
                         info!("[update][stdout] {}", text);
-                        let _ = app_clone.emit("update-progress", &text);
+                        let _ = app_clone.emit(progress_event, &text);
                     }
                     Err(e) => {
                         warn!("[update] Error reading stdout: {}", e);
@@ -119,7 +120,7 @@ fn stream_output(
                 match line {
                     Ok(text) => {
                         warn!("[update][stderr] {}", text);
-                        let _ = app_clone.emit("update-progress", &text);
+                        let _ = app_clone.emit(progress_event, &text);
                     }
                     Err(e) => {
                         warn!("[update] Error reading stderr: {}", e);
@@ -167,14 +168,34 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
 // ── Public API ──
 
 pub fn run_backend_update(app: AppHandle, state: UpdateState) -> Result<(), String> {
+    run_backend_update_with_terminal_events(app, state, true)
+}
+
+pub(crate) fn run_backend_update_for_repair(
+    app: AppHandle,
+    state: UpdateState,
+) -> Result<(), String> {
+    run_backend_update_with_terminal_events(app, state, false)
+}
+
+fn run_backend_update_with_terminal_events(
+    app: AppHandle,
+    state: UpdateState,
+    terminal_events: bool,
+) -> Result<(), String> {
     let bin = crate::process::find_unsloth_binary()
         .ok_or("Unsloth binary not found. Cannot run update.")?;
 
     info!("[update] Starting backend update via {:?}", bin);
-    let _ = app.emit("update-progress", "Starting backend update...");
+    let progress_event = if terminal_events {
+        "update-progress"
+    } else {
+        "repair-progress"
+    };
+    let _ = app.emit(progress_event, "Starting backend update...");
 
     let (stdout, stderr) = spawn_update(&bin, &state)?;
-    let threads = stream_output(&app, stdout, stderr);
+    let threads = stream_output(&app, progress_event, stdout, stderr);
 
     let result = wait_for_exit(&state);
     for handle in threads {
@@ -184,7 +205,9 @@ pub fn run_backend_update(app: AppHandle, state: UpdateState) -> Result<(), Stri
     match result {
         Ok((status, _)) if status.success() => {
             info!("[update] Backend update complete");
-            let _ = app.emit("update-complete", ());
+            if terminal_events {
+                let _ = app.emit("update-complete", ());
+            }
             Ok(())
         }
         Ok((_status, intentional)) if intentional => {
@@ -195,12 +218,16 @@ pub fn run_backend_update(app: AppHandle, state: UpdateState) -> Result<(), Stri
             let code = status.code().unwrap_or(-1);
             let msg = format!("Update exited with code {}", code);
             error!("[update] {}", msg);
-            let _ = app.emit("update-failed", &msg);
+            if terminal_events {
+                let _ = app.emit("update-failed", &msg);
+            }
             Err(msg)
         }
         Err(msg) => {
             error!("[update] {}", msg);
-            let _ = app.emit("update-failed", &msg);
+            if terminal_events {
+                let _ = app.emit("update-failed", &msg);
+            }
             Err(msg)
         }
     }

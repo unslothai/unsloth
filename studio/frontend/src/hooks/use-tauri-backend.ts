@@ -14,10 +14,26 @@ export type BackendStatus =
   | "installing"
   | "install-error"
   | "needs-elevation"
+  | "repairing"
+  | "repair-error"
   | "starting"
   | "running"
   | "stopped"
   | "error";
+
+type DesktopPreflightDisposition =
+  | "not_installed"
+  | "managed_ready"
+  | "managed_stale"
+  | "attached_ready";
+
+interface DesktopPreflightResult {
+  disposition: DesktopPreflightDisposition;
+  reason: string | null;
+  port: number | null;
+  can_auto_repair: boolean;
+  managed_bin: string | null;
+}
 
 export function useTauriBackend() {
   const [status, setStatus] = useState<BackendStatus>("checking");
@@ -40,9 +56,11 @@ export function useTauriBackend() {
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
+  const elevationResumeRef = useRef<"install" | "repair" | null>(null);
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
+    statusRef.current = nextStatus;
     setStatus(nextStatus);
   }
 
@@ -51,6 +69,7 @@ export function useTauriBackend() {
     nextStatus: BackendStatus = "error",
   ) {
     if (authFailureRef.current) return;
+    statusRef.current = nextStatus;
     setStatus(nextStatus);
     setError(nextError);
   }
@@ -66,6 +85,7 @@ export function useTauriBackend() {
 
   function setAuthFailure(detail: string) {
     authFailureRef.current = detail;
+    statusRef.current = "error";
     setStatus("error");
     setError(detail);
   }
@@ -119,41 +139,59 @@ export function useTauriBackend() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
-      // Check for existing running server first
-      const existingPort = await invoke<number | null>("find_existing_server");
-      if (existingPort) {
-        setApiBase(existingPort);
-        setIsExternalServer(true);
-        setRunningStatus();
-        // Monitor external server — we can't get Rust-side crash events for it
-        startExternalServerPoll(existingPort);
-        return;
+      const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
+      switch (preflight.disposition) {
+        case "attached_ready": {
+          if (!preflight.port) {
+            setBackendError("Desktop preflight found a backend without a port.");
+            return;
+          }
+          setApiBase(preflight.port);
+          portRef.current = preflight.port;
+          setIsExternalServer(true);
+          setRunningStatus();
+          startExternalServerPoll(preflight.port);
+          return;
+        }
+        case "managed_ready":
+          setIsExternalServer(false);
+          stopExternalServerPoll();
+          setBackendStatus("starting");
+          await startManagedServer();
+          return;
+        case "managed_stale":
+          setIsExternalServer(false);
+          stopExternalServerPoll();
+          if (preflight.can_auto_repair) {
+            await startRepair();
+          } else {
+            setBackendError(
+              "Managed Studio install is too old. Run `unsloth studio update`.",
+            );
+          }
+          return;
+        case "not_installed":
+          setBackendStatus("not-installed");
+          return;
       }
-
-      const installed = await invoke<boolean>("check_install_status");
-      if (!installed) {
-        setBackendStatus("not-installed");
-        return;
-      }
-      setBackendStatus("starting");
-      await startServer();
     } catch (e) {
       setBackendError(String(e));
     }
   }
 
-  async function startServer() {
+  async function startManagedServer() {
     // Prevent double-start race condition
     if (startingRef.current) return;
     startingRef.current = true;
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("start_server", { port: 8888 });
+      // backend/run.py keeps the existing 8888-8908 fallback via
+      // server-port/TAURI_PORT.
+      await invoke("start_managed_server", { port: 8888 });
 
-      // Wait for the server-port event (usually arrives within ~2s) before
-      // falling back to scanning the full port range. This avoids 20 unnecessary
-      // health checks per poll iteration.
+      // Wait for the owned backend's server-port event. Do not attach to an
+      // external backend if the managed start does not report a port.
       for (let i = 0; i < 120; i++) {
         if (portRef.current) {
           const healthy = await invoke<boolean>("check_health", {
@@ -165,41 +203,57 @@ export function useTauriBackend() {
             startingRef.current = false;
             return;
           }
-        } else if (i >= 4) {
-          // Only scan the full range after ~2s (4 x 500ms) if the server-port
-          // event hasn't arrived yet. This is the rare fallback path.
-          for (let p = 8888; p <= 8908; p++) {
-            const healthy = await invoke<boolean>("check_health", { port: p });
-            if (healthy) {
-              setApiBase(p);
-              setRunningStatus();
-              startingRef.current = false;
-              return;
-            }
-          }
         }
         await new Promise((r) => setTimeout(r, 500));
       }
       const message = !portRef.current
-        ? "Could not start the server — all ports 8888–8908 may be in use. " +
-          "Close other Unsloth instances or free a port and try again."
+        ? "Managed server started without reporting a port. Check the logs for details."
         : "Server started but is not responding. Check the logs for details.";
       setBackendError(message);
     } catch (e) {
       const msg = String(e);
       if (msg.includes("already running")) {
-        // Backend exists but start_server rejected. Give Rust time to reap
-        // the old process (stdout reader sets child=None), then retry via
-        // find_existing_server which will attach to the running backend.
         startingRef.current = false;
-        setBackendStatus("starting");
-        await new Promise((r) => setTimeout(r, 2000));
-        checkInstallAndStart();
+        setBackendError(
+          "Managed server is already running but did not report a port. Restart Studio and try again.",
+        );
         return;
       }
       setBackendError(msg);
     }
     startingRef.current = false;
+  }
+
+  async function startRepair() {
+    elevationResumeRef.current = null;
+    setCurrentStepIndex(-1);
+    setProgressDetail(null);
+    seenStepsRef.current.clear();
+    startingRef.current = false;
+    portRef.current = null;
+    setIsExternalServer(false);
+    stopExternalServerPoll();
+    setLogs([]);
+    clearBackendError();
+    setBackendStatus("repairing");
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("start_managed_repair");
+
+      setBackendStatus("starting");
+      elevationResumeRef.current = null;
+      await startManagedServer();
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("NEEDS_ELEVATION")) return;
+      setBackendError(msg, "repair-error");
+    }
+  }
+
+  async function startServer() {
+    setBackendStatus("starting");
+    await startManagedServer();
   }
 
   async function stopServer() {
@@ -219,6 +273,7 @@ export function useTauriBackend() {
   }
 
   async function startInstall() {
+    elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     seenStepsRef.current.clear();
@@ -232,6 +287,7 @@ export function useTauriBackend() {
       // after install. The install-complete event listener does NOT call
       // startServer() to avoid a double-start race condition.
       setBackendStatus("starting");
+      elevationResumeRef.current = null;
       await startServer();
     } catch (e) {
       const msg = String(e);
@@ -252,6 +308,7 @@ export function useTauriBackend() {
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     setElevationPackages([]);
+    elevationResumeRef.current = null;
     setIsExternalServer(false);
     stopExternalServerPoll();
     seenStepsRef.current.clear();
@@ -259,21 +316,34 @@ export function useTauriBackend() {
   }, []);
 
   const retryInstall = useCallback(() => {
+    const resume = elevationResumeRef.current;
+    elevationResumeRef.current = null;
     clearBackendError();
     setLogs([]);
+    setElevationPackages([]);
+    if (resume === "repair") {
+      setBackendError("Repair canceled before system packages were installed.", "repair-error");
+      return;
+    }
     setBackendStatus("not-installed");
   }, []);
 
   const approveElevation = useCallback(async () => {
+    const resume = elevationResumeRef.current ?? "install";
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("install_system_packages", { packages: elevationPackages });
-      // Packages installed successfully, retry the full install
+      // Packages installed successfully, resume the flow that requested them.
       setCurrentStepIndex(-1);
       setProgressDetail(null);
-      await startInstall();
+      elevationResumeRef.current = null;
+      if (resume === "repair") {
+        await startRepair();
+      } else {
+        await startInstall();
+      }
     } catch (e) {
-      setBackendError(String(e), "install-error");
+      setBackendError(String(e), resume === "repair" ? "repair-error" : "install-error");
     }
   }, [elevationPackages]);
 
@@ -293,54 +363,89 @@ export function useTauriBackend() {
   useEffect(() => {
     if (!isTauri) return;
     const cleanup: (() => void)[] = [];
+    let disposed = false;
 
     import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<string>("install-progress", (e) => {
+      function register<T>(
+        event: string,
+        handler: Parameters<typeof listen<T>>[1],
+      ) {
+        listen<T>(event, handler).then((unlisten) => {
+          if (disposed) {
+            unlisten();
+          } else {
+            cleanup.push(unlisten);
+          }
+        });
+      }
+
+      register<string>("install-progress", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
-      }).then((u) => cleanup.push(u));
+      });
 
       // install-complete is informational only — does NOT trigger startServer.
       // The invoke("start_install") success path handles that to avoid races.
-      listen<void>("install-complete", () => {
+      register<void>("install-complete", () => {
         setCurrentStepIndex(999); // all steps done
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<string>("install-step", (e) => {
+      register<string>("install-step", (e) => {
         const stepName = e.payload;
         if (seenStepsRef.current.has(stepName)) return; // deduplicate
         seenStepsRef.current.add(stepName);
         setCurrentStepIndex((prev) => prev + 1);
         setProgressDetail(null);
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<string[]>("install-needs-elevation", (e) => {
+      register<string[]>("install-needs-elevation", (e) => {
+        elevationResumeRef.current = "install";
         setElevationPackages(e.payload);
         setBackendStatus("needs-elevation");
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<string>("install-progress-detail", (e) => {
+      register<string>("install-progress-detail", (e) => {
         setProgressDetail(e.payload);
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<string>("install-failed", (e) => {
+      register<string>("install-failed", (e) => {
         setBackendError(e.payload, "install-error");
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<number>("server-port", (e) => {
+      register<string>("repair-progress", (e) => {
+        setLogs((prev) => [...prev.slice(-499), e.payload]);
+      });
+
+      register<string[]>("repair-needs-elevation", (e) => {
+        elevationResumeRef.current = "repair";
+        setElevationPackages(e.payload);
+        setBackendStatus("needs-elevation");
+      });
+
+      register<void>("repair-complete", () => {
+        if (statusRef.current !== "repairing") return;
+        setProgressDetail("Repair complete");
+      });
+
+      register<string>("repair-failed", (e) => {
+        if (statusRef.current !== "repairing") return;
+        setBackendError(e.payload, "repair-error");
+      });
+
+      register<number>("server-port", (e) => {
         portRef.current = e.payload;
         setApiBase(e.payload);
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<void>("server-crashed", () => {
+      register<void>("server-crashed", () => {
         startingRef.current = false;
         setBackendError("Server stopped unexpectedly");
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<string>("server-log", (e) => {
+      register<string>("server-log", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
-      }).then((u) => cleanup.push(u));
+      });
 
-      listen<void>("tray-toggle-server", () => {
+      register<void>("tray-toggle-server", () => {
         if (statusRef.current === "running") {
           stopServer();
         } else if (
@@ -349,14 +454,14 @@ export function useTauriBackend() {
         ) {
           retry();
         }
-      }).then((u) => cleanup.push(u));
+      });
     });
 
     const onAuthFailed = (event: Event) => {
       const detail =
         event instanceof CustomEvent && typeof event.detail === "string"
           ? event.detail
-          : "Desktop authentication failed. Restart Unsloth Studio or run `unsloth studio reset-password`.";
+          : "Desktop authentication failed. Update or repair the managed Studio install, then restart Studio.";
       setAuthFailure(detail);
     };
     window.addEventListener("tauri-auth-failed", onAuthFailed);
@@ -367,6 +472,7 @@ export function useTauriBackend() {
     );
 
     return () => {
+      disposed = true;
       cleanup.forEach((fn) => fn());
       stopExternalServerPoll();
     };

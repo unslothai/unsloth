@@ -90,10 +90,7 @@ pub(crate) fn force_kill_process_tree(
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
-pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    let studio = home.join(".unsloth").join("studio");
-
+fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::path::PathBuf> {
     // New layout (upstream scripts >= March 2026)
     let new_base = studio.join("unsloth_studio");
     // Old layout (bundled scripts, older upstream)
@@ -111,6 +108,88 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    let studio = home.join(".unsloth").join("studio");
+
+    find_unsloth_binary_in_studio_dir(&studio)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_studio_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn finds_new_layout_before_legacy_layout() {
+        let temp = temp_studio_dir("new-before-legacy");
+
+        #[cfg(unix)]
+        let new_bin = temp.join("unsloth_studio/bin/unsloth");
+        #[cfg(unix)]
+        let old_bin = temp.join(".venv/bin/unsloth");
+        #[cfg(windows)]
+        let new_bin = temp.join("unsloth_studio/Scripts/unsloth.exe");
+        #[cfg(windows)]
+        let old_bin = temp.join(".venv/Scripts/unsloth.exe");
+
+        fs::create_dir_all(new_bin.parent().unwrap()).unwrap();
+        fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
+        fs::write(&new_bin, "").unwrap();
+        fs::write(&old_bin, "").unwrap();
+
+        assert_eq!(find_unsloth_binary_in_studio_dir(&temp), Some(new_bin));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn finds_legacy_layout_when_new_missing() {
+        let temp = temp_studio_dir("legacy");
+
+        #[cfg(unix)]
+        let old_bin = temp.join(".venv/bin/unsloth");
+        #[cfg(windows)]
+        let old_bin = temp.join(".venv/Scripts/unsloth.exe");
+
+        fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
+        fs::write(&old_bin, "").unwrap();
+
+        assert_eq!(find_unsloth_binary_in_studio_dir(&temp), Some(old_bin));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn returns_none_when_no_managed_layout_exists() {
+        let temp = temp_studio_dir("none");
+
+        assert_eq!(find_unsloth_binary_in_studio_dir(&temp), None);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn backend_args_always_enable_api_only() {
+        assert_eq!(
+            backend_args(8888),
+            vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
+        );
+    }
 }
 
 /// Find the unsloth binary, preferring the dev repo if available.
@@ -146,46 +225,18 @@ pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "Unsloth binary not found. Please install Unsloth Studio first.".to_string())
 }
 
-/// Check if the installed unsloth CLI supports --api-only by probing --help output.
-/// Times out after 5s to avoid blocking startup if the binary hangs.
-fn supports_api_only(bin: &std::path::Path) -> bool {
-    let mut cmd = std::process::Command::new(bin);
-    cmd.args(["studio", "--help"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-
-    // Poll for up to 5 seconds
-    for _ in 0..50 {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                let stdout = child.stdout.take();
-                if let Some(mut out) = stdout {
-                    let mut buf = String::new();
-                    use std::io::Read;
-                    let _ = out.read_to_string(&mut buf);
-                    return buf.contains("--api-only");
-                }
-                return false;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
-            Err(_) => return false,
-        }
-    }
-    // Timed out — kill and assume not supported
-    let _ = child.kill();
-    let _ = child.wait();
-    false
+fn backend_args(port: u16) -> Vec<String> {
+    [
+        "studio",
+        "--api-only",
+        "-H",
+        "127.0.0.1",
+        "-p",
+        &port.to_string(),
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// Spawn the backend process and wire up stdout/stderr reader threads.
@@ -210,27 +261,11 @@ pub fn start_backend(
         proc.intentional_stop = false;
     }
 
-    // In dev, always use --api-only (local code has it).
-    // In production, probe the binary to check if the PyPI version supports it.
-    let use_api_only = if cfg!(debug_assertions) {
-        true
-    } else {
-        supports_api_only(&bin)
-    };
-
-    info!(
-        "Starting backend: {:?} studio {}-H 127.0.0.1 -p {}",
-        bin,
-        if use_api_only { "--api-only " } else { "" },
-        port
-    );
+    let args = backend_args(port);
+    info!("Starting backend: {:?} {}", bin, args.join(" "));
 
     let mut cmd = Command::new(&bin);
-    cmd.arg("studio");
-    if use_api_only {
-        cmd.arg("--api-only");
-    }
-    cmd.args(["-H", "127.0.0.1", "-p", &port.to_string()])
+    cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

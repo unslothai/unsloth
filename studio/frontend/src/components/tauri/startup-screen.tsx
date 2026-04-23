@@ -153,6 +153,31 @@ function InstallingContent({
   );
 }
 
+function RepairingContent({
+  logs,
+  progressDetail,
+}: {
+  logs: string[];
+  progressDetail: string | null;
+}) {
+  const latest = progressDetail ?? logs.at(-1);
+
+  return (
+    <div className="flex h-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-2">
+        <TealSpinner />
+        <p className="text-sm font-bold text-foreground">Updating existing Studio install...</p>
+        {latest && (
+          <p className="max-w-xs text-center text-xs text-muted-foreground">{latest}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InstallErrorContent({
   error,
   logs,
@@ -178,6 +203,37 @@ function InstallErrorContent({
             Copy Logs
           </ActionButton>
           <ActionButton onClick={onRetryInstall}>Try Again</ActionButton>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function RepairErrorContent({
+  error,
+  logs,
+  onRetry,
+}: {
+  error: string | null;
+  logs: string[];
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      <Logo />
+      <div className="mt-8 flex flex-col items-center gap-2">
+        <p className="text-sm font-medium text-destructive">Update failed</p>
+        {error && (
+          <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
+        )}
+        <div className="mt-4 flex gap-3">
+          <ActionButton
+            variant="secondary"
+            onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
+          >
+            Copy Logs
+          </ActionButton>
+          <ActionButton onClick={onRetry}>Retry</ActionButton>
         </div>
       </div>
     </>
@@ -301,6 +357,10 @@ export function StartupScreen({
         return <InstallingContent currentStepIndex={currentStepIndex} progressDetail={progressDetail} />;
       case "install-error":
         return <InstallErrorContent error={error} logs={logs} onRetryInstall={onRetryInstall} />;
+      case "repairing":
+        return <RepairingContent logs={logs} progressDetail={progressDetail} />;
+      case "repair-error":
+        return <RepairErrorContent error={error} logs={logs} onRetry={onRetry} />;
       case "needs-elevation":
         return (
           <NeedsElevationContent

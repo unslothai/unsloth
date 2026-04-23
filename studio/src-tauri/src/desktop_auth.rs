@@ -1,4 +1,4 @@
-use crate::commands;
+use crate::preflight::{DesktopPreflightDisposition, DesktopPreflightResult};
 use crate::process::BackendState;
 use log::info;
 use reqwest::Client;
@@ -91,7 +91,7 @@ async fn current_backend_port(
         });
     }
 
-    let port = commands::find_existing_server()
+    let port = discover_compatible_backend_port()
         .await
         .ok_or_else(|| "Backend is not ready".to_string())?;
 
@@ -106,6 +106,18 @@ async fn current_backend_port(
         port,
         source: PortSource::Discovered,
     })
+}
+
+fn attached_ready_port(preflight: DesktopPreflightResult) -> Option<u16> {
+    if preflight.disposition == DesktopPreflightDisposition::AttachedReady {
+        preflight.port
+    } else {
+        None
+    }
+}
+
+async fn discover_compatible_backend_port() -> Option<u16> {
+    attached_ready_port(crate::preflight::desktop_preflight_result().await)
 }
 
 fn update_backend_port(state: &tauri::State<'_, BackendState>, port: u16) -> Result<(), String> {
@@ -146,7 +158,7 @@ async fn exchange_desktop_secret(
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AuthError::Failed(
-            "Desktop auth requires an updated Studio backend. Restart or update Unsloth Studio."
+            "Running Studio backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
     }
@@ -210,7 +222,7 @@ async fn authenticate_with_stale_port_retry(
     match exchange_desktop_secret(client, backend.port, secret).await {
         Ok(tokens) => Ok((tokens, backend)),
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
-            let Some(port) = commands::find_existing_server().await else {
+            let Some(port) = discover_compatible_backend_port().await else {
                 return Err(error.message());
             };
             update_backend_port(state, port)?;
@@ -258,7 +270,10 @@ pub async fn desktop_auth(
         }
     }
 
-    Err("Desktop auth failed. Run `unsloth studio reset-password` and restart Studio.".to_string())
+    Err(
+        "Desktop auth failed. Update or repair the managed Studio install, then restart Studio."
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -317,6 +332,36 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn attached_ready_port_requires_attached_ready_with_port() {
+        let compatible = DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::AttachedReady,
+            reason: None,
+            port: Some(8890),
+            can_auto_repair: false,
+            managed_bin: None,
+        };
+        assert_eq!(attached_ready_port(compatible), Some(8890));
+
+        let missing_port = DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::AttachedReady,
+            reason: None,
+            port: None,
+            can_auto_repair: false,
+            managed_bin: None,
+        };
+        assert_eq!(attached_ready_port(missing_port), None);
+
+        let managed_ready = DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::ManagedReady,
+            reason: None,
+            port: Some(8890),
+            can_auto_repair: false,
+            managed_bin: None,
+        };
+        assert_eq!(attached_ready_port(managed_ready), None);
+    }
+
     #[tokio::test]
     async fn exchange_desktop_secret_returns_none_for_unauthorized() {
         let port = login_server("401 Unauthorized").await;
@@ -335,6 +380,9 @@ mod tests {
             .unwrap_err()
             .message();
 
-        assert!(error.contains("updated Studio backend"));
+        assert_eq!(
+            error,
+            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+        );
     }
 }

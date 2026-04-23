@@ -1658,27 +1658,24 @@ case ":$PATH:" in
         ;;
 esac
 
-# ── Tauri mode: done, skip shortcuts and auto-launch ──
-if [ "$TAURI_MODE" = true ]; then
-    tauri_log "DONE" ""
-    exit 0
+# Non-Tauri installs keep shortcuts even if setup reports failure.
+if [ "$TAURI_MODE" != true ]; then
+    create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
-
-create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 
 # If setup.sh failed, report and exit now.
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
-    substep "Check the output above for details, then re-run:"
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        substep "  unsloth studio update --local"
-    else
-        substep "  unsloth studio update"
-    fi
     echo ""
     exit "$_SETUP_EXIT"
+fi
+
+# ── Tauri mode: done, skip shortcuts and auto-launch ──
+if [ "$TAURI_MODE" = true ]; then
+    tauri_log "DONE" ""
+    exit 0
 fi
 
 echo ""

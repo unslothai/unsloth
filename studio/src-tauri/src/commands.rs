@@ -4,6 +4,19 @@ use crate::update;
 use log::{error, info, warn};
 use tauri::{AppHandle, Emitter};
 
+async fn managed_install_ready_after_repair() -> bool {
+    crate::preflight::managed_install_ready().await
+}
+
+fn should_emit_repair_failed(msg: &str) -> bool {
+    !msg.contains("NEEDS_ELEVATION")
+}
+
+#[tauri::command]
+pub async fn desktop_preflight() -> crate::preflight::DesktopPreflightResult {
+    crate::preflight::desktop_preflight_result().await
+}
+
 /// Check if unsloth is installed AND functional.
 /// Runs `unsloth -h` to verify the import chain works — a partial install
 /// (binary exists but deps missing) will fail on import and return false,
@@ -73,20 +86,31 @@ pub async fn start_server(
 ) -> Result<(), String> {
     info!("start_server command called with port {}", port);
 
-    // Check for existing backend (e.g., CLI user already running `unsloth studio`)
-    if let Some(existing_port) = find_existing_server().await {
-        info!("Found existing backend on port {}, reusing", existing_port);
-        {
-            let mut proc = state.lock().map_err(|e| e.to_string())?;
-            proc.port = Some(existing_port);
-        }
-        let _ = app.emit("server-port", existing_port);
-    } else {
-        process::start_backend(&app, &state, port, &shutdown)?;
-    }
+    process::start_backend(&app, &state, port, &shutdown)?;
 
-    // Spawn health watchdog for both owned and reused backends — detects
+    // Spawn health watchdog for the owned backend — detects
     // deadlocks and hangs that stdout-based crash detection misses.
+    let watchdog_state = state.inner().clone();
+    let watchdog_shutdown = shutdown.inner().clone();
+    let watchdog_app = app.clone();
+    tokio::spawn(async move {
+        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown).await;
+    });
+
+    Ok(())
+}
+
+/// Start the managed backend without reusing an existing backend.
+#[tauri::command]
+pub async fn start_managed_server(
+    app: AppHandle,
+    state: tauri::State<'_, BackendState>,
+    shutdown: tauri::State<'_, ShutdownFlag>,
+    port: u16,
+) -> Result<(), String> {
+    info!("start_managed_server command called with port {}", port);
+    process::start_backend(&app, &state, port, &shutdown)?;
+
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
@@ -143,25 +167,6 @@ async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
         .unwrap_or(false);
 
     Ok(healthy && correct_service)
-}
-
-/// Scan ports 8888-8908 looking for an existing healthy backend.
-/// Range matches run.py: initial port 8888, then _find_free_port(8889, max_attempts=20)
-/// which can reach 8908.
-#[tauri::command]
-pub async fn find_existing_server() -> Option<u16> {
-    info!("Scanning ports 8888-8908 for existing backend...");
-    for port in 8888..=8908 {
-        match check_health_inner(port).await {
-            Ok(true) => {
-                info!("Found existing backend on port {}", port);
-                return Some(port);
-            }
-            _ => continue,
-        }
-    }
-    info!("No existing backend found");
-    None
 }
 
 /// Return buffered server logs.
@@ -288,6 +293,123 @@ pub async fn start_backend_update(
     tokio::task::spawn_blocking(move || update::run_backend_update(app, state))
         .await
         .map_err(|e| format!("Update task panicked: {e}"))?
+}
+
+/// Repair a stale managed Studio install.
+#[tauri::command]
+pub async fn start_managed_repair(
+    app: AppHandle,
+    backend_state: tauri::State<'_, BackendState>,
+    shutdown: tauri::State<'_, ShutdownFlag>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
+) -> Result<(), String> {
+    info!("start_managed_repair command called");
+
+    if install_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Cannot repair while installation is in progress.".to_string());
+    }
+
+    if update_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Repair is already running.".to_string());
+    }
+
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    if backend_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        info!("Stopping backend before repair...");
+        process::stop_backend(&backend_state, &shutdown)?;
+    }
+
+    let _ = app.emit("repair-progress", "Updating existing Studio install...");
+    let update_app = app.clone();
+    let update_state = update_state.inner().clone();
+    let update_result = tokio::task::spawn_blocking(move || {
+        update::run_backend_update_for_repair(update_app, update_state)
+    })
+    .await
+    .map_err(|e| format!("Repair update task panicked: {e}"))?;
+
+    match update_result {
+        Ok(()) if managed_install_ready_after_repair().await => {
+            info!("Managed repair complete after update");
+            let _ = app.emit("repair-complete", ());
+            return Ok(());
+        }
+        Ok(()) => {
+            warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
+            let _ = app.emit(
+                "repair-progress",
+                "Update finished, but Studio is still not ready. Running bundled installer...",
+            );
+        }
+        Err(msg) => {
+            if msg.to_ascii_lowercase().contains("already running") {
+                error!("Managed repair update conflict: {}", msg);
+                let _ = app.emit("repair-failed", &msg);
+                return Err(msg);
+            }
+
+            warn!(
+                "Managed repair update failed, falling back to bundled installer: {}",
+                msg
+            );
+            let _ = app.emit(
+                "repair-progress",
+                "Update failed. Running bundled installer...",
+            );
+        }
+    }
+
+    let install_app = app.clone();
+    let install_state = install_state.inner().clone();
+    let install_result = tokio::task::spawn_blocking(move || {
+        install::run_install_for_repair(install_app, install_state)
+    })
+    .await
+    .map_err(|e| format!("Repair install task panicked: {e}"))?;
+
+    if let Err(msg) = install_result {
+        if should_emit_repair_failed(&msg) {
+            error!("Managed repair installer failed: {}", msg);
+            let _ = app.emit("repair-failed", &msg);
+        }
+        return Err(msg);
+    }
+
+    if managed_install_ready_after_repair().await {
+        info!("Managed repair complete after installer");
+        let _ = app.emit("repair-complete", ());
+        return Ok(());
+    }
+
+    let msg = "Repair finished, but Studio install is still not desktop-ready.".to_string();
+    error!("{}", msg);
+    let _ = app.emit("repair-failed", &msg);
+    Err(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn repair_elevation_is_not_a_terminal_repair_failure() {
+        assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
+        assert!(super::should_emit_repair_failed(
+            "Installer exited with code 1"
+        ));
+    }
 }
 
 /// Periodic health check that detects deadlocked or hung backends.

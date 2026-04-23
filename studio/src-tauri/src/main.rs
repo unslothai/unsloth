@@ -3,6 +3,7 @@
 mod commands;
 mod desktop_auth;
 mod install;
+mod preflight;
 mod process;
 mod update;
 mod windows_job;
@@ -135,14 +136,16 @@ fn main() {
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
             commands::check_install_status,
+            commands::desktop_preflight,
             commands::start_install,
             commands::start_server,
+            commands::start_managed_server,
             commands::stop_server,
             commands::check_health,
-            commands::find_existing_server,
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::start_backend_update,
+            commands::start_managed_repair,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
         ])

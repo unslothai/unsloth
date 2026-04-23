@@ -21,7 +21,7 @@ let pending: Promise<boolean> | null = null;
 let lastTauriAuthFailure: string | null = null;
 
 const TAURI_AUTH_FAILURE_FALLBACK =
-  "Desktop authentication failed. Restart Unsloth Studio or run `unsloth studio reset-password`.";
+  "Desktop authentication failed. Update or repair the managed Studio install, then restart Studio.";
 const BACKEND_NOT_READY_MESSAGE = "Backend is not ready";
 
 function authFailureMessage(error: unknown): string {

@@ -3,6 +3,7 @@
 
 import importlib.util
 import hashlib
+import json
 import os
 import platform
 import secrets
@@ -816,6 +817,35 @@ def update(
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
+
+
+@studio_app.command("desktop-capabilities", hidden = True)
+def desktop_capabilities(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help = "Emit machine-readable JSON.",
+    ),
+):
+    payload = {
+        "desktop_protocol_version": 1,
+        "supports_provision_desktop_auth": True,
+        "supports_api_only": True,
+        "version": "unknown",
+    }
+    try:
+        from importlib.metadata import version as package_version
+
+        payload["version"] = package_version("unsloth")
+    except Exception:
+        pass
+
+    if json_output:
+        typer.echo(json.dumps(payload, sort_keys = True))
+        return
+
+    for key, value in payload.items():
+        typer.echo(f"{key}: {value}")
 
 
 @studio_app.command("provision-desktop-auth", hidden = True)

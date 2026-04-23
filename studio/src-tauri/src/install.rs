@@ -78,9 +78,39 @@ fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), Str
 
 // ── Emit Helpers ──
 
-fn emit_progress(app: &AppHandle, message: &str) {
+#[derive(Clone, Copy)]
+enum InstallEventMode {
+    Full,
+    Repair,
+}
+
+impl InstallEventMode {
+    fn progress_event(self) -> &'static str {
+        match self {
+            Self::Full => "install-progress",
+            Self::Repair => "repair-progress",
+        }
+    }
+
+    fn emit_install_structured_events(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn emit_terminal_events(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn needs_elevation_event(self) -> &'static str {
+        match self {
+            Self::Full => "install-needs-elevation",
+            Self::Repair => "repair-needs-elevation",
+        }
+    }
+}
+
+fn emit_mode_progress(app: &AppHandle, mode: InstallEventMode, message: &str) {
     info!("[install] {}", message);
-    let _ = app.emit("install-progress", message);
+    let _ = app.emit(mode.progress_event(), message);
 }
 
 fn emit_failed(app: &AppHandle, message: &str) {
@@ -197,6 +227,7 @@ fn spawn_script(
 fn stream_output(
     app: &AppHandle,
     state: &InstallState,
+    event_mode: InstallEventMode,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -222,13 +253,23 @@ fn stream_output(
                                 install.needed_packages = pkgs;
                             }
                         } else if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
+                            if !event_mode.emit_install_structured_events() {
+                                info!("[install][stdout] {}", text);
+                                let _ = app_clone.emit(event_mode.progress_event(), &text);
+                                continue;
+                            }
                             let _ = app_clone.emit("install-step", step);
                         } else if let Some(detail) = text.strip_prefix("[TAURI:PROGRESS] ") {
+                            if !event_mode.emit_install_structured_events() {
+                                info!("[install][stdout] {}", text);
+                                let _ = app_clone.emit(event_mode.progress_event(), detail);
+                                continue;
+                            }
                             let _ = app_clone.emit("install-progress-detail", detail);
                         }
                         // Always forward the raw line
                         info!("[install][stdout] {}", text);
-                        let _ = app_clone.emit("install-progress", &text);
+                        let _ = app_clone.emit(event_mode.progress_event(), &text);
                     }
                     Err(e) => {
                         warn!("[install] Error reading stdout: {}", e);
@@ -251,7 +292,7 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         warn!("[install][stderr] {}", text);
-                        let _ = app_clone.emit("install-progress", &text);
+                        let _ = app_clone.emit(event_mode.progress_event(), &text);
                     }
                     Err(e) => {
                         warn!("[install] Error reading stderr: {}", e);
@@ -305,13 +346,29 @@ fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
 /// Returns Err("NEEDS_ELEVATION") if system packages need elevated install (Linux only).
 /// Returns Err(message) on other failures.
 pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
-    emit_progress(&app, "Starting installation...");
+    run_install_with_event_mode(app, state, InstallEventMode::Full)
+}
+
+pub(crate) fn run_install_for_repair(app: AppHandle, state: InstallState) -> Result<(), String> {
+    run_install_with_event_mode(app, state, InstallEventMode::Repair)
+}
+
+fn run_install_with_event_mode(
+    app: AppHandle,
+    state: InstallState,
+    event_mode: InstallEventMode,
+) -> Result<(), String> {
+    emit_mode_progress(&app, event_mode, "Starting installation...");
 
     let (script, args) = resolve_install_script(&app)?;
-    emit_progress(&app, &format!("Using script: {}", script.display()));
+    emit_mode_progress(
+        &app,
+        event_mode,
+        &format!("Using script: {}", script.display()),
+    );
 
     let (stdout, stderr) = spawn_script(&script, &args, &state)?;
-    let threads = stream_output(&app, &state, stdout, stderr);
+    let threads = stream_output(&app, &state, event_mode, stdout, stderr);
 
     // Wait for exit, join reader threads
     let result = wait_for_exit(&state);
@@ -321,7 +378,9 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
 
     match result {
         Ok((status, _)) if status.success() => {
-            emit_complete(&app);
+            if event_mode.emit_terminal_events() {
+                emit_complete(&app);
+            }
             Ok(())
         }
         Ok((status, _)) => {
@@ -333,11 +392,13 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
                     .map(|i| i.needed_packages.clone())
                     .unwrap_or_default();
                 info!("[install] Needs elevation for packages: {:?}", packages);
-                let _ = app.emit("install-needs-elevation", &packages);
+                let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
                 let msg = format!("Installer exited with code {}", code);
-                emit_failed(&app, &msg);
+                if event_mode.emit_terminal_events() {
+                    emit_failed(&app, &msg);
+                }
                 Err(msg)
             }
         }
@@ -346,7 +407,9 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
             Err(msg)
         }
         Err(msg) => {
-            emit_failed(&app, &msg);
+            if event_mode.emit_terminal_events() {
+                emit_failed(&app, &msg);
+            }
             Err(msg)
         }
     }
@@ -453,4 +516,22 @@ pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
 
     info!("[install] Elevated package install succeeded");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repair_install_mode_uses_repair_elevation_event() {
+        assert_eq!(
+            InstallEventMode::Full.needs_elevation_event(),
+            "install-needs-elevation"
+        );
+        assert_eq!(
+            InstallEventMode::Repair.needs_elevation_event(),
+            "repair-needs-elevation"
+        );
+        assert!(!InstallEventMode::Repair.emit_terminal_events());
+    }
 }

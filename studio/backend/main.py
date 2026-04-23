@@ -236,6 +236,8 @@ async def health_check():
         "version": UNSLOTH_VERSION,
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
+        "desktop_protocol_version": 1,
+        "supports_desktop_auth": True,
     }
 
 
