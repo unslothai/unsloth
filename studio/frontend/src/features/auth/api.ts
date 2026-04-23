@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -34,7 +35,7 @@ async function redirectToAuth(): Promise<void> {
 
   let target = "/login";
   try {
-    const res = await fetch("/api/auth/status");
+    const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
       if (data.requires_password_change || mustChangePassword()) target = "/change-password";
@@ -46,12 +47,32 @@ async function redirectToAuth(): Promise<void> {
   window.location.href = target;
 }
 
+async function retryWithCurrentToken(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const retryHeaders = new Headers(init?.headers);
+  const token = getAuthToken();
+  if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers: retryHeaders });
+}
+
+async function retryWithTauriAutoAuth(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response | null> {
+  clearAuthTokens();
+  const { tauriAutoAuth } = await import("./tauri-auto-auth");
+  if (await tauriAutoAuth()) return retryWithCurrentToken(input, init);
+  return null;
+}
+
 export async function refreshSession(): Promise<boolean> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;
 
   try {
-    const response = await fetch("/api/auth/refresh", {
+    const response = await fetch(apiUrl("/api/auth/refresh"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -78,6 +99,7 @@ export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
+  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();
   if (accessToken) {
@@ -86,14 +108,18 @@ export async function authFetch(
 
   let response: Response;
   try {
-    response = await fetch(input, { ...init, headers });
+    response = await fetch(resolvedInput, { ...init, headers });
   } catch (err) {
     if (err instanceof TypeError) {
       throw new Error("Studio isn't running -- please relaunch it.");
     }
     throw err;
   }
+
   if (await isPasswordChangeRequiredResponse(response)) {
+    if (isTauri) {
+      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+    }
     void redirectToAuth();
     return response;
   }
@@ -101,25 +127,24 @@ export async function authFetch(
 
   const refreshed = await refreshSession();
   if (!refreshed) {
+    if (isTauri) {
+      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+    }
     clearAuthTokens();
     void redirectToAuth();
     return response;
   }
 
   if (mustChangePassword()) {
+    if (isTauri) {
+      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+    }
     void redirectToAuth();
     return response;
   }
 
-  const retryHeaders = new Headers(init?.headers);
-  const newToken = getAuthToken();
-  if (newToken) {
-    retryHeaders.set("Authorization", `Bearer ${newToken}`);
-  } else {
-    clearAuthTokens();
-  }
-
-  return fetch(input, { ...init, headers: retryHeaders });
+  if (!getAuthToken()) clearAuthTokens();
+  return retryWithCurrentToken(resolvedInput, init);
 }
 
 export function logout(): void {

@@ -1,0 +1,187 @@
+name: Release Desktop App
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create as draft release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            label: macOS (Apple Silicon)
+          # - platform: macos-latest
+          #   args: '--target x86_64-apple-darwin'
+          #   label: macOS (Intel)
+          - platform: ubuntu-22.04
+            args: ''
+            label: Linux (x64)
+          - platform: windows-latest
+            args: ''
+            label: Windows (x64)
+
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      # ── Linux dependencies ──
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+
+      # ── Node.js ──
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm install
+
+      # ── Rust ──
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: 'studio/src-tauri -> target'
+
+      # ── macOS: import signing certificate ──
+      - name: Import Apple certificate
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo $APPLE_CERTIFICATE | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+          rm -f certificate.p12
+
+      # ── Windows: install Azure Trusted Signing CLI ──
+      - name: Install trusted-signing-cli
+        if: matrix.platform == 'windows-latest'
+        run: |
+          cargo install trusted-signing-cli --version 0.9.0 --locked
+          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # ── Windows: verify signing CLI is accessible ──
+      - name: Verify trusted-signing-cli
+        if: matrix.platform == 'windows-latest'
+        run: |
+          Write-Output "PATH: $env:PATH"
+          Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
+          trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
+
+      # ── Linux: build + sign + upload ──
+      - name: Build Linux app
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: studio
+          tagName: desktop-v__VERSION__
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
+          releaseBody: |
+            Desktop app for Unsloth Studio.
+
+            **macOS**: Download the Apple Silicon `.dmg`.
+            **Windows**: Download the `-setup.exe` installer.
+            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+
+            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+          releaseDraft: ${{ inputs.draft }}
+          prerelease: false
+          args: -v ${{ matrix.args }}
+
+      # ── macOS: build + sign + notarize + upload ──
+      - name: Build macOS app
+        if: matrix.platform == 'macos-latest'
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: studio
+          tagName: desktop-v__VERSION__
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
+          releaseBody: |
+            Desktop app for Unsloth Studio.
+
+            **macOS**: Download the Apple Silicon `.dmg`.
+            **Windows**: Download the `-setup.exe` installer.
+            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+
+            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+          releaseDraft: ${{ inputs.draft }}
+          prerelease: false
+          args: -v ${{ matrix.args }}
+
+      # ── Windows: build + sign + upload ──
+      - name: Build Windows app
+        if: matrix.platform == 'windows-latest'
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        with:
+          projectPath: studio
+          tagName: desktop-v__VERSION__
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
+          releaseBody: |
+            Desktop app for Unsloth Studio.
+
+            **macOS**: Download the Apple Silicon `.dmg`.
+            **Windows**: Download the `-setup.exe` installer.
+            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+
+            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+          releaseDraft: ${{ inputs.draft }}
+          prerelease: false
+          args: -v ${{ matrix.args }}

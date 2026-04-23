@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { UpdateStudioInstructions } from "../components/update-studio-instructions";
 import { usePlatformStore } from "@/config/env";
+import { apiUrl } from "@/lib/api-base";
 import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import {
   ArrowUpRight01Icon,
@@ -28,7 +29,7 @@ export function AboutTab() {
 
     (async () => {
       try {
-        const res = await fetch("/api/health");
+        const res = await fetch(apiUrl("/api/health"));
         if (!res.ok) return;
         const data = (await res.json()) as { version?: string };
         if (!canceled && data.version) {
