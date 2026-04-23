@@ -102,7 +102,8 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             with self.assertRaisesRegex(
-                ValueError, "unsupported when CUDA_VISIBLE_DEVICES uses UUID/MIG"
+                ValueError,
+                "unsupported when CUDA_VISIBLE_DEVICES uses non-numeric or subdevice",
             ):
                 resolve_requested_gpu_ids([1])
 
@@ -711,12 +712,12 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestRouteErrors(unittest.TestCase):
-    def test_prepare_gpu_selection_rejects_gpu_ids_on_non_cuda_backend(self):
+    def test_prepare_gpu_selection_rejects_gpu_ids_on_non_accelerator_backend(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             with self.assertRaises(ValueError) as exc_info:
                 prepare_gpu_selection([0], model_name = "unsloth/test")
 
-        self.assertIn("only supported on CUDA devices", str(exc_info.exception))
+        self.assertIn("only supported on CUDA and Intel XPU", str(exc_info.exception))
 
     def test_inference_route_rejects_gpu_ids_for_gguf(self):
         inference_route = _load_route_module(
@@ -1089,15 +1090,58 @@ class TestAutoSelectWithNoneRequired(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(metadata["selection_mode"], "fallback_all")
 
 
-class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
-    def test_auto_select_returns_non_cuda_for_xpu(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+class TestXpuSelection(_GpuCacheResetMixin, unittest.TestCase):
+    def test_auto_select_supports_xpu(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.hardware.estimate_required_model_memory_gb",
+                return_value = (1.0, {}),
+            ),
+            patch(
+                "utils.hardware.hardware.get_visible_gpu_utilization",
+                return_value = {
+                    "devices": [
+                        {"index": 0, "vram_total_gb": 8, "vram_used_gb": 1},
+                    ]
+                },
+            ),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {
+                    "raw": None,
+                    "numeric_ids": [0],
+                    "supports_explicit_gpu_ids": True,
+                },
+            ),
+            patch(
+                "utils.hardware.hardware.get_parent_visible_gpu_ids",
+                return_value = [0],
+            ),
+        ):
             selected, metadata = auto_select_gpu_ids("unsloth/test")
 
-        self.assertIsNone(selected)
-        self.assertEqual(metadata["selection_mode"], "non_cuda")
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "auto")
 
-    def test_prepare_gpu_selection_rejects_explicit_ids_on_xpu(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
-            with self.assertRaisesRegex(ValueError, "only supported on CUDA"):
-                prepare_gpu_selection([0], model_name = "unsloth/test")
+    def test_prepare_gpu_selection_accepts_explicit_ids_on_xpu(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {
+                    "raw": "0",
+                    "numeric_ids": [0],
+                    "supports_explicit_gpu_ids": True,
+                },
+            ),
+            patch(
+                "utils.hardware.hardware.get_parent_visible_gpu_ids",
+                return_value = [0],
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 1),
+        ):
+            selected, metadata = prepare_gpu_selection([0], model_name = "unsloth/test")
+
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "explicit")

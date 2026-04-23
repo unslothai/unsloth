@@ -101,17 +101,31 @@ def format_error_message(error: Exception, model_name: str) -> str:
         return "Invalid HF token. Please check your token and try again."
 
     if (
-        "memory" in error_str
-        or "cuda" in error_str
-        or "mlx" in error_str
-        or "out of memory" in error_str
+        "out of memory" in error_str
+        or "out of device memory" in error_str
+        or "out_of_device_memory" in error_str  # ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY
+        or "out_of_host_memory" in error_str  # ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY
+        or "not enough memory" in error_str
+        or "cannot allocate memory" in error_str
+        or "memory allocation failed" in error_str
+        or "cublas_status_alloc_failed" in error_str  # cuBLAS workspace OOM
+        or ("cuda error" in error_str and "alloc" in error_str)
+        or ("xpu" in error_str and ("alloc" in error_str or "memory" in error_str))
+        or isinstance(error, MemoryError)
+        or ("mlx" in error_str and ("memory" in error_str or "allocate" in error_str))
     ):
+        # Resolve get_device() at call time (not import time) so tests that
+        # monkey-patch utils.hardware.get_device after this module is loaded
+        # still see the patched backend.
         from utils.hardware import get_device
 
         device = get_device()
-        device_label = {"cuda": "GPU", "mlx": "Apple Silicon GPU", "cpu": "system"}.get(
-            device.value, "GPU"
-        )
+        device_label = {
+            "cuda": "GPU",
+            "xpu": "Intel GPU",
+            "mlx": "Apple Silicon GPU",
+            "cpu": "system",
+        }.get(device.value, "GPU")
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
     # Generic fallback

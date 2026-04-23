@@ -26,6 +26,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from utils.hardware import clear_gpu_cache
+
 logger = get_logger(__name__)
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
@@ -422,15 +424,29 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per visible GPU, backend-aware.
 
-        Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Returns list of ``(gpu_index, free_mib)`` sorted by index. The index
+        space matches whatever the active backend exposes: physical
+        ``nvidia-smi`` indices on NVIDIA; parent-visible numeric IDs on
+        AMD/ROCm and Intel XPU (via Studio's hardware telemetry layer).
+        Returns an empty list if no per-GPU free-memory data is available,
+        which lets the caller fall through to a non-placement launch path.
         """
         import os
 
+        from utils.hardware import get_device
+        from utils.hardware.hardware import DeviceType
+        import utils.hardware.hardware as _hw_mod
+
+        # Fast path: NVIDIA / nvidia-smi. Only run when backend is CUDA
+        # (not ROCm, not XPU) to avoid feeding wrong indices to other backends.
+        nvidia_eligible = get_device() == DeviceType.CUDA and not getattr(
+            _hw_mod, "IS_ROCM", False
+        )
         try:
+            if not nvidia_eligible:
+                raise FileNotFoundError  # skip to generic telemetry path
             result = subprocess.run(
                 [
                     "nvidia-smi",
@@ -441,30 +457,77 @@ class LlamaCppBackend:
                 text = True,
                 timeout = 10,
             )
-            if result.returncode != 0:
+            if result.returncode == 0:
+                # Filter nvidia-smi output by CUDA_VISIBLE_DEVICES.
+                # Skip empty tokens so trailing commas don't disable the filter.
+                allowed = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None and cvd.strip():
+                    try:
+                        allowed = set(
+                            int(x.strip()) for x in cvd.split(",") if x.strip()
+                        )
+                    except ValueError:
+                        pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
+
+                gpus = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                if gpus:
+                    return sorted(gpus, key = lambda item: item[0])
+        except FileNotFoundError:
+            pass  # nvidia-smi not on PATH — fall through to generic path
+        except Exception as e:
+            logger.debug(f"nvidia-smi free-memory query failed: {e}")
+
+        # Generic path: ROCm, XPU, or nvidia-smi absent/failed.
+        try:
+            from utils.hardware import get_visible_gpu_utilization
+
+            utilization = get_visible_gpu_utilization()
+
+            # Relative ordinals are not safe to round-trip into
+            # visibility env vars. Return [] so llama-server inherits
+            # the parent's mask unchanged.
+            if utilization.get("index_kind") not in (None, "physical"):
+                logger.debug(
+                    "Skipping GPU placement: telemetry reports index_kind=%r "
+                    "(not reusable for placement)",
+                    utilization.get("index_kind"),
+                )
                 return []
 
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
+            gpus: list[tuple[int, int]] = []
+            for device in utilization.get("devices", []) or []:
+                index = device.get("index")
 
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
-            return gpus
+                # Use explicit ``is None`` checks -- ``or`` would treat an
+                # idle GPU with vram_used_gb == 0.0 as missing telemetry and
+                # silently drop a perfectly valid free card.
+                total_gb = device.get("vram_total_gb")
+                if total_gb is None:
+                    total_gb = device.get("total_gb")
+
+                used_gb = device.get("vram_used_gb")
+                if used_gb is None:
+                    used_gb = device.get("used_gb")
+
+                if index is None or total_gb is None or used_gb is None:
+                    # Missing telemetry for this device -- skip rather than
+                    # invent a free-memory number that drives placement.
+                    continue
+
+                free_mib = max(int((float(total_gb) - float(used_gb)) * 1024), 0)
+                gpus.append((int(index), free_mib))
+            return sorted(gpus, key = lambda item: item[0])
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"Generic GPU free-memory query failed: {e}")
             return []
 
     @staticmethod
@@ -1647,9 +1710,16 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            # Pin to selected GPU(s) via backend-appropriate env var.
             if gpu_indices is not None:
-                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                from utils.hardware import get_device
+                from utils.hardware.hardware import DeviceType
+
+                mask = ",".join(str(i) for i in gpu_indices)
+                if get_device() == DeviceType.XPU:
+                    env["ZE_AFFINITY_MASK"] = mask
+                else:
+                    env["CUDA_VISIBLE_DEVICES"] = mask
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -1787,10 +1857,7 @@ class LlamaCppBackend:
             if LlamaCppBackend._codec_mgr is not None:
                 LlamaCppBackend._codec_mgr.unload()
                 LlamaCppBackend._codec_mgr = None
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                clear_gpu_cache()
             return True
 
     def _kill_process(self):
@@ -3423,6 +3490,7 @@ class LlamaCppBackend:
         if LlamaCppBackend._codec_mgr is None:
             LlamaCppBackend._codec_mgr = AudioCodecManager()
 
+        # Audio codecs are only validated on CUDA; stay on CPU otherwise.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_repo_path = None
 
@@ -3495,6 +3563,8 @@ class LlamaCppBackend:
             else None
         )
 
+        # Match init_audio_codec: stay on CPU for non-CUDA hosts until the
+        # codec path is validated on XPU.
         import torch
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
