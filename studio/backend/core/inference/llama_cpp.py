@@ -87,6 +87,84 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 
+_TOOL_TEMPLATE_MARKERS = (
+    "{%- if tools %}",
+    "{%- if tools -%}",
+    "{% if tools %}",
+    "{% if tools -%}",
+    '"role" == "tool"',
+    "'role' == 'tool'",
+    'message.role == "tool"',
+    "message.role == 'tool'",
+)
+
+
+def detect_reasoning_flags(
+    chat_template: Optional[str],
+    model_identifier: Optional[str] = None,
+    *,
+    log_source: Optional[str] = None,
+) -> dict:
+    """Classify a chat template's reasoning and tool-calling capabilities.
+
+    Returns a dict with the same five keys populated by the GGUF sniffer:
+    ``supports_reasoning``, ``reasoning_style``
+    (``"enable_thinking"`` | ``"reasoning_effort"``),
+    ``reasoning_always_on``, ``supports_preserve_thinking``, and
+    ``supports_tools``. Used by both the llama-server backend at load
+    time and the safetensors/transformers paths in ``routes/inference``
+    so the two agree on what the frontend will see.
+    """
+    flags = {
+        "supports_reasoning": False,
+        "reasoning_style": "enable_thinking",
+        "reasoning_always_on": False,
+        "supports_preserve_thinking": False,
+        "supports_tools": False,
+    }
+    if not chat_template:
+        return flags
+    tpl = chat_template
+    prefix = f"{log_source}: " if log_source else ""
+
+    if "enable_thinking" in tpl:
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking"
+        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+    elif "reasoning_effort" in tpl:
+        # gpt-oss / Harmony templates use reasoning_effort
+        # ("low" | "medium" | "high") instead of a boolean.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "reasoning_effort"
+        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+    elif "thinking" in tpl:
+        # DeepSeek uses 'thinking' instead of 'enable_thinking'
+        normalized_id = (model_identifier or "").lower()
+        if "deepseek" in normalized_id:
+            flags["supports_reasoning"] = True
+            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+
+    # Hardcoded <think> tags or reasoning_content in the template mean
+    # thinking is always on (no toggle to disable it).
+    if not flags["supports_reasoning"]:
+        if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
+            flags["supports_reasoning"] = True
+            flags["reasoning_always_on"] = True
+            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+
+    # preserve_thinking is an independent kwarg on some Qwen templates
+    # that keeps historical <think> blocks in prior assistant turns.
+    if "preserve_thinking" in tpl:
+        flags["supports_preserve_thinking"] = True
+        logger.info(f"{prefix}model supports preserve_thinking")
+
+    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+        flags["supports_tools"] = True
+        logger.info(f"{prefix}model supports tool calling")
+
+    return flags
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -112,6 +190,8 @@ class LlamaCppBackend:
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
+        self._reasoning_style: str = "enable_thinking"
+        self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
@@ -294,8 +374,49 @@ class LlamaCppBackend:
         return self._reasoning_always_on
 
     @property
+    def reasoning_style(self) -> str:
+        return self._reasoning_style
+
+    @property
+    def supports_preserve_thinking(self) -> bool:
+        return self._supports_preserve_thinking
+
+    @property
     def reasoning_default(self) -> bool:
         return self._reasoning_default
+
+    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+        if self._reasoning_style == "reasoning_effort":
+            return {"reasoning_effort": "high" if enable_thinking else "low"}
+        return {"enable_thinking": enable_thinking}
+
+    def _request_reasoning_kwargs(
+        self,
+        enable_thinking: Optional[bool],
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+    ) -> Optional[dict]:
+        """Build chat_template_kwargs from per-request reasoning fields.
+
+        Produces a merged dict covering the active model's reasoning style
+        (``enable_thinking`` or ``reasoning_effort``) plus the independent
+        ``preserve_thinking`` kwarg when the template supports it.
+        """
+        kwargs: dict = {}
+        # Always-on reasoning models hardcode <think> tags in their template
+        # and do not consume enable_thinking / reasoning_effort -- skip.
+        if self._supports_reasoning and not self._reasoning_always_on:
+            if self._reasoning_style == "reasoning_effort":
+                if reasoning_effort in ("low", "medium", "high"):
+                    kwargs["reasoning_effort"] = reasoning_effort
+                elif enable_thinking is not None:
+                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+            else:
+                if enable_thinking is not None:
+                    kwargs["enable_thinking"] = enable_thinking
+        if self._supports_preserve_thinking and preserve_thinking is not None:
+            kwargs["preserve_thinking"] = preserve_thinking
+        return kwargs or None
 
     @property
     def supports_tools(self) -> bool:
@@ -818,6 +939,9 @@ class LlamaCppBackend:
         self._chat_template = None
         self._supports_reasoning = False
         self._reasoning_always_on = False
+        self._reasoning_style = "enable_thinking"
+        self._reasoning_default = True
+        self._supports_preserve_thinking = False
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
@@ -898,48 +1022,16 @@ class LlamaCppBackend:
                     f"GGUF metadata: chat_template={len(self._chat_template)} chars"
                 )
                 # Detect thinking/reasoning support from chat template
-                tpl = self._chat_template
-                if "enable_thinking" in tpl:
-                    self._supports_reasoning = True
-                    logger.info(
-                        "GGUF metadata: model supports reasoning (enable_thinking)"
-                    )
-                elif "thinking" in tpl:
-                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
-                    normalized_id = (self._model_identifier or "").lower()
-                    if "deepseek" in normalized_id:
-                        self._supports_reasoning = True
-                        logger.info(
-                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
-                        )
-                # Models with hardcoded <think> tags or reasoning_content
-                # in their chat template always produce thinking output
-                # (no toggle to disable it).
-                if not self._supports_reasoning:
-                    if (
-                        "<think>" in tpl
-                        and "</think>" in tpl
-                        or "reasoning_content" in tpl
-                    ):
-                        self._supports_reasoning = True
-                        self._reasoning_always_on = True
-                        logger.info(
-                            "GGUF metadata: model always reasons (<think> tags in template)"
-                        )
-                # Detect tool calling support from chat template
-                tool_markers = [
-                    "{%- if tools %}",
-                    "{%- if tools -%}",
-                    "{% if tools %}",
-                    "{% if tools -%}",
-                    '"role" == "tool"',
-                    "'role' == 'tool'",
-                    'message.role == "tool"',
-                    "message.role == 'tool'",
-                ]
-                if any(marker in tpl for marker in tool_markers):
-                    self._supports_tools = True
-                    logger.info("GGUF metadata: model supports tool calling")
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF metadata",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -1523,7 +1615,8 @@ class LlamaCppBackend:
             # For reasoning models, set default thinking mode.
             # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
             # Only 9B and larger enable thinking.
-            if self._supports_reasoning:
+            # Always-on templates ignore the kwarg entirely, so skip.
+            if self._supports_reasoning and not self._reasoning_always_on:
                 thinking_default = True
                 mid = (model_identifier or "").lower()
                 if "qwen3.5" in mid or "qwen3.6" in mid:
@@ -1531,15 +1624,14 @@ class LlamaCppBackend:
                     if size_val is not None and size_val < 9:
                         thinking_default = False
                 self._reasoning_default = thinking_default
+                reasoning_kw = self._reasoning_kwargs(thinking_default)
                 cmd.extend(
                     [
                         "--chat-template-kwargs",
-                        json.dumps({"enable_thinking": thinking_default}),
+                        json.dumps(reasoning_kw),
                     ]
                 )
-                logger.info(
-                    f"Reasoning model: enable_thinking={thinking_default} by default"
-                )
+                logger.info(f"Reasoning model: {reasoning_kw} by default")
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -1767,6 +1859,9 @@ class LlamaCppBackend:
             self._chat_template = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
+            self._reasoning_style = "enable_thinking"
+            self._reasoning_default = True
+            self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
             self._speculative_type = None
@@ -2317,6 +2412,8 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -2341,9 +2438,12 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        # Pass enable_thinking per-request for reasoning models
-        if self._supports_reasoning and enable_thinking is not None:
-            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        # Pass enable_thinking / reasoning_effort / preserve_thinking per-request
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        if _reasoning_kw is not None:
+            payload["chat_template_kwargs"] = _reasoning_kw
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if stop:
@@ -2479,6 +2579,8 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
@@ -2557,8 +2659,11 @@ class LlamaCppBackend:
                 "tools": tools,
                 "tool_choice": "auto",
             }
-            if self._supports_reasoning and enable_thinking is not None:
-                payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+            _reasoning_kw = self._request_reasoning_kwargs(
+                enable_thinking, reasoning_effort, preserve_thinking
+            )
+            if _reasoning_kw is not None:
+                payload["chat_template_kwargs"] = _reasoning_kw
             if max_tokens is not None:
                 payload["max_tokens"] = max_tokens
             if stop:
@@ -3207,10 +3312,11 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        if self._supports_reasoning and enable_thinking is not None:
-            stream_payload["chat_template_kwargs"] = {
-                "enable_thinking": enable_thinking
-            }
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        if _reasoning_kw is not None:
+            stream_payload["chat_template_kwargs"] = _reasoning_kw
         if max_tokens is not None:
             stream_payload["max_tokens"] = max_tokens
         if stop:
