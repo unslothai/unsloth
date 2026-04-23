@@ -10,14 +10,9 @@ import { Thread } from "@/components/assistant-ui/thread";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
-import {
-  Settings05Icon,
-} from "@hugeicons/core-free-icons";
+import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Tooltip,
-  TooltipContent,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -122,7 +117,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -351,7 +346,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "flex h-[48px] shrink-0 items-center gap-2 bg-background",
+        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
         side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
       )}
     >
@@ -492,6 +487,37 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     return () => setSettingsOpen(false);
   }, [setSettingsOpen]);
+
+  useEffect(() => {
+    const threadId = search.thread;
+    if (!threadId) return;
+
+    let canceled = false;
+    void db.threads
+      .get(threadId)
+      .then((thread) => {
+        if (canceled || thread) return;
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        toast.info("Chat not found", {
+          description: "That thread no longer exists, so we opened a new chat.",
+        });
+        navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+          replace: true,
+        });
+      })
+      .catch(() => {
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [navigate, search.thread]);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
@@ -533,8 +559,7 @@ export function ChatPage(): ReactElement {
     if (search.compare) {
       return {
         mode: "compare",
-        pairId:
-          search.compare,
+        pairId: search.compare,
       };
     }
     if (search.thread) {
@@ -627,8 +652,14 @@ export function ChatPage(): ReactElement {
     },
     [modelSelectorLocked],
   );
-  const openSettings = useCallback(() => setSettingsOpen(true), [setSettingsOpen]);
-  const closeSettings = useCallback(() => setSettingsOpen(false), [setSettingsOpen]);
+  const openSettings = useCallback(
+    () => setSettingsOpen(true),
+    [setSettingsOpen],
+  );
+  const closeSettings = useCallback(
+    () => setSettingsOpen(false),
+    [setSettingsOpen],
+  );
   const { setPinned, isMobile } = useSidebar();
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
@@ -655,7 +686,9 @@ export function ChatPage(): ReactElement {
         .first()
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"];
+          const usage = metadata?.contextUsage as ReturnType<
+            typeof useChatRuntimeStore.getState
+          >["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
         });
     }
@@ -834,7 +867,8 @@ export function ChatPage(): ReactElement {
           className={cn(
             "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
-            view.mode === "compare" && "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
+            view.mode === "compare" &&
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
           )}
         >
           <div className="flex items-center gap-1">
