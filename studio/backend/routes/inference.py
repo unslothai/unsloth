@@ -1692,13 +1692,29 @@ async def openai_chat_completions(
                         continue  # skip metadata dict in non-streaming path
                     full_text = token
 
+                reasoning_text: Optional[str] = None
+                if "<think>" in full_text:
+                    reasoning_parts: list[str] = []
+                    full_text = _re.sub(
+                        r"<think>(.*?)</think>\s*",
+                        lambda m: reasoning_parts.append(m.group(1).strip()) or "",
+                        full_text,
+                        flags = _re.DOTALL,
+                    ).strip()
+                    reasoning_text = (
+                        "\n\n".join(p for p in reasoning_parts if p) or None
+                    )
+
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
                     model = model_name,
                     choices = [
                         CompletionChoice(
-                            message = CompletionMessage(content = full_text),
+                            message = CompletionMessage(
+                                content = full_text,
+                                reasoning_content = reasoning_text,
+                            ),
                             finish_reason = "stop",
                         )
                     ],
@@ -1873,13 +1889,29 @@ async def openai_chat_completions(
             for token in generate():
                 full_text = token
 
+            reasoning_text_ns: Optional[str] = None
+            if "<think>" in full_text:
+                reasoning_parts_ns: list[str] = []
+                full_text = _re.sub(
+                    r"<think>(.*?)</think>\s*",
+                    lambda m: reasoning_parts_ns.append(m.group(1).strip()) or "",
+                    full_text,
+                    flags = _re.DOTALL,
+                ).strip()
+                reasoning_text_ns = (
+                    "\n\n".join(p for p in reasoning_parts_ns if p) or None
+                )
+
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
                 model = model_name,
                 choices = [
                     CompletionChoice(
-                        message = CompletionMessage(content = full_text),
+                        message = CompletionMessage(
+                            content = full_text,
+                            reasoning_content = reasoning_text_ns,
+                        ),
                         finish_reason = "stop",
                     )
                 ],
