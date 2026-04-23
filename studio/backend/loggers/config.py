@@ -44,6 +44,14 @@ class LogConfig:
         # Fallback to INFO if an invalid level is provided
         log_level = getattr(logging, log_level_name, logging.INFO)
 
+        if sys.platform == "win32":
+            for stream in (sys.stdout, sys.stderr):
+                if hasattr(stream, "reconfigure"):
+                    try:
+                        stream.reconfigure(encoding = "utf-8", errors = "replace")
+                    except Exception:
+                        pass
+
         structlog.configure(
             processors = [
                 # Reorder processors to control field order

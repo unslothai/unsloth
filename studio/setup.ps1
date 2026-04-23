@@ -1077,10 +1077,13 @@ if (-not $CudaArch) {
 }
 
 # ============================================
-# 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
+# 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
 # ============================================
+$SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
 if ($IsPipInstall) {
     step "frontend" "bundled (pip install)"
+} elseif ($SkipFrontend) {
+    step "frontend" "bundled (Tauri)"
 } else {
     # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
     # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
@@ -1207,6 +1210,9 @@ $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
     step "frontend" "bundled (pip install)"
+} elseif ($SkipFrontend) {
+    $NeedFrontendBuild = $false
+    step "frontend" "bundled (Tauri)"
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null
@@ -1539,7 +1545,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        Invoke-SetupCommand { powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" } | Out-Null
+        Invoke-SetupCommand { Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1") } | Out-Null
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
