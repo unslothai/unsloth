@@ -113,7 +113,7 @@ jobs:
         with:
           projectPath: studio
           tagName: desktop-v__VERSION__
-          releaseName: 'Unsloth Studio v__VERSION__'
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
             Desktop app for Unsloth Studio.
 
@@ -142,7 +142,7 @@ jobs:
         with:
           projectPath: studio
           tagName: desktop-v__VERSION__
-          releaseName: 'Unsloth Studio v__VERSION__'
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
             Desktop app for Unsloth Studio.
 
@@ -172,7 +172,7 @@ jobs:
         with:
           projectPath: studio
           tagName: desktop-v__VERSION__
-          releaseName: 'Unsloth Studio v__VERSION__'
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
             Desktop app for Unsloth Studio.
 

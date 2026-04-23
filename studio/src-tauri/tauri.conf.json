@@ -1,5 +1,5 @@
 {
-  "productName": "Unsloth Studio",
+  "productName": "Unsloth Studio (Desktop)",
   "identifier": "ai.unsloth.studio",
   "build": {
     "beforeDevCommand": "npm --prefix ../frontend run dev -- --port 5173 --strictPort",
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Unsloth Studio",
+        "title": "Unsloth Studio (Desktop)",
         "width": 690,
         "height": 480,
         "visible": false,
@@ -25,7 +25,7 @@
     "trayIcon": {
       "iconPath": "icons/icon.png",
       "id": "main",
-      "tooltip": "Unsloth Studio"
+      "tooltip": "Unsloth Studio (Desktop)"
     }
   },
   "plugins": {

@@ -1,6 +1,6 @@
 [package]
 name = "unsloth-studio"
-version = "0.3.0"
+version = "2026.4.6"
 description = "Unsloth Studio Desktop App"
 authors = ["Unsloth AI"]
 edition = "2021"
