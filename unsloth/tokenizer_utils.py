@@ -519,12 +519,12 @@ def fix_sentencepiece_gguf(saved_location):
             with open(f"{saved_location}/tokenizer.model", "wb") as file:
                 file.write(tokenizer_file.SerializeToString())
         return
+    added_tokens_ids = _real_added_tokens_ids
     if added_tokens_ids.min() != sentence_piece_size:
         if patched > 0:
             with open(f"{saved_location}/tokenizer.model", "wb") as file:
                 file.write(tokenizer_file.SerializeToString())
         return
-    added_tokens_ids = _real_added_tokens_ids
 
     # Edit sentence piece tokens with added_tokens_json
     logger.warning(
