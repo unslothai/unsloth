@@ -932,7 +932,10 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] sm:max-w-none !h-[34px]"
                 benchmarkMode={benchmarkMode}
                 benchmarkSelectedIds={benchmarkSelectedModelIds}
-                onBenchmarkToggle={(id) => toggleModelSelection(id)}
+                onBenchmarkToggle={(id, meta) => {
+                  const storeId = meta?.ggufVariant ? `${id}::${meta.ggufVariant}` : id;
+                  toggleModelSelection(storeId);
+                }}
                 onBenchmarkConfirm={closeModelSelector}
               />
             )}

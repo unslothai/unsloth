@@ -204,8 +204,8 @@ function ModelSelectorContent({
         </div>
       )}
 
-      {/* Eject button — hidden when benchmark mode is active */}
-      {!benchmarkMode && hasSelection && onEject ? (
+      {/* Eject button */}
+      {hasSelection && onEject ? (
         <div className="mt-2 border-t border-border/70 pt-2">
           <button
             type="button"

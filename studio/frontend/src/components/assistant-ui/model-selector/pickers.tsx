@@ -215,12 +215,16 @@ function GgufVariantExpander({
   gpuGb,
   systemRamGb,
   onDeleteVariant,
+  benchmarkMode,
+  benchmarkSelectedIds,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
   onDeleteVariant?: (quant: string) => void;
+  benchmarkMode?: boolean;
+  benchmarkSelectedIds?: string[];
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -372,6 +376,9 @@ function GgufVariantExpander({
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
+        const isQuantBenchmarkSelected =
+          benchmarkMode === true &&
+          benchmarkSelectedIds?.includes(`${repoId}::${v.quant}`) === true;
         return (
           <div key={v.filename} className="flex items-center gap-0.5">
             <button
@@ -381,6 +388,7 @@ function GgufVariantExpander({
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-[6px] px-2.5 py-1 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+                isQuantBenchmarkSelected && "ring-2 ring-primary bg-primary/5",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -959,7 +967,7 @@ export function HubModelPicker({
                     label={c.repo_id}
                     meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
-                    benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((id) => id.startsWith(c.repo_id))}
+                    benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(c.repo_id)}
                     onClick={() =>
                       setExpandedGguf((prev) =>
                         prev === c.repo_id ? null : c.repo_id,
@@ -978,6 +986,8 @@ export function HubModelPicker({
                       onDeleteVariant={(quant) =>
                         setDeleteTarget(`${c.repo_id}::${quant}`)
                       }
+                      benchmarkMode={benchmarkMode}
+                      benchmarkSelectedIds={benchmarkSelectedIds}
                     />
                   )}
                 </div>
@@ -1052,6 +1062,8 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
+                        benchmarkMode={benchmarkMode}
+                        benchmarkSelectedIds={benchmarkSelectedIds}
                       />
                     )}
                   </div>
@@ -1248,6 +1260,8 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
+                        benchmarkMode={benchmarkMode}
+                        benchmarkSelectedIds={benchmarkSelectedIds}
                       />
                     )}
                   </div>
@@ -1280,7 +1294,7 @@ export function HubModelPicker({
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + ":"))}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(id)}
                         onClick={() => handleModelClick(id)}
                         vramStatus={
                           isKnownGgufRepo(id) ? null : (vram?.status ?? null)
@@ -1296,6 +1310,8 @@ export function HubModelPicker({
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
                           }
+                          benchmarkMode={benchmarkMode}
+                          benchmarkSelectedIds={benchmarkSelectedIds}
                         />
                       )}
                     </div>
@@ -1328,7 +1344,7 @@ export function HubModelPicker({
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + ":"))}
+                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(id)}
                       onClick={() => handleModelClick(id)}
                       vramStatus={
                         isKnownGgufRepo(id) ? null : (vram?.status ?? null)
@@ -1344,6 +1360,8 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
+                        benchmarkMode={benchmarkMode}
+                        benchmarkSelectedIds={benchmarkSelectedIds}
                       />
                     )}
                   </div>
@@ -1377,7 +1395,7 @@ export function HubModelPicker({
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + ":"))}
+                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.includes(id)}
                         onClick={() => handleModelClick(id)}
                         vramStatus={
                           isSearchGguf ? null : (vram?.status ?? null)
@@ -1393,6 +1411,8 @@ export function HubModelPicker({
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
                           }
+                          benchmarkMode={benchmarkMode}
+                          benchmarkSelectedIds={benchmarkSelectedIds}
                         />
                       )}
                     </div>

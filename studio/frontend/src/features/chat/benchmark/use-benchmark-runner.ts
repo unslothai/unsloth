@@ -70,13 +70,19 @@ export function useBenchmarkRunner() {
 
         for (let mi = 0; mi < selectedIds.length; mi++) {
           const modelId = selectedIds[mi];
+          // Support "repoId::quantName" format for GGUF quant selections
+          const sepIdx = modelId.indexOf("::");
+          const baseModelId = sepIdx >= 0 ? modelId.slice(0, sepIdx) : modelId;
+          const quantVariant = sepIdx >= 0 ? modelId.slice(sepIdx + 2) : null;
+
           const modelEntry =
-            allModels.find((m) => m.id === modelId) ??
-            allLoras.find((l) => l.id === modelId);
-          const displayName =
+            allModels.find((m) => m.id === baseModelId) ??
+            allLoras.find((l) => l.id === baseModelId);
+          const baseName =
             (modelEntry as { name?: string })?.name ??
-            modelId.split("/").pop() ??
-            modelId;
+            baseModelId.split("/").pop() ??
+            baseModelId;
+          const displayName = quantVariant ? `${baseName} ${quantVariant}` : baseName;
 
           const threadId = crypto.randomUUID();
           await db.threads.add({
@@ -102,17 +108,22 @@ export function useBenchmarkRunner() {
         const threadId = threadIds[modelId];
         if (!threadId) continue;
 
+        // Support "repoId::quantName" format for GGUF quant selections
+        const sepIdx = modelId.indexOf("::");
+        const baseModelId = sepIdx >= 0 ? modelId.slice(0, sepIdx) : modelId;
+        const quantVariant = sepIdx >= 0 ? modelId.slice(sepIdx + 2) : null;
+
         const runtimeStore = useChatRuntimeStore.getState();
         const modelEntry =
-          runtimeStore.models.find((m) => m.id === modelId) ??
-          runtimeStore.loras.find((l) => l.id === modelId);
-        const modelName =
+          runtimeStore.models.find((m) => m.id === baseModelId) ??
+          runtimeStore.loras.find((l) => l.id === baseModelId);
+        const baseName =
           (modelEntry as { name?: string })?.name ??
-          modelId.split("/").pop() ??
-          modelId;
+          baseModelId.split("/").pop() ??
+          baseModelId;
+        const modelName = quantVariant ? `${baseName} ${quantVariant}` : baseName;
         const isLora = (modelEntry as { isLora?: boolean })?.isLora ?? false;
-        const ggufVariant =
-          (modelEntry as { ggufVariant?: string })?.ggufVariant ?? null;
+        const ggufVariant = quantVariant ?? (modelEntry as { ggufVariant?: string })?.ggufVariant ?? null;
 
         // 1. Load the model
         setProgress({
@@ -126,10 +137,10 @@ export function useBenchmarkRunner() {
 
         const currentCheckpoint =
           useChatRuntimeStore.getState().params.checkpoint;
-        if (currentCheckpoint !== modelId) {
+        if (currentCheckpoint !== baseModelId) {
           try {
             await loadModel({
-              model_path: modelId,
+              model_path: baseModelId,
               hf_token: useChatRuntimeStore.getState().hfToken ?? null,
               max_seq_length: maxSeqLength,
               load_in_4bit: false,
@@ -142,7 +153,7 @@ export function useBenchmarkRunner() {
           if (cancelRef.current) break;
           useChatRuntimeStore
             .getState()
-            .setCheckpoint(modelId, ggufVariant ?? null);
+            .setCheckpoint(baseModelId, ggufVariant ?? null);
         }
 
         // 2. Navigate to the thread and wait for the orchestrator handle
