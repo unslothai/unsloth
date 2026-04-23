@@ -300,6 +300,18 @@ async def load_model(
                 _reasoning_flags = detect_reasoning_flags(
                     _chat_template, backend.active_model_name, log_source = "Safetensors"
                 )
+                # gpt-oss safetensors emit Harmony channels even when no
+                # chat template is stored on the model record; fall back so
+                # the UI still surfaces the Think control.
+                if not _reasoning_flags["supports_reasoning"] and hasattr(
+                    backend, "_is_gpt_oss_model"
+                ):
+                    try:
+                        if backend._is_gpt_oss_model():
+                            _reasoning_flags["supports_reasoning"] = True
+                            _reasoning_flags["reasoning_style"] = "reasoning_effort"
+                    except Exception:
+                        pass
                 return LoadResponse(
                     status = "already_loaded",
                     model = backend.active_model_name,
@@ -819,7 +831,7 @@ async def get_status(
                 chat_template = None
 
         reasoning_flags = detect_reasoning_flags(
-            chat_template, backend.active_model_name, log_source = None
+            chat_template, backend.active_model_name, log_source = "Safetensors status"
         )
         # gpt-oss safetensors models emit Harmony channels even when the
         # tokenizer.chat_template is unavailable; fall back to the
@@ -856,7 +868,9 @@ async def get_status(
             ),
             supports_reasoning = reasoning_flags["supports_reasoning"],
             reasoning_style = reasoning_flags["reasoning_style"],
+            reasoning_always_on = reasoning_flags["reasoning_always_on"],
             supports_preserve_thinking = reasoning_flags["supports_preserve_thinking"],
+            supports_tools = reasoning_flags["supports_tools"],
         )
 
     except Exception as e:

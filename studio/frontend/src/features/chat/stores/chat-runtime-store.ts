@@ -355,6 +355,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,
+      reasoningAlwaysOn: false,
       reasoningEnabled: true,
       reasoningStyle: "enable_thinking",
       supportsPreserveThinking: false,
