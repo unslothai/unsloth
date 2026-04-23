@@ -245,6 +245,7 @@ VLLM_SUPPORTED_VLM = [
     "mistral3",
     "qwen3_vl",
     "qwen3_vl_moe",
+    "gemma4",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -1053,6 +1054,16 @@ class FastBaseModel:
                 is_vision_model = is_vlm,
                 fp8_mode = fp8_mode,
             )
+            # why: vLLM's -O3 compile backend (compilation_config=3) hits
+            # _decompose_size_nodes "Tried to erase Node size_N but it still
+            # had N users" on Gemma 4 multimodal models (both dense E2B and
+            # MoE 26B-A4B). Until the upstream FX splitter is fixed, fall
+            # back to compilation_config=0 (no piecewise compile) for gemma4
+            # so fast_inference still loads. Runtime is slower than -O3 but
+            # correctness is preserved.
+            if any(arch == "gemma4" for arch in (model_types or [])):
+                load_vllm_kwargs.setdefault("compilation_config", 0)
+                load_vllm_kwargs.setdefault("enforce_eager", True)
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
                     load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
