@@ -70,6 +70,21 @@ export function getUniquePresetName(
   return nextName;
 }
 
+export function getBuiltinVariantName(
+  baseName: string,
+  usedNames: Set<string>,
+): string {
+  const normalizedBase = baseName.trim() || "Imported Prompt";
+  let suffix = 1;
+  let nextName = `${normalizedBase} ${suffix}`;
+  while (usedNames.has(nextName)) {
+    suffix += 1;
+    nextName = `${normalizedBase} ${suffix}`;
+  }
+  usedNames.add(nextName);
+  return nextName;
+}
+
 export function normalizeCustomPresets(presets: Preset[]): Preset[] {
   const usedNames = new Set(BUILTIN_PRESET_NAMES);
   return presets
@@ -77,7 +92,7 @@ export function normalizeCustomPresets(presets: Preset[]): Preset[] {
       const trimmedName = preset.name.trim();
       if (!trimmedName) return null;
       const name = usedNames.has(trimmedName)
-        ? getUniquePresetName(`${trimmedName} copy`, usedNames)
+        ? getBuiltinVariantName(trimmedName, usedNames)
         : trimmedName;
       usedNames.add(name);
       return {
@@ -151,6 +166,7 @@ export function getPresetSaveState({
   }
 
   if (BUILTIN_PRESET_NAMES.has(trimmedName)) {
+    const variantName = getBuiltinVariantName(trimmedName, new Set(presets.map((preset) => preset.name)));
     return {
       mode: "copy-builtin",
       canSubmit: activePreset !== trimmedName || hasUnsavedPresetChanges,
@@ -162,7 +178,7 @@ export function getPresetSaveState({
       title:
         activePreset === trimmedName && !hasUnsavedPresetChanges
           ? "No unsaved changes"
-          : `Save current settings as "${trimmedName} copy"`,
+          : `Save current settings as "${variantName}"`,
     };
   }
 

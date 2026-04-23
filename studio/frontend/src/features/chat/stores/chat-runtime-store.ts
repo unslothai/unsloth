@@ -21,6 +21,7 @@ const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
+const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
 const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
 
@@ -164,6 +165,16 @@ function saveInferenceParams(params: InferenceParams): boolean {
 
 function loadPresetSource(): ChatPresetSource {
   const activePreset = loadString(CHAT_ACTIVE_PRESET_KEY, "Default");
+  if (canUseStorage()) {
+    try {
+      const raw = localStorage.getItem(CHAT_ACTIVE_PRESET_SOURCE_KEY);
+      if (raw === "modified") {
+        return "modified";
+      }
+    } catch {
+      // ignore
+    }
+  }
   return getPresetSource(activePreset);
 }
 
@@ -309,7 +320,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       }
       return { params };
     }),
-  setActivePresetSource: (activePresetSource) => set({ activePresetSource }),
+  setActivePresetSource: (activePresetSource) =>
+    set(() => {
+      saveString(CHAT_ACTIVE_PRESET_SOURCE_KEY, activePresetSource);
+      return { activePresetSource };
+    }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
   setThreadRunning: (threadId, running) =>

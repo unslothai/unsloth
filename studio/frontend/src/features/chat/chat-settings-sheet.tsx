@@ -73,6 +73,7 @@ import {
   BUILTIN_PRESET_NAMES,
   BUILTIN_PRESETS,
   defaultInferenceParams,
+  getBuiltinVariantName,
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
@@ -448,6 +449,7 @@ export function ChatSettingsPanel({
   >(undefined);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  const [activePresetBaseline, setActivePresetBaseline] = useState(params);
   const presets = useMemo(() => {
     return getOrderedPresets(customPresets);
   }, [customPresets]);
@@ -489,8 +491,12 @@ export function ChatSettingsPanel({
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
-      setActivePresetSource("modified");
-      onParamsChange({ ...params, [key]: v });
+      const nextParams = { ...params, [key]: v };
+      const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+        ? getPresetSource(activePreset)
+        : "modified";
+      setActivePresetSource(nextSource);
+      onParamsChange(nextParams);
     };
   }
 
@@ -534,7 +540,7 @@ export function ChatSettingsPanel({
       ...customPresets.map((preset) => preset.name),
     ]);
     const saveName = BUILTIN_PRESET_NAMES.has(trimmed)
-      ? getUniquePresetName(`${trimmed} copy`, usedNames)
+      ? getBuiltinVariantName(trimmed, usedNames)
       : trimmed;
     setCustomPresets((prev) => {
       const next = prev.filter((p) => p.name !== saveName);
@@ -610,8 +616,17 @@ export function ChatSettingsPanel({
   }
 
   useEffect(() => {
+    if (activePresetSource !== "modified") {
+      setActivePresetBaseline(params);
+    }
+  }, [activePresetSource, params]);
+
+  useEffect(() => {
     if (presets.some((preset) => preset.name === activePreset)) {
-      setActivePresetSource(getPresetSource(activePreset));
+      const expectedSource = getPresetSource(activePreset);
+      if (activePresetSource !== "modified" && activePresetSource !== expectedSource) {
+        setActivePresetSource(expectedSource);
+      }
       return;
     }
     setActivePreset("Default");
@@ -623,7 +638,12 @@ export function ChatSettingsPanel({
         // ignore
       }
     }
-  }, [activePreset, presets, setActivePresetSource]);
+  }, [
+    activePreset,
+    activePresetSource,
+    presets,
+    setActivePresetSource,
+  ]);
 
   useEffect(() => {
     setPresetNameInput(activePreset);
