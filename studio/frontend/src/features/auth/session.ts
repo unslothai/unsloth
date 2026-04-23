@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { isTauri } from "@/lib/api-base";
 
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
@@ -78,6 +79,7 @@ export function resetOnboardingDone(): void {
 }
 
 export function getPostAuthRoute(): PostAuthRoute {
+  if (isTauri) return "/chat";
   if (mustChangePassword()) return "/change-password";
   if (usePlatformStore.getState().isChatOnly()) return "/chat";
   return "/chat";
