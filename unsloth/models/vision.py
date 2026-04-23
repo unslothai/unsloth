@@ -1824,7 +1824,7 @@ def check_dataset_for_missing_videos(dataset, column = "messages", raise_error =
         missing_list = "\n".join(f"  - {p}" for p in missing)
         error_msg = (
             f"Unsloth: {len(missing)} video file(s) referenced in your dataset could not be found.\n"
-            "Training would silently continue with empty video tensors — the model would receive\n"
+            "Training would silently continue with empty video tensors - the model would receive\n"
             "no actual video signal while loss still appears to decrease.\n\n"
             f"Missing files:\n{missing_list}\n\n"
             "Fix: verify the video file paths in your dataset before calling the trainer."

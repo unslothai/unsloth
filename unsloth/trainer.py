@@ -58,7 +58,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     validates local video file paths on the first batch.
 
     If any referenced video files are missing from disk, a FileNotFoundError is
-    raised before any model weights are updated — preventing silent training on
+    raised before any model weights are updated - preventing silent training on
     empty video tensors (issue #5085).
     """
 
