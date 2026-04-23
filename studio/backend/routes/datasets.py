@@ -38,18 +38,18 @@ _GATED_KEYWORDS = (
     "is private",
     "ask for access",
     "must be authenticated",
-    "cannot be accessed",
-    "cannot access",
 )
 
 
 def _classify_dataset_not_found_status(err: Exception) -> int:
-    text = str(err).lower()
     response = getattr(err, "response", None) or getattr(
         getattr(err, "__cause__", None), "response", None
     )
     http_status = getattr(response, "status_code", None)
-    if http_status in (401, 403) or any(k in text for k in _GATED_KEYWORDS):
+    if http_status is not None:
+        return 403 if http_status in (401, 403) else 404
+    text = str(err).lower()
+    if any(k in text for k in _GATED_KEYWORDS):
         return 403
     return 404
 
@@ -428,7 +428,7 @@ def get_dataset_splits(
 
     try:
         dataset_name = request.dataset_name
-        token = request.hf_token or None
+        token = request.hf_token if request.hf_token is not None else False
 
         logger.info(f"Fetching splits for dataset: {dataset_name}")
 
