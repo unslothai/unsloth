@@ -34,6 +34,7 @@ type RecipeStudioHeaderProps = {
   savedAtLabel: string;
   workflowName: string;
   warnings?: GraphWarning[];
+  supportsEasyMode?: boolean;
   onWorkflowNameChange: (value: string) => void;
   onViewChange: (view: RecipeStudioView) => void;
   onSaveRecipe: () => void;
@@ -51,6 +52,7 @@ export function RecipeStudioHeader({
   savedAtLabel,
   workflowName,
   warnings = [],
+  supportsEasyMode = false,
   onWorkflowNameChange,
   onViewChange,
   onSaveRecipe,
@@ -58,7 +60,7 @@ export function RecipeStudioHeader({
   const [editingWorkflowName, setEditingWorkflowName] = useState(false);
 
   function handleViewValueChange(value: string): void {
-    if (value === "editor" || value === "executions") {
+    if (value === "easy" || value === "editor" || value === "executions") {
       onViewChange(value);
     }
   }
@@ -130,7 +132,12 @@ export function RecipeStudioHeader({
       <div className="justify-self-center">
         <Tabs value={activeView} onValueChange={handleViewValueChange}>
           <TabsList>
-            <TabsTrigger value="editor">Editor</TabsTrigger>
+            {supportsEasyMode && (
+              <TabsTrigger value="easy">Easy</TabsTrigger>
+            )}
+            <TabsTrigger value="editor">
+              {supportsEasyMode ? "Advanced" : "Editor"}
+            </TabsTrigger>
             <TabsTrigger value="executions">Runs</TabsTrigger>
           </TabsList>
         </Tabs>

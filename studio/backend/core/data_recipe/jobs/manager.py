@@ -33,6 +33,60 @@ from .worker import run_job_process
 _CTX = mp.get_context("spawn")
 
 
+def _github_source_estimated_total(recipe: dict) -> int | None:
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return None
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "github_repo":
+        return None
+
+    repos_raw = source.get("repos")
+    repos = (
+        [repo for repo in repos_raw if isinstance(repo, str) and repo.strip()]
+        if isinstance(repos_raw, list)
+        else []
+    )
+    item_types_raw = source.get("item_types")
+    item_types = (
+        [
+            item
+            for item in item_types_raw
+            if isinstance(item, str) and item in {"issues", "pulls", "commits"}
+        ]
+        if isinstance(item_types_raw, list)
+        else []
+    )
+    try:
+        limit = int(source.get("limit") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not repos or not item_types or limit <= 0:
+        return None
+    return len(repos) * len(item_types) * limit
+
+
+def _source_progress_status(job: Job) -> dict[str, Any] | None:
+    progress = job.source_progress
+    if progress is None:
+        return None
+    return {
+        "source": progress.source,
+        "status": progress.status,
+        "repo": progress.repo,
+        "resource": progress.resource,
+        "page": progress.page,
+        "page_items": progress.page_items,
+        "fetched_items": progress.fetched_items,
+        "estimated_total": progress.estimated_total,
+        "percent": progress.percent,
+        "rate_remaining": progress.rate_remaining,
+        "retry_after_sec": progress.retry_after_sec,
+        "message": progress.message,
+        "updated_at": progress.updated_at,
+    }
+
+
 @dataclass
 class Subscription:
     replay: list[dict]
@@ -71,8 +125,20 @@ class JobManager:
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
 
-    def start(self, *, recipe: dict, run: dict) -> str:
-        """Spawn the job subprocess (one at a time, no cap)."""
+    def start(
+        self,
+        *,
+        recipe: dict,
+        run: dict,
+        internal_api_key_id: int | None = None,
+    ) -> str:
+        """Spawn the job subprocess (one at a time, no cap).
+
+        ``internal_api_key_id`` is the row id of a workflow-scoped
+        sk-unsloth-* key minted by the route layer for local providers.
+        JobManager revokes it when the job reaches a terminal state so the
+        key's live window is no longer than the run.
+        """
         llm_columns = recipe.get("columns") or []
         llm_column_count = 0
         if isinstance(llm_columns, list):
@@ -92,6 +158,10 @@ class JobManager:
             job_id = uuid.uuid4().hex
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
+            self._job.source_progress_estimated_total = _github_source_estimated_total(
+                recipe
+            )
+            self._job.internal_api_key_id = internal_api_key_id
             self._events.clear()
             self._seq = 0
 
@@ -163,6 +233,7 @@ class JobManager:
                     "ok": job.column_progress.ok,
                     "failed": job.column_progress.failed,
                 },
+                "source_progress": _source_progress_status(job),
                 "model_usage": {
                     name: {
                         "model": usage.model,
@@ -405,6 +476,7 @@ class JobManager:
             for e in self._drain_queue(mp_q):
                 self._handle_event(job, e)
 
+            retired_job: Job | None = None
             with self._lock:
                 if self._job and self._job.status in {
                     "pending",
@@ -429,6 +501,9 @@ class JobManager:
                             "job_id": self._job.job_id,
                         }
                     )
+                    retired_job = self._job
+            if retired_job is not None:
+                self._retire_workflow_key(retired_job)
             return
 
     def _handle_event(self, job: Job, event: dict) -> None:
@@ -436,6 +511,7 @@ class JobManager:
         et = event.get("type")
         msg = event.get("message") if et == "log" else None
 
+        terminal = False
         with self._lock:
             if self._job is None or self._job.job_id != job.job_id:
                 return
@@ -452,17 +528,42 @@ class JobManager:
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total
                     self._job.progress.percent = 100.0
+                terminal = True
             if et == EVENT_JOB_ERROR:
                 self._job.status = "error"
                 self._job.finished_at = time.time()
                 self._job.error = event.get("error") or "error"
+                terminal = True
+            if et == EVENT_JOB_CANCELLED:
+                terminal = True
 
             if msg:
                 upd = parse_log_message(msg)
                 if upd:
                     apply_update(self._job, upd)
 
+        if terminal:
+            self._retire_workflow_key(job)
+
         self._emit(event)
+
+    def _retire_workflow_key(self, job: Job) -> None:
+        """Revoke the workflow-scoped sk-unsloth-* key, if one was minted.
+
+        Best-effort: revocation failures are swallowed. The key would
+        expire on its own after 24h, so a missed revoke is a latency
+        concern, not a correctness one.
+        """
+        key_id = getattr(job, "internal_api_key_id", None)
+        if not key_id:
+            return
+        try:
+            from auth import storage  # deferred: avoids circular import
+
+            storage.revoke_internal_api_key(int(key_id))
+        except Exception:
+            pass
+        job.internal_api_key_id = None
 
 
 _JOB_MANAGER: JobManager | None = None
