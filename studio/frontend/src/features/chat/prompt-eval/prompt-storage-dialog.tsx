@@ -22,7 +22,7 @@ import { toast } from "sonner";
 import { db } from "../db";
 import type { PromptEntry, PromptListEntry } from "../db";
 import { useLiveQuery } from "../db";
-import { useBenchmarkStore } from "../stores/use-benchmark-store";
+import { usePromptEvalStore } from "../stores/use-prompt-eval-store";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -274,7 +274,7 @@ function PromptListCard({
             type="button"
             onClick={() => onRun(entry.items)}
             className="flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            title="Run all prompts as benchmark"
+            title="Run all prompts as Prompt Eval"
           >
             <PlayIcon className="size-3" />Run
           </button>
@@ -416,10 +416,10 @@ export function PromptStorageDialog({
   const promptLists = useLiveQuery(() =>
     db.promptLists.orderBy("createdAt").reverse().toArray(), []);
 
-  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
-  const benchmarkSelectedModelIds = useBenchmarkStore((s) => s.benchmarkSelectedModelIds);
-  const benchmarkSendFn = useBenchmarkStore((s) => s.benchmarkSendFn);
-  const setPendingComposerText = useBenchmarkStore((s) => s.setPendingComposerText);
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalSelectedModelIds = usePromptEvalStore((s) => s.promptEvalSelectedModelIds);
+  const promptEvalSendFn = usePromptEvalStore((s) => s.promptEvalSendFn);
+  const setPendingComposerText = usePromptEvalStore((s) => s.setPendingComposerText);
 
   const handleUsePrompt = useCallback(
     (text: string) => {
@@ -431,26 +431,26 @@ export function PromptStorageDialog({
 
   const handleRunList = useCallback(
     (items: string[]) => {
-      if (!benchmarkMode) {
-        toast.warning("Enable benchmark mode first", {
-          description: "Turn on Benchmark mode and select models before running a prompt list.",
+      if (!promptEvalMode) {
+        toast.warning("Enable Prompt Eval mode first", {
+          description: "Turn on Prompt Eval mode and select models before running a prompt list.",
         });
         return;
       }
-      if (benchmarkSelectedModelIds.length === 0) {
+      if (promptEvalSelectedModelIds.length === 0) {
         toast.warning("No models selected", {
-          description: "Select at least one model in the benchmark model picker.",
+          description: "Select at least one model in the Prompt Eval model picker.",
         });
         return;
       }
-      if (!benchmarkSendFn) {
-        toast.error("Benchmark runner not ready");
+      if (!promptEvalSendFn) {
+        toast.error("Prompt Eval runner not ready");
         return;
       }
-      benchmarkSendFn(items);
+      promptEvalSendFn(items);
       onOpenChange(false);
     },
-    [benchmarkMode, benchmarkSelectedModelIds, benchmarkSendFn, onOpenChange],
+    [promptEvalMode, promptEvalSelectedModelIds, promptEvalSendFn, onOpenChange],
   );
 
   return (

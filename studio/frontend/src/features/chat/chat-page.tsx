@@ -45,12 +45,12 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import { useBenchmarkStore } from "./stores/use-benchmark-store";
+import { usePromptEvalStore } from "./stores/use-prompt-eval-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
-import { BenchmarkOrchestrator } from "./benchmark/benchmark-content";
-import { BenchmarkProgressPill } from "./benchmark/benchmark-progress-pill";
-import { useBenchmarkRunner } from "./benchmark/use-benchmark-runner";
+import { PromptEvalOrchestrator } from "./prompt-eval/prompt-eval-content";
+import { PromptEvalProgressPill } from "./prompt-eval/prompt-eval-progress-pill";
+import { usePromptEvalRunner } from "./prompt-eval/use-prompt-eval-runner";
 
 type LoraCandidate = {
   id: string;
@@ -113,11 +113,11 @@ function messageHasImage(message: MessageRecord): boolean {
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
-  onBenchmarkSend,
+  onPromptEvalSend,
 }: {
   threadId?: string;
   newThreadNonce?: string;
-  onBenchmarkSend?: (text: string) => void;
+  onPromptEvalSend?: (text: string) => void;
 }): ReactElement {
   return (
     <ChatRuntimeProvider
@@ -126,7 +126,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onBenchmarkSend={onBenchmarkSend} />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onPromptEvalSend={onPromptEvalSend} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -563,57 +563,57 @@ export function ChatPage(): ReactElement {
     return Boolean(inferenceParams.checkpoint);
   }, [inferenceParams.checkpoint]);
 
-  // Benchmark runner
-  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
-  const benchmarkSelectedModelIds = useBenchmarkStore((s) => s.benchmarkSelectedModelIds);
-  const toggleModelSelection = useBenchmarkStore((s) => s.toggleModelSelection);
-  const setBenchmarkSendFn = useBenchmarkStore((s) => s.setBenchmarkSendFn);
+  // Prompt Eval runner
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalSelectedModelIds = usePromptEvalStore((s) => s.promptEvalSelectedModelIds);
+  const toggleModelSelection = usePromptEvalStore((s) => s.toggleModelSelection);
+  const setPromptEvalSendFn = usePromptEvalStore((s) => s.setPromptEvalSendFn);
   const {
-    run: runBenchmark,
-    cancel: cancelBenchmark,
-    progress: benchmarkProgress,
-    running: benchmarkRunning,
-    activeThreadId: benchmarkActiveThreadId,
-  } = useBenchmarkRunner();
-  // Holds the getter function provided by BenchmarkOrchestrator once it mounts.
-  // Always reads handlesRef.current["bench"] from the hidden ChatRuntimeProvider.
-  const benchmarkHandleGetterRef = useRef<(() => CompareHandle | null) | null>(null);
+    run: runPromptEval,
+    cancel: cancelPromptEval,
+    progress: promptEvalProgress,
+    running: promptEvalRunning,
+    activeThreadId: promptEvalActiveThreadId,
+  } = usePromptEvalRunner();
+  // Holds the getter function provided by PromptEvalOrchestrator once it mounts.
+  // Always reads handlesRef.current["eval"] from the hidden ChatRuntimeProvider.
+  const promptEvalHandleGetterRef = useRef<(() => CompareHandle | null) | null>(null);
 
-  const onBenchmarkHandleReady = useCallback(
+  const onPromptEvalHandleReady = useCallback(
     (getter: () => CompareHandle | null) => {
-      benchmarkHandleGetterRef.current = getter;
+      promptEvalHandleGetterRef.current = getter;
     },
     [],
   );
 
-  const onBenchmarkSend = useCallback(
+  const onPromptEvalSend = useCallback(
     (text: string) => {
-      void runBenchmark(
+      void runPromptEval(
         [text],
-        () => benchmarkHandleGetterRef.current?.() ?? null,
+        () => promptEvalHandleGetterRef.current?.() ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
     },
-    [navigate, runBenchmark],
+    [navigate, runPromptEval],
   );
 
-  const onBenchmarkRunMultiple = useCallback(
+  const onPromptEvalRunMultiple = useCallback(
     (texts: string[]) => {
-      void runBenchmark(
+      void runPromptEval(
         texts,
-        () => benchmarkHandleGetterRef.current?.() ?? null,
+        () => promptEvalHandleGetterRef.current?.() ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
     },
-    [navigate, runBenchmark],
+    [navigate, runPromptEval],
   );
 
   useEffect(() => {
-    setBenchmarkSendFn(onBenchmarkRunMultiple);
-    return () => setBenchmarkSendFn(null);
-  }, [onBenchmarkRunMultiple, setBenchmarkSendFn]);
+    setPromptEvalSendFn(onPromptEvalRunMultiple);
+    return () => setPromptEvalSendFn(null);
+  }, [onPromptEvalRunMultiple, setPromptEvalSendFn]);
 
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
@@ -948,19 +948,19 @@ export function ChatPage(): ReactElement {
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 className="max-w-[62vw] sm:max-w-none !h-[34px]"
-                benchmarkMode={benchmarkMode}
-                benchmarkSelectedIds={benchmarkSelectedModelIds}
-                onBenchmarkToggle={(id, meta) => {
+                promptEvalMode={promptEvalMode}
+                promptEvalSelectedIds={promptEvalSelectedModelIds}
+                onPromptEvalToggle={(id, meta) => {
                   const storeId = meta?.ggufVariant ? `${id}::${meta.ggufVariant}` : id;
                   toggleModelSelection(storeId);
                 }}
-                onBenchmarkConfirm={closeModelSelector}
+                onPromptEvalConfirm={closeModelSelector}
               />
             )}
-            {benchmarkRunning && benchmarkProgress ? (
-              <BenchmarkProgressPill
-                progress={benchmarkProgress}
-                onCancel={cancelBenchmark}
+            {promptEvalRunning && promptEvalProgress ? (
+              <PromptEvalProgressPill
+                progress={promptEvalProgress}
+                onCancel={cancelPromptEval}
               />
             ) : loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
@@ -1026,7 +1026,7 @@ export function ChatPage(): ReactElement {
             key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
-            onBenchmarkSend={onBenchmarkSend}
+            onPromptEvalSend={onPromptEvalSend}
           />
         ) : (
           <CompareContent
@@ -1041,10 +1041,10 @@ export function ChatPage(): ReactElement {
 
       {/* Hidden benchmark orchestrator: drives generation via its own
           ChatRuntimeProvider so there is zero race with the visible UI */}
-      {benchmarkRunning && (
-        <BenchmarkOrchestrator
-          currentThreadId={benchmarkActiveThreadId ?? undefined}
-          onHandleReady={onBenchmarkHandleReady}
+      {promptEvalRunning && (
+        <PromptEvalOrchestrator
+          currentThreadId={promptEvalActiveThreadId ?? undefined}
+          onHandleReady={onPromptEvalHandleReady}
         />
       )}
 

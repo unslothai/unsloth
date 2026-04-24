@@ -7,23 +7,23 @@ export interface PromptItem {
   category?: string;
 }
 
-export interface BenchmarkModelEntry {
+export interface PromptEvalModelEntry {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
   displayName?: string;
 }
 
-export interface BenchmarkConfig {
+export interface PromptEvalConfig {
   id: string;
   name: string;
   prompts: PromptItem[];
-  models: BenchmarkModelEntry[];
+  models: PromptEvalModelEntry[];
   /** Snapshot of inference params at run-start */
   maxSeqLength: number;
 }
 
-export interface BenchmarkProgress {
+export interface PromptEvalProgress {
   promptIdx: number;
   modelIdx: number;
   totalPrompts: number;
@@ -32,7 +32,7 @@ export interface BenchmarkProgress {
   phase: "loading" | "generating" | "done";
 }
 
-export interface BenchmarkResultRecord {
+export interface PromptEvalResultRecord {
   run_id: string;
   run_name: string;
   model_id: string;

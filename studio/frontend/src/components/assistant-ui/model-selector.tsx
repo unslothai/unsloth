@@ -44,13 +44,13 @@ interface ModelSelectorProps {
   triggerDataTour?: string;
   contentDataTour?: string;
   /** When true, clicking models toggles their benchmark selection instead of loading them */
-  benchmarkMode?: boolean;
+  promptEvalMode?: boolean;
   /** Model IDs currently selected for the benchmark */
-  benchmarkSelectedIds?: string[];
-  /** Called when a model is toggled in benchmark mode */
-  onBenchmarkToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
-  /** Called when the user confirms benchmark model selection */
-  onBenchmarkConfirm?: () => void;
+  promptEvalSelectedIds?: string[];
+  /** Called when a model is toggled in Prompt Eval mode */
+  onPromptEvalToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  /** Called when the user confirms Prompt Eval model selection */
+  onPromptEvalConfirm?: () => void;
 }
 
 function ModelSelectorTrigger({
@@ -113,10 +113,10 @@ function ModelSelectorContent({
   onFoldersChange,
   className,
   dataTour,
-  benchmarkMode,
-  benchmarkSelectedIds,
-  onBenchmarkToggle,
-  onBenchmarkConfirm,
+  promptEvalMode,
+  promptEvalSelectedIds,
+  onPromptEvalToggle,
+  onPromptEvalConfirm,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -126,14 +126,14 @@ function ModelSelectorContent({
   onFoldersChange?: () => void;
   className?: string;
   dataTour?: string;
-  benchmarkMode?: boolean;
-  benchmarkSelectedIds?: string[];
-  onBenchmarkToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
-  onBenchmarkConfirm?: () => void;
+  promptEvalMode?: boolean;
+  promptEvalSelectedIds?: string[];
+  onPromptEvalToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onPromptEvalConfirm?: () => void;
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  const selectedCount = benchmarkSelectedIds?.length ?? 0;
+  const selectedCount = promptEvalSelectedIds?.length ?? 0;
 
   return (
     <PopoverContent
@@ -150,9 +150,9 @@ function ModelSelectorContent({
           value={value}
           onSelect={onSelect}
           onFoldersChange={onFoldersChange}
-          benchmarkMode={benchmarkMode}
-          benchmarkSelectedIds={benchmarkSelectedIds}
-          onBenchmarkToggle={onBenchmarkToggle}
+          promptEvalMode={promptEvalMode}
+          promptEvalSelectedIds={promptEvalSelectedIds}
+          onPromptEvalToggle={onPromptEvalToggle}
         />
       ) : (
         <Tabs defaultValue="hub" className="w-full">
@@ -167,9 +167,9 @@ function ModelSelectorContent({
               value={value}
               onSelect={onSelect}
               onFoldersChange={onFoldersChange}
-              benchmarkMode={benchmarkMode}
-              benchmarkSelectedIds={benchmarkSelectedIds}
-              onBenchmarkToggle={onBenchmarkToggle}
+              promptEvalMode={promptEvalMode}
+              promptEvalSelectedIds={promptEvalSelectedIds}
+              onPromptEvalToggle={onPromptEvalToggle}
             />
           </TabsContent>
 
@@ -183,12 +183,12 @@ function ModelSelectorContent({
         </Tabs>
       )}
 
-      {/* Benchmark confirmation button — only when benchmark mode is active */}
-      {benchmarkMode && (
+      {/* Benchmark confirmation button — only when Prompt Eval mode is active */}
+      {promptEvalMode && (
         <div className="mt-2 border-t border-border/70 pt-2">
           <button
             type="button"
-            onClick={onBenchmarkConfirm}
+            onClick={onPromptEvalConfirm}
             disabled={selectedCount === 0}
             className={cn(
               "flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
@@ -199,7 +199,7 @@ function ModelSelectorContent({
           >
             {selectedCount > 0
               ? `Load ${selectedCount} selected model${selectedCount !== 1 ? "s" : ""} for benchmark`
-              : "Select models above for benchmark"}
+              : "Select models above for Prompt Eval"}
           </button>
         </div>
       )}
@@ -239,10 +239,10 @@ export function ModelSelector({
   onOpenChange,
   triggerDataTour,
   contentDataTour,
-  benchmarkMode,
-  benchmarkSelectedIds,
-  onBenchmarkToggle,
-  onBenchmarkConfirm,
+  promptEvalMode,
+  promptEvalSelectedIds,
+  onPromptEvalToggle,
+  onPromptEvalConfirm,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -312,24 +312,24 @@ export function ModelSelector({
     setOpen(false);
   }
 
-  function handleBenchmarkConfirm() {
-    onBenchmarkConfirm?.();
+  function handlePromptEvalConfirm() {
+    onPromptEvalConfirm?.();
     setOpen(false);
   }
 
-  // In benchmark mode show the count of selected models in the trigger
-  const benchmarkCount = benchmarkSelectedIds?.length ?? 0;
-  const benchmarkTriggerModel: ModelOption | undefined = benchmarkMode
-    ? benchmarkCount > 0
-      ? { id: "__bench__", name: `${benchmarkCount} model${benchmarkCount !== 1 ? "s" : ""} selected` }
+  // In Prompt Eval mode show the count of selected models in the trigger
+  const promptEvalCount = promptEvalSelectedIds?.length ?? 0;
+  const promptEvalTriggerModel: ModelOption | undefined = promptEvalMode
+    ? promptEvalCount > 0
+      ? { id: "__bench__", name: `${promptEvalCount} model${promptEvalCount !== 1 ? "s" : ""} selected` }
       : { id: "__bench__", name: "Select models" }
     : undefined;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
-        currentModel={benchmarkTriggerModel ?? currentModel}
-        isLoaded={benchmarkMode ? benchmarkCount > 0 : isLoaded}
+        currentModel={promptEvalTriggerModel ?? currentModel}
+        isLoaded={promptEvalMode ? promptEvalCount > 0 : isLoaded}
         variant={variant}
         size={size}
         className={className}
@@ -344,10 +344,10 @@ export function ModelSelector({
         onFoldersChange={onFoldersChange}
         className={contentClassName}
         dataTour={contentDataTour}
-        benchmarkMode={benchmarkMode}
-        benchmarkSelectedIds={benchmarkSelectedIds}
-        onBenchmarkToggle={onBenchmarkToggle}
-        onBenchmarkConfirm={handleBenchmarkConfirm}
+        promptEvalMode={promptEvalMode}
+        promptEvalSelectedIds={promptEvalSelectedIds}
+        onPromptEvalToggle={onPromptEvalToggle}
+        onPromptEvalConfirm={handlePromptEvalConfirm}
       />
     </Popover>
   );

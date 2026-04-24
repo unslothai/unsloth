@@ -13,8 +13,8 @@ export interface ThreadRecord {
   modelType: ModelType;
   modelId?: string;
   pairId?: string;
-  benchmarkId?: string;
-  benchmarkName?: string;
+  promptEvalId?: string;
+  promptEvalName?: string;
   archived: boolean;
   createdAt: number;
 }

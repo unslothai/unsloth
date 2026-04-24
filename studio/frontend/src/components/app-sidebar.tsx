@@ -155,13 +155,13 @@ function NavItem({
   );
 }
 
-function BenchmarkFolderItem({
+function PromptEvalFolderItem({
   item,
   activeThreadId,
   onNavigate,
   onDelete,
 }: {
-  item: SidebarItem & { type: "benchmark" };
+  item: SidebarItem & { type: "promptEval" };
   activeThreadId: string | undefined;
   onNavigate: (threadId: string) => void;
   onDelete: () => void;
@@ -170,7 +170,7 @@ function BenchmarkFolderItem({
   const [isRenaming, setIsRenaming] = useState(false);
   const [editTitle, setEditTitle] = useState(item.title);
   const children = useLiveQuery(
-    () => db.threads.where("benchmarkId").equals(item.id).sortBy("createdAt"),
+    () => db.threads.where("promptEvalId").equals(item.id).sortBy("createdAt"),
     [item.id],
   );
   const anyActive = children?.some((t) => t.id === activeThreadId);
@@ -178,16 +178,16 @@ function BenchmarkFolderItem({
   const saveRename = useCallback(async () => {
     if (editTitle.trim() && editTitle !== item.title) {
       await db.threads
-        .where("benchmarkId")
+        .where("promptEvalId")
         .equals(item.id)
-        .modify({ benchmarkName: editTitle.trim() });
+        .modify({ promptEvalName: editTitle.trim() });
     }
     setIsRenaming(false);
   }, [editTitle, item.id, item.title]);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <SidebarMenuItem className="group/bench-folder">
+      <SidebarMenuItem className="group/eval-folder">
         <CollapsibleTrigger asChild>
           <SidebarMenuButton
             isActive={anyActive}
@@ -225,19 +225,19 @@ function BenchmarkFolderItem({
               </span>
             )}
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 ml-1">
-              bench
+              eval
             </span>
           </SidebarMenuButton>
         </CollapsibleTrigger>
         {/* Hover actions: delete */}
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover/bench-folder:opacity-100">
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover/eval-folder:opacity-100">
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
             }}
-            title="Delete benchmark"
+            title="Delete Prompt Eval"
             className="flex size-5 items-center justify-center rounded-[8px] text-sidebar-foreground/55 hover:bg-destructive/12 hover:text-destructive"
           >
             <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
@@ -247,7 +247,7 @@ function BenchmarkFolderItem({
       <CollapsibleContent>
         <SidebarMenu className="ml-5 border-l border-border/40 pl-2 py-0.5">
           {children?.map((t) => (
-            <SidebarMenuItem key={t.id} className="group/bench-child">
+            <SidebarMenuItem key={t.id} className="group/eval-child">
               <SidebarMenuButton
                 isActive={t.id === activeThreadId}
                 className="h-[30px] rounded-[10px] pl-2 pr-2 text-[13px] leading-[18px] font-normal text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
@@ -509,10 +509,10 @@ export function AppSidebar() {
             <SidebarGroupContent>
               <SidebarMenu>
                 {chatItems.map((item) =>
-                  item.type === "benchmark" ? (
-                    <BenchmarkFolderItem
+                  item.type === "promptEval" ? (
+                    <PromptEvalFolderItem
                       key={item.id}
-                      item={item as SidebarItem & { type: "benchmark" }}
+                      item={item as SidebarItem & { type: "promptEval" }}
                       activeThreadId={activeThreadId}
                       onNavigate={(threadId) => {
                         navigate({ to: "/chat", search: { thread: threadId } });

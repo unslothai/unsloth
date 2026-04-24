@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { CheckIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { BenchmarkConfig, BenchmarkModelEntry, PromptItem } from "./types";
+import type { PromptEvalConfig, PromptEvalModelEntry, PromptItem } from "./types";
 
 type ModelEntry = {
   id: string;
@@ -26,14 +26,14 @@ type ModelEntry = {
   ggufVariant?: string;
 };
 
-export function BenchmarkSetupDialog({
+export function PromptEvalSetupDialog({
   open,
   onOpenChange,
   onStart,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  onStart: (config: BenchmarkConfig) => void;
+  onStart: (config: PromptEvalConfig) => void;
 }) {
   const models = useChatRuntimeStore((s) => s.models);
   const loras = useChatRuntimeStore((s) => s.loras);
@@ -116,7 +116,7 @@ export function BenchmarkSetupDialog({
   function handleStart() {
     if (prompts.length === 0 || selectedIds.size === 0) return;
     const selected = allEntries.filter((e) => selectedIds.has(e.id));
-    const benchmarkModels: BenchmarkModelEntry[] = selected.map((e) => ({
+    const promptEvalModels: PromptEvalModelEntry[] = selected.map((e) => ({
       id: e.id,
       isLora: e.isLora,
       ggufVariant: e.ggufVariant,
@@ -126,7 +126,7 @@ export function BenchmarkSetupDialog({
       id: crypto.randomUUID(),
       name: name.trim() || `Benchmark ${new Date().toLocaleDateString()}`,
       prompts,
-      models: benchmarkModels,
+      models: promptEvalModels,
       maxSeqLength,
     });
     onOpenChange(false);
@@ -237,7 +237,7 @@ export function BenchmarkSetupDialog({
             Cancel
           </Button>
           <Button onClick={handleStart} disabled={!canStart}>
-            Start Benchmark
+            Start Prompt Eval
           </Button>
         </DialogFooter>
       </DialogContent>

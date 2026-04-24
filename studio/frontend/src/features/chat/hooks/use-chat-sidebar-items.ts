@@ -6,7 +6,7 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 
 export interface SidebarItem {
-  type: "single" | "compare" | "benchmark";
+  type: "single" | "compare" | "promptEval";
   id: string;
   title: string;
   createdAt: number;
@@ -15,20 +15,20 @@ export interface SidebarItem {
 export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
   const items: SidebarItem[] = [];
   const seenPairs = new Set<string>();
-  const seenBenchmarks = new Set<string>();
+  const seenPromptEvals = new Set<string>();
 
   for (const t of threads) {
     if (t.archived) {
       continue;
     }
     // Benchmark folders — handled before pairId so child threads don't fall through
-    if (t.benchmarkId) {
-      if (seenBenchmarks.has(t.benchmarkId)) continue;
-      seenBenchmarks.add(t.benchmarkId);
+    if (t.promptEvalId) {
+      if (seenPromptEvals.has(t.promptEvalId)) continue;
+      seenPromptEvals.add(t.promptEvalId);
       items.push({
-        type: "benchmark",
-        id: t.benchmarkId,
-        title: t.benchmarkName ?? "Benchmark",
+        type: "promptEval",
+        id: t.promptEvalId,
+        title: t.promptEvalName ?? "Benchmark",
         createdAt: t.createdAt,
       });
       continue;
@@ -63,10 +63,10 @@ export function useChatSidebarItems() {
       (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
     );
     const rows = await db.threads.orderBy("createdAt").reverse().toArray();
-    // Include benchmark child threads even before they have messages so the
-    // benchmark folder appears in the sidebar as soon as the run begins.
+    // Include prompt eval child threads even before they have messages so the
+    // prompt eval folder appears in the sidebar as soon as the run begins.
     return rows.filter(
-      (t) => !t.archived && (threadIdsWithMessage.has(t.id) || Boolean(t.benchmarkId)),
+      (t) => !t.archived && (threadIdsWithMessage.has(t.id) || Boolean(t.promptEvalId)),
     );
   }, []);
   const items = groupThreads(allThreads ?? []);
@@ -90,8 +90,8 @@ export async function deleteChatItem(
   const threadIds: string[] =
     item.type === "single"
       ? [item.id]
-      : item.type === "benchmark"
-        ? (await db.threads.where("benchmarkId").equals(item.id).toArray()).map((t) => t.id)
+      : item.type === "promptEval"
+        ? (await db.threads.where("promptEvalId").equals(item.id).toArray()).map((t) => t.id)
         : (await db.threads.where("pairId").equals(item.id).toArray()).map((t) => t.id);
 
   // Stop any in-flight streams before deleting, so the model doesn't keep
@@ -105,7 +105,7 @@ export async function deleteChatItem(
     }
   });
 
-  // For benchmark items, activeId is a child threadId, not the benchmarkId itself
+  // For benchmark items, activeId is a child threadId, not the promptEvalId itself
   if (activeId === item.id || threadIds.includes(activeId ?? "")) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });

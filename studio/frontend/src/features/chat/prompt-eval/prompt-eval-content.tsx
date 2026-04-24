@@ -12,7 +12,7 @@ import { ChatRuntimeProvider } from "../runtime-provider";
 
 /**
  * Invisible orchestration component. Mounts a hidden ChatRuntimeProvider
- * connected to the benchmark target thread and exposes a stable CompareHandle
+ * connected to the prompt eval target thread and exposes a stable CompareHandle
  * getter to the runner. Completely independent of the visible SingleContent —
  * no race condition with navigation possible.
  *
@@ -21,7 +21,7 @@ import { ChatRuntimeProvider } from "../runtime-provider";
  * RegisterCompareHandle re-registers, and waitForHandle() in the runner
  * picks up the fresh handle automatically via polling.
  */
-export function BenchmarkOrchestrator({
+export function PromptEvalOrchestrator({
   currentThreadId,
   onHandleReady,
 }: {
@@ -32,7 +32,7 @@ export function BenchmarkOrchestrator({
 
   // Give the runner a stable getter that always reads the latest handle.
   useEffect(() => {
-    onHandleReady(() => handlesRef.current["bench"] ?? null);
+    onHandleReady(() => handlesRef.current["eval"] ?? null);
   }, [onHandleReady]);
 
   if (!currentThreadId) return null;
@@ -45,7 +45,7 @@ export function BenchmarkOrchestrator({
           initialThreadId={currentThreadId}
           syncActiveThreadId={false}
         >
-          <RegisterCompareHandle name="bench" />
+          <RegisterCompareHandle name="eval" />
         </ChatRuntimeProvider>
       </CompareHandlesProvider>
     </div>

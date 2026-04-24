@@ -67,6 +67,31 @@ db.version(5).stores({
   promptLists: "id, createdAt",
 });
 
+db.version(6)
+  .stores({
+    threads: "id, modelType, pairId, promptEvalId, archived, createdAt",
+    messages: "id, threadId, createdAt",
+    promptEntries: "id, createdAt",
+    promptLists: "id, createdAt",
+  })
+  .upgrade((tx) =>
+    tx
+      .table("threads")
+      .toCollection()
+      .modify((thread) => {
+        if ("benchmarkId" in thread && thread.benchmarkId !== undefined) {
+          thread.promptEvalId = thread.benchmarkId;
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete thread.benchmarkId;
+        }
+        if ("benchmarkName" in thread && thread.benchmarkName !== undefined) {
+          thread.promptEvalName = thread.benchmarkName;
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete thread.benchmarkName;
+        }
+      }),
+  );
+
 export { db };
 
 /**

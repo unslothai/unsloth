@@ -120,7 +120,7 @@ function ModelRow({
   label,
   meta,
   selected,
-  benchmarkSelected,
+  promptEvalSelected,
   onClick,
   vramStatus,
   vramEst,
@@ -130,8 +130,8 @@ function ModelRow({
   label: string;
   meta?: string;
   selected?: boolean;
-  /** When true, renders a green squircle ring (benchmark multi-select mode) */
-  benchmarkSelected?: boolean;
+  /** When true, renders a green squircle ring (prompt eval multi-select mode) */
+  promptEvalSelected?: boolean;
   onClick: () => void;
   vramStatus?: VramFitStatus | null;
   vramEst?: number;
@@ -156,8 +156,8 @@ function ModelRow({
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
-        selected && !benchmarkSelected && "bg-[#ececec] dark:bg-[#2e3035]",
-        benchmarkSelected && "ring-2 ring-primary bg-primary/5",
+        selected && !promptEvalSelected && "bg-[#ececec] dark:bg-[#2e3035]",
+        promptEvalSelected && "ring-2 ring-primary bg-primary/5",
       )}
     >
       <span
@@ -215,16 +215,16 @@ function GgufVariantExpander({
   gpuGb,
   systemRamGb,
   onDeleteVariant,
-  benchmarkMode,
-  benchmarkSelectedIds,
+  promptEvalMode,
+  promptEvalSelectedIds,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
   onDeleteVariant?: (quant: string) => void;
-  benchmarkMode?: boolean;
-  benchmarkSelectedIds?: string[];
+  promptEvalMode?: boolean;
+  promptEvalSelectedIds?: string[];
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -377,8 +377,8 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const isQuantBenchmarkSelected =
-          benchmarkMode === true &&
-          benchmarkSelectedIds?.includes(`${repoId}::${v.quant}`) === true;
+          promptEvalMode === true &&
+          promptEvalSelectedIds?.includes(`${repoId}::${v.quant}`) === true;
         return (
           <div key={v.filename} className="flex items-center gap-0.5">
             <button
@@ -482,17 +482,17 @@ export function HubModelPicker({
   value,
   onSelect,
   onFoldersChange,
-  benchmarkMode,
-  benchmarkSelectedIds,
-  onBenchmarkToggle,
+  promptEvalMode,
+  promptEvalSelectedIds,
+  onPromptEvalToggle,
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
-  benchmarkMode?: boolean;
-  benchmarkSelectedIds?: string[];
-  onBenchmarkToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  promptEvalMode?: boolean;
+  promptEvalSelectedIds?: string[];
+  onPromptEvalToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
@@ -900,16 +900,16 @@ export function HubModelPicker({
     };
   }, [recommendedSentinel, hasMoreRecommended, recommendedPage, scrollRef]);
 
-  /** In benchmark mode, route model clicks to onBenchmarkToggle instead of onSelect. */
+  /** In Prompt Eval mode, route model clicks to onPromptEvalToggle instead of onSelect. */
   const effectiveSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      if (benchmarkMode && onBenchmarkToggle) {
-        onBenchmarkToggle(id, meta);
+      if (promptEvalMode && onPromptEvalToggle) {
+        onPromptEvalToggle(id, meta);
       } else {
         onSelect(id, meta);
       }
     },
-    [benchmarkMode, onBenchmarkToggle, onSelect],
+    [promptEvalMode, onPromptEvalToggle, onSelect],
   );
 
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
@@ -967,7 +967,7 @@ export function HubModelPicker({
                     label={c.repo_id}
                     meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
-                    benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === c.repo_id || sid.startsWith(c.repo_id + "::"))}
+                    promptEvalSelected={promptEvalMode && promptEvalSelectedIds?.some((sid) => sid === c.repo_id || sid.startsWith(c.repo_id + "::"))}
                     onClick={() =>
                       setExpandedGguf((prev) =>
                         prev === c.repo_id ? null : c.repo_id,
@@ -986,8 +986,8 @@ export function HubModelPicker({
                       onDeleteVariant={(quant) =>
                         setDeleteTarget(`${c.repo_id}::${quant}`)
                       }
-                      benchmarkMode={benchmarkMode}
-                      benchmarkSelectedIds={benchmarkSelectedIds}
+                      promptEvalMode={promptEvalMode}
+                      promptEvalSelectedIds={promptEvalSelectedIds}
                     />
                   )}
                 </div>
@@ -1000,7 +1000,7 @@ export function HubModelPicker({
                         label={c.repo_id}
                         meta={formatBytes(c.size_bytes)}
                         selected={value === c.repo_id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === c.repo_id || sid.startsWith(c.repo_id + "::"))}
+                        promptEvalSelected={promptEvalMode && promptEvalSelectedIds?.some((sid) => sid === c.repo_id || sid.startsWith(c.repo_id + "::"))}
                         onClick={() =>
                           effectiveSelect(c.repo_id, {
                             source: "hub",
@@ -1062,8 +1062,8 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
-                        benchmarkMode={benchmarkMode}
-                        benchmarkSelectedIds={benchmarkSelectedIds}
+                        promptEvalMode={promptEvalMode}
+                        promptEvalSelectedIds={promptEvalSelectedIds}
                       />
                     )}
                   </div>
@@ -1236,7 +1236,7 @@ export function HubModelPicker({
                       label={m.model_id ?? m.display_name}
                       meta={isGguf ? "GGUF" : "Local"}
                       selected={value === m.id}
-                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === m.id || sid.startsWith(m.id + "::"))}
+                      promptEvalSelected={promptEvalMode && promptEvalSelectedIds?.some((sid) => sid === m.id || sid.startsWith(m.id + "::"))}
                       onClick={() => {
                         if (isGguf && !isGgufFile) {
                           setExpandedGguf((prev) =>
@@ -1260,8 +1260,8 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
-                        benchmarkMode={benchmarkMode}
-                        benchmarkSelectedIds={benchmarkSelectedIds}
+                        promptEvalMode={promptEvalMode}
+                        promptEvalSelectedIds={promptEvalSelectedIds}
                       />
                     )}
                   </div>
@@ -1294,7 +1294,7 @@ export function HubModelPicker({
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
+                        promptEvalSelected={promptEvalMode && promptEvalSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
                         onClick={() => handleModelClick(id)}
                         vramStatus={
                           isKnownGgufRepo(id) ? null : (vram?.status ?? null)
@@ -1310,8 +1310,8 @@ export function HubModelPicker({
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
                           }
-                          benchmarkMode={benchmarkMode}
-                          benchmarkSelectedIds={benchmarkSelectedIds}
+                          promptEvalMode={promptEvalMode}
+                          promptEvalSelectedIds={promptEvalSelectedIds}
                         />
                       )}
                     </div>
@@ -1344,7 +1344,7 @@ export function HubModelPicker({
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
+                      promptEvalSelected={promptEvalMode && promptEvalSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
                       onClick={() => handleModelClick(id)}
                       vramStatus={
                         isKnownGgufRepo(id) ? null : (vram?.status ?? null)
@@ -1360,8 +1360,8 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
-                        benchmarkMode={benchmarkMode}
-                        benchmarkSelectedIds={benchmarkSelectedIds}
+                        promptEvalMode={promptEvalMode}
+                        promptEvalSelectedIds={promptEvalSelectedIds}
                       />
                     )}
                   </div>
@@ -1395,7 +1395,7 @@ export function HubModelPicker({
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        benchmarkSelected={benchmarkMode && benchmarkSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
+                        promptEvalSelected={promptEvalMode && promptEvalSelectedIds?.some((sid) => sid === id || sid.startsWith(id + "::"))}
                         onClick={() => handleModelClick(id)}
                         vramStatus={
                           isSearchGguf ? null : (vram?.status ?? null)
@@ -1411,8 +1411,8 @@ export function HubModelPicker({
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
                           }
-                          benchmarkMode={benchmarkMode}
-                          benchmarkSelectedIds={benchmarkSelectedIds}
+                          promptEvalMode={promptEvalMode}
+                          promptEvalSelectedIds={promptEvalSelectedIds}
                         />
                       )}
                     </div>

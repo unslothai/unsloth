@@ -27,12 +27,12 @@ import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { db, useLiveQuery } from "@/features/chat/db";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useBenchmarkStore } from "@/features/chat/stores/use-benchmark-store";
+import { usePromptEvalStore } from "@/features/chat/stores/use-prompt-eval-store";
 import {
-  downloadBenchmarkCsv,
-  downloadBenchmarkJsonl,
-} from "@/features/chat/benchmark/utils/export-benchmark";
-import { PromptStorageDialog } from "@/features/chat/benchmark/prompt-storage-dialog";
+  downloadPromptEvalCsv,
+  downloadPromptEvalJsonl,
+} from "@/features/chat/prompt-eval/utils/export-prompt-eval";
+import { PromptStorageDialog } from "@/features/chat/prompt-eval/prompt-storage-dialog";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -53,7 +53,7 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  BarChartIcon,
+  FlaskConicalIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -89,12 +89,12 @@ export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-  onBenchmarkSend?: (text: string) => void;
+  onPromptEvalSend?: (text: string) => void;
 }> = ({
   hideComposer,
   hideWelcome,
   targetThreadId,
-  onBenchmarkSend,
+  onPromptEvalSend,
 }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
@@ -130,7 +130,7 @@ export const Thread: FC<{
         >
           {!hideWelcome && (
             <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
-              <ThreadWelcome hideComposer={hideComposer} onBenchmarkSend={onBenchmarkSend} />
+              <ThreadWelcome hideComposer={hideComposer} onPromptEvalSend={onPromptEvalSend} />
             </AuiIf>
           )}
 
@@ -174,7 +174,7 @@ export const Thread: FC<{
               />
               <div className="relative px-5 pb-2">
                 <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                  <ComposerAnimated disabled={isComposerAttachPending} onBenchmarkSend={onBenchmarkSend} />
+                  <ComposerAnimated disabled={isComposerAttachPending} onPromptEvalSend={onPromptEvalSend} />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
                   LLMs can make mistakes. Double-check all responses.
@@ -212,7 +212,7 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
-const ThreadWelcome: FC<{ hideComposer?: boolean; onBenchmarkSend?: (text: string) => void }> = ({ hideComposer, onBenchmarkSend }) => {
+const ThreadWelcome: FC<{ hideComposer?: boolean; onPromptEvalSend?: (text: string) => void }> = ({ hideComposer, onPromptEvalSend }) => {
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
@@ -231,7 +231,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean; onBenchmarkSend?: (text: strin
             </p>
           </div>
           <GeneratingSpinner />
-          {!hideComposer && <ComposerAnimated onBenchmarkSend={onBenchmarkSend} />}
+          {!hideComposer && <ComposerAnimated onPromptEvalSend={onPromptEvalSend} />}
         </div>
       </div>
     </div>
@@ -253,7 +253,7 @@ const GeneratingSpinner: FC = () => {
   );
 };
 
-const ComposerAnimated: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => void }> = ({ disabled, onBenchmarkSend }) => {
+const ComposerAnimated: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => void }> = ({ disabled, onPromptEvalSend }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <motion.div
@@ -262,7 +262,7 @@ const ComposerAnimated: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string
         transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
         className="relative z-10 w-full"
       >
-        <Composer disabled={disabled} onBenchmarkSend={onBenchmarkSend} />
+        <Composer disabled={disabled} onPromptEvalSend={onPromptEvalSend} />
       </motion.div>
     </div>
   );
@@ -292,12 +292,12 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => void }> = ({ disabled, onBenchmarkSend }) => {
-  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
-  const benchmarkName = useBenchmarkStore((s) => s.benchmarkName);
-  const setBenchmarkName = useBenchmarkStore((s) => s.setBenchmarkName);
-  const pendingComposerText = useBenchmarkStore((s) => s.pendingComposerText);
-  const setPendingComposerText = useBenchmarkStore((s) => s.setPendingComposerText);
+const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => void }> = ({ disabled, onPromptEvalSend }) => {
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalName = usePromptEvalStore((s) => s.promptEvalName);
+  const setPromptEvalName = usePromptEvalStore((s) => s.setPromptEvalName);
+  const pendingComposerText = usePromptEvalStore((s) => s.pendingComposerText);
+  const setPendingComposerText = usePromptEvalStore((s) => s.setPendingComposerText);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
 
   // Detect if a different thread (not the currently visible one) is generating.
@@ -327,7 +327,7 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
         event.preventDefault();
         return;
       }
-      if (benchmarkMode && onBenchmarkSend) {
+      if (promptEvalMode && onPromptEvalSend) {
         const textarea = event.currentTarget.querySelector('textarea') as HTMLTextAreaElement | null;
         const text = textarea?.value?.trim() ?? "";
         if (text) {
@@ -337,18 +337,18 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
             nativeSetter.call(textarea, '');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
           }
-          onBenchmarkSend(text);
+          onPromptEvalSend(text);
         } else {
           event.preventDefault();
         }
       }
     },
-    [disabled, anotherThreadRunning, benchmarkMode, onBenchmarkSend],
+    [disabled, anotherThreadRunning, promptEvalMode, onPromptEvalSend],
   );
 
   return (
     <>
-      {benchmarkMode && (
+      {promptEvalMode && (
         <PromptStorageDialog open={promptStorageOpen} onOpenChange={setPromptStorageOpen} />
       )}
       <ComposerPrimitive.Root
@@ -364,14 +364,14 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
               </span>
             </div>
           )}
-          {benchmarkMode && (
+          {promptEvalMode && (
             <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
               <label className="text-xs font-medium text-primary whitespace-nowrap">Benchmark name:</label>
               <input
-                value={benchmarkName}
-                onChange={(e) => setBenchmarkName(e.target.value)}
+                value={promptEvalName}
+                onChange={(e) => setPromptEvalName(e.target.value)}
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                placeholder="Benchmark name..."
+                placeholder="Prompt Eval name..."
               />
               <button
                 type="button"
@@ -388,7 +388,7 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
           <PendingAudioChip />
           <ToolStatusDisplay />
           <ComposerPrimitive.Input
-            placeholder={benchmarkMode ? "Send prompt to all selected models..." : "Send a message..."}
+            placeholder={promptEvalMode ? "Send prompt to all selected models..." : "Send a message..."}
             className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
             minRows={1}
             maxRows={6}
@@ -631,25 +631,25 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const BenchmarkToggle: FC = () => {
-  const benchmarkMode = useBenchmarkStore((s) => s.benchmarkMode);
-  const toggleBenchmarkMode = useBenchmarkStore((s) => s.toggleBenchmarkMode);
-  const toggleModelSelection = useBenchmarkStore((s) => s.toggleModelSelection);
+const PromptEvalToggle: FC = () => {
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const togglePromptEvalMode = usePromptEvalStore((s) => s.togglePromptEvalMode);
+  const toggleModelSelection = usePromptEvalStore((s) => s.toggleModelSelection);
 
   const handleToggle = () => {
-    // When enabling benchmark mode, auto-add the currently loaded model
-    if (!benchmarkMode) {
+    // When enabling Prompt Eval mode, auto-add the currently loaded model
+    if (!promptEvalMode) {
       const { params, activeGgufVariant } = useChatRuntimeStore.getState();
       const checkpoint = params.checkpoint;
       if (checkpoint) {
         const storeId = activeGgufVariant ? `${checkpoint}::${activeGgufVariant}` : checkpoint;
-        const currentIds = useBenchmarkStore.getState().benchmarkSelectedModelIds;
+        const currentIds = usePromptEvalStore.getState().promptEvalSelectedModelIds;
         if (!currentIds.includes(storeId)) {
           toggleModelSelection(storeId);
         }
       }
     }
-    toggleBenchmarkMode();
+    togglePromptEvalMode();
   };
 
   return (
@@ -658,19 +658,19 @@ const BenchmarkToggle: FC = () => {
       onClick={handleToggle}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        benchmarkMode
+        promptEvalMode
           ? "bg-primary/10 text-primary hover:bg-primary/20"
           : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
-      aria-label={benchmarkMode ? "Disable benchmark mode" : "Enable benchmark mode"}
+      aria-label={promptEvalMode ? "Disable Prompt Eval mode" : "Enable Prompt Eval mode"}
     >
-      <BarChartIcon className="size-3.5" />
-      <span>Benchmark</span>
+      <FlaskConicalIcon className="size-3.5" />
+      <span>Prompt Eval</span>
     </button>
   );
 };
 
-const ExportBenchmarkButton: FC = () => {
+const ExportPromptEvalButton: FC = () => {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const thread = useLiveQuery(
     () => (activeThreadId ? db.threads.get(activeThreadId) : Promise.resolve(undefined)),
@@ -679,17 +679,17 @@ const ExportBenchmarkButton: FC = () => {
   const [open, setOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const benchmarkId = thread?.benchmarkId;
+  const promptEvalId = thread?.promptEvalId;
 
-  if (!benchmarkId) return null;
+  if (!promptEvalId) return null;
 
   const handleExport = async (format: "jsonl" | "csv") => {
     setExporting(true);
     try {
       if (format === "jsonl") {
-        await downloadBenchmarkJsonl(benchmarkId);
+        await downloadPromptEvalJsonl(promptEvalId);
       } else {
-        await downloadBenchmarkCsv(benchmarkId);
+        await downloadPromptEvalCsv(promptEvalId);
       }
     } catch {
       // user cancelled file picker — ignore
@@ -702,7 +702,7 @@ const ExportBenchmarkButton: FC = () => {
   return (
     <div className="relative">
       <TooltipIconButton
-        tooltip="Export benchmark"
+        tooltip="Export Prompt Eval"
         variant="ghost"
         className="size-8 rounded-full text-muted-foreground"
         onClick={() => setOpen((v) => !v)}
@@ -748,10 +748,10 @@ const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ di
         <ReasoningToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
-        <BenchmarkToggle />
+        <PromptEvalToggle />
       </div>
       <div className="flex items-center gap-1">
-        <ExportBenchmarkButton />
+        <ExportPromptEvalButton />
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { db } from "../../db";
-import type { BenchmarkResultRecord } from "../types";
+import type { PromptEvalResultRecord } from "../types";
 
 function extractText(content: unknown): string {
   if (!Array.isArray(content)) return "";
@@ -15,16 +15,16 @@ function extractText(content: unknown): string {
     .join("");
 }
 
-async function getBenchmarkRecords(
-  benchmarkId: string,
-): Promise<BenchmarkResultRecord[]> {
+async function getPromptEvalRecords(
+  promptEvalId: string,
+): Promise<PromptEvalResultRecord[]> {
   const threads = await db.threads
-    .where("benchmarkId")
-    .equals(benchmarkId)
+    .where("promptEvalId")
+    .equals(promptEvalId)
     .sortBy("createdAt");
 
-  const runName = threads[0]?.benchmarkName ?? benchmarkId;
-  const records: BenchmarkResultRecord[] = [];
+  const runName = threads[0]?.promptEvalName ?? promptEvalId;
+  const records: PromptEvalResultRecord[] = [];
 
   for (const thread of threads) {
     const messages = await db.messages
@@ -42,7 +42,7 @@ async function getBenchmarkRecords(
 
       const meta = response.metadata as Record<string, unknown> | undefined;
       records.push({
-        run_id: benchmarkId,
+        run_id: promptEvalId,
         run_name: runName,
         model_id: thread.modelId ?? "",
         model_name: thread.title,
@@ -109,25 +109,25 @@ async function saveBlob(
 
 const dateSuffix = () => new Date().toISOString().slice(0, 10);
 
-export async function downloadBenchmarkJsonl(
-  benchmarkId: string,
+export async function downloadPromptEvalJsonl(
+  promptEvalId: string,
 ): Promise<void> {
-  const records = await getBenchmarkRecords(benchmarkId);
+  const records = await getPromptEvalRecords(promptEvalId);
   const jsonl = records.map((r) => JSON.stringify(r)).join("\n");
   await saveBlob(
     jsonl,
     "application/jsonl",
-    `benchmark-${benchmarkId.slice(0, 8)}-${dateSuffix()}.jsonl`,
+    `prompt-eval-${promptEvalId.slice(0, 8)}-${dateSuffix()}.jsonl`,
     [".jsonl"],
   );
 }
 
-export async function downloadBenchmarkCsv(
-  benchmarkId: string,
+export async function downloadPromptEvalCsv(
+  promptEvalId: string,
 ): Promise<void> {
-  const records = await getBenchmarkRecords(benchmarkId);
+  const records = await getPromptEvalRecords(promptEvalId);
 
-  const HEADERS: (keyof BenchmarkResultRecord)[] = [
+  const HEADERS: (keyof PromptEvalResultRecord)[] = [
     "run_id",
     "run_name",
     "model_id",
@@ -157,7 +157,7 @@ export async function downloadBenchmarkCsv(
   await saveBlob(
     rows,
     "text/csv",
-    `benchmark-${benchmarkId.slice(0, 8)}-${dateSuffix()}.csv`,
+    `prompt-eval-${promptEvalId.slice(0, 8)}-${dateSuffix()}.csv`,
     [".csv"],
   );
 }

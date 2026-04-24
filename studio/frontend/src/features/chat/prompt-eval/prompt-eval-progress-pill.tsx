@@ -3,19 +3,19 @@
 
 import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
-import type { BenchmarkProgress } from "./types";
+import type { PromptEvalProgress } from "./types";
 
-function progressLabel(p: BenchmarkProgress): string {
+function progressLabel(p: PromptEvalProgress): string {
   if (p.phase === "loading") return `Loading ${p.currentModelName}…`;
-  if (p.phase === "done") return "Benchmark complete";
+  if (p.phase === "done") return "Prompt Eval complete";
   return `Prompt ${p.promptIdx + 1}/${p.totalPrompts} · Model ${p.modelIdx + 1}/${p.totalModels} · ${p.currentModelName}`;
 }
 
-export function BenchmarkProgressPill({
+export function PromptEvalProgressPill({
   progress,
   onCancel,
 }: {
-  progress: BenchmarkProgress;
+  progress: PromptEvalProgress;
   onCancel: () => void;
 }) {
   const done = progress.phase === "done";
@@ -35,7 +35,7 @@ export function BenchmarkProgressPill({
           type="button"
           onClick={onCancel}
           className="ml-1 flex size-4 shrink-0 items-center justify-center rounded-full opacity-60 transition-opacity hover:opacity-100"
-          aria-label="Cancel benchmark"
+          aria-label="Cancel Prompt Eval"
         >
           <XIcon className="size-3" />
         </button>

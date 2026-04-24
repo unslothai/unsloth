@@ -5,9 +5,9 @@ import { useCallback, useRef, useState } from "react";
 import { db } from "../db";
 import { loadModel } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import { useBenchmarkStore } from "../stores/use-benchmark-store";
+import { usePromptEvalStore } from "../stores/use-prompt-eval-store";
 import type { CompareHandle } from "../shared-composer";
-import type { BenchmarkProgress } from "./types";
+import type { PromptEvalProgress } from "./types";
 
 /** Poll until the orchestrator registers its handle or timeout expires. */
 async function waitForHandle(
@@ -23,8 +23,8 @@ async function waitForHandle(
   return null;
 }
 
-export function useBenchmarkRunner() {
-  const [progress, setProgress] = useState<BenchmarkProgress | null>(null);
+export function usePromptEvalRunner() {
+  const [progress, setProgress] = useState<PromptEvalProgress | null>(null);
   const [running, setRunning] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const cancelRef = useRef(false);
@@ -35,8 +35,8 @@ export function useBenchmarkRunner() {
    * Run one or more prompts against all selected models sequentially.
    * For each model: load it (if needed), then send each prompt in order
    * waiting for the response before sending the next.
-   * Called by the shared benchmarkSendFn each time the user submits in
-   * benchmark mode, or by the prompt list runner with multiple texts.
+   * Called by the shared promptEvalSendFn each time the user submits in
+   * Prompt Eval mode, or by the prompt list runner with multiple texts.
    */
   const run = useCallback(
     async (
@@ -44,8 +44,8 @@ export function useBenchmarkRunner() {
       getHandle: () => CompareHandle | null,
       navigateToThread: (threadId: string) => void,
     ) => {
-      const store = useBenchmarkStore.getState();
-      const selectedIds = store.benchmarkSelectedModelIds;
+      const store = usePromptEvalStore.getState();
+      const selectedIds = store.promptEvalSelectedModelIds;
       if (selectedIds.length === 0) return;
       if (promptTexts.length === 0) return;
 
@@ -67,19 +67,19 @@ export function useBenchmarkRunner() {
       // toolsEnabled/codeToolsEnabled to true when a tool-capable model loads.
       // Restoring after each load guarantees all models run under the same
       // (user-intended) settings, preventing accidental web_search calls.
-      const benchmarkSettings = {
+      const promptEvalSettings = {
         reasoningEnabled: useChatRuntimeStore.getState().reasoningEnabled,
         toolsEnabled: useChatRuntimeStore.getState().toolsEnabled,
         codeToolsEnabled: useChatRuntimeStore.getState().codeToolsEnabled,
       };
 
       // Determine or create the benchmark ID and per-model thread IDs
-      let benchmarkId = store.activeBenchmarkId;
-      let threadIds = { ...store.activeBenchmarkThreadIds };
+      let promptEvalId = store.activePromptEvalId;
+      let threadIds = { ...store.activePromptEvalThreadIds };
 
-      if (!benchmarkId) {
-        // First message in this benchmark session — create a new run
-        benchmarkId = crypto.randomUUID();
+      if (!promptEvalId) {
+        // First message in this prompt eval session — create a new run
+        promptEvalId = crypto.randomUUID();
         const runtimeStore = useChatRuntimeStore.getState();
         const allModels = runtimeStore.models;
         const allLoras = runtimeStore.loras;
@@ -106,15 +106,15 @@ export function useBenchmarkRunner() {
             title: displayName,
             modelType: "base",
             modelId,
-            benchmarkId,
-            benchmarkName: store.benchmarkName,
+            promptEvalId,
+            promptEvalName: store.promptEvalName,
             archived: false,
             createdAt: Date.now() + mi,
           });
           threadIds[modelId] = threadId;
         }
 
-        useBenchmarkStore.getState().setActiveBenchmark(benchmarkId, threadIds);
+        usePromptEvalStore.getState().setActiveBenchmark(promptEvalId, threadIds);
       }
 
       // Run the prompt(s) through each selected model
@@ -178,7 +178,7 @@ export function useBenchmarkRunner() {
         // toolsEnabled/codeToolsEnabled and setReasoningEnabled, overriding
         // the user's intent. We restore here so every model runs under identical
         // settings.
-        useChatRuntimeStore.setState(benchmarkSettings);
+        useChatRuntimeStore.setState(promptEvalSettings);
 
         // 2. Navigate to this model's thread (user sees it live)
         setActiveThreadId(threadId);
