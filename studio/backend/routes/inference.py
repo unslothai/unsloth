@@ -115,7 +115,7 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
-        _DEFAULT_MAX_TOKENS,
+        _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
     )
     from utils.models import ModelConfig
@@ -128,7 +128,7 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
-        _DEFAULT_MAX_TOKENS,
+        _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
     )
     from utils.models import ModelConfig
@@ -2711,7 +2711,9 @@ async def _responses_stream(
             ),
         )
 
-    body = _build_openai_passthrough_body(chat_req)
+    body = _build_openai_passthrough_body(
+        chat_req, backend_ctx = llama_backend.context_length
+    )
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
@@ -3557,6 +3559,7 @@ def _build_passthrough_payload(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    backend_ctx = None,
 ):
     body = {
         "messages": openai_messages,
@@ -3569,7 +3572,11 @@ def _build_passthrough_payload(
     }
     if stream:
         body["stream_options"] = {"include_usage": True}
-    body["max_tokens"] = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+    body["max_tokens"] = (
+        max_tokens
+        if max_tokens is not None
+        else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
+    )
     body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     if stop:
         body["stop"] = stop
@@ -3618,6 +3625,7 @@ async def _anthropic_passthrough_stream(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
+        backend_ctx = llama_backend.context_length,
     )
 
     _tracker = _TrackedCancel(cancel_event, session_id, message_id)
@@ -3747,6 +3755,7 @@ async def _anthropic_passthrough_non_streaming(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
+        backend_ctx = llama_backend.context_length,
     )
 
     async with httpx.AsyncClient() as client:
@@ -3868,7 +3877,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     return messages
 
 
-def _build_openai_passthrough_body(payload) -> dict:
+def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only explicitly-known OpenAI / llama-server fields are forwarded so that
@@ -3890,6 +3899,7 @@ def _build_openai_passthrough_body(payload) -> dict:
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
         tool_choice = tool_choice,
+        backend_ctx = backend_ctx,
     )
 
 
@@ -3910,7 +3920,9 @@ async def _openai_passthrough_stream(
     observes a standard OpenAI response.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length
+    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -4046,7 +4058,9 @@ async def _openai_passthrough_non_streaming(
     token counts.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length
+    )
 
     try:
         async with httpx.AsyncClient() as client:

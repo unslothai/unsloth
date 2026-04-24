@@ -56,8 +56,17 @@ _MAX_REPROMPTS = 3
 
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
-# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally.
-_DEFAULT_MAX_TOKENS = 4096
+# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
+# but the llama.cpp README notes it ONLY fires after a newline has been
+# generated -- a model stuck in a long unbroken non-newline sequence is
+# unbounded by it. So we still want a token cap as the front-line limiter.
+#
+# The cap is the model's effective context length when we know it,
+# falling back to a generous floor when metadata is unavailable. 4096 was
+# too low: Qwen3 / gpt-oss reasoning traces routinely exceed it, and any
+# OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
+# curl) sees responses silently truncated mid-sentence.
+_DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
 
@@ -2351,7 +2360,9 @@ class LlamaCppBackend:
         if self._supports_reasoning and enable_thinking is not None:
             payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         payload["max_tokens"] = (
-            max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
@@ -2570,7 +2581,9 @@ class LlamaCppBackend:
             if self._supports_reasoning and enable_thinking is not None:
                 payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
             payload["max_tokens"] = (
-                max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+                max_tokens
+                if max_tokens is not None
+                else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
@@ -3227,7 +3240,9 @@ class LlamaCppBackend:
                 "enable_thinking": enable_thinking
             }
         stream_payload["max_tokens"] = (
-            max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
         stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
