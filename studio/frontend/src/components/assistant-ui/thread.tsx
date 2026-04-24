@@ -302,9 +302,16 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
 
   // Detect if a different thread (not the currently visible one) is generating.
   // In that case we block send but keep typing/uploads/prompt-storage enabled.
+  // We check both the assistant-ui isRunning flag AND the store's runningByThreadId
+  // so that the eval hidden host's generation (which uses its own ChatRuntimeProvider)
+  // is recognised as "this thread running" when the visible thread is the same DB thread.
   const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const thisThreadInStore = useChatRuntimeStore((s) =>
+    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
+  );
   const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
-  const anotherThreadRunning = !thisThreadIsRunning && anyRunning;
+  const anotherThreadRunning = !thisThreadIsRunning && !thisThreadInStore && anyRunning;
 
   // When a prompt is loaded from Prompt Storage, inject it into the textarea.
   // Only inject into a VISIBLE textarea (offsetParent !== null) so that the
@@ -749,7 +756,6 @@ const ExportPromptEvalButton: FC = () => {
 const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ disabled, sendDisabled }) => {
   const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
   const promptEvalSendFn = usePromptEvalStore((s) => s.promptEvalSendFn);
-
   // Custom send handler for prompt eval mode.
   // ComposerPrimitive.Send's own onClick bypasses our form's onSubmit (it calls
   // the runtime directly), so in eval mode we replace it with a plain button

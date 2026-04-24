@@ -113,12 +113,10 @@ const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
   onPromptEvalSend,
-  promptEvalHandlesRef,
 }: {
   threadId?: string;
   newThreadNonce?: string;
   onPromptEvalSend?: (text: string) => void;
-  promptEvalHandlesRef?: CompareHandles;
 }): ReactElement {
   return (
     <ChatRuntimeProvider
@@ -126,15 +124,39 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
     >
-      {promptEvalHandlesRef && (
-        <CompareHandlesProvider handlesRef={promptEvalHandlesRef}>
-          <RegisterCompareHandle name="eval" threadId={threadId} />
-        </CompareHandlesProvider>
-      )}
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onPromptEvalSend={onPromptEvalSend} />
       </div>
     </ChatRuntimeProvider>
+  );
+});
+
+/**
+ * Persistent hidden host for the current eval model's thread.
+ * Mounted for the duration of each model's eval run, independently of which
+ * thread the user is currently viewing in the sidebar. Its ChatRuntimeProvider
+ * is the one that actually drives generation (via handle.append()). The
+ * visible SingleContent above shows the same thread's DB content.
+ *
+ * Key is evalActiveThreadId so it remounts when the runner moves to the next
+ * model — triggering waitForHandle's Phase 1 (stale handle clears) then
+ * Phase 2 (new handle registers).
+ */
+const EvalHandleHost = memo(function EvalHandleHost({
+  threadId,
+  handlesRef,
+}: {
+  threadId: string;
+  handlesRef: CompareHandles;
+}): ReactElement {
+  return (
+    <div className="hidden" aria-hidden="true">
+      <ChatRuntimeProvider modelType="base" initialThreadId={threadId}>
+        <CompareHandlesProvider handlesRef={handlesRef}>
+          <RegisterCompareHandle name="eval" threadId={threadId} />
+        </CompareHandlesProvider>
+      </ChatRuntimeProvider>
+    </div>
   );
 });
 
@@ -1048,33 +1070,24 @@ export function ChatPage(): ReactElement {
 
         {view.mode === "single" ? (
           <>
-            {/* Background eval thread — always mounted while eval runs so its
-                handle survives user sidebar navigation. Hidden via CSS but
-                React keeps the tree alive (and the handle registered). Only
-                rendered when the user has navigated AWAY from the eval thread;  
-                when they're viewing it, the visible SingleContent below handles it. */}
-            {promptEvalRunning && evalActiveThreadId && view.threadId !== evalActiveThreadId && (
-              <div className="hidden">
-                <SingleContent
-                  key={`eval-bg-${evalActiveThreadId}`}
-                  threadId={evalActiveThreadId}
-                  onPromptEvalSend={onPromptEvalSend}
-                  promptEvalHandlesRef={singleChatHandlesRef}
-                />
-              </div>
+            {/* Persistent eval handle host — always mounted while running, keyed
+                to the active eval thread so it remounts on model transitions.
+                Drives generation via handle.append(); the visible SingleContent
+                below shows the same DB content. Survives user sidebar navigation
+                because its lifecycle is independent of view.threadId. */}
+            {promptEvalRunning && evalActiveThreadId && (
+              <EvalHandleHost
+                key={evalActiveThreadId}
+                threadId={evalActiveThreadId}
+                handlesRef={singleChatHandlesRef}
+              />
             )}
-            {/* Visible thread — changes with navigation */}
+            {/* Visible thread — display-only, follows user navigation */}
             <SingleContent
               key={view.threadId ?? "single"}
               threadId={view.threadId}
               newThreadNonce={view.newThreadNonce}
               onPromptEvalSend={onPromptEvalSend}
-              promptEvalHandlesRef={
-                promptEvalRunning &&
-                (!evalActiveThreadId || view.threadId === evalActiveThreadId)
-                  ? singleChatHandlesRef
-                  : undefined
-              }
             />
           </>
         ) : (
