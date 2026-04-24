@@ -1114,6 +1114,23 @@ async def openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
+    # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``,
+    # which the SDK spreads into the request body at the top level. Studio's
+    # ChatCompletionRequest has ``extra="allow"`` so pydantic stashes them in
+    # ``model_extra``, but the typed ``payload.enable_thinking`` path is what
+    # downstream generators actually consume. Lift ``enable_thinking`` from
+    # the extra-body chat_template_kwargs onto the typed field so clients
+    # that only know the OpenAI shape (data_designer recipe runs, etc.)
+    # can still control the reasoning preamble.
+    _extra = getattr(payload, "model_extra", None)
+    if (
+        payload.enable_thinking is None
+        and isinstance(_extra, dict)
+    ):
+        _tpl_kw = _extra.get("chat_template_kwargs")
+        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
+            payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
+
     # ── Determine which backend is active ─────────────────────
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
@@ -3454,6 +3471,7 @@ def _build_passthrough_payload(
     presence_penalty = None,
     tool_choice = "auto",
     response_format = None,
+    chat_template_kwargs = None,
 ):
     body = {
         "messages": openai_messages,
@@ -3483,6 +3501,11 @@ def _build_passthrough_payload(
         # request root (tools/server/README.md), which is also what the
         # OpenAI SDK produces by spreading extra_body into the body top.
         body["response_format"] = response_format
+    if chat_template_kwargs is not None:
+        # Propagate reasoning / template overrides (e.g. enable_thinking)
+        # so llama-server renders the Jinja template in the mode the caller
+        # asked for instead of whatever default the model was loaded with.
+        body["chat_template_kwargs"] = chat_template_kwargs
     return body
 
 
@@ -3784,6 +3807,12 @@ def _build_openai_passthrough_body(payload) -> dict:
     """
     messages = _openai_messages_for_passthrough(payload)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
+    # When the caller asked for a specific reasoning mode, forward it to
+    # llama-server via chat_template_kwargs so the Jinja template renders
+    # with (or without) the reasoning preamble.
+    tpl_kwargs = None
+    if payload.enable_thinking is not None:
+        tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
     return _build_passthrough_payload(
         messages,
         payload.tools,
@@ -3798,6 +3827,7 @@ def _build_openai_passthrough_body(payload) -> dict:
         presence_penalty = payload.presence_penalty,
         tool_choice = tool_choice,
         response_format = _extract_response_format(payload),
+        chat_template_kwargs = tpl_kwargs,
     )
 
 
