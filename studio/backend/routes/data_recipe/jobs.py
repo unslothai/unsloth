@@ -178,9 +178,7 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(
-    recipe: dict[str, Any], request: Request
-) -> Optional[int]:
+def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
     """
     Mutate recipe dict in-place: for any provider with is_local=True,
     fill in the endpoint pointing at this server and inject a short-lived
@@ -257,9 +255,7 @@ def _inject_local_providers(
         # surface instead of a second JWT code path). The key is marked
         # internal so it is hidden from the user's API-key list, and the
         # caller revokes it when the job terminates.
-        expires_at = (
-            datetime.now(timezone.utc) + timedelta(hours = 24)
-        ).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
             username = "unsloth",
             name = "data-recipe workflow",
