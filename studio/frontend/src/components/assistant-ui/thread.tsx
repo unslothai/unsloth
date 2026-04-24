@@ -306,10 +306,17 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
   const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
   const anotherThreadRunning = !thisThreadIsRunning && anyRunning;
 
-  // When a prompt is loaded from Prompt Storage, inject it into the textarea
+  // When a prompt is loaded from Prompt Storage, inject it into the textarea.
+  // Only inject into a VISIBLE textarea (offsetParent !== null) so that the
+  // hidden background eval SingleContent doesn't consume the event.
   useEffect(() => {
     if (!pendingComposerText) return;
-    const textarea = document.querySelector<HTMLTextAreaElement>(".aui-composer-input");
+    // Find the first visible .aui-composer-input (not inside display:none).
+    const all = document.querySelectorAll<HTMLTextAreaElement>(".aui-composer-input");
+    let textarea: HTMLTextAreaElement | null = null;
+    for (const el of all) {
+      if (el.offsetParent !== null) { textarea = el; break; }
+    }
     if (textarea) {
       const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
       if (nativeSetter) {
@@ -740,6 +747,34 @@ const ExportPromptEvalButton: FC = () => {
 };
 
 const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ disabled, sendDisabled }) => {
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalSendFn = usePromptEvalStore((s) => s.promptEvalSendFn);
+
+  // Custom send handler for prompt eval mode.
+  // ComposerPrimitive.Send's own onClick bypasses our form's onSubmit (it calls
+  // the runtime directly), so in eval mode we replace it with a plain button
+  // that reads the textarea value and fires the eval runner.
+  const handleEvalSend = useCallback(() => {
+    if (!promptEvalSendFn) return;
+    const textarea = document.querySelector<HTMLTextAreaElement>(".aui-composer-input:not(.hidden *)");
+    // Fall back to any visible composer input (not inside a display:none container)
+    const visibleTextarea = (() => {
+      const all = document.querySelectorAll<HTMLTextAreaElement>(".aui-composer-input");
+      for (const el of all) {
+        if (el.offsetParent !== null) return el;
+      }
+      return textarea;
+    })();
+    const text = visibleTextarea?.value?.trim() ?? "";
+    if (!text) return;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (nativeSetter && visibleTextarea) {
+      nativeSetter.call(visibleTextarea, "");
+      visibleTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    promptEvalSendFn([text]);
+  }, [promptEvalSendFn]);
+
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
@@ -775,20 +810,39 @@ const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ di
           </ComposerPrimitive.StopDictation>
         </ComposerPrimitive.If>
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <ComposerPrimitive.Send asChild={true}>
+          {promptEvalMode ? (
+            // In Prompt Eval mode, bypass ComposerPrimitive.Send entirely —
+            // its onClick calls the runtime directly, skipping our onSubmit.
+            // This plain button reads the textarea and fires the eval runner.
             <TooltipIconButton
-              tooltip={sendDisabled ? "Another model is generating" : "Send message"}
+              tooltip={sendDisabled ? "Another model is generating" : "Send to all selected models"}
               side="bottom"
-              type="submit"
+              type="button"
               variant="default"
               size="icon"
               disabled={disabled || sendDisabled}
               className="aui-composer-send size-8 rounded-full"
-              aria-label="Send message"
+              aria-label="Send to all selected models"
+              onClick={handleEvalSend}
             >
               <ArrowUpIcon className="aui-composer-send-icon size-4" />
             </TooltipIconButton>
-          </ComposerPrimitive.Send>
+          ) : (
+            <ComposerPrimitive.Send asChild={true}>
+              <TooltipIconButton
+                tooltip={sendDisabled ? "Another model is generating" : "Send message"}
+                side="bottom"
+                type="submit"
+                variant="default"
+                size="icon"
+                disabled={disabled || sendDisabled}
+                className="aui-composer-send size-8 rounded-full"
+                aria-label="Send message"
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          )}
         </AuiIf>
         <AuiIf condition={({ thread }) => thread.isRunning}>
           <ComposerPrimitive.Cancel asChild={true}>

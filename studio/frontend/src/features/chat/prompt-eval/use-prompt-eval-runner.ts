@@ -15,12 +15,16 @@ import type { PromptEvalProgress } from "./types";
  * Two-phase to avoid returning a stale handle from the previous model:
  *   Phase 1 – if a previousHandle is given, wait until it's cleared
  *              (React unmounts the old SingleContent after key change).
- *   Phase 2 – wait until a fresh, non-previous handle appears
+ *   Phase 2 – wait until a fresh handle bound to expectedThreadId appears
  *              (React mounts the new SingleContent and registers its handle).
+ *
+ * The expectedThreadId check prevents accidentally accepting a handle that
+ * was already registered for a different thread (e.g. pre-existing chat).
  */
 async function waitForHandle(
   getHandle: () => CompareHandle | null,
   previousHandle: CompareHandle | null,
+  expectedThreadId: string,
   timeoutMs = 12000,
 ): Promise<CompareHandle | null> {
   const deadline = Date.now() + timeoutMs;
@@ -34,10 +38,10 @@ async function waitForHandle(
     }
   }
 
-  // Phase 2: wait for the fresh handle for the new thread.
+  // Phase 2: wait for a fresh handle bound to the expected thread.
   while (Date.now() < deadline) {
     const h = getHandle();
-    if (h !== null && h !== previousHandle) return h;
+    if (h !== null && h !== previousHandle && h.threadId === expectedThreadId) return h;
     await new Promise<void>((r) => setTimeout(r, 50));
   }
   return null;
@@ -217,10 +221,13 @@ export function usePromptEvalRunner() {
         // 3. Wait for the visible thread's handle to be ready after navigation.
         // Pass previousHandle so Phase 1 waits for the stale handle to clear
         // before accepting a fresh one (fixes double-send on model transitions).
-        const handle = await waitForHandle(getHandle, previousHandle);
+        const handle = await waitForHandle(getHandle, previousHandle, threadId);
         if (!handle || cancelRef.current) break;
 
-        // 4. Send each prompt in order, waiting for each response to complete
+        // 4. Send each prompt in order, waiting for each response to complete.
+        //    For multi-prompt lists, animate each prompt into the visible
+        //    composer box before sending so the user can see what's coming.
+        const isMulti = promptTexts.length > 1;
         for (let pi = 0; pi < promptTexts.length; pi++) {
           if (cancelRef.current) break;
           const promptText = promptTexts[pi];
@@ -234,7 +241,22 @@ export function usePromptEvalRunner() {
             phase: "generating",
           });
 
+          // For lists: inject prompt text into the visible composer so the
+          // user can see it appear before auto-send (300ms visual pause).
+          if (isMulti) {
+            usePromptEvalStore.getState().setPendingComposerText(promptText);
+            await new Promise<void>((r) => setTimeout(r, 350));
+          }
+
           handle.append([{ type: "text", text: promptText }]);
+
+          // Show the NEXT prompt in the box while the model is responding.
+          if (isMulti && pi + 1 < promptTexts.length) {
+            // Small delay so assistant-ui can clear the composer after append.
+            await new Promise<void>((r) => setTimeout(r, 100));
+            usePromptEvalStore.getState().setPendingComposerText(promptTexts[pi + 1]);
+          }
+
           await handle.waitForRunEnd();
         }
 

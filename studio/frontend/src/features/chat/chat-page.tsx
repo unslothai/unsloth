@@ -128,7 +128,7 @@ const SingleContent = memo(function SingleContent({
     >
       {promptEvalHandlesRef && (
         <CompareHandlesProvider handlesRef={promptEvalHandlesRef}>
-          <RegisterCompareHandle name="eval" />
+          <RegisterCompareHandle name="eval" threadId={threadId} />
         </CompareHandlesProvider>
       )}
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
@@ -579,6 +579,7 @@ export function ChatPage(): ReactElement {
     cancel: cancelPromptEval,
     progress: promptEvalProgress,
     running: promptEvalRunning,
+    activeThreadId: evalActiveThreadId,
   } = usePromptEvalRunner();
   // Stable ref into which SingleContent registers the visible thread's handle.
   // When SingleContent remounts for a new thread (key changes), the old handle
@@ -1046,13 +1047,36 @@ export function ChatPage(): ReactElement {
         </div>
 
         {view.mode === "single" ? (
-          <SingleContent
-            key={view.threadId ?? "single"}
-            threadId={view.threadId}
-            newThreadNonce={view.newThreadNonce}
-            onPromptEvalSend={onPromptEvalSend}
-            promptEvalHandlesRef={promptEvalRunning ? singleChatHandlesRef : undefined}
-          />
+          <>
+            {/* Background eval thread — always mounted while eval runs so its
+                handle survives user sidebar navigation. Hidden via CSS but
+                React keeps the tree alive (and the handle registered). Only
+                rendered when the user has navigated AWAY from the eval thread;  
+                when they're viewing it, the visible SingleContent below handles it. */}
+            {promptEvalRunning && evalActiveThreadId && view.threadId !== evalActiveThreadId && (
+              <div className="hidden">
+                <SingleContent
+                  key={`eval-bg-${evalActiveThreadId}`}
+                  threadId={evalActiveThreadId}
+                  onPromptEvalSend={onPromptEvalSend}
+                  promptEvalHandlesRef={singleChatHandlesRef}
+                />
+              </div>
+            )}
+            {/* Visible thread — changes with navigation */}
+            <SingleContent
+              key={view.threadId ?? "single"}
+              threadId={view.threadId}
+              newThreadNonce={view.newThreadNonce}
+              onPromptEvalSend={onPromptEvalSend}
+              promptEvalHandlesRef={
+                promptEvalRunning &&
+                (!evalActiveThreadId || view.threadId === evalActiveThreadId)
+                  ? singleChatHandlesRef
+                  : undefined
+              }
+            />
+          </>
         ) : (
           <CompareContent
             key={view.pairId}
