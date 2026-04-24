@@ -618,15 +618,25 @@ class LlamaCppBackend:
             # with ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
             # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
             physical_ids: Optional[list[int]] = None
+            # Match the codebase convention in
+            # ``utils/hardware/hardware.py::_get_parent_visible_gpu_spec``:
+            # treat an explicitly empty mask (``HIP_VISIBLE_DEVICES=""``)
+            # as "set to no GPUs" rather than falling through to the next
+            # var. ``or`` would coerce empty string to falsy and silently
+            # promote the wrong source.
             if getattr(torch.version, "hip", None) is not None:
+                hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+                rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
                 cvd = (
-                    os.environ.get("HIP_VISIBLE_DEVICES")
-                    or os.environ.get("ROCR_VISIBLE_DEVICES")
-                    or os.environ.get("CUDA_VISIBLE_DEVICES")
+                    hip_v
+                    if hip_v is not None
+                    else rocr_v
+                    if rocr_v is not None
+                    else os.environ.get("CUDA_VISIBLE_DEVICES")
                 )
             else:
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd and cvd.strip():
+            if cvd is not None and cvd.strip():
                 try:
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
                 except ValueError:
@@ -640,7 +650,8 @@ class LlamaCppBackend:
                     else ordinal
                 )
                 gpus.append((idx, free_bytes // (1024 * 1024)))
-            return gpus
+            # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
+            return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
