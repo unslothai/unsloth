@@ -218,21 +218,14 @@ export function useChatModelRuntime() {
       progressPercent?: number | null,
       progressLabel?: string | null,
       onStop?: () => void,
-    ) => {
-      const s = useChatRuntimeStore.getState();
-      const anyRunning = Object.values(s.runningByThreadId).some(Boolean);
-      const activeRunning = s.activeThreadId
-        ? Boolean(s.runningByThreadId[s.activeThreadId])
-        : false;
-      return createElement(ModelLoadDescription, {
+    ) =>
+      createElement(ModelLoadDescription, {
         title,
         message,
         progressPercent,
         progressLabel,
         onStop,
-        anotherModelRunning: anyRunning && !activeRunning,
-      });
-    },
+      }),
     [],
   );
 
