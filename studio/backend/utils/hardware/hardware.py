@@ -696,6 +696,19 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
         return None
 
 
+def _determine_attention_impl_for_gpu_estimate(config) -> str:
+    from unsloth.models._utils import determine_attention_implementation
+    from transformers import AutoModel, AutoModelForCausalLM
+
+    model_class = None
+    for auto_model in (AutoModelForCausalLM, AutoModel):
+        if config.__class__ in auto_model._model_mapping:
+            model_class = auto_model._model_mapping[config.__class__]
+            break
+
+    return determine_attention_implementation(model_class, config)
+
+
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
     from .vram_estimation import extract_arch_config, compute_total_params
 
@@ -848,6 +861,10 @@ def estimate_required_model_memory_gb(
         model_name, hf_token = hf_token
     )
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    if config is not None:
+        vram_config.attention_implementation = _determine_attention_impl_for_gpu_estimate(
+            config
+        )
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:
@@ -855,6 +872,7 @@ def estimate_required_model_memory_gb(
         required_gb = breakdown.total / (1024**3)
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"
+        metadata["attention_implementation"] = vram_config.attention_implementation
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
         max_gpus = max(1, get_visible_gpu_count())
         for n_gpus in range(1, max_gpus + 1):

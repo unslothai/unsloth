@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 QUANT_4BIT_FACTOR = 16 / 5
+DOUBLE_QUANT_4BIT_FACTOR = 3.6
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
+NON_FLASH_ATTENTION_FACTOR = 12.0
 
 DEFAULT_TARGET_MODULES = [
     "q_proj",
@@ -27,6 +29,8 @@ DEFAULT_TARGET_MODULES = [
     "up_proj",
     "down_proj",
 ]
+ATTENTION_TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj"}
+MLP_TARGET_MODULES = {"gate_proj", "up_proj", "down_proj"}
 
 # Empirically calibrated bytes/param — see VRAM_ESTIMATION.md for rationale.
 OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
@@ -67,6 +71,17 @@ class ModelArchConfig:
     qk_nope_head_dim: Optional[int] = None
     qk_rope_head_dim: Optional[int] = None
     v_head_dim: Optional[int] = None
+    head_dim: Optional[int] = None
+    global_head_dim: Optional[int] = None
+    num_global_key_value_heads: Optional[int] = None
+    attention_k_eq_v: bool = False
+    layer_types: Optional[list] = None
+    num_kv_shared_layers: int = 0
+    use_double_wide_mlp: bool = False
+    vocab_size_per_layer_input: int = 0
+    hidden_size_per_layer_input: int = 0
+    quantization_skip_modules: list = field(default_factory = list)
+    quant_4bit_factor: float = QUANT_4BIT_FACTOR
 
 
 @dataclass
@@ -79,6 +94,7 @@ class TrainingVramConfig:
     gradient_checkpointing: str = "unsloth"
     optimizer: str = "adamw_8bit"
     load_in_4bit: bool = True
+    attention_implementation: str = "flash_attention_2"
 
 
 @dataclass
@@ -155,6 +171,14 @@ def _compute_num_dense_layers(text_config, total_layers: int) -> int:
 
 def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     text_config = getattr(hf_config, "text_config", None) or hf_config
+    quantization_config = getattr(hf_config, "quantization_config", None) or {}
+    if not isinstance(quantization_config, dict):
+        quantization_config = getattr(quantization_config, "to_dict", lambda: {})()
+    quant_4bit_factor = (
+        DOUBLE_QUANT_4BIT_FACTOR
+        if quantization_config.get("bnb_4bit_use_double_quant", False)
+        else QUANT_4BIT_FACTOR
+    )
 
     hidden_size = getattr(text_config, "hidden_size", None)
     num_layers = getattr(text_config, "num_hidden_layers", None)
@@ -213,7 +237,246 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         qk_nope_head_dim = qk_nope_head_dim,
         qk_rope_head_dim = qk_rope_head_dim,
         v_head_dim = v_head_dim,
+        head_dim = getattr(text_config, "head_dim", None),
+        global_head_dim = getattr(text_config, "global_head_dim", None),
+        num_global_key_value_heads = getattr(
+            text_config,
+            "num_global_key_value_heads",
+            None,
+        ),
+        attention_k_eq_v = bool(getattr(text_config, "attention_k_eq_v", False)),
+        layer_types = getattr(text_config, "layer_types", None),
+        num_kv_shared_layers = getattr(text_config, "num_kv_shared_layers", None) or 0,
+        use_double_wide_mlp = bool(getattr(text_config, "use_double_wide_mlp", False)),
+        vocab_size_per_layer_input = getattr(
+            text_config,
+            "vocab_size_per_layer_input",
+            None,
+        )
+        or 0,
+        hidden_size_per_layer_input = getattr(
+            text_config,
+            "hidden_size_per_layer_input",
+            None,
+        )
+        or 0,
+        quantization_skip_modules = list(
+            quantization_config.get("llm_int8_skip_modules", []) or []
+        ),
+        quant_4bit_factor = quant_4bit_factor,
     )
+
+
+def _targets_all_linear(target_modules: list) -> bool:
+    normalized = {str(module).lower().replace("_", "-") for module in target_modules}
+    return normalized == {"all-linear"}
+
+
+def _head_dim(arch: ModelArchConfig) -> int:
+    return arch.head_dim or arch.hidden_size // arch.num_attention_heads
+
+
+def _layer_types(arch: ModelArchConfig) -> list:
+    if arch.layer_types and len(arch.layer_types) == arch.num_hidden_layers:
+        return arch.layer_types
+    return ["full_attention"] * arch.num_hidden_layers
+
+
+def _uses_structured_layer_shapes(arch: ModelArchConfig) -> bool:
+    return bool(
+        arch.layer_types
+        or arch.head_dim is not None
+        or arch.global_head_dim is not None
+        or arch.num_global_key_value_heads is not None
+        or arch.attention_k_eq_v
+        or arch.num_kv_shared_layers > 0
+        or arch.use_double_wide_mlp
+    )
+
+
+def _is_kv_shared_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
+    if arch.num_kv_shared_layers <= 0:
+        return False
+    first_shared = arch.num_hidden_layers - arch.num_kv_shared_layers
+    return layer_idx >= first_shared > 0
+
+
+def _layer_attention_dims(arch: ModelArchConfig, layer_idx: int) -> tuple:
+    layer_types = _layer_types(arch)
+    layer_type = layer_types[layer_idx]
+    is_sliding = layer_type == "sliding_attention"
+    head_dim = (
+        arch.global_head_dim
+        if not is_sliding and arch.global_head_dim
+        else _head_dim(arch)
+    )
+    use_alt_attention = arch.attention_k_eq_v and not is_sliding
+    num_kv_heads = (
+        arch.num_global_key_value_heads
+        if use_alt_attention and arch.num_global_key_value_heads
+        else arch.num_key_value_heads
+    )
+    q_size = arch.num_attention_heads * head_dim
+    kv_size = num_kv_heads * head_dim
+    has_k = not _is_kv_shared_layer(arch, layer_idx)
+    has_v = has_k and not use_alt_attention
+    return q_size, kv_size, has_k, has_v
+
+
+def _layer_mlp_size(arch: ModelArchConfig, layer_idx: int) -> int:
+    if arch.use_double_wide_mlp and _is_kv_shared_layer(arch, layer_idx):
+        return arch.intermediate_size * 2
+    return arch.intermediate_size
+
+
+def _text_linear_dims(
+    arch: ModelArchConfig,
+    layer_idx: int,
+) -> Dict[str, tuple[int, int]]:
+    hd = arch.hidden_size
+    if _uses_structured_layer_shapes(arch):
+        q_size, kv_size, has_k, has_v = _layer_attention_dims(arch, layer_idx)
+        mlp_size = _layer_mlp_size(arch, layer_idx)
+    else:
+        q_size = hd
+        kv_size = _get_kv_size(arch)
+        has_k = True
+        has_v = True
+        mlp_size = _get_mlp_size(arch)
+
+    dims = {
+        "q_proj": (hd, q_size),
+        "o_proj": (q_size, hd),
+    }
+    if has_k:
+        dims["k_proj"] = (hd, kv_size)
+    if has_v:
+        dims["v_proj"] = (hd, kv_size)
+
+    dims.update(
+        {
+            "gate_proj": (hd, mlp_size),
+            "up_proj": (hd, mlp_size),
+            "down_proj": (mlp_size, hd),
+        }
+    )
+    return dims
+
+
+def _module_path_matches(skip_module: str, alias: str) -> bool:
+    skip_parts = [part for part in skip_module.split(".") if part]
+    alias_parts = [part for part in alias.split(".") if part]
+    if not skip_parts or not alias_parts:
+        return False
+    if alias_parts[0] == "layers":
+        return skip_parts == alias_parts
+    return (
+        len(skip_parts) >= len(alias_parts)
+        and skip_parts[-len(alias_parts) :] == alias_parts
+    )
+
+
+def _add_module_aliases(
+    aliases: Dict[str, str],
+    canonical: str,
+    suffix: str,
+) -> None:
+    for prefix in (
+        "",
+        "model",
+        "model.model",
+        "language_model",
+        "language_model.model",
+        "model.language_model",
+        "model.language_model.model",
+    ):
+        alias = f"{prefix}.{suffix}" if prefix else suffix
+        aliases[alias] = canonical
+
+
+def _build_text_module_elements(
+    arch: ModelArchConfig,
+) -> tuple[Dict[str, int], Dict[str, str]]:
+    elements: Dict[str, int] = {}
+    aliases: Dict[str, str] = {}
+
+    for layer_idx in range(arch.num_hidden_layers):
+        layer_modules: Dict[str, int] = {}
+        dims = _text_linear_dims(arch, layer_idx)
+        attn_dims = {
+            name: dim
+            for name, dim in dims.items()
+            if name in ATTENTION_TARGET_MODULES
+        }
+        mlp_dims = {
+            name: dim
+            for name, dim in dims.items()
+            if name in MLP_TARGET_MODULES
+        }
+
+        for name, (in_dim, out_dim) in attn_dims.items():
+            layer_modules[f"self_attn.{name}"] = in_dim * out_dim
+
+        if arch.num_experts and arch.num_experts > 1:
+            mlp_total = _compute_moe_mlp_elements(arch)
+            layer_modules["mlp"] = mlp_total
+        else:
+            layer_modules.update(
+                {
+                    f"mlp.{name}": in_dim * out_dim
+                    for name, (in_dim, out_dim) in mlp_dims.items()
+                }
+            )
+
+        attn_total = sum(
+            value
+            for name, value in layer_modules.items()
+            if name.startswith("self_attn.")
+        )
+        mlp_total = sum(
+            value
+            for name, value in layer_modules.items()
+            if name == "mlp" or name.startswith("mlp.")
+        )
+
+        aggregate_modules = {
+            f"text.layers.{layer_idx}": attn_total + mlp_total,
+            f"text.layers.{layer_idx}.self_attn": attn_total,
+            f"text.layers.{layer_idx}.mlp": mlp_total,
+        }
+        elements.update(aggregate_modules)
+        for canonical in aggregate_modules:
+            suffix = canonical.removeprefix("text.")
+            _add_module_aliases(aliases, canonical, suffix)
+
+        for name, value in layer_modules.items():
+            canonical = f"text.layers.{layer_idx}.{name}"
+            elements[canonical] = value
+            _add_module_aliases(aliases, canonical, canonical.removeprefix("text."))
+
+    return elements, aliases
+
+
+def _compute_skipped_quantizable_elements(arch: ModelArchConfig) -> int:
+    if not arch.quantization_skip_modules:
+        return 0
+
+    module_elements, aliases = _build_text_module_elements(arch)
+    matched = set()
+    for skip_module in arch.quantization_skip_modules:
+        for alias, canonical in aliases.items():
+            if _module_path_matches(skip_module, alias):
+                matched.add(canonical)
+
+    pruned = {
+        canonical
+        for canonical in matched
+        if not any(
+            canonical != parent and canonical.startswith(f"{parent}.")
+            for parent in matched
+        )
+    }
+    return sum(module_elements[canonical] for canonical in pruned)
 
 
 def _get_kv_size(arch: ModelArchConfig) -> int:
@@ -267,9 +530,21 @@ def _compute_layer_elements(arch: ModelArchConfig):
     n_layers = arch.num_hidden_layers
     n_experts = _get_num_experts(arch)
 
-    attn_total = _compute_attn_elements(arch) * n_layers
-
-    if n_experts > 1:
+    if _uses_structured_layer_shapes(arch):
+        attn_total = 0
+        mlp_total = 0
+        for layer_idx in range(n_layers):
+            for name, (in_dim, out_dim) in _text_linear_dims(
+                arch,
+                layer_idx,
+            ).items():
+                elements = in_dim * out_dim
+                if name in ATTENTION_TARGET_MODULES:
+                    attn_total += elements
+                elif name in MLP_TARGET_MODULES:
+                    mlp_total += elements
+    elif n_experts > 1:
+        attn_total = _compute_attn_elements(arch) * n_layers
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
         mlp_total = (
@@ -277,10 +552,16 @@ def _compute_layer_elements(arch: ModelArchConfig):
             + _compute_dense_mlp_elements(arch) * n_dense
         )
     else:
+        attn_total = _compute_attn_elements(arch) * n_layers
         mlp_total = _compute_dense_mlp_elements(arch) * n_layers
 
     layernorms = 2 * hd
-    embed_tokens = arch.vocab_size * hd
+    per_layer_embed = (
+        arch.vocab_size_per_layer_input
+        * arch.hidden_size_per_layer_input
+        * n_layers
+    )
+    embed_tokens = arch.vocab_size * hd + per_layer_embed
     lm_head = 0 if arch.tie_word_embeddings else arch.vocab_size * hd
     return attn_total + mlp_total, layernorms, embed_tokens, lm_head
 
@@ -295,7 +576,16 @@ def compute_model_weights_bytes(
     non_quantizable = layernorms * n_layers + embed_tokens + lm_head
 
     if training_method == "qlora" and load_in_4bit:
-        return int(total_quantizable * 2 / QUANT_4BIT_FACTOR + non_quantizable * 2)
+        skipped_quantizable = min(
+            _compute_skipped_quantizable_elements(arch),
+            total_quantizable,
+        )
+        quantized = total_quantizable - skipped_quantizable
+        return int(
+            quantized * 2 / arch.quant_4bit_factor
+            + skipped_quantizable * 2
+            + non_quantizable * 2
+        )
 
     return int((total_quantizable + non_quantizable) * 2)
 
@@ -363,14 +653,26 @@ def compute_lora_params(
     lora_rank: int,
     target_modules: list,
 ) -> int:
+    all_linear = _targets_all_linear(target_modules)
+    selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
     hd = arch.hidden_size
     r = lora_rank
     n_layers = arch.num_hidden_layers
     n_experts = _get_num_experts(arch)
 
-    attn_total = _lora_attn_elements(arch, r, target_modules) * n_layers
-
-    if n_experts > 1:
+    use_structured_shapes = _uses_structured_layer_shapes(arch)
+    if use_structured_shapes:
+        total = 0
+        for layer_idx in range(n_layers):
+            for name, (in_dim, out_dim) in _text_linear_dims(
+                arch,
+                layer_idx,
+            ).items():
+                if name in selected_modules:
+                    total += in_dim * r + r * out_dim
+        return total
+    elif n_experts > 1:
+        attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
         # Include shared experts alongside routed experts
@@ -379,24 +681,25 @@ def compute_lora_params(
             hd,
             _get_mlp_size(arch),
             r,
-            target_modules,
+            selected_modules,
             moe_expert_mult,
         )
         dense_mlp = _lora_mlp_elements(
             hd,
             arch.intermediate_size,
             r,
-            target_modules,
+            selected_modules,
             1,
         )
         mlp_total = moe_mlp * n_moe + dense_mlp * n_dense
     else:
+        attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         mlp_total = (
             _lora_mlp_elements(
                 hd,
                 arch.intermediate_size,
                 r,
-                target_modules,
+                selected_modules,
                 1,
             )
             * n_layers
@@ -419,12 +722,26 @@ def compute_gradient_bytes(trainable_params: int) -> int:
     return trainable_params * 2
 
 
+def _is_flash_attention(attention_implementation: str) -> bool:
+    return attention_implementation == "flash_attention_2"
+
+
+def _compute_non_flash_attention_bytes(
+    arch: ModelArchConfig,
+    batch_size: int,
+    seq_len: int,
+) -> int:
+    score_elements = batch_size * arch.num_attention_heads * seq_len * seq_len
+    return int(score_elements * 2 * NON_FLASH_ATTENTION_FACTOR)
+
+
 def compute_activation_bytes(
     arch: ModelArchConfig,
     batch_size: int,
     seq_len: int,
     gradient_checkpointing: str,
     is_lora: bool = False,
+    attention_implementation: str = "flash_attention_2",
 ) -> int:
     hd = arch.hidden_size
     kv_size = _get_kv_size(arch)
@@ -449,7 +766,13 @@ def compute_activation_bytes(
     else:
         effective_layers = gc_multiplier
 
-    return int(per_layer_bytes * effective_layers)
+    linear_bytes = int(per_layer_bytes * effective_layers)
+    if not _is_flash_attention(attention_implementation):
+        return max(
+            linear_bytes,
+            _compute_non_flash_attention_bytes(arch, batch_size, seq_len),
+        )
+    return linear_bytes
 
 
 def estimate_training_vram(
@@ -474,21 +797,23 @@ def estimate_training_vram(
 
     trainable_params = lora_params if is_lora else compute_total_params(arch)
     optimizer_bytes = compute_optimizer_bytes(trainable_params, config.optimizer)
-    gradient_bytes = max(
-        compute_gradient_bytes(trainable_params),
-        int(model_weights * 0.15),
-    )
     activations_computed = compute_activation_bytes(
         arch,
         config.batch_size,
         config.max_seq_length,
         config.gradient_checkpointing,
         is_lora = is_lora,
+        attention_implementation = config.attention_implementation,
     )
-    activation_bytes = max(
-        activations_computed,
-        int(model_weights * 0.15 * (config.batch_size / 2)),
-    )
+    raw_gradient_bytes = compute_gradient_bytes(trainable_params)
+    gradient_floor = int(model_weights * 0.15)
+    if is_lora:
+        gradient_floor = min(
+            gradient_floor,
+            max(activations_computed, optimizer_bytes),
+        )
+    gradient_bytes = max(raw_gradient_bytes, gradient_floor)
+    activation_bytes = activations_computed
 
     return VramBreakdown(
         model_weights = model_weights,

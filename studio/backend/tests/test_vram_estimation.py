@@ -2,7 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from utils.hardware.vram_estimation import (
     ModelArchConfig,
@@ -116,6 +118,55 @@ GPT_OSS = ModelArchConfig(
     num_dense_layers = 0,
 )
 
+STRUCTURED_MIXED = ModelArchConfig(
+    hidden_size = 256,
+    num_hidden_layers = 6,
+    num_attention_heads = 4,
+    num_key_value_heads = 2,
+    intermediate_size = 512,
+    vocab_size = 1024,
+    tie_word_embeddings = True,
+    head_dim = 80,
+    global_head_dim = 96,
+    num_global_key_value_heads = 1,
+    attention_k_eq_v = True,
+    layer_types = [
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "full_attention",
+    ],
+)
+
+STRUCTURED_SHARED = ModelArchConfig(
+    hidden_size = 192,
+    num_hidden_layers = 4,
+    num_attention_heads = 6,
+    num_key_value_heads = 2,
+    intermediate_size = 384,
+    vocab_size = 512,
+    tie_word_embeddings = True,
+    head_dim = 32,
+    num_kv_shared_layers = 2,
+    use_double_wide_mlp = True,
+    vocab_size_per_layer_input = 128,
+    hidden_size_per_layer_input = 48,
+    quant_4bit_factor = 3.6,
+)
+
+QUANT_SKIP_STRUCTURED = replace(
+    STRUCTURED_SHARED,
+    quantization_skip_modules = [
+        "model.layers.0.self_attn.q_proj",
+        "language_model.model.layers.1.mlp",
+        "layers.2",
+        "vision_tower",
+        "embed_tokens",
+    ],
+)
+
 
 class TestExtractArchConfig(unittest.TestCase):
     def test_basic_config(self):
@@ -182,6 +233,42 @@ class TestExtractArchConfig(unittest.TestCase):
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.intermediate_size, 8192)
 
+    def test_structural_and_quantization_fields_are_config_derived(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 256,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            intermediate_size = 512,
+            vocab_size = 1024,
+            tie_word_embeddings = True,
+            head_dim = 80,
+            global_head_dim = 96,
+            num_global_key_value_heads = 1,
+            attention_k_eq_v = True,
+            layer_types = ["sliding_attention", "full_attention"],
+            num_kv_shared_layers = 1,
+            use_double_wide_mlp = True,
+            vocab_size_per_layer_input = 128,
+            hidden_size_per_layer_input = 48,
+            quantization_config = {
+                "bnb_4bit_use_double_quant": True,
+                "llm_int8_skip_modules": ["model.layers.0.self_attn"],
+            },
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.head_dim, 80)
+        self.assertEqual(arch.global_head_dim, 96)
+        self.assertEqual(arch.num_global_key_value_heads, 1)
+        self.assertTrue(arch.attention_k_eq_v)
+        self.assertEqual(arch.layer_types, ["sliding_attention", "full_attention"])
+        self.assertEqual(arch.num_kv_shared_layers, 1)
+        self.assertTrue(arch.use_double_wide_mlp)
+        self.assertEqual(arch.vocab_size_per_layer_input, 128)
+        self.assertEqual(arch.hidden_size_per_layer_input, 48)
+        self.assertEqual(arch.quantization_skip_modules, ["model.layers.0.self_attn"])
+        self.assertEqual(arch.quant_4bit_factor, 3.6)
+
 
 class TestModelWeightsBytes(unittest.TestCase):
     def test_llama_8b_fp16(self):
@@ -247,6 +334,41 @@ class TestLoraParams(unittest.TestCase):
         )
         self.assertEqual(dense_attn, moe_attn)
 
+    def test_all_linear_uses_default_text_modules(self):
+        text_only = compute_lora_params(STRUCTURED_MIXED, 16, DEFAULT_TARGET_MODULES)
+        all_linear = compute_lora_params(STRUCTURED_MIXED, 16, ["all-linear"])
+        self.assertEqual(all_linear, text_only)
+
+    def test_structural_layer_shapes_are_config_driven(self):
+        unstructured_arch = replace(
+            STRUCTURED_MIXED,
+            head_dim = None,
+            global_head_dim = None,
+            num_global_key_value_heads = None,
+            attention_k_eq_v = False,
+            layer_types = None,
+        )
+        self.assertNotEqual(
+            compute_lora_params(unstructured_arch, 16, ["all-linear"]),
+            compute_lora_params(STRUCTURED_MIXED, 16, ["all-linear"]),
+        )
+        self.assertNotEqual(
+            compute_model_weights_bytes(unstructured_arch, "qlora", True),
+            compute_model_weights_bytes(STRUCTURED_MIXED, "qlora", True),
+        )
+
+    def test_shared_kv_and_per_layer_inputs_change_weight_count(self):
+        unstructured_arch = replace(
+            STRUCTURED_SHARED,
+            head_dim = None,
+            num_kv_shared_layers = 0,
+            use_double_wide_mlp = False,
+        )
+        self.assertNotEqual(
+            compute_model_weights_bytes(unstructured_arch, "qlora", True),
+            compute_model_weights_bytes(STRUCTURED_SHARED, "qlora", True),
+        )
+
 
 class TestOptimizerBytes(unittest.TestCase):
     def test_adamw_8bit(self):
@@ -292,6 +414,68 @@ class TestActivationBytes(unittest.TestCase):
         act_2k = compute_activation_bytes(LLAMA_8B, 2, 2048, "unsloth")
         act_4k = compute_activation_bytes(LLAMA_8B, 2, 4096, "unsloth")
         self.assertAlmostEqual(act_4k / act_2k, 2.0, delta = 0.1)
+
+    def test_flash_attention_uses_linear_path(self):
+        flash = compute_activation_bytes(
+            STRUCTURED_MIXED,
+            1,
+            4096,
+            "unsloth",
+            is_lora = True,
+            attention_implementation = "flash_attention_2",
+        )
+        default = compute_activation_bytes(
+            STRUCTURED_MIXED,
+            1,
+            4096,
+            "unsloth",
+            is_lora = True,
+        )
+        self.assertEqual(flash, default)
+
+    def test_non_flash_attention_uses_quadratic_path(self):
+        seq_len = 4096
+        expected_quadratic = (
+            1 * STRUCTURED_MIXED.num_attention_heads * seq_len * seq_len * 2 * 12.0
+        )
+        for attention_implementation in ("eager", "sdpa", "unknown_impl", None):
+            with self.subTest(attention_implementation = attention_implementation):
+                non_flash = compute_activation_bytes(
+                    STRUCTURED_MIXED,
+                    1,
+                    seq_len,
+                    "unsloth",
+                    is_lora = True,
+                    attention_implementation = attention_implementation,
+                )
+                self.assertEqual(non_flash, int(expected_quadratic))
+
+
+class TestQuantizationSkips(unittest.TestCase):
+    def test_skipped_language_layers_stay_fp16(self):
+        no_skips = replace(QUANT_SKIP_STRUCTURED, quantization_skip_modules = [])
+        skipped = compute_model_weights_bytes(QUANT_SKIP_STRUCTURED, "qlora", True)
+        quantized = compute_model_weights_bytes(no_skips, "qlora", True)
+        self.assertGreater(skipped, quantized)
+
+    def test_non_language_skips_do_not_double_count_text_weights(self):
+        arch = replace(
+            QUANT_SKIP_STRUCTURED,
+            quantization_skip_modules = ["vision_tower", "embed_tokens"],
+        )
+        no_skips = replace(QUANT_SKIP_STRUCTURED, quantization_skip_modules = [])
+        self.assertEqual(
+            compute_model_weights_bytes(arch, "qlora", True),
+            compute_model_weights_bytes(no_skips, "qlora", True),
+        )
+
+    def test_double_quant_factor_reduces_quantized_weight_storage(self):
+        default_quant = replace(STRUCTURED_MIXED, quant_4bit_factor = 16 / 5)
+        double_quant = replace(STRUCTURED_MIXED, quant_4bit_factor = 3.6)
+        self.assertLess(
+            compute_model_weights_bytes(double_quant, "qlora", True),
+            compute_model_weights_bytes(default_quant, "qlora", True),
+        )
 
 
 class TestEstimateTrainingVram(unittest.TestCase):
@@ -428,6 +612,72 @@ class TestEstimateTrainingVram(unittest.TestCase):
         v32 = estimate_training_vram(LLAMA_8B, opt32)
         self.assertAlmostEqual(
             v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1
+        )
+
+    def test_qlora_gradient_floor_is_capped_by_trainable_scale(self):
+        config = TrainingVramConfig(
+            training_method = "qlora",
+            batch_size = 1,
+            max_seq_length = 512,
+            lora_rank = 16,
+            target_modules = ["all-linear"],
+            gradient_checkpointing = "unsloth",
+            optimizer = "adamw_8bit",
+            load_in_4bit = True,
+        )
+        breakdown = estimate_training_vram(LLAMA_8B, config)
+        lora_params = compute_lora_params(LLAMA_8B, 16, DEFAULT_TARGET_MODULES)
+        optimizer_bytes = compute_optimizer_bytes(lora_params, "adamw_8bit")
+        weight_floor = int(breakdown.model_weights * 0.15)
+
+        self.assertEqual(
+            breakdown.gradients,
+            max(breakdown.activations_computed, optimizer_bytes),
+        )
+        self.assertLess(breakdown.gradients, weight_floor)
+        self.assertEqual(breakdown.activations, breakdown.activations_computed)
+
+    def test_full_finetuning_gradient_floor_remains_uncapped(self):
+        config = TrainingVramConfig(
+            training_method = "full",
+            batch_size = 1,
+            max_seq_length = 512,
+            gradient_checkpointing = "unsloth",
+            optimizer = "adamw_8bit",
+            load_in_4bit = False,
+        )
+        expected_floor = int(compute_model_weights_bytes(LLAMA_8B, "full", False) * 0.15)
+        with patch(
+            "utils.hardware.vram_estimation.compute_gradient_bytes",
+            return_value = 1,
+        ):
+            breakdown = estimate_training_vram(LLAMA_8B, config)
+        self.assertEqual(breakdown.gradients, expected_floor)
+
+    def test_non_flash_attention_flows_into_training_estimate(self):
+        config = TrainingVramConfig(
+            training_method = "qlora",
+            batch_size = 1,
+            max_seq_length = 4096,
+            lora_rank = 16,
+            target_modules = ["all-linear"],
+            gradient_checkpointing = "unsloth",
+            optimizer = "adamw_8bit",
+            load_in_4bit = True,
+            attention_implementation = "eager",
+        )
+        breakdown = estimate_training_vram(STRUCTURED_MIXED, config)
+        self.assertEqual(breakdown.activations, breakdown.activations_computed)
+        self.assertGreater(
+            breakdown.activations,
+            compute_activation_bytes(
+                STRUCTURED_MIXED,
+                1,
+                4096,
+                "unsloth",
+                is_lora = True,
+                attention_implementation = "flash_attention_2",
+            ),
         )
 
 
