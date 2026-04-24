@@ -404,14 +404,10 @@ def _build_text_module_elements(
         layer_modules: Dict[str, int] = {}
         dims = _text_linear_dims(arch, layer_idx)
         attn_dims = {
-            name: dim
-            for name, dim in dims.items()
-            if name in ATTENTION_TARGET_MODULES
+            name: dim for name, dim in dims.items() if name in ATTENTION_TARGET_MODULES
         }
         mlp_dims = {
-            name: dim
-            for name, dim in dims.items()
-            if name in MLP_TARGET_MODULES
+            name: dim for name, dim in dims.items() if name in MLP_TARGET_MODULES
         }
 
         for name, (in_dim, out_dim) in attn_dims.items():
@@ -557,9 +553,7 @@ def _compute_layer_elements(arch: ModelArchConfig):
 
     layernorms = 2 * hd
     per_layer_embed = (
-        arch.vocab_size_per_layer_input
-        * arch.hidden_size_per_layer_input
-        * n_layers
+        arch.vocab_size_per_layer_input * arch.hidden_size_per_layer_input * n_layers
     )
     embed_tokens = arch.vocab_size * hd + per_layer_embed
     lm_head = 0 if arch.tie_word_embeddings else arch.vocab_size * hd

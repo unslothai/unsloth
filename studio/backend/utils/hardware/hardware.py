@@ -862,8 +862,8 @@ def estimate_required_model_memory_gb(
     )
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     if config is not None:
-        vram_config.attention_implementation = _determine_attention_impl_for_gpu_estimate(
-            config
+        vram_config.attention_implementation = (
+            _determine_attention_impl_for_gpu_estimate(config)
         )
     arch = extract_arch_config(config) if config is not None else None
 

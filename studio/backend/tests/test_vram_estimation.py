@@ -646,7 +646,9 @@ class TestEstimateTrainingVram(unittest.TestCase):
             optimizer = "adamw_8bit",
             load_in_4bit = False,
         )
-        expected_floor = int(compute_model_weights_bytes(LLAMA_8B, "full", False) * 0.15)
+        expected_floor = int(
+            compute_model_weights_bytes(LLAMA_8B, "full", False) * 0.15
+        )
         with patch(
             "utils.hardware.vram_estimation.compute_gradient_bytes",
             return_value = 1,
