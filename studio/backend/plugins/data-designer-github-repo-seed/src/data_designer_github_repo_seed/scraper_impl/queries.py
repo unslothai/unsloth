@@ -273,6 +273,66 @@ query PRsPage($owner: String!, $name: String!, $first: Int!, $after: String) {
 """,
 )
 
+PRS_PAGE_QUERY_LIGHT = _q(
+    [F_ACTOR, F_LABEL],
+    """
+query PRsPageLight($owner: String!, $name: String!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      totalCount
+      nodes {
+        id databaseId number title body state isDraft
+        createdAt updatedAt closedAt mergedAt
+        url
+        author { ...ActorFields }
+        labels(first: 50) { nodes { ...LabelFields } }
+        comments(first: 30) {
+          totalCount
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id databaseId createdAt updatedAt url body
+            author { ...ActorFields }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { cost remaining resetAt }
+}
+""",
+)
+
+ISSUES_PAGE_QUERY_LIGHT = _q(
+    [F_ACTOR, F_LABEL],
+    """
+query IssuesPageLight($owner: String!, $name: String!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      totalCount
+      nodes {
+        id databaseId number title body state
+        createdAt updatedAt closedAt
+        url
+        author { ...ActorFields }
+        labels(first: 50) { nodes { ...LabelFields } }
+        comments(first: 30) {
+          totalCount
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id databaseId createdAt updatedAt url body
+            author { ...ActorFields }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { cost remaining resetAt }
+}
+""",
+)
+
 ISSUE_COMMENTS_QUERY = _q(
     [F_ACTOR],
     """

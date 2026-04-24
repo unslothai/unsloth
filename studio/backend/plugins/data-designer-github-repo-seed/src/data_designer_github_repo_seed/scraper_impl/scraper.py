@@ -42,12 +42,17 @@ class RepoScraper:
         base_dir: Path,
         client: GitHubClient,
         trial_limits: Optional[Dict[str, int]] = None,
+        light: bool = False,
     ):
         self.owner = owner
         self.name = name
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
+        # When light=True, use trimmed GraphQL queries (no reviewThreads,
+        # reviews, commits, timelineItems, files) so PR pages can be much
+        # larger without blowing GitHub's node-count ceiling.
+        self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         self.repo_dir.mkdir(parents = True, exist_ok = True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
@@ -116,7 +121,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        per_page = 15  # conservative for heavy nested query
+        # Light query skips heavy nested fields; safe at 50 per page.
+        per_page = 50 if self.light else 15
         while True:
             page += 1
             vars_ = {
@@ -125,7 +131,8 @@ class RepoScraper:
                 "first": per_page,
                 "after": cursor,
             }
-            data = self.client.graphql(Q.ISSUES_PAGE_QUERY, vars_)
+            query = Q.ISSUES_PAGE_QUERY_LIGHT if self.light else Q.ISSUES_PAGE_QUERY
+            data = self.client.graphql(query, vars_)
             self._log_rate("issues", data)
             repo = (data.get("data") or {}).get("repository") or {}
             issues = repo.get("issues") or {}
@@ -134,15 +141,20 @@ class RepoScraper:
                 it["_owner"] = self.owner
                 it["_repo"] = self.name
                 it["_fetchedAt"] = ts()
-                # Paginate nested comments/timeline if more exist
-                if it.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_issue_comments(
-                        it["number"], it["comments"]["pageInfo"]["endCursor"]
-                    )
-                if it.get("timelineItems", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_issue_timeline(
-                        it["number"], it["timelineItems"]["pageInfo"]["endCursor"]
-                    )
+                if not self.light:
+                    if it.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
+                        self._paginate_issue_comments(
+                            it["number"], it["comments"]["pageInfo"]["endCursor"]
+                        )
+                    if (
+                        it.get("timelineItems", {})
+                        .get("pageInfo", {})
+                        .get("hasNextPage")
+                    ):
+                        self._paginate_issue_timeline(
+                            it["number"],
+                            it["timelineItems"]["pageInfo"]["endCursor"],
+                        )
                 if self.writers[key].write(it):
                     total_new += 1
             info = issues.get("pageInfo") or {}
@@ -217,7 +229,10 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        per_page = 3  # PR query is heavy; keep small so huge PRs don't OOM GraphQL
+        # Heavy nested PR query is capped at 3 per page (GitHub node-count
+        # ceiling); light query skips reviewThreads/reviews/commits/etc and
+        # can safely go to 25 per page.
+        per_page = 25 if self.light else 3
         while True:
             page += 1
             vars_ = {
@@ -226,7 +241,8 @@ class RepoScraper:
                 "first": per_page,
                 "after": cursor,
             }
-            data = self.client.graphql(Q.PRS_PAGE_QUERY, vars_)
+            query = Q.PRS_PAGE_QUERY_LIGHT if self.light else Q.PRS_PAGE_QUERY
+            data = self.client.graphql(query, vars_)
             self._log_rate("prs", data)
             repo = (data.get("data") or {}).get("repository") or {}
             prs = repo.get("pullRequests") or {}
@@ -236,24 +252,35 @@ class RepoScraper:
                 pr["_repo"] = self.name
                 pr["_fetchedAt"] = ts()
                 num = pr["number"]
-                if pr.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_comments(
-                        num, pr["comments"]["pageInfo"]["endCursor"]
-                    )
-                if pr.get("timelineItems", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_timeline(
-                        num, pr["timelineItems"]["pageInfo"]["endCursor"]
-                    )
-                if pr.get("commits", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_commits(
-                        num, pr["commits"]["pageInfo"]["endCursor"]
-                    )
-                if pr.get("files", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_files(num, pr["files"]["pageInfo"]["endCursor"])
-                if pr.get("reviewThreads", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_review_threads(
-                        num, pr["reviewThreads"]["pageInfo"]["endCursor"]
-                    )
+                if not self.light:
+                    if pr.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
+                        self._paginate_pr_comments(
+                            num, pr["comments"]["pageInfo"]["endCursor"]
+                        )
+                    if (
+                        pr.get("timelineItems", {})
+                        .get("pageInfo", {})
+                        .get("hasNextPage")
+                    ):
+                        self._paginate_pr_timeline(
+                            num, pr["timelineItems"]["pageInfo"]["endCursor"]
+                        )
+                    if pr.get("commits", {}).get("pageInfo", {}).get("hasNextPage"):
+                        self._paginate_pr_commits(
+                            num, pr["commits"]["pageInfo"]["endCursor"]
+                        )
+                    if pr.get("files", {}).get("pageInfo", {}).get("hasNextPage"):
+                        self._paginate_pr_files(
+                            num, pr["files"]["pageInfo"]["endCursor"]
+                        )
+                    if (
+                        pr.get("reviewThreads", {})
+                        .get("pageInfo", {})
+                        .get("hasNextPage")
+                    ):
+                        self._paginate_pr_review_threads(
+                            num, pr["reviewThreads"]["pageInfo"]["endCursor"]
+                        )
                 if self.writers[key].write(pr):
                     total_new += 1
             info = prs.get("pageInfo") or {}
@@ -693,9 +720,15 @@ def main():
                 if not only or "commits" in only:
                     default_ref = repo_meta.get("defaultBranchRef") or {}
                     default_branch = (
-                        default_ref.get("name") if isinstance(default_ref, dict) else None
+                        default_ref.get("name")
+                        if isinstance(default_ref, dict)
+                        else None
                     )
-                    branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
+                    branch = (
+                        f"refs/heads/{default_branch}"
+                        if default_branch
+                        else "refs/heads/main"
+                    )
                     scraper.scrape_commits(branch = branch)
             finally:
                 scraper.close()

@@ -131,7 +131,7 @@ function githubLimitString(value: string | undefined): string {
   return (value ?? "100").trim();
 }
 
-function GithubRepoSeedForm({
+export function GithubRepoSeedForm({
   config,
   onUpdate,
 }: {
@@ -208,7 +208,7 @@ function GithubRepoSeedForm({
   }
 
   return (
-    <div className="space-y-3 rounded-xl corner-squircle border border-border/60 p-3">
+    <div className="space-y-4">
       <div className="grid gap-1.5">
         <FieldLabel
           label="GitHub repositories"
@@ -217,7 +217,7 @@ function GithubRepoSeedForm({
         />
         <div
           className={cn(
-            "nodrag flex min-h-20 flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-1.5",
+            "nodrag flex min-h-11 flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-1.5",
             hasRepoErrors && "border-red-500/70",
           )}
         >
@@ -309,8 +309,8 @@ function GithubRepoSeedForm({
         )}
       </div>
 
-      <fieldset className="space-y-3 rounded-lg border border-border/60 p-3">
-        <legend className="px-1 text-xs font-semibold uppercase text-muted-foreground">
+      <fieldset className="space-y-3">
+        <legend className="text-xs font-semibold uppercase text-muted-foreground">
           Fetch scope
         </legend>
         <div className="grid gap-1.5">

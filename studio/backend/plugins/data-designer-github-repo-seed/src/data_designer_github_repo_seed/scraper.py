@@ -177,6 +177,7 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
             base_dir = base_dir,
             client = client,
             trial_limits = trial_limits,
+            light = True,
         )
         try:
             repo_meta = scraper.scrape_repo_meta()
@@ -189,7 +190,11 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
                 default_branch = (
                     default_ref.get("name") if isinstance(default_ref, dict) else None
                 )
-                branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
+                branch = (
+                    f"refs/heads/{default_branch}"
+                    if default_branch
+                    else "refs/heads/main"
+                )
                 scraper.scrape_commits(branch = branch)
         finally:
             scraper.close()

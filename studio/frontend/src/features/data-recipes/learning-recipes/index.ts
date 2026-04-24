@@ -143,9 +143,9 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
   },
   {
     id: "github-support-bot",
-    title: "GitHub Support Bot",
+    title: "GitHub Scraper",
     description:
-      "Generate realistic Unsloth support Q&A (question + structured answer with citations) for fine-tuning a support assistant.",
+      "Scrape real GitHub issues and PRs and turn each thread into a {user_request, grounded_response} training pair.",
     loadPayload: () => loadPayloadFromUrl(githubSupportBotUrl),
   },
 ];
