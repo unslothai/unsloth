@@ -416,9 +416,7 @@ export function useChatModelRuntime() {
             || previousVariant != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
           const rollbackMaxSeqLength = previousIsGguf
-            ? (stateBeforeUnload.customContextLength
-                ?? stateBeforeUnload.ggufContextLength
-                ?? 0)
+            ? (stateBeforeUnload.ggufContextLength ?? 0)
             : maxSeqLength;
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
