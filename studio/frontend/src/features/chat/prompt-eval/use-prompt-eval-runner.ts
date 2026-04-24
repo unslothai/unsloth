@@ -73,47 +73,53 @@ export function usePromptEvalRunner() {
         codeToolsEnabled: useChatRuntimeStore.getState().codeToolsEnabled,
       };
 
-      // Determine or create the benchmark ID and per-model thread IDs
-      let promptEvalId = store.activePromptEvalId;
+      // Determine or create the prompt eval ID and per-model thread IDs.
+      // If promptEvalId is already set (retro-fit: user enabled Prompt Eval
+      // on an existing chat), we reuse the existing ID and only create threads
+      // for models that don't yet have one.
+      let promptEvalId = store.activePromptEvalId ?? crypto.randomUUID();
       let threadIds = { ...store.activePromptEvalThreadIds };
+      const evalName = store.promptEvalName;
+      const runtimeStore = useChatRuntimeStore.getState();
+      const allModels = runtimeStore.models;
+      const allLoras = runtimeStore.loras;
 
-      if (!promptEvalId) {
-        // First message in this prompt eval session — create a new run
-        promptEvalId = crypto.randomUUID();
-        const runtimeStore = useChatRuntimeStore.getState();
-        const allModels = runtimeStore.models;
-        const allLoras = runtimeStore.loras;
+      // Create thread entries for any selected models that don't have one yet.
+      let createdAny = false;
+      for (let mi = 0; mi < selectedIds.length; mi++) {
+        const modelId = selectedIds[mi];
+        if (threadIds[modelId]) continue; // already has a thread (retro-fit or prior run)
 
-        for (let mi = 0; mi < selectedIds.length; mi++) {
-          const modelId = selectedIds[mi];
-          // Support "repoId::quantName" format for GGUF quant selections
-          const sepIdx = modelId.indexOf("::");
-          const baseModelId = sepIdx >= 0 ? modelId.slice(0, sepIdx) : modelId;
-          const quantVariant = sepIdx >= 0 ? modelId.slice(sepIdx + 2) : null;
+        // Support "repoId::quantName" format for GGUF quant selections
+        const sepIdx = modelId.indexOf("::");
+        const baseModelId = sepIdx >= 0 ? modelId.slice(0, sepIdx) : modelId;
+        const quantVariant = sepIdx >= 0 ? modelId.slice(sepIdx + 2) : null;
 
-          const modelEntry =
-            allModels.find((m) => m.id === baseModelId) ??
-            allLoras.find((l) => l.id === baseModelId);
-          const baseName =
-            (modelEntry as { name?: string })?.name ??
-            baseModelId.split("/").pop() ??
-            baseModelId;
-          const displayName = quantVariant ? `${baseName} ${quantVariant}` : baseName;
+        const modelEntry =
+          allModels.find((m) => m.id === baseModelId) ??
+          allLoras.find((l) => l.id === baseModelId);
+        const baseName =
+          (modelEntry as { name?: string })?.name ??
+          baseModelId.split("/").pop() ??
+          baseModelId;
+        const displayName = quantVariant ? `${baseName} ${quantVariant}` : baseName;
 
-          const threadId = crypto.randomUUID();
-          await db.threads.add({
-            id: threadId,
-            title: displayName,
-            modelType: "base",
-            modelId,
-            promptEvalId,
-            promptEvalName: store.promptEvalName,
-            archived: false,
-            createdAt: Date.now() + mi,
-          });
-          threadIds[modelId] = threadId;
-        }
+        const threadId = crypto.randomUUID();
+        await db.threads.add({
+          id: threadId,
+          title: displayName,
+          modelType: "base",
+          modelId,
+          promptEvalId,
+          promptEvalName: evalName,
+          archived: false,
+          createdAt: Date.now() + mi,
+        });
+        threadIds[modelId] = threadId;
+        createdAny = true;
+      }
 
+      if (createdAny || !store.activePromptEvalId) {
         usePromptEvalStore.getState().setActiveBenchmark(promptEvalId, threadIds);
       }
 

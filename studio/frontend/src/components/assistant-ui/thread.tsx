@@ -366,7 +366,7 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
           )}
           {promptEvalMode && (
             <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
-              <label className="text-xs font-medium text-primary whitespace-nowrap">Benchmark name:</label>
+              <label className="text-xs font-medium text-primary whitespace-nowrap">Prompt Eval name:</label>
               <input
                 value={promptEvalName}
                 onChange={(e) => setPromptEvalName(e.target.value)}

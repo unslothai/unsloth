@@ -615,6 +615,29 @@ export function ChatPage(): ReactElement {
     return () => setPromptEvalSendFn(null);
   }, [onPromptEvalRunMultiple, setPromptEvalSendFn]);
 
+  // Retro-fit: when Prompt Eval mode is enabled on an existing open thread,
+  // tag it immediately with a promptEvalId so the sidebar folder appears at
+  // once — without needing to send a first message to trigger thread creation.
+  const setActiveBenchmark = usePromptEvalStore((s) => s.setActiveBenchmark);
+  useEffect(() => {
+    if (!promptEvalMode) return;
+    if (usePromptEvalStore.getState().activePromptEvalId) return;
+    const currentThreadId = useChatRuntimeStore.getState().activeThreadId;
+    if (!currentThreadId || currentThreadId.startsWith("__LOCALID_")) return;
+    const checkpoint = useChatRuntimeStore.getState().params.checkpoint;
+    if (!checkpoint) return;
+    const ggufVariant = useChatRuntimeStore.getState().activeGgufVariant;
+    const fullModelId = ggufVariant ? `${checkpoint}::${ggufVariant}` : checkpoint;
+    const newEvalId = crypto.randomUUID();
+    const evalName = usePromptEvalStore.getState().promptEvalName;
+    void db.threads.update(currentThreadId, {
+      promptEvalId: newEvalId,
+      promptEvalName: evalName,
+    });
+    setActiveBenchmark(newEvalId, { [fullModelId]: currentThreadId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptEvalMode]);
+
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
     if (search.compare) {
