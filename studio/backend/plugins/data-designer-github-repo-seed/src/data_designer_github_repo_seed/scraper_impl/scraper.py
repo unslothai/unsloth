@@ -122,7 +122,15 @@ class RepoScraper:
         total_new = 0
         page = 0
         # Light query skips heavy nested fields; safe at 50 per page.
-        per_page = 50 if self.light else 15
+        # Clamp by trial_limit so e.g. limit=1 asks GitHub for first:1
+        # instead of fetching a full 50-item page and discarding 49.
+        page_cap = 50 if self.light else 15
+        trial_cap = self.trial_limits.get(key)
+        per_page = (
+            min(page_cap, trial_cap)
+            if trial_cap and trial_cap > 0
+            else page_cap
+        )
         while True:
             page += 1
             vars_ = {
@@ -231,8 +239,15 @@ class RepoScraper:
         page = 0
         # Heavy nested PR query is capped at 3 per page (GitHub node-count
         # ceiling); light query skips reviewThreads/reviews/commits/etc and
-        # can safely go to 25 per page.
-        per_page = 25 if self.light else 3
+        # can safely go to 25 per page. Clamp by trial_limit for small
+        # previews so limit=1 does not fetch a whole 25-item page.
+        page_cap = 25 if self.light else 3
+        trial_cap = self.trial_limits.get(key)
+        per_page = (
+            min(page_cap, trial_cap)
+            if trial_cap and trial_cap > 0
+            else page_cap
+        )
         while True:
             page += 1
             vars_ = {
@@ -538,7 +553,13 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        per_page = 100
+        page_cap = 100
+        trial_cap = self.trial_limits.get(key)
+        per_page = (
+            min(page_cap, trial_cap)
+            if trial_cap and trial_cap > 0
+            else page_cap
+        )
         while True:
             page += 1
             vars_ = {
