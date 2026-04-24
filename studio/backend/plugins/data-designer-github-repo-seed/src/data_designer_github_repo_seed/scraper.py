@@ -9,6 +9,7 @@ After scraping, we read the per-resource JSONL shards and flatten them into
 a single unified JSONL with stable columns (`item_type`, `repo`, `number`,
 `title`, `body`, ...).
 """
+
 from __future__ import annotations
 
 import json
@@ -59,7 +60,7 @@ def _resolve_token(token: str) -> str:
 def _read_jsonl(path: Path, max_rows: int | None = None):
     if not path.exists():
         return
-    with path.open(encoding="utf-8") as f:
+    with path.open(encoding = "utf-8") as f:
         for i, line in enumerate(f):
             if not line.strip():
                 continue
@@ -72,7 +73,11 @@ def _read_jsonl(path: Path, max_rows: int | None = None):
 
 
 def _flatten_issue_row(r: dict, repo: str, include_comments: bool, max_c: int) -> dict:
-    labels = [l.get("name") for l in (r.get("labels", {}) or {}).get("nodes", []) if l.get("name")]
+    labels = [
+        l.get("name")
+        for l in (r.get("labels", {}) or {}).get("nodes", [])
+        if l.get("name")
+    ]
     comments_nodes = (r.get("comments") or {}).get("nodes") or []
     comments_text = ""
     if include_comments and comments_nodes:
@@ -98,7 +103,11 @@ def _flatten_issue_row(r: dict, repo: str, include_comments: bool, max_c: int) -
 
 
 def _flatten_pr_row(r: dict, repo: str, include_comments: bool, max_c: int) -> dict:
-    labels = [l.get("name") for l in (r.get("labels", {}) or {}).get("nodes", []) if l.get("name")]
+    labels = [
+        l.get("name")
+        for l in (r.get("labels", {}) or {}).get("nodes", [])
+        if l.get("name")
+    ]
     comments_nodes = (r.get("comments") or {}).get("nodes") or []
     comments_text = ""
     if include_comments and comments_nodes:
@@ -126,7 +135,7 @@ def _flatten_pr_row(r: dict, repo: str, include_comments: bool, max_c: int) -> d
 def _flatten_commit_row(r: dict, repo: str) -> dict:
     msg = r.get("messageHeadline") or r.get("message") or ""
     body = r.get("messageBody") or r.get("message") or msg
-    author = (r.get("author") or {})
+    author = r.get("author") or {}
     return {
         "item_type": "commit",
         "repo": repo,
@@ -148,7 +157,7 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
     os.environ["GH_TOKEN"] = token
     GitHubClient, RepoScraper = _load_impl()
     client = GitHubClient()
-    base_dir.mkdir(parents=True, exist_ok=True)
+    base_dir.mkdir(parents = True, exist_ok = True)
 
     # Per-resource trial limits. limit <= 0 means "all": use a very large cap.
     effective_limit = cfg.limit if cfg.limit and cfg.limit > 0 else 1_000_000
@@ -164,11 +173,11 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
     for repo in cfg.repos:
         owner, name = repo.split("/", 1)
         scraper = RepoScraper(
-            owner=owner,
-            name=name,
-            base_dir=base_dir,
-            client=client,
-            trial_limits=trial_limits,
+            owner = owner,
+            name = name,
+            base_dir = base_dir,
+            client = client,
+            trial_limits = trial_limits,
         )
         try:
             scraper.scrape_repo_meta()
@@ -185,10 +194,18 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
         repo_dir = base_dir / f"{owner}__{name}"
         if "issues" in cfg.item_types:
             for row in _read_jsonl(repo_dir / "issues.jsonl", read_cap):
-                all_rows.append(_flatten_issue_row(row, repo, cfg.include_comments, cfg.max_comments_per_item))
+                all_rows.append(
+                    _flatten_issue_row(
+                        row, repo, cfg.include_comments, cfg.max_comments_per_item
+                    )
+                )
         if "pulls" in cfg.item_types:
             for row in _read_jsonl(repo_dir / "pull_requests.jsonl", read_cap):
-                all_rows.append(_flatten_pr_row(row, repo, cfg.include_comments, cfg.max_comments_per_item))
+                all_rows.append(
+                    _flatten_pr_row(
+                        row, repo, cfg.include_comments, cfg.max_comments_per_item
+                    )
+                )
         if "commits" in cfg.item_types:
             for row in _read_jsonl(repo_dir / "commits.jsonl", read_cap):
                 all_rows.append(_flatten_commit_row(row, repo))
@@ -197,13 +214,13 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
 
 
 def materialize_to_jsonl(cfg: ScrapeConfig, out_dir: Path) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents = True, exist_ok = True)
     tag = "-".join(r.replace("/", "__") for r in cfg.repos)[:120]
     kinds = "-".join(cfg.item_types)
     fname = f"github_{tag}__{kinds}__{cfg.limit}_{int(time.time())}.jsonl"
     out = out_dir / fname
     rows = scrape(cfg, out_dir / "raw")
-    with out.open("w", encoding="utf-8") as f:
+    with out.open("w", encoding = "utf-8") as f:
         for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            f.write(json.dumps(r, ensure_ascii = False) + "\n")
     return out

@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Checkpoint state management for resumable scraping."""
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,7 @@ from typing import Any, Dict
 class StateStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
         if self.path.exists():
@@ -47,17 +48,18 @@ class StateStore:
     def _flush(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with tmp.open("w") as f:
-            json.dump(self._data, f, indent=2, default=str)
+            json.dump(self._data, f, indent = 2, default = str)
         os.replace(tmp, self.path)
 
 
 class JsonlWriter:
     """Append-only JSONL writer, thread-safe, with line buffering."""
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
-        self._fh = self.path.open("a", buffering=1)
+        self._fh = self.path.open("a", buffering = 1)
         self._count_seen_keys: set[str] = set()
         # Preload seen keys if file exists (for dedup across resumes)
         if self.path.exists() and self.path.stat().st_size > 0:
@@ -91,7 +93,7 @@ class JsonlWriter:
                 return False
             if k is not None:
                 self._count_seen_keys.add(k)
-            self._fh.write(json.dumps(obj, default=str, ensure_ascii=False))
+            self._fh.write(json.dumps(obj, default = str, ensure_ascii = False))
             self._fh.write("\n")
             self._fh.flush()
         return True

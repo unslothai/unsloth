@@ -20,12 +20,12 @@ class GitHubRepoSeedReader(SeedReader[GitHubRepoSeedSource]):
     def get_dataset_uri(self) -> str:
         out_dir = Path(tempfile.gettempdir()) / "studio-github-repo-seed"
         cfg = ScrapeConfig(
-            repos=list(self.source.repos),
-            token=self.source.token,
-            item_types=list(self.source.item_types),
-            limit=self.source.limit,
-            include_comments=self.source.include_comments,
-            max_comments_per_item=self.source.max_comments_per_item,
+            repos = list(self.source.repos),
+            token = self.source.token,
+            item_types = list(self.source.item_types),
+            limit = self.source.limit,
+            include_comments = self.source.include_comments,
+            max_comments_per_item = self.source.max_comments_per_item,
         )
         path = materialize_to_jsonl(cfg, out_dir)
         return str(path)

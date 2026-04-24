@@ -131,7 +131,9 @@ def _q(parts: list[str], body: str) -> str:
     return "\n".join(parts + [body])
 
 
-ISSUES_PAGE_QUERY = _q([F_ACTOR, F_LABEL, F_TIMELINE], """
+ISSUES_PAGE_QUERY = _q(
+    [F_ACTOR, F_LABEL, F_TIMELINE],
+    """
 query IssuesPage($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     issues(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -169,9 +171,12 @@ query IssuesPage($owner: String!, $name: String!, $first: Int!, $after: String) 
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-PRS_PAGE_QUERY = _q([F_ACTOR, F_LABEL, F_PR_TIMELINE], """
+PRS_PAGE_QUERY = _q(
+    [F_ACTOR, F_LABEL, F_PR_TIMELINE],
+    """
 query PRsPage($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -265,9 +270,12 @@ query PRsPage($owner: String!, $name: String!, $first: Int!, $after: String) {
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-ISSUE_COMMENTS_QUERY = _q([F_ACTOR], """
+ISSUE_COMMENTS_QUERY = _q(
+    [F_ACTOR],
+    """
 query IssueComments($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
@@ -298,9 +306,12 @@ query IssueComments($owner: String!, $name: String!, $number: Int!, $after: Stri
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-ISSUE_TIMELINE_QUERY = _q([F_ACTOR, F_TIMELINE], """
+ISSUE_TIMELINE_QUERY = _q(
+    [F_ACTOR, F_TIMELINE],
+    """
 query IssueTimeline($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
@@ -312,9 +323,12 @@ query IssueTimeline($owner: String!, $name: String!, $number: Int!, $after: Stri
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-PR_TIMELINE_QUERY = _q([F_ACTOR, F_PR_TIMELINE], """
+PR_TIMELINE_QUERY = _q(
+    [F_ACTOR, F_PR_TIMELINE],
+    """
 query PRTimeline($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -326,7 +340,8 @@ query PRTimeline($owner: String!, $name: String!, $number: Int!, $after: String)
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
 PR_COMMITS_QUERY = """
 query PRCommits($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -364,7 +379,9 @@ query PRFiles($owner: String!, $name: String!, $number: Int!, $after: String) {
 }
 """
 
-PR_REVIEW_THREADS_QUERY = _q([F_ACTOR], """
+PR_REVIEW_THREADS_QUERY = _q(
+    [F_ACTOR],
+    """
 query PRReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -389,9 +406,12 @@ query PRReviewThreads($owner: String!, $name: String!, $number: Int!, $after: St
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-DISCUSSIONS_PAGE_QUERY = _q([F_ACTOR, F_LABEL], """
+DISCUSSIONS_PAGE_QUERY = _q(
+    [F_ACTOR, F_LABEL],
+    """
 query DiscussionsPage($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     discussions(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -437,9 +457,12 @@ query DiscussionsPage($owner: String!, $name: String!, $first: Int!, $after: Str
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-DISCUSSION_COMMENTS_QUERY = _q([F_ACTOR], """
+DISCUSSION_COMMENTS_QUERY = _q(
+    [F_ACTOR],
+    """
 query DiscussionComments($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     discussion(number: $number) {
@@ -467,9 +490,12 @@ query DiscussionComments($owner: String!, $name: String!, $number: Int!, $after:
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-DISCUSSION_REPLIES_QUERY = _q([F_ACTOR], """
+DISCUSSION_REPLIES_QUERY = _q(
+    [F_ACTOR],
+    """
 query DiscussionReplies($commentId: ID!, $after: String) {
   node(id: $commentId) {
     ... on DiscussionComment {
@@ -486,7 +512,8 @@ query DiscussionReplies($commentId: ID!, $after: String) {
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
 COMMITS_PAGE_QUERY = """
 query CommitsPage($owner: String!, $name: String!, $first: Int!, $after: String, $branch: String!) {
@@ -519,7 +546,9 @@ query CommitsPage($owner: String!, $name: String!, $first: Int!, $after: String,
 }
 """
 
-RELEASES_QUERY = _q([F_ACTOR], """
+RELEASES_QUERY = _q(
+    [F_ACTOR],
+    """
 query Releases($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     releases(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -540,9 +569,12 @@ query Releases($owner: String!, $name: String!, $first: Int!, $after: String) {
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
-LABELS_QUERY = _q([F_LABEL], """
+LABELS_QUERY = _q(
+    [F_LABEL],
+    """
 query LabelsList($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     labels(first: $first, after: $after) {
@@ -552,7 +584,8 @@ query LabelsList($owner: String!, $name: String!, $first: Int!, $after: String) 
   }
   rateLimit { cost remaining resetAt }
 }
-""")
+""",
+)
 
 MILESTONES_QUERY = """
 query Milestones($owner: String!, $name: String!, $first: Int!, $after: String) {

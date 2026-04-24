@@ -5,6 +5,7 @@
 
 Resumable via state file. Writes JSONL shards under data/{repo}/{resource}.jsonl.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,25 +35,42 @@ def ts() -> str:
 
 
 class RepoScraper:
-    def __init__(self, owner: str, name: str, base_dir: Path, client: GitHubClient,
-                 trial_limits: Optional[Dict[str, int]] = None):
+    def __init__(
+        self,
+        owner: str,
+        name: str,
+        base_dir: Path,
+        client: GitHubClient,
+        trial_limits: Optional[Dict[str, int]] = None,
+    ):
         self.owner = owner
         self.name = name
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
         self.repo_dir = base_dir / f"{owner}__{name}"
-        self.repo_dir.mkdir(parents=True, exist_ok=True)
+        self.repo_dir.mkdir(parents = True, exist_ok = True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
 
         # Writers
         self.writers: Dict[str, JsonlWriter] = {}
-        for key in ("issues", "pull_requests", "discussions",
-                    "commits", "releases", "labels", "milestones",
-                    "pr_extra_comments", "pr_extra_timeline", "pr_extra_reviews",
-                    "issue_extra_comments", "issue_extra_timeline",
-                    "discussion_extra_comments", "discussion_extra_replies",
-                    "repo_meta"):
+        for key in (
+            "issues",
+            "pull_requests",
+            "discussions",
+            "commits",
+            "releases",
+            "labels",
+            "milestones",
+            "pr_extra_comments",
+            "pr_extra_timeline",
+            "pr_extra_reviews",
+            "issue_extra_comments",
+            "issue_extra_timeline",
+            "discussion_extra_comments",
+            "discussion_extra_replies",
+            "repo_meta",
+        ):
             self.writers[key] = JsonlWriter(self.repo_dir / f"{key}.jsonl")
 
     # ----- helpers -----
@@ -63,14 +81,25 @@ class RepoScraper:
         return counter >= lim
 
     def _log_rate(self, where: str, data: Dict[str, Any]) -> None:
-        rl = data.get("data", {}).get("rateLimit") if isinstance(data.get("data"), dict) else None
+        rl = (
+            data.get("data", {}).get("rateLimit")
+            if isinstance(data.get("data"), dict)
+            else None
+        )
         if rl:
-            log.debug("[%s] rate cost=%s remaining=%s resetAt=%s",
-                      where, rl.get("cost"), rl.get("remaining"), rl.get("resetAt"))
+            log.debug(
+                "[%s] rate cost=%s remaining=%s resetAt=%s",
+                where,
+                rl.get("cost"),
+                rl.get("remaining"),
+                rl.get("resetAt"),
+            )
 
     # ----- repo meta -----
     def scrape_repo_meta(self) -> None:
-        data = self.client.graphql(Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name})
+        data = self.client.graphql(
+            Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name}
+        )
         self._log_rate("repo_meta", data)
         repo = data.get("data", {}).get("repository") or {}
         repo["_fetchedAt"] = ts()
@@ -89,11 +118,16 @@ class RepoScraper:
         per_page = 15  # conservative for heavy nested query
         while True:
             page += 1
-            vars_ = {"owner": self.owner, "name": self.name, "first": per_page, "after": cursor}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "first": per_page,
+                "after": cursor,
+            }
             data = self.client.graphql(Q.ISSUES_PAGE_QUERY, vars_)
             self._log_rate("issues", data)
             repo = (data.get("data") or {}).get("repository") or {}
-            issues = (repo.get("issues") or {})
+            issues = repo.get("issues") or {}
             nodes = issues.get("nodes") or []
             for it in nodes:
                 it["_owner"] = self.owner
@@ -101,17 +135,27 @@ class RepoScraper:
                 it["_fetchedAt"] = ts()
                 # Paginate nested comments/timeline if more exist
                 if it.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_issue_comments(it["number"], it["comments"]["pageInfo"]["endCursor"])
+                    self._paginate_issue_comments(
+                        it["number"], it["comments"]["pageInfo"]["endCursor"]
+                    )
                 if it.get("timelineItems", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_issue_timeline(it["number"], it["timelineItems"]["pageInfo"]["endCursor"])
+                    self._paginate_issue_timeline(
+                        it["number"], it["timelineItems"]["pageInfo"]["endCursor"]
+                    )
                 if self.writers[key].write(it):
                     total_new += 1
             info = issues.get("pageInfo") or {}
             cursor = info.get("endCursor")
             self.state.set(f"{key}_cursor", cursor)
-            log.info("[%s/%s] issues page %d (+%d) cursor=%s remaining=%s",
-                     self.owner, self.name, page, len(nodes), str(cursor)[:20],
-                     self.client.graphql_remaining)
+            log.info(
+                "[%s/%s] issues page %d (+%d) cursor=%s remaining=%s",
+                self.owner,
+                self.name,
+                page,
+                len(nodes),
+                str(cursor)[:20],
+                self.client.graphql_remaining,
+            )
             if self._trial_stop(key, total_new):
                 log.info("Trial limit reached for issues (%d)", total_new)
                 return total_new
@@ -123,10 +167,17 @@ class RepoScraper:
     def _paginate_issue_comments(self, number: int, after: str) -> None:
         cur = after
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.ISSUE_COMMENTS_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("issueOrPullRequest") or {})
-            comments = (item.get("comments") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get(
+                "issueOrPullRequest"
+            ) or {}
+            comments = item.get("comments") or {}
             for c in comments.get("nodes") or []:
                 c["_owner"] = self.owner
                 c["_repo"] = self.name
@@ -138,10 +189,15 @@ class RepoScraper:
     def _paginate_issue_timeline(self, number: int, after: str) -> None:
         cur = after
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.ISSUE_TIMELINE_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("issue") or {})
-            tl = (item.get("timelineItems") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get("issue") or {}
+            tl = item.get("timelineItems") or {}
             for ev in tl.get("nodes") or []:
                 ev["_owner"] = self.owner
                 ev["_repo"] = self.name
@@ -163,11 +219,16 @@ class RepoScraper:
         per_page = 3  # PR query is heavy; keep small so huge PRs don't OOM GraphQL
         while True:
             page += 1
-            vars_ = {"owner": self.owner, "name": self.name, "first": per_page, "after": cursor}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "first": per_page,
+                "after": cursor,
+            }
             data = self.client.graphql(Q.PRS_PAGE_QUERY, vars_)
             self._log_rate("prs", data)
             repo = (data.get("data") or {}).get("repository") or {}
-            prs = (repo.get("pullRequests") or {})
+            prs = repo.get("pullRequests") or {}
             nodes = prs.get("nodes") or []
             for pr in nodes:
                 pr["_owner"] = self.owner
@@ -175,23 +236,37 @@ class RepoScraper:
                 pr["_fetchedAt"] = ts()
                 num = pr["number"]
                 if pr.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_comments(num, pr["comments"]["pageInfo"]["endCursor"])
+                    self._paginate_pr_comments(
+                        num, pr["comments"]["pageInfo"]["endCursor"]
+                    )
                 if pr.get("timelineItems", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_timeline(num, pr["timelineItems"]["pageInfo"]["endCursor"])
+                    self._paginate_pr_timeline(
+                        num, pr["timelineItems"]["pageInfo"]["endCursor"]
+                    )
                 if pr.get("commits", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_commits(num, pr["commits"]["pageInfo"]["endCursor"])
+                    self._paginate_pr_commits(
+                        num, pr["commits"]["pageInfo"]["endCursor"]
+                    )
                 if pr.get("files", {}).get("pageInfo", {}).get("hasNextPage"):
                     self._paginate_pr_files(num, pr["files"]["pageInfo"]["endCursor"])
                 if pr.get("reviewThreads", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_pr_review_threads(num, pr["reviewThreads"]["pageInfo"]["endCursor"])
+                    self._paginate_pr_review_threads(
+                        num, pr["reviewThreads"]["pageInfo"]["endCursor"]
+                    )
                 if self.writers[key].write(pr):
                     total_new += 1
             info = prs.get("pageInfo") or {}
             cursor = info.get("endCursor")
             self.state.set(f"{key}_cursor", cursor)
-            log.info("[%s/%s] PRs page %d (+%d) cursor=%s remaining=%s",
-                     self.owner, self.name, page, len(nodes), str(cursor)[:20],
-                     self.client.graphql_remaining)
+            log.info(
+                "[%s/%s] PRs page %d (+%d) cursor=%s remaining=%s",
+                self.owner,
+                self.name,
+                page,
+                len(nodes),
+                str(cursor)[:20],
+                self.client.graphql_remaining,
+            )
             if self._trial_stop(key, total_new):
                 log.info("Trial limit reached for PRs (%d)", total_new)
                 return total_new
@@ -203,10 +278,17 @@ class RepoScraper:
     def _paginate_pr_comments(self, number: int, after: str) -> None:
         cur = after
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.ISSUE_COMMENTS_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("issueOrPullRequest") or {})
-            comments = (item.get("comments") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get(
+                "issueOrPullRequest"
+            ) or {}
+            comments = item.get("comments") or {}
             for c in comments.get("nodes") or []:
                 c["_owner"] = self.owner
                 c["_repo"] = self.name
@@ -218,10 +300,17 @@ class RepoScraper:
     def _paginate_pr_timeline(self, number: int, after: str) -> None:
         cur = after
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.PR_TIMELINE_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
-            tl = (item.get("timelineItems") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get(
+                "pullRequest"
+            ) or {}
+            tl = item.get("timelineItems") or {}
             for ev in tl.get("nodes") or []:
                 ev["_owner"] = self.owner
                 ev["_repo"] = self.name
@@ -236,10 +325,17 @@ class RepoScraper:
         if out_key not in self.writers:
             self.writers[out_key] = JsonlWriter(self.repo_dir / f"{out_key}.jsonl")
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.PR_COMMITS_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
-            cc = (item.get("commits") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get(
+                "pullRequest"
+            ) or {}
+            cc = item.get("commits") or {}
             for c in cc.get("nodes") or []:
                 c["_owner"] = self.owner
                 c["_repo"] = self.name
@@ -254,10 +350,17 @@ class RepoScraper:
         if out_key not in self.writers:
             self.writers[out_key] = JsonlWriter(self.repo_dir / f"{out_key}.jsonl")
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.PR_FILES_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
-            ff = (item.get("files") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get(
+                "pullRequest"
+            ) or {}
+            ff = item.get("files") or {}
             for f in ff.get("nodes") or []:
                 f["_owner"] = self.owner
                 f["_repo"] = self.name
@@ -274,10 +377,17 @@ class RepoScraper:
         if out_key not in self.writers:
             self.writers[out_key] = JsonlWriter(self.repo_dir / f"{out_key}.jsonl")
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.PR_REVIEW_THREADS_QUERY, vars_)
-            item = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
-            rt = (item.get("reviewThreads") or {})
+            item = ((data.get("data") or {}).get("repository") or {}).get(
+                "pullRequest"
+            ) or {}
+            rt = item.get("reviewThreads") or {}
             for th in rt.get("nodes") or []:
                 th["_owner"] = self.owner
                 th["_repo"] = self.name
@@ -299,11 +409,16 @@ class RepoScraper:
         per_page = 15
         while True:
             page += 1
-            vars_ = {"owner": self.owner, "name": self.name, "first": per_page, "after": cursor}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "first": per_page,
+                "after": cursor,
+            }
             data = self.client.graphql(Q.DISCUSSIONS_PAGE_QUERY, vars_)
             self._log_rate("discussions", data)
             repo = (data.get("data") or {}).get("repository") or {}
-            dd = (repo.get("discussions") or {})
+            dd = repo.get("discussions") or {}
             nodes = dd.get("nodes") or []
             for d in nodes:
                 d["_owner"] = self.owner
@@ -311,19 +426,29 @@ class RepoScraper:
                 d["_fetchedAt"] = ts()
                 num = d["number"]
                 if d.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
-                    self._paginate_discussion_comments(num, d["comments"]["pageInfo"]["endCursor"])
+                    self._paginate_discussion_comments(
+                        num, d["comments"]["pageInfo"]["endCursor"]
+                    )
                 # paginate replies per comment if needed
                 for c in d.get("comments", {}).get("nodes", []) or []:
                     if c.get("replies", {}).get("pageInfo", {}).get("hasNextPage"):
-                        self._paginate_discussion_replies(c["id"], c["replies"]["pageInfo"]["endCursor"], num)
+                        self._paginate_discussion_replies(
+                            c["id"], c["replies"]["pageInfo"]["endCursor"], num
+                        )
                 if self.writers[key].write(d):
                     total_new += 1
             info = dd.get("pageInfo") or {}
             cursor = info.get("endCursor")
             self.state.set(f"{key}_cursor", cursor)
-            log.info("[%s/%s] discussions page %d (+%d) cursor=%s remaining=%s",
-                     self.owner, self.name, page, len(nodes), str(cursor)[:20],
-                     self.client.graphql_remaining)
+            log.info(
+                "[%s/%s] discussions page %d (+%d) cursor=%s remaining=%s",
+                self.owner,
+                self.name,
+                page,
+                len(nodes),
+                str(cursor)[:20],
+                self.client.graphql_remaining,
+            )
             if self._trial_stop(key, total_new):
                 return total_new
             if not info.get("hasNextPage"):
@@ -334,10 +459,17 @@ class RepoScraper:
     def _paginate_discussion_comments(self, number: int, after: str) -> None:
         cur = after
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "number": number, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "number": number,
+                "after": cur,
+            }
             data = self.client.graphql(Q.DISCUSSION_COMMENTS_QUERY, vars_)
-            disc = (((data.get("data") or {}).get("repository") or {}).get("discussion") or {})
-            cc = (disc.get("comments") or {})
+            disc = ((data.get("data") or {}).get("repository") or {}).get(
+                "discussion"
+            ) or {}
+            cc = disc.get("comments") or {}
             for c in cc.get("nodes") or []:
                 c["_owner"] = self.owner
                 c["_repo"] = self.name
@@ -346,10 +478,17 @@ class RepoScraper:
             info = cc.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
-    def _paginate_discussion_replies(self, comment_id: str, after: str, disc_number: int) -> None:
+    def _paginate_discussion_replies(
+        self, comment_id: str, after: str, disc_number: int
+    ) -> None:
         cur = after
         while cur:
-            vars_ = {"owner": self.owner, "name": self.name, "commentId": comment_id, "after": cur}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "commentId": comment_id,
+                "after": cur,
+            }
             data = self.client.graphql(Q.DISCUSSION_REPLIES_QUERY, vars_)
             node = (data.get("data") or {}).get("node") or {}
             replies = node.get("replies") or {}
@@ -374,11 +513,16 @@ class RepoScraper:
         per_page = 100
         while True:
             page += 1
-            vars_ = {"owner": self.owner, "name": self.name,
-                     "first": per_page, "after": cursor, "branch": branch}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "first": per_page,
+                "after": cursor,
+                "branch": branch,
+            }
             data = self.client.graphql(Q.COMMITS_PAGE_QUERY, vars_)
             self._log_rate("commits", data)
-            ref = (((data.get("data") or {}).get("repository") or {}).get("ref") or {})
+            ref = ((data.get("data") or {}).get("repository") or {}).get("ref") or {}
             tgt = ref.get("target") or {}
             hist = tgt.get("history") or {}
             nodes = hist.get("nodes") or []
@@ -391,8 +535,14 @@ class RepoScraper:
             info = hist.get("pageInfo") or {}
             cursor = info.get("endCursor")
             self.state.set(f"{key}_cursor", cursor)
-            log.info("[%s/%s] commits page %d (+%d) remaining=%s",
-                     self.owner, self.name, page, len(nodes), self.client.graphql_remaining)
+            log.info(
+                "[%s/%s] commits page %d (+%d) remaining=%s",
+                self.owner,
+                self.name,
+                page,
+                len(nodes),
+                self.client.graphql_remaining,
+            )
             if self._trial_stop(key, total_new):
                 return total_new
             if not info.get("hasNextPage"):
@@ -417,10 +567,15 @@ class RepoScraper:
             return 0
         total_new = 0
         while True:
-            vars_ = {"owner": self.owner, "name": self.name, "first": 50, "after": cursor}
+            vars_ = {
+                "owner": self.owner,
+                "name": self.name,
+                "first": 50,
+                "after": cursor,
+            }
             data = self.client.graphql(query, vars_)
             repo = (data.get("data") or {}).get("repository") or {}
-            col = (repo.get(field) or {})
+            col = repo.get(field) or {}
             for it in col.get("nodes") or []:
                 it["_owner"] = self.owner
                 it["_repo"] = self.name
@@ -447,47 +602,70 @@ class RepoScraper:
 
 
 def setup_logging(log_file: Path) -> None:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.parent.mkdir(parents = True, exist_ok = True)
     fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_file, mode="a", encoding="utf-8"),
+        logging.FileHandler(log_file, mode = "a", encoding = "utf-8"),
     ]
-    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
+    logging.basicConfig(level = logging.INFO, format = fmt, handlers = handlers, force = True)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-dir", default="/mnt/disks/unslothai/ubuntu/workspace_34/github_scraper")
-    ap.add_argument("--repos", nargs="+", default=["unslothai/unsloth", "unslothai/unsloth-zoo"])
-    ap.add_argument("--trial", action="store_true", help="Small trial run")
-    ap.add_argument("--only", nargs="+", default=None,
-                    help="Only run these resource keys: issues,pulls,discussions,commits,releases,labels,milestones,meta")
-    ap.add_argument("--hf-upload-interval", type=int, default=900,
-                    help="Seconds between HF uploads (0 to disable)")
+    ap.add_argument(
+        "--base-dir", default = "/mnt/disks/unslothai/ubuntu/workspace_34/github_scraper"
+    )
+    ap.add_argument(
+        "--repos", nargs = "+", default = ["unslothai/unsloth", "unslothai/unsloth-zoo"]
+    )
+    ap.add_argument("--trial", action = "store_true", help = "Small trial run")
+    ap.add_argument(
+        "--only",
+        nargs = "+",
+        default = None,
+        help = "Only run these resource keys: issues,pulls,discussions,commits,releases,labels,milestones,meta",
+    )
+    ap.add_argument(
+        "--hf-upload-interval",
+        type = int,
+        default = 900,
+        help = "Seconds between HF uploads (0 to disable)",
+    )
     args = ap.parse_args()
 
     base = Path(args.base_dir)
     data_dir = base / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents = True, exist_ok = True)
     setup_logging(base / "logs" / f"scraper_{time.strftime('%Y%m%d_%H%M%S')}.log")
     log.info("Scraper starting: repos=%s trial=%s", args.repos, args.trial)
 
-    client = GitHubClient(min_remaining_graphql=80, min_remaining_rest=80)
+    client = GitHubClient(min_remaining_graphql = 80, min_remaining_rest = 80)
     rl = client.rate_snapshot()
-    log.info("Rate limit snapshot: %s", json.dumps(rl.get("resources", {}), default=str)[:400])
+    log.info(
+        "Rate limit snapshot: %s",
+        json.dumps(rl.get("resources", {}), default = str)[:400],
+    )
 
     # Start HF uploader in background if requested
     uploader = None
     if args.hf_upload_interval > 0:
         from hf_uploader import HFUploader
-        uploader = HFUploader(data_dir, interval_s=args.hf_upload_interval)
+
+        uploader = HFUploader(data_dir, interval_s = args.hf_upload_interval)
         uploader.start()
 
     trial_limits = None
     if args.trial:
-        trial_limits = {"issues": 5, "pull_requests": 5, "discussions": 3,
-                        "commits": 20, "releases": 3, "labels": 20, "milestones": 20}
+        trial_limits = {
+            "issues": 5,
+            "pull_requests": 5,
+            "discussions": 3,
+            "commits": 20,
+            "releases": 3,
+            "labels": 20,
+            "milestones": 20,
+        }
 
     only = set(args.only or [])
 
@@ -517,9 +695,12 @@ def main():
     finally:
         if uploader:
             log.info("Stopping uploader and final sync...")
-            uploader.stop(final_upload=True)
-    log.info("Scraper complete. GraphQL calls=%d REST calls=%d",
-             client.calls_graphql, client.calls_rest)
+            uploader.stop(final_upload = True)
+    log.info(
+        "Scraper complete. GraphQL calls=%d REST calls=%d",
+        client.calls_graphql,
+        client.calls_rest,
+    )
 
 
 if __name__ == "__main__":
