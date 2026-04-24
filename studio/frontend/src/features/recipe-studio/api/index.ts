@@ -183,12 +183,7 @@ async function parseErrorResponse(response: Response): Promise<string> {
       // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
-    return (
-      parsed.detail ??
-      parsed.message ??
-      parsed.raw_detail ??
-      text
-    );
+    return parsed.detail ?? parsed.message ?? parsed.raw_detail ?? text;
   } catch {
     return text;
   }
@@ -264,11 +259,15 @@ export async function validateRecipe(
   return postJson<ValidateResponse>("/validate", payload);
 }
 
-export async function createRecipeJob(payload: unknown): Promise<JobCreateResponse> {
+export async function createRecipeJob(
+  payload: unknown,
+): Promise<JobCreateResponse> {
   return postJson<JobCreateResponse>("/jobs", payload);
 }
 
-export async function getRecipeJobStatus(jobId: string): Promise<JobStatusResponse> {
+export async function getRecipeJobStatus(
+  jobId: string,
+): Promise<JobStatusResponse> {
   return getJson<JobStatusResponse>(`/jobs/${jobId}/status`);
 }
 
@@ -292,7 +291,9 @@ export async function getRecipeJobDataset(
   );
 }
 
-export async function cancelRecipeJob(jobId: string): Promise<JobStatusResponse> {
+export async function cancelRecipeJob(
+  jobId: string,
+): Promise<JobStatusResponse> {
   return postJson<JobStatusResponse>(`/jobs/${jobId}/cancel`, {});
 }
 
@@ -313,6 +314,13 @@ export async function inspectSeedUpload(
   payload: SeedInspectUploadRequest,
 ): Promise<SeedInspectResponse> {
   return postJson<SeedInspectResponse>("/seed/inspect-upload", payload);
+}
+
+// biome-ignore lint/style/useNamingConvention: api schema
+export type GithubEnvTokenStatus = { has_token: boolean };
+
+export async function getGithubEnvTokenStatus(): Promise<GithubEnvTokenStatus> {
+  return getJson<GithubEnvTokenStatus>("/seed/github/env-token");
 }
 
 export async function listMcpTools(
@@ -407,11 +415,14 @@ export async function uploadUnstructuredFile(
     formData.append("existing_file_ids", existingFileIds.join(","));
   }
 
-  const res = await authFetch(`${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`, {
-    method: "POST",
-    body: formData,
-    signal,
-  });
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`,
+    {
+      method: "POST",
+      body: formData,
+      signal,
+    },
+  );
 
   if (res.status === 413) {
     const detail = await res.json().catch(() => ({ detail: "File too large" }));
@@ -420,13 +431,16 @@ export async function uploadUnstructuredFile(
       filename: file.name,
       size_bytes: file.size,
       status: "error",
-      error: typeof detail.detail === "string" ? detail.detail : "File too large",
+      error:
+        typeof detail.detail === "string" ? detail.detail : "File too large",
     };
   }
 
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: "Upload failed" }));
-    throw new Error(typeof detail.detail === "string" ? detail.detail : "Upload failed");
+    throw new Error(
+      typeof detail.detail === "string" ? detail.detail : "Upload failed",
+    );
   }
 
   return res.json();

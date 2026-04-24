@@ -1528,8 +1528,10 @@ class LlamaCppBackend:
                 # Model fits on selected GPU(s) -- offload all layers
                 cmd.extend(["-ngl", "-1"])
 
-            if n_threads is not None:
-                cmd.extend(["--threads", str(n_threads)])
+            # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
+            # do not inherit llama-server's internal default, which has historically
+            # varied (hardware concurrency incl. hyperthreads on some builds).
+            cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
 
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])

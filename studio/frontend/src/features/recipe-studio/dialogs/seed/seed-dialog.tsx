@@ -44,7 +44,11 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
-import { inspectSeedDataset, inspectSeedUpload } from "../../api";
+import {
+  getGithubEnvTokenStatus,
+  inspectSeedDataset,
+  inspectSeedUpload,
+} from "../../api";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   GithubItemType,
@@ -139,6 +143,9 @@ export function GithubRepoSeedForm({
   onUpdate: (patch: Partial<SeedConfig>) => void;
 }): ReactElement {
   const [repoDraft, setRepoDraft] = useState("");
+  const [serverHasEnvToken, setServerHasEnvToken] = useState<boolean | null>(
+    null,
+  );
   const repoInputId = useId();
   const repoHelpId = useId();
   const repoErrorId = useId();
@@ -169,6 +176,21 @@ export function GithubRepoSeedForm({
   const estimatedItems = repos.length * itemTypes.length * boundedLimit;
   const includeComments = config.github_include_comments ?? true;
   const hasToken = Boolean(config.github_token?.trim());
+  const usingEnvToken = !hasToken && serverHasEnvToken === true;
+
+  useEffect(() => {
+    let cancelled = false;
+    void getGithubEnvTokenStatus()
+      .then((status) => {
+        if (!cancelled) setServerHasEnvToken(status.has_token);
+      })
+      .catch(() => {
+        if (!cancelled) setServerHasEnvToken(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function updateRepos(nextRepos: string[]): void {
     const seen = new Set<string>();
@@ -282,23 +304,35 @@ export function GithubRepoSeedForm({
       </div>
 
       <div className="grid gap-1.5">
-        <FieldLabel
-          label="GitHub token (optional)"
-          htmlFor={tokenId}
-          hint="Prefer the server GH_TOKEN / GITHUB_TOKEN env var. Use public_repo for public repos or repo for private repos."
-        />
+        <div className="flex items-start justify-between gap-2">
+          <FieldLabel
+            label="GitHub token (optional)"
+            htmlFor={tokenId}
+            hint="Prefer the server GH_TOKEN / GITHUB_TOKEN env var. Use public_repo for public repos or repo for private repos."
+          />
+          {usingEnvToken && (
+            <span className="shrink-0 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+              Using server env var
+            </span>
+          )}
+        </div>
         <Input
           id={tokenId}
           type="password"
           className="nodrag"
           value={config.github_token ?? ""}
           onChange={(e) => onUpdate({ github_token: e.target.value })}
-          placeholder="Leave blank to use server GH_TOKEN"
+          placeholder={
+            usingEnvToken
+              ? "Using server GH_TOKEN / GITHUB_TOKEN"
+              : "Leave blank to use server GH_TOKEN"
+          }
           aria-describedby={tokenHelpId}
         />
         <p id={tokenHelpId} className="text-xs text-muted-foreground">
-          Blank is safest for saved/shared recipes because Studio will read the
-          server environment at run time.
+          {usingEnvToken
+            ? "Studio detected a server env token, so saved/shared recipes can leave this blank."
+            : "Blank is safest for saved/shared recipes because Studio will read the server environment at run time."}
         </p>
         {hasToken && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">

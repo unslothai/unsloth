@@ -202,7 +202,13 @@ export function RecipeStudioPage({
     null,
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const supportsEasyMode = initialPayload?.ui?.seed_source_type === "github_repo";
+  const supportsEasyMode =
+    initialPayload?.ui?.seed_source_type === "github_repo" ||
+    (
+      initialPayload?.recipe?.seed_config as
+        | { source?: { seed_type?: string } }
+        | undefined
+    )?.source?.seed_type === "github_repo";
   const viewModeStorageKey = `recipe-studio:view-mode:${recipeId}`;
   const [activeView, setActiveViewState] = useState<RecipeStudioView>(() => {
     if (typeof window !== "undefined") {
@@ -213,7 +219,9 @@ export function RecipeStudioPage({
     return supportsEasyMode ? "easy" : "editor";
   });
   const setActiveView = useCallback(
-    (next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView)) => {
+    (
+      next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView),
+    ) => {
       setActiveViewState((prev) => {
         const resolved = typeof next === "function" ? next(prev) : next;
         if (typeof window !== "undefined") {
@@ -224,6 +232,15 @@ export function RecipeStudioPage({
     },
     [viewModeStorageKey],
   );
+  // Easy mode has no canvas overlay/progress island, so once a run starts the
+  // user sees the Run button stuck on "Running..." with nothing else changing.
+  // Flip to the Runs pane so they land where progress is actually rendered.
+  // Advanced (editor) keeps its island and stays put.
+  const handleExecutionStart = useCallback(() => {
+    setActiveView((currentView) =>
+      currentView === "easy" ? "executions" : currentView,
+    );
+  }, [setActiveView]);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
@@ -361,6 +378,7 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
+    onExecutionStart: handleExecutionStart,
   });
   const {
     activeExecution,
