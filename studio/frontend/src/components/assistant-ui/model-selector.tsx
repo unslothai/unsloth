@@ -90,11 +90,13 @@ function ModelSelectorTrigger({
             </span>
           )}
         </span>
-        <HugeiconsIcon
-          icon={ArrowDown01Icon}
-          strokeWidth={1.75}
-          className="size-3.5 shrink-0 text-muted-foreground"
-        />
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            strokeWidth={1.75}
+            className="relative top-0.5 size-3.5 text-muted-foreground"
+          />
+        </span>
       </button>
     </PopoverTrigger>
   );
