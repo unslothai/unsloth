@@ -92,7 +92,7 @@ const AnotherModelBanner: FC = () => {
   const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
   if (thisThreadIsRunning || thisThreadInStore || !anyRunning) return null;
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center pt-2">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-end pr-3 pt-2">
       <div className="pointer-events-auto rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 shadow-sm dark:border-amber-800/40 dark:bg-amber-950/20">
         <span className="text-xs text-amber-700 dark:text-amber-400">
           Another model is generating, you can send a message once it finishes.
