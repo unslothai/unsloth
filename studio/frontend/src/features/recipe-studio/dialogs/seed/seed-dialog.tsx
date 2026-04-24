@@ -138,7 +138,6 @@ export function GithubRepoSeedForm({
   config: SeedConfig;
   onUpdate: (patch: Partial<SeedConfig>) => void;
 }): ReactElement {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [repoDraft, setRepoDraft] = useState("");
   const repoInputId = useId();
   const repoHelpId = useId();
@@ -302,7 +301,7 @@ export function GithubRepoSeedForm({
           server environment at run time.
         </p>
         {hasToken && (
-          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
+          <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
             Personal access tokens are sensitive. Prefer server env vars when
             possible, and avoid sharing recipes that contain a PAT.
           </p>
@@ -372,66 +371,51 @@ export function GithubRepoSeedForm({
           </div>
         </div>
 
-        <label
-          htmlFor={includeCommentsId}
-          className="flex cursor-pointer items-center gap-1.5 text-xs"
-        >
-          <Checkbox
-            id={includeCommentsId}
-            checked={includeComments}
-            onCheckedChange={(v) =>
-              onUpdate({ github_include_comments: v === true })
-            }
-          />
-          <span>Include issue/PR comments</span>
-        </label>
-        <div className="grid gap-1.5 pl-5">
-          <FieldLabel
-            label="Max comments / item"
-            htmlFor={commentsId}
-            hint="Comments are concatenated into the comments column for issues and PRs."
-          />
-          <Input
-            id={commentsId}
-            type="number"
-            className="nodrag"
-            min={0}
-            max={200}
-            disabled={!includeComments}
-            value={config.github_max_comments_per_item ?? "30"}
-            onChange={(e) =>
-              onUpdate({ github_max_comments_per_item: e.target.value })
-            }
-            aria-describedby={commentsHelpId}
-          />
-          <p id={commentsHelpId} className="text-xs text-muted-foreground">
-            Comments increase GraphQL cost and can make Check/Run look quiet
-            while GitHub pages and rate-limit waits stream in logs.
-          </p>
+        <div className="grid gap-2">
+          <label
+            htmlFor={includeCommentsId}
+            className="flex cursor-pointer items-center gap-1.5 text-xs"
+          >
+            <Checkbox
+              id={includeCommentsId}
+              checked={includeComments}
+              onCheckedChange={(v) =>
+                onUpdate({ github_include_comments: v === true })
+              }
+            />
+            <span>Include issue/PR comments</span>
+          </label>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Max comments / item"
+              htmlFor={commentsId}
+              hint="Comments are concatenated into the comments column for issues and PRs."
+            />
+            <Input
+              id={commentsId}
+              type="number"
+              className="nodrag"
+              min={0}
+              max={200}
+              disabled={!includeComments}
+              value={config.github_max_comments_per_item ?? "30"}
+              onChange={(e) =>
+                onUpdate({ github_max_comments_per_item: e.target.value })
+              }
+              aria-describedby={commentsHelpId}
+            />
+            <p id={commentsHelpId} className="text-xs text-muted-foreground">
+              Comments increase GraphQL cost and can make Check/Run look quiet
+              while GitHub pages and rate-limit waits stream in logs.
+            </p>
+          </div>
         </div>
       </fieldset>
 
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <CollapsibleTrigger asChild={true}>
-          <button
-            type="button"
-            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-          >
-            {advancedOpen ? "Hide source options" : "Source notes"}
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-2 space-y-2 text-xs text-muted-foreground">
-          <p>
-            Backed by Studio's built-in <code>github_repo</code> seed reader: a
-            rate-limit-aware GraphQL scraper for issues, pull requests, and
-            commits.
-          </p>
-          <p>
-            Large repos can take minutes. Use small limits for previews, then
-            increase for full runs.
-          </p>
-        </CollapsibleContent>
-      </Collapsible>
+      <p className="text-xs text-muted-foreground">
+        Backed by Studio's built-in <code>github_repo</code> seed reader. Large
+        repos can take minutes, so start with small limits for previews.
+      </p>
     </div>
   );
 }

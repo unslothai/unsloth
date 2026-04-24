@@ -33,9 +33,8 @@ export function GithubScraperEasyView({
 }: GithubScraperEasyViewProps): ReactElement {
   const seedConfig = useMemo(
     () =>
-      Object.values(configs).find(
-        (c): c is SeedConfig => c.kind === "seed",
-      ) ?? null,
+      Object.values(configs).find((c): c is SeedConfig => c.kind === "seed") ??
+      null,
     [configs],
   );
   const modelConfig = useMemo(
@@ -96,38 +95,43 @@ export function GithubScraperEasyView({
 
       <GithubRepoSeedForm config={seedConfig} onUpdate={handleSeedUpdate} />
 
-      <div className="space-y-3 rounded-xl corner-squircle border border-border/60 p-3">
-        <div className="grid gap-1.5">
-          <FieldLabel
-            label="Rows to generate"
-            hint="How many training pairs the LLM should produce from the scraped threads."
-          />
-          <Input
-            type="number"
-            className="nodrag"
-            min={1}
-            max={10000}
-            value={previewRows}
-            onChange={(event) => {
-              const next = Number.parseInt(event.target.value, 10);
-              setPreviewRows(Number.isFinite(next) && next > 0 ? next : 1);
-            }}
-          />
+      <section className="space-y-3 border-t border-border/60 pt-4">
+        <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+          Run settings
+        </h3>
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]">
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Rows to generate"
+              hint="How many training pairs the LLM should produce."
+            />
+            <Input
+              type="number"
+              className="nodrag"
+              min={1}
+              max={10000}
+              value={previewRows}
+              onChange={(event) => {
+                const next = Number.parseInt(event.target.value, 10);
+                setPreviewRows(Number.isFinite(next) && next > 0 ? next : 1);
+              }}
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Model"
+              hint="OpenAI-compatible model id. Local GGUFs run on the bundled llama-server."
+            />
+            <Input
+              className="nodrag font-mono text-xs"
+              value={modelConfig?.model ?? ""}
+              onChange={(event) => handleModelChange(event.target.value)}
+              placeholder="unsloth/gemma-4-E2B-it-GGUF"
+              disabled={!modelConfig}
+            />
+          </div>
         </div>
-        <div className="grid gap-1.5">
-          <FieldLabel
-            label="Model"
-            hint="Any OpenAI-compatible model id. Local GGUFs (e.g. unsloth/...-GGUF) run on the bundled llama-server."
-          />
-          <Input
-            className="nodrag font-mono text-xs"
-            value={modelConfig?.model ?? ""}
-            onChange={(event) => handleModelChange(event.target.value)}
-            placeholder="unsloth/gemma-4-E2B-it-GGUF"
-            disabled={!modelConfig}
-          />
-        </div>
-      </div>
+      </section>
 
       {runErrors.length > 0 && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -148,12 +152,7 @@ export function GithubScraperEasyView({
         >
           Advanced (drag and drop canvas)
         </button>
-        <Button
-          type="button"
-          size="lg"
-          onClick={onRun}
-          disabled={runLoading}
-        >
+        <Button type="button" size="lg" onClick={onRun} disabled={runLoading}>
           <HugeiconsIcon icon={PlayCircleIcon} className="size-4" />
           {runLoading ? "Running..." : "Run"}
         </Button>
