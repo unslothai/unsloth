@@ -334,9 +334,11 @@ function BulkExportDropdown({
 function PromptCard({
   entry,
   onUse,
+  promptEvalMode,
 }: {
   entry: PromptEntry;
   onUse: (text: string) => void;
+  promptEvalMode?: boolean;
 }): ReactElement {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(entry.name);
@@ -395,9 +397,9 @@ function PromptCard({
             type="button"
             onClick={() => onUse(entry.text)}
             className="flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            title="Load into composer"
+            title={promptEvalMode ? "Run through all selected models" : "Load into composer"}
           >
-            <PlayIcon className="size-3" />Use
+            <PlayIcon className="size-3" />{promptEvalMode ? "Run" : "Use"}
           </button>
           <ExportDropdown
             onJsonl={() => exportPromptJsonl(entry)}
@@ -788,10 +790,27 @@ export function PromptStorageDialog({
 
   const handleUsePrompt = useCallback(
     (text: string) => {
+      // In Prompt Eval mode, single prompts behave like list prompts: fire the
+      // eval runner directly instead of just loading into the composer.
+      if (promptEvalMode) {
+        if (promptEvalSelectedModelIds.length === 0) {
+          toast.warning("No models selected", {
+            description: "Select at least one model in the Prompt Eval model picker.",
+          });
+          return;
+        }
+        if (!promptEvalSendFn) {
+          toast.error("Prompt Eval runner not ready");
+          return;
+        }
+        promptEvalSendFn([text]);
+        onOpenChange(false);
+        return;
+      }
       setPendingComposerText(text);
       onOpenChange(false);
     },
-    [setPendingComposerText, onOpenChange],
+    [promptEvalMode, promptEvalSelectedModelIds, promptEvalSendFn, setPendingComposerText, onOpenChange],
   );
 
   const handleRunList = useCallback(
@@ -969,7 +988,7 @@ export function PromptStorageDialog({
 
               {filteredPrompts.length > 0 ? (
                 filteredPrompts.map((entry) => (
-                  <PromptCard key={entry.id} entry={entry} onUse={handleUsePrompt} />
+                  <PromptCard key={entry.id} entry={entry} onUse={handleUsePrompt} promptEvalMode={promptEvalMode} />
                 ))
               ) : (
                 !showNewPrompt && (
