@@ -18,9 +18,7 @@ from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 
 router = APIRouter()
 
-_GITHUB_VALIDATE_NOTE = (
-    "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
-)
+_GITHUB_VALIDATE_NOTE = "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
 _GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
 
 
@@ -57,7 +55,9 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
         invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
         if invalid_items:
             errors.append(
-                ValidateError(message = "GitHub item types must be issues, pulls, or commits.")
+                ValidateError(
+                    message = "GitHub item types must be issues, pulls, or commits."
+                )
             )
 
     try:
