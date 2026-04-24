@@ -315,6 +315,13 @@ export async function inspectSeedUpload(
   return postJson<SeedInspectResponse>("/seed/inspect-upload", payload);
 }
 
+// biome-ignore lint/style/useNamingConvention: api schema
+export type GithubEnvTokenStatus = { has_token: boolean };
+
+export async function getGithubEnvTokenStatus(): Promise<GithubEnvTokenStatus> {
+  return getJson<GithubEnvTokenStatus>("/seed/github/env-token");
+}
+
 export async function listMcpTools(
   payload: McpToolsListRequest,
 ): Promise<McpToolsListResponse> {

@@ -202,7 +202,10 @@ export function RecipeStudioPage({
     null,
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const supportsEasyMode = initialPayload?.ui?.seed_source_type === "github_repo";
+  const supportsEasyMode =
+    initialPayload?.ui?.seed_source_type === "github_repo" ||
+    (initialPayload?.recipe?.seed_config as { source?: { seed_type?: string } } | undefined)
+      ?.source?.seed_type === "github_repo";
   const viewModeStorageKey = `recipe-studio:view-mode:${recipeId}`;
   const [activeView, setActiveViewState] = useState<RecipeStudioView>(() => {
     if (typeof window !== "undefined") {

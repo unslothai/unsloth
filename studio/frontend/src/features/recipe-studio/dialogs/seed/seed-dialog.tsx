@@ -40,7 +40,7 @@ import {
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
-import { inspectSeedDataset, inspectSeedUpload } from "../../api";
+import { getGithubEnvTokenStatus, inspectSeedDataset, inspectSeedUpload } from "../../api";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   SeedConfig,
@@ -83,8 +83,26 @@ export function GithubRepoSeedForm({
   onUpdate: (patch: Partial<SeedConfig>) => void;
 }): ReactElement {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [serverHasEnvToken, setServerHasEnvToken] = useState<boolean | null>(
+    null,
+  );
   const limitStr = (config.github_limit ?? "100").trim();
   const allMode = limitStr === "" || limitStr === "0";
+  useEffect(() => {
+    let cancelled = false;
+    void getGithubEnvTokenStatus()
+      .then((status) => {
+        if (!cancelled) setServerHasEnvToken(status.has_token);
+      })
+      .catch(() => {
+        if (!cancelled) setServerHasEnvToken(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const userTokenEmpty = !(config.github_token ?? "").trim();
+  const usingEnvToken = userTokenEmpty && serverHasEnvToken === true;
   return (
     <div className="space-y-3 rounded-xl corner-squircle border border-border/60 p-3">
       <div className="grid gap-1.5">
@@ -100,16 +118,27 @@ export function GithubRepoSeedForm({
         />
       </div>
       <div className="grid gap-1.5">
-        <FieldLabel
-          label="GitHub token"
-          hint="Personal access token with repo scope. Leave blank to use the server's GH_TOKEN / GITHUB_TOKEN env var."
-        />
+        <div className="flex items-start justify-between gap-2">
+          <FieldLabel
+            label="GitHub token"
+            hint="Personal access token with repo scope. Leave blank to use the server's GH_TOKEN / GITHUB_TOKEN env var."
+          />
+          {usingEnvToken && (
+            <span className="shrink-0 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+              Using server env var
+            </span>
+          )}
+        </div>
         <Input
           type="password"
           className="nodrag"
           value={config.github_token ?? ""}
           onChange={(e) => onUpdate({ github_token: e.target.value })}
-          placeholder="ghp_... (optional if server has GH_TOKEN)"
+          placeholder={
+            usingEnvToken
+              ? "using server's GH_TOKEN env var"
+              : "ghp_... (optional if server has GH_TOKEN)"
+          }
         />
       </div>
       <div className="grid gap-1.5">
