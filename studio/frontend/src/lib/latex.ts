@@ -107,6 +107,15 @@ const TRAIL_PUNCT_RE = /[.,;:!?\-/]+$/;
 const LONE_LETTER_RE = /(?<![a-zA-Z])[a-zA-Z](?![a-zA-Z])/;
 
 /**
+ * Numeric or single-letter operands joined by math operators, with
+ * optional whitespace. Matches `2 + 2`, `100 < 200`, `1,000 - 500`,
+ * `2.5 * 3`, `x + y`. Lets us recognise numeric-only expressions like
+ * `$2 + 2$` as math without forcing a lone variable token.
+ */
+const SIMPLE_MATH_RE =
+  /^(?:\d+(?:,\d{3})*(?:\.\d+)?|[a-zA-Z])(?:\s*[=+\-<>/*]\s*(?:\d+(?:,\d{3})*(?:\.\d+)?|[a-zA-Z]))+$/;
+
+/**
  * Return true if the substring between two `$` delimiters looks like a
  * LaTeX expression rather than a span of prose between two currency
  * tokens.
@@ -124,6 +133,9 @@ function looksLikeMathBody(body: string): boolean {
   const trimmed = body.trim().replace(TRAIL_PUNCT_RE, "");
   if (!trimmed) return false;
   if (CURRENCY_BODY_RE.test(trimmed)) return false;
+  // Numeric-only operator forms: `2 + 2`, `100 < 200`, `1,000 - 500`.
+  // Recognised without requiring a lone-variable letter.
+  if (SIMPLE_MATH_RE.test(trimmed)) return true;
   if (!/\s/.test(trimmed)) return true;
   if (!MATH_OP_RE.test(trimmed)) return false;
   return LONE_LETTER_RE.test(trimmed);
@@ -149,6 +161,13 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
     if (content[i - 1] === "\\") continue;
     if (content[i + 1] === "$") {
       i++;
+      continue;
+    }
+    // A `$` immediately followed by a digit is far more likely the start
+    // of another currency token than the closer for the current span. Keep
+    // scanning so prose like `Starts at $5 + a $10 add-on` doesn't pair
+    // the two currency markers as a math span.
+    if (/\d/.test(content[i + 1] ?? "")) {
       continue;
     }
     if (offset >= 2) {
