@@ -1,0 +1,126 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "Local Model",
+        "endpoint": "",
+        "provider_type": "openai",
+        "api_key": "",
+        "is_local": true,
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "model_1",
+        "model": "unsloth/gemma-4-E2B-it-GGUF",
+        "provider": "Local Model",
+        "inference_parameters": {
+          "temperature": 0.4,
+          "max_tokens": 1500
+        }
+      }
+    ],
+    "tool_configs": [],
+    "seed_config": {
+      "source": {
+        "seed_type": "github_repo",
+        "repos": ["unslothai/unsloth", "unslothai/unsloth-zoo"],
+        "token": "",
+        "item_types": ["issues", "pulls"],
+        "limit": 100,
+        "include_comments": true,
+        "max_comments_per_item": 20
+      },
+      "sampling_strategy": "shuffle",
+      "selection_strategy": null
+    },
+    "columns": [
+      {
+        "column_type": "llm-text",
+        "name": "normalized_question",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Rewrite the following GitHub {{ item_type }} into a single, standalone Unsloth support question a user would ask on Discord. Keep the key technical details (code snippets, tracebacks, versions) verbatim. Keep it 1-5 sentences. Output ONLY the rewritten question.\n\n--- INPUT ---\nRepo: {{ repo }}\nTitle: {{ title }}\nBody:\n{{ body }}\n\nFirst comments:\n{{ comments }}",
+        "system_prompt": "You rewrite real GitHub issue / PR threads into concise support questions. Preserve technical fidelity: do not invent facts.",
+        "with_trace": "none"
+      },
+      {
+        "column_type": "llm-structured",
+        "name": "support_answer",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "You are the Unsloth support assistant. Answer the user's question grounded in how Unsloth actually works. Produce structured JSON.\n\nSource issue/PR:\n- Repo: {{ repo }}\n- Title: {{ title }}\n- URL: {{ url }}\n- State: {{ state }}\n- Labels: {{ labels }}\n\nNormalized user question:\n{{ normalized_question }}\n\nRules:\n- `answer` is 3-8 sentences of Markdown. Include a python code block when showing usage.\n- `diagnosis_questions` is 1-4 extra questions the user should answer if the info is insufficient (versions, GPU, full traceback). Empty list if the answer is complete.\n- `cites` is a list of references the answer is grounded in (doc paths, GitHub URLs). Always include the source `url` above.\n- `confidence` is one of `high` / `medium` / `low`. Use `low` when ambiguous or out of scope.\n- Never invent APIs. If uncertain, set confidence=`low` and ask diagnosis_questions rather than fabricating.",
+        "output_format": {
+          "type": "object",
+          "properties": {
+            "answer": {"type": "string", "minLength": 1},
+            "diagnosis_questions": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+            "cites": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+          },
+          "required": ["answer", "diagnosis_questions", "cites", "confidence"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 10,
+    "preview": true,
+    "output_formats": ["jsonl"]
+  },
+  "ui": {
+    "nodes": [
+      {"id": "Local Model", "x": -1056, "y": 520, "width": 400},
+      {"id": "model_1", "x": -544, "y": 488, "width": 400},
+      {"id": "seed", "x": 0, "y": 140, "width": 400},
+      {"id": "normalized_question", "x": 0, "y": 440, "width": 400},
+      {"id": "support_answer", "x": 0, "y": 740, "width": 400},
+      {
+        "id": "note_1",
+        "x": 480,
+        "y": 120,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "### GitHub Support Bot\nReal GitHub data to synthetic Q&A pairs for support-bot fine-tuning.\n\n**1. Click the Source Data node (top-left of the canvas) to enter:**\n- **Repos**: one `owner/name` per line\n- **GitHub token**: your `GH_TOKEN` (or leave blank to use the server's env var)\n- Item types (issues / pulls / commits) and per-resource limit\n\n**2. Click `Run` below and set the number of rows** (defaults to 10 for a quick test).\n\nThe built-in `github_repo` seed reader does rate-limit-aware GraphQL scraping. Each scraped item becomes a row with `title`, `body`, `comments`, `labels`, etc. Two LLM blocks turn it into `{normalized_question, support_answer}`. Answers are structured JSON with `answer` / `diagnosis_questions` / `cites` / `confidence`.",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 480,
+        "y": 420,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "The **normalize** step turns a raw GitHub thread (which often has title/body/comments scattered) into a single clean support question.\n\nTweak the prompt to:\n- always include the traceback\n- drop off-topic chitchat\n- target a specific user persona",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": 480,
+        "y": 740,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "The **answer** block enforces a JSON shape that maps directly onto the grounded RAG answerer format.\n\nFields:\n- `answer` (Markdown with code)\n- `diagnosis_questions` (follow-ups)\n- `cites` (doc + GitHub URLs)\n- `confidence` (high/medium/low)\n\nThis is key: uniform schema = less cleanup later.",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      }
+    ],
+    "edges": [
+      {"from": "seed", "to": "normalized_question", "type": "canvas", "source_handle": "data-out-bottom", "target_handle": "data-in-top"},
+      {"from": "normalized_question", "to": "support_answer", "type": "canvas", "source_handle": "data-out-bottom", "target_handle": "data-in-top"},
+      {"from": "Local Model", "to": "model_1", "type": "semantic", "source_handle": "semantic-out", "target_handle": "semantic-in"},
+      {"from": "model_1", "to": "normalized_question", "type": "semantic", "source_handle": "semantic-out", "target_handle": "data-in"},
+      {"from": "model_1", "to": "support_answer", "type": "semantic", "source_handle": "semantic-out-bottom", "target_handle": "data-in"}
+    ],
+    "layout_direction": "LR"
+  }
+}

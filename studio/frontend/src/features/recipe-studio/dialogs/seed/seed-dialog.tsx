@@ -75,6 +75,137 @@ type SeedDialogProps = {
   open: boolean;
 };
 
+function GithubRepoSeedForm({
+  config,
+  onUpdate,
+}: {
+  config: SeedConfig;
+  onUpdate: (patch: Partial<SeedConfig>) => void;
+}): ReactElement {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const limitStr = (config.github_limit ?? "100").trim();
+  const allMode = limitStr === "" || limitStr === "0";
+  return (
+    <div className="space-y-3 rounded-xl corner-squircle border border-border/60 p-3">
+      <div className="grid gap-1.5">
+        <FieldLabel
+          label="GitHub repositories"
+          hint="One owner/name per line. Defaults to the two Unsloth repos."
+        />
+        <textarea
+          className="nodrag min-h-20 w-full resize-y rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs font-mono"
+          value={config.github_repo_slug ?? ""}
+          onChange={(e) => onUpdate({ github_repo_slug: e.target.value })}
+          placeholder="unslothai/unsloth&#10;unslothai/unsloth-zoo"
+        />
+      </div>
+      <div className="grid gap-1.5">
+        <FieldLabel
+          label="GitHub token"
+          hint="Personal access token with repo scope. Leave blank to use the server's GH_TOKEN / GITHUB_TOKEN env var."
+        />
+        <Input
+          type="password"
+          className="nodrag"
+          value={config.github_token ?? ""}
+          onChange={(e) => onUpdate({ github_token: e.target.value })}
+          placeholder="ghp_... (optional if server has GH_TOKEN)"
+        />
+      </div>
+      <div className="grid gap-1.5">
+        <FieldLabel
+          label="Items per repo"
+          hint="How many issues/PRs/commits to fetch from each repo. Toggle All to scrape everything."
+        />
+        <div className="flex items-center gap-2">
+          <Input
+            type="number"
+            className="nodrag flex-1"
+            min={1}
+            max={100000}
+            disabled={allMode}
+            value={allMode ? "" : limitStr}
+            onChange={(e) => onUpdate({ github_limit: e.target.value })}
+            placeholder={allMode ? "All" : "100"}
+          />
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+            <Checkbox
+              checked={allMode}
+              onCheckedChange={(v) =>
+                onUpdate({ github_limit: v === true ? "0" : "100" })
+              }
+            />
+            <span>All</span>
+          </label>
+        </div>
+      </div>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild={true}>
+          <button
+            type="button"
+            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          >
+            {advancedOpen ? "Hide advanced" : "Advanced"}
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-2 space-y-3">
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Item types"
+              hint="Which GitHub resources to scrape per repo."
+            />
+            <div className="flex flex-wrap gap-3 text-xs">
+              {(["issues", "pulls", "commits"] as const).map((kind) => {
+                const current = config.github_item_types ?? ["issues", "pulls"];
+                const checked = current.includes(kind);
+                return (
+                  <label key={kind} className="flex cursor-pointer items-center gap-1.5">
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(v) => {
+                        const next = v === true
+                          ? Array.from(new Set([...current, kind]))
+                          : current.filter((k) => k !== kind);
+                        onUpdate({ github_item_types: next.length ? next : ["issues"] });
+                      }}
+                    />
+                    <span>{kind}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Max comments / item"
+              hint="Comments are concatenated into the comments column."
+            />
+            <Input
+              type="number"
+              className="nodrag"
+              min={0}
+              max={200}
+              value={config.github_max_comments_per_item ?? "30"}
+              onChange={(e) => onUpdate({ github_max_comments_per_item: e.target.value })}
+            />
+          </div>
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+            <Checkbox
+              checked={config.github_include_comments ?? true}
+              onCheckedChange={(v) => onUpdate({ github_include_comments: v === true })}
+            />
+            <span>Include comments</span>
+          </label>
+        </CollapsibleContent>
+      </Collapsible>
+      <p className="text-xs text-muted-foreground">
+        Backed by Studio's built-in <code>github_repo</code> seed reader: a
+        rate-limit-aware GraphQL scraper for issues, pull requests, and commits.
+      </p>
+    </div>
+  );
+}
+
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -600,9 +731,13 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             />
           )}
 
+          {mode === "github_repo" && (
+            <GithubRepoSeedForm config={config} onUpdate={onUpdate} />
+          )}
+
           {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
 
-          {mode !== "unstructured" && (
+          {mode !== "unstructured" && mode !== "github_repo" && (
             <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
               <FieldLabel
                 label="Drop specific seed columns"

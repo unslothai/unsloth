@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DocumentAttachmentIcon, DocumentCodeIcon, Plant01Icon } from "@hugeicons/core-free-icons";
+import {
+  DocumentAttachmentIcon,
+  DocumentCodeIcon,
+  GithubIcon,
+  Plant01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import type { SeedConfig } from "../../types";
@@ -15,6 +20,38 @@ type InlineSeedProps = {
 
 export function InlineSeed({ config, onUpdate }: InlineSeedProps): ReactElement {
   const mode = config.seed_source_type ?? "hf";
+
+  if (mode === "github_repo") {
+    const repos = (config.github_repo_slug ?? "")
+      .split(/\r?\n/)
+      .map((r) => r.trim())
+      .filter(Boolean);
+    const summary =
+      repos.length === 0
+        ? "No repositories"
+        : repos.length === 1
+          ? repos[0]
+          : `${repos.length} repositories`;
+    const items = config.github_item_types ?? [];
+    const itemsLabel = items.length ? items.join(" · ") : "issues · pulls";
+    return (
+      <div className="corner-squircle flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-2">
+        <div className="corner-squircle rounded-md bg-primary/10 p-1.5 text-primary">
+          <HugeiconsIcon icon={GithubIcon} className="size-3.5" />
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium">{summary}</p>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {itemsLabel} · configure in dialog
+          </p>
+        </div>
+        <HugeiconsIcon
+          icon={Plant01Icon}
+          className="ml-auto size-3.5 text-muted-foreground/60"
+        />
+      </div>
+    );
+  }
 
   if (mode === "hf") {
     return (

@@ -19,6 +19,10 @@ const ocrDocumentExtractionUrl = new URL(
   "./ocr-document-extraction.json",
   import.meta.url,
 ).href;
+const githubSupportBotUrl = new URL(
+  "./github-support-bot.json",
+  import.meta.url,
+).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -136,5 +140,12 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Use image context to generate OCR-style document extraction output.",
     loadPayload: () => loadPayloadFromUrl(ocrDocumentExtractionUrl),
+  },
+  {
+    id: "github-support-bot",
+    title: "GitHub Support Bot",
+    description:
+      "Generate realistic Unsloth support Q&A (question + structured answer with citations) for fine-tuning a support assistant.",
+    loadPayload: () => loadPayloadFromUrl(githubSupportBotUrl),
   },
 ];

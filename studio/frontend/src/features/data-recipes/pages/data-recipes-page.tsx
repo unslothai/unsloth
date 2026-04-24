@@ -35,6 +35,7 @@ import {
   Delete02Icon,
   DocumentAttachmentIcon,
   FunctionIcon,
+  GithubIcon,
   Plant01Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
@@ -161,6 +162,22 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "rgb(34 211 238 / 0.45)",
     ],
     learningRecipeId: "structured-outputs-jinja",
+  },
+  {
+    title: "GitHub Support Bot",
+    description:
+      "Scrape real GitHub issues / PRs / commits (multi-repo) and turn each into a normalized question + structured answer for fine-tuning a support assistant.",
+    icon: GithubIcon,
+    difficulty: "Intermediate",
+    learningBadges: ["GitHub", "LLM Text", "Structured LLM"],
+    surfaceClassName:
+      "from-slate-500/15 via-zinc-500/5 to-transparent dark:from-slate-400/30 dark:via-zinc-400/14 dark:to-slate-950/16",
+    shineColor: [
+      "rgb(71 85 105 / 0.45)",
+      "rgb(100 116 139 / 0.4)",
+      "rgb(148 163 184 / 0.45)",
+    ],
+    learningRecipeId: "github-support-bot",
   },
 ];
 
