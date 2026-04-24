@@ -227,6 +227,15 @@ export function RecipeStudioPage({
     },
     [viewModeStorageKey],
   );
+  // Easy mode has no canvas overlay/progress island, so once a run starts the
+  // user sees the Run button stuck on "Running..." with nothing else changing.
+  // Flip to the Runs pane so they land where progress is actually rendered.
+  // Advanced (editor) keeps its island and stays put.
+  const handleExecutionStart = useCallback(() => {
+    setActiveView((currentView) =>
+      currentView === "easy" ? "executions" : currentView,
+    );
+  }, [setActiveView]);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
@@ -364,6 +373,7 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
+    onExecutionStart: handleExecutionStart,
   });
   const {
     activeExecution,
