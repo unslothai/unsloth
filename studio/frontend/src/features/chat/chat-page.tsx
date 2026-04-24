@@ -129,7 +129,7 @@ const SingleContent = memo(function SingleContent({
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onBenchmarkSend={onBenchmarkSend} />
-        {onHandleChange && <RegisterBenchmarkHandle setHandle={onHandleChange} />}
+        {onHandleChange && <RegisterBenchmarkHandle setHandle={onHandleChange} threadId={threadId} />}
       </div>
     </ChatRuntimeProvider>
   );

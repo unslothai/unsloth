@@ -63,7 +63,11 @@ export function useChatSidebarItems() {
       (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
     );
     const rows = await db.threads.orderBy("createdAt").reverse().toArray();
-    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
+    // Include benchmark child threads even before they have messages so the
+    // benchmark folder appears in the sidebar as soon as the run begins.
+    return rows.filter(
+      (t) => !t.archived && (threadIdsWithMessage.has(t.id) || Boolean(t.benchmarkId)),
+    );
   }, []);
   const items = groupThreads(allThreads ?? []);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));

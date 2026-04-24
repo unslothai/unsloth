@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -457,6 +458,9 @@ export function PromptStorageDialog({
       <DialogContent className="max-w-xl max-h-[80vh] flex flex-col gap-0 p-0 overflow-hidden">
         <DialogHeader className="px-5 pt-5 pb-0 shrink-0">
           <DialogTitle className="text-base font-semibold">Prompt Storage</DialogTitle>
+          <DialogDescription className="sr-only">
+            Save and manage reusable prompts and prompt lists for benchmarks.
+          </DialogDescription>
         </DialogHeader>
 
         {/* Tabs */}

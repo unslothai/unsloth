@@ -4,17 +4,25 @@
 import { useAui } from "@assistant-ui/react";
 import { useEffect } from "react";
 import type { CompareHandle } from "../shared-composer";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 /**
  * Registers a CompareHandle into a ref provided by the benchmark runner.
  * Must be rendered INSIDE the visible SingleContent's ChatRuntimeProvider so
  * that handle.append() drives the thread the user is actually watching,
  * causing messages to stream live in the UI.
+ *
+ * When `threadId` is provided the handle is NOT registered until
+ * ThreadAutoSwitch has completed and `useChatRuntimeStore.activeThreadId`
+ * matches. This prevents appending to a stale / wrong thread when the
+ * runtime hasn't finished switching yet.
  */
 export function RegisterBenchmarkHandle({
   setHandle,
+  threadId,
 }: {
   setHandle: (handle: CompareHandle | null) => void;
+  threadId?: string;
 }): null {
   const aui = useAui();
 
@@ -33,9 +41,6 @@ export function RegisterBenchmarkHandle({
       isRunning: () => aui.thread().getState().isRunning,
       /**
        * Polls the AUI thread state directly to detect run completion.
-       * This is more reliable than subscribing to useChatRuntimeStore because
-       * the AUI thread state updates synchronously, eliminating race conditions
-       * where the run completes before a Zustand subscription fires.
        */
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
@@ -59,9 +64,52 @@ export function RegisterBenchmarkHandle({
           setTimeout(poll, 150);
         }),
     };
-    setHandle(handle);
-    return () => setHandle(null);
-  }, [aui, setHandle]);
+
+    // If no specific thread is expected, register immediately (e.g. initial mount).
+    if (!threadId) {
+      setHandle(handle);
+      return () => setHandle(null);
+    }
+
+    // Otherwise wait for ThreadAutoSwitch to activate the target thread before
+    // handing off the handle. This ensures aui.thread().append() writes to the
+    // correct pre-created benchmark thread, not a freshly-initialized one.
+    let registered = false;
+
+    const tryRegister = () => {
+      if (useChatRuntimeStore.getState().activeThreadId === threadId && !registered) {
+        registered = true;
+        setHandle(handle);
+        return true;
+      }
+      return false;
+    };
+
+    if (tryRegister()) {
+      return () => setHandle(null);
+    }
+
+    const unsub = useChatRuntimeStore.subscribe((state) => {
+      if (state.activeThreadId === threadId && !registered) {
+        registered = true;
+        unsub();
+        setHandle(handle);
+      }
+    });
+
+    // Safety: if the thread never activates within 10s, give up
+    const timeout = setTimeout(() => {
+      if (!registered) {
+        unsub();
+      }
+    }, 10_000);
+
+    return () => {
+      clearTimeout(timeout);
+      unsub();
+      setHandle(null);
+    };
+  }, [aui, setHandle, threadId]);
 
   return null;
 }
