@@ -624,9 +624,7 @@ class LlamaCppBackend:
             )
             if cvd and cvd.strip():
                 try:
-                    physical_ids = [
-                        int(x.strip()) for x in cvd.split(",") if x.strip()
-                    ]
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
                 except ValueError:
                     physical_ids = None
             gpus = []
