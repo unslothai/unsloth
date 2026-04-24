@@ -60,6 +60,19 @@ export function useBenchmarkRunner() {
 
       const maxSeqLength = useChatRuntimeStore.getState().params.maxSeqLength;
 
+      // Capture the user's current tool/reasoning settings so we can restore
+      // them after each model load. The periodic refresh() poll in
+      // use-chat-model-runtime.ts calls setReasoningEnabled(true) whenever a
+      // reasoning-capable model is detected, and selectModel() auto-sets
+      // toolsEnabled/codeToolsEnabled to true when a tool-capable model loads.
+      // Restoring after each load guarantees all models run under the same
+      // (user-intended) settings, preventing accidental web_search calls.
+      const benchmarkSettings = {
+        reasoningEnabled: useChatRuntimeStore.getState().reasoningEnabled,
+        toolsEnabled: useChatRuntimeStore.getState().toolsEnabled,
+        codeToolsEnabled: useChatRuntimeStore.getState().codeToolsEnabled,
+      };
+
       // Determine or create the benchmark ID and per-model thread IDs
       let benchmarkId = store.activeBenchmarkId;
       let threadIds = { ...store.activeBenchmarkThreadIds };
@@ -159,6 +172,13 @@ export function useBenchmarkRunner() {
             .getState()
             .setCheckpoint(baseModelId, ggufVariant ?? null);
         }
+
+        // Restore the user's tool/reasoning settings after each model load.
+        // Model loading (via selectModel or the status poll) may auto-enable
+        // toolsEnabled/codeToolsEnabled and setReasoningEnabled, overriding
+        // the user's intent. We restore here so every model runs under identical
+        // settings.
+        useChatRuntimeStore.setState(benchmarkSettings);
 
         // 2. Navigate to this model's thread (user sees it live)
         setActiveThreadId(threadId);

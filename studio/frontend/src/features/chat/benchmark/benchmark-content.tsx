@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { useEffect } from "react";
 import type { CompareHandle } from "../shared-composer";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 /**
  * Registers a CompareHandle into a ref provided by the benchmark runner.
@@ -12,10 +11,12 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
  * that handle.append() drives the thread the user is actually watching,
  * causing messages to stream live in the UI.
  *
- * When `threadId` is provided the handle is NOT registered until
- * ThreadAutoSwitch has completed and `useChatRuntimeStore.activeThreadId`
- * matches. This prevents appending to a stale / wrong thread when the
- * runtime hasn't finished switching yet.
+ * When `threadId` is provided the handle is NOT registered until:
+ *   1. The AUI runtime has finished loading its thread list (!isLoading), AND
+ *   2. AUI's mainThreadId matches threadId (ThreadAutoSwitch completed).
+ *
+ * Using AUI's own state avoids any race between the AUI thread switch and
+ * the Zustand activeThreadId update that a Zustand subscription would have.
  */
 export function RegisterBenchmarkHandle({
   setHandle,
@@ -25,8 +26,16 @@ export function RegisterBenchmarkHandle({
   threadId?: string;
 }): null {
   const aui = useAui();
+  // Mirror the same signals ThreadAutoSwitch uses so we know exactly when
+  // AUI has finished switching to the target thread.
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
+    // Wait until the AUI runtime has loaded and switched to the target thread.
+    if (isLoading) return;
+    if (threadId && mainThreadId !== threadId) return;
+
     const handle: CompareHandle = {
       append: (content) =>
         aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
@@ -40,7 +49,8 @@ export function RegisterBenchmarkHandle({
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
       /**
-       * Polls the AUI thread state directly to detect run completion.
+       * Polls AUI thread state directly to detect run completion.
+       * Reliable because AUI state updates synchronously.
        */
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
@@ -60,56 +70,14 @@ export function RegisterBenchmarkHandle({
             }
             setTimeout(poll, 100);
           };
-          // Allow ~150ms for the AUI thread to start the run before we begin polling
+          // Allow ~150ms for the AUI thread to start the run before polling
           setTimeout(poll, 150);
         }),
     };
 
-    // If no specific thread is expected, register immediately (e.g. initial mount).
-    if (!threadId) {
-      setHandle(handle);
-      return () => setHandle(null);
-    }
-
-    // Otherwise wait for ThreadAutoSwitch to activate the target thread before
-    // handing off the handle. This ensures aui.thread().append() writes to the
-    // correct pre-created benchmark thread, not a freshly-initialized one.
-    let registered = false;
-
-    const tryRegister = () => {
-      if (useChatRuntimeStore.getState().activeThreadId === threadId && !registered) {
-        registered = true;
-        setHandle(handle);
-        return true;
-      }
-      return false;
-    };
-
-    if (tryRegister()) {
-      return () => setHandle(null);
-    }
-
-    const unsub = useChatRuntimeStore.subscribe((state) => {
-      if (state.activeThreadId === threadId && !registered) {
-        registered = true;
-        unsub();
-        setHandle(handle);
-      }
-    });
-
-    // Safety: if the thread never activates within 10s, give up
-    const timeout = setTimeout(() => {
-      if (!registered) {
-        unsub();
-      }
-    }, 10_000);
-
-    return () => {
-      clearTimeout(timeout);
-      unsub();
-      setHandle(null);
-    };
-  }, [aui, setHandle, threadId]);
+    setHandle(handle);
+    return () => setHandle(null);
+  }, [aui, setHandle, threadId, mainThreadId, isLoading]);
 
   return null;
 }
