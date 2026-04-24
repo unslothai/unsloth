@@ -300,6 +300,12 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
   const setPendingComposerText = useBenchmarkStore((s) => s.setPendingComposerText);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
 
+  // Detect if a different thread (not the currently visible one) is generating.
+  // In that case we block send but keep typing/uploads/prompt-storage enabled.
+  const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
+  const anotherThreadRunning = !thisThreadIsRunning && anyRunning;
+
   // When a prompt is loaded from Prompt Storage, inject it into the textarea
   useEffect(() => {
     if (!pendingComposerText) return;
@@ -317,7 +323,7 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled) {
+      if (disabled || anotherThreadRunning) {
         event.preventDefault();
         return;
       }
@@ -337,7 +343,7 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
         }
       }
     },
-    [disabled, benchmarkMode, onBenchmarkSend],
+    [disabled, anotherThreadRunning, benchmarkMode, onBenchmarkSend],
   );
 
   return (
@@ -351,6 +357,13 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
         onSubmit={handleSubmit}
       >
         <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          {anotherThreadRunning && (
+            <div className="mb-2 mx-2 mt-1 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800/40 dark:bg-amber-950/20">
+              <span className="text-xs text-amber-700 dark:text-amber-400">
+                Another model is generating — you can send a message once it finishes.
+              </span>
+            </div>
+          )}
           {benchmarkMode && (
             <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
               <label className="text-xs font-medium text-primary whitespace-nowrap">Benchmark name:</label>
@@ -383,7 +396,7 @@ const Composer: FC<{ disabled?: boolean; onBenchmarkSend?: (text: string) => voi
             disabled={disabled}
             aria-label="Message input"
           />
-          <ComposerAction disabled={disabled} />
+          <ComposerAction disabled={disabled} sendDisabled={anotherThreadRunning} />
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>
     </>
@@ -726,7 +739,7 @@ const ExportBenchmarkButton: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ disabled, sendDisabled }) => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
@@ -764,12 +777,12 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           <ComposerPrimitive.Send asChild={true}>
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={sendDisabled ? "Another model is generating" : "Send message"}
               side="bottom"
               type="submit"
               variant="default"
               size="icon"
-              disabled={disabled}
+              disabled={disabled || sendDisabled}
               className="aui-composer-send size-8 rounded-full"
               aria-label="Send message"
             >

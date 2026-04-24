@@ -36,7 +36,6 @@ import {
   ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
-  Download02Icon,
   Download03Icon,
   GemIcon,
   MessageSearch01Icon,
@@ -69,7 +68,6 @@ import type { SidebarItem } from "@/features/chat/hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
 import { db, useLiveQuery } from "@/features/chat/db";
-import { downloadBenchmarkJsonl, downloadBenchmarkCsv } from "@/features/chat/benchmark/utils/export-benchmark";
 import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
@@ -231,30 +229,8 @@ function BenchmarkFolderItem({
             </span>
           </SidebarMenuButton>
         </CollapsibleTrigger>
-        {/* Hover actions: export + delete */}
+        {/* Hover actions: delete */}
         <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover/bench-folder:opacity-100">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              void downloadBenchmarkJsonl(item.id);
-            }}
-            title="Export JSONL"
-            className="flex size-5 items-center justify-center rounded-[8px] text-sidebar-foreground/55 hover:bg-accent hover:text-foreground"
-          >
-            <HugeiconsIcon icon={Download02Icon} strokeWidth={2} className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              void downloadBenchmarkCsv(item.id);
-            }}
-            title="Export CSV"
-            className="flex size-5 items-center justify-center rounded-[8px] text-sidebar-foreground/55 hover:bg-accent hover:text-foreground"
-          >
-            <HugeiconsIcon icon={Download03Icon} strokeWidth={2} className="size-3.5" />
-          </button>
           <button
             type="button"
             onClick={(e) => {
