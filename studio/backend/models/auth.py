@@ -17,6 +17,12 @@ class AuthLoginRequest(BaseModel):
     password: str = Field(..., description = "Password")
 
 
+class DesktopLoginRequest(BaseModel):
+    """Desktop-only local secret exchange payload."""
+
+    secret: str = Field(..., description = "Desktop local auth secret")
+
+
 class RefreshTokenRequest(BaseModel):
     """Refresh token payload to obtain new access + refresh tokens."""
 
