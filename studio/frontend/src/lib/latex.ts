@@ -75,11 +75,95 @@ function isInCodeBlock(
 }
 
 /**
+ * A token (no whitespace) that looks purely like currency, e.g. `5`,
+ * `1,000`, `5.99`, `100K`, `3.5M`.
+ */
+const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
+
+/** Body characters that almost always indicate real LaTeX. */
+const LATEX_CHAR_RE = /[\\^_{}]/;
+
+/** Operators that strongly suggest a math expression. */
+const MATH_OP_RE = /[=+\-^_<>/*]/;
+
+/** Trailing prose punctuation we strip before the currency check. */
+const TRAIL_PUNCT_RE = /[.,;:!?]+$/;
+
+/**
+ * A standalone single letter (variable name) inside the body. We require
+ * that the letter is not part of a longer word so that prose like
+ * "5 to attend" doesn't get misread as a math expression with the
+ * variable `t`.
+ */
+const LONE_LETTER_RE = /(?<![a-zA-Z])[a-zA-Z](?![a-zA-Z])/;
+
+/**
+ * Return true if the substring between two `$` delimiters looks like a
+ * LaTeX expression rather than a span of prose between two currency
+ * tokens.
+ *
+ * Rule of thumb:
+ *   - `$30^\circ$`  -> math (LaTeX chars)
+ *   - `$x$`         -> math (single non-currency token)
+ *   - `$90 - x$`    -> math (math op + lone variable)
+ *   - `$5 to $10`   -> NOT math (multi-token prose, no math op)
+ *   - `$5, $10`     -> NOT math (currency-like token + trailing punct)
+ *   - `$1,000$`     -> NOT math (single currency-like token)
+ */
+function looksLikeMathBody(body: string): boolean {
+  if (LATEX_CHAR_RE.test(body)) return true;
+  const trimmed = body.trim().replace(TRAIL_PUNCT_RE, "");
+  if (!trimmed) return false;
+  if (CURRENCY_BODY_RE.test(trimmed)) return false;
+  if (!/\s/.test(trimmed)) return true;
+  if (!MATH_OP_RE.test(trimmed)) return false;
+  return LONE_LETTER_RE.test(trimmed);
+}
+
+/**
+ * Return true if the `$` at `offset` opens a balanced inline math span
+ * (`$...$`) on the same line. The closer must be unescaped, must not be
+ * part of `$$`, and must lie inside a 200-character window. The body
+ * must look like LaTeX so we don't pair two currency tokens that share
+ * a line (e.g. "$5 to $10"). Bold-wrapped spans (`**$X$**`) are always
+ * treated as math because LLMs reach for that pattern when they want
+ * "bold math" and the heuristic would otherwise reject prose-shaped
+ * bodies like "90 - x".
+ */
+function hasInlineMathCloser(content: string, offset: number): boolean {
+  const MAX_SPAN = 200;
+  const limit = Math.min(content.length, offset + 1 + MAX_SPAN);
+  for (let i = offset + 1; i < limit; i++) {
+    const c = content[i];
+    if (c === "\n") return false;
+    if (c !== "$") continue;
+    if (content[i - 1] === "\\") continue;
+    if (content[i + 1] === "$") {
+      i++;
+      continue;
+    }
+    if (
+      offset >= 2 &&
+      content.charCodeAt(offset - 1) === 0x2a /* * */ &&
+      content.charCodeAt(offset - 2) === 0x2a &&
+      content.charCodeAt(i + 1) === 0x2a &&
+      content.charCodeAt(i + 2) === 0x2a
+    ) {
+      return true;
+    }
+    return looksLikeMathBody(content.slice(offset + 1, i));
+  }
+  return false;
+}
+
+/**
  * Preprocess a markdown string to escape currency dollar signs so they are not
  * parsed as LaTeX math delimiters.
  *
  * - `$5` alone becomes `\$5` (currency, not math)
  * - `$\alpha$` is untouched (real LaTeX)
+ * - `$30^\circ$` is untouched (LaTeX whose body starts with a digit)
+ * - `**$30^\circ$**` is untouched (LaTeX wrapped in bold)
  * - `$$E = mc^2$$` is untouched (display math)
  * - Currency inside code blocks/spans is untouched
  */
@@ -90,6 +174,9 @@ export function preprocessLaTeX(content: string): string {
 
   return content.replace(CURRENCY_REGEX, (match, offset) => {
     if (isInCodeBlock(offset, codeRegions)) {
+      return match;
+    }
+    if (hasInlineMathCloser(content, offset)) {
       return match;
     }
     return "\\" + match;
