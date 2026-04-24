@@ -637,7 +637,5 @@ def get_github_env_token_status() -> dict:
     The value is never returned; the UI uses this to tell the user they
     can leave the token field blank.
     """
-    has_token = bool(
-        os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    )
+    has_token = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
     return {"has_token": has_token}
