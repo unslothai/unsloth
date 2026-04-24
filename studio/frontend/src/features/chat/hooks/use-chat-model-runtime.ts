@@ -180,10 +180,14 @@ export function useChatModelRuntime() {
   const loras = useChatRuntimeStore((state) => state.loras);
   const anotherModelRunning = useChatRuntimeStore((s) => {
     const anyRunning = Object.values(s.runningByThreadId).some(Boolean);
-    const activeRunning = s.activeThreadId
-      ? Boolean(s.runningByThreadId[s.activeThreadId])
-      : false;
-    return anyRunning && !activeRunning;
+    if (!anyRunning) return false;
+    // activeThreadId is null for new threads before DB persistence —
+    // those use "__default" as the threadKey in chat-adapter
+    const activeId = s.activeThreadId;
+    const thisThreadRunning = activeId
+      ? Boolean(s.runningByThreadId[activeId])
+      : Boolean(s.runningByThreadId["__default"]);
+    return !thisThreadRunning;
   });
   const setModels = useChatRuntimeStore((state) => state.setModels);
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
