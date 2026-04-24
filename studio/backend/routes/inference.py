@@ -864,7 +864,9 @@ async def cancel_inference(
         return {"cancelled": _cancel_by_cancel_id_or_stash(cancel_id)}
 
     keys = []
-    for k in ("completion_id", "session_id"):
+    # `message_id` is the Anthropic passthrough's per-run identifier --
+    # included so /v1/messages clients can cancel by their native id.
+    for k in ("completion_id", "session_id", "message_id"):
         v = body.get(k)
         if isinstance(v, str) and v:
             keys.append(v)
@@ -3289,6 +3291,7 @@ async def anthropic_messages(
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
                 session_id = payload.session_id,
+                cancel_id = payload.cancel_id,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -3698,6 +3701,7 @@ async def _anthropic_passthrough_stream(
     presence_penalty = None,
     tool_choice = "auto",
     session_id = None,
+    cancel_id = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -3718,7 +3722,9 @@ async def _anthropic_passthrough_stream(
         backend_ctx = llama_backend.context_length,
     )
 
-    _tracker = _TrackedCancel(cancel_event, session_id, message_id)
+    # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST
+    # works without the caller having to know the local message_id.
+    _tracker = _TrackedCancel(cancel_event, cancel_id, session_id, message_id)
     _tracker.__enter__()
 
     async def _stream():

@@ -996,6 +996,7 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    cancel_id: Optional[str] = None
     model_config = {"extra": "allow"}
 
 
