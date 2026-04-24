@@ -192,7 +192,7 @@ export function ExecutionsView({
         return (
           <div
             className={cn(
-              columnExpanded ? undefined : "max-w-[32rem]",
+              columnExpanded ? "min-w-[48rem] max-w-none" : "max-w-[32rem]",
               canExpand ? "cursor-pointer" : undefined,
             )}
             onClick={handleClick}
