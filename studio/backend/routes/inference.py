@@ -113,7 +113,12 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend, detect_reasoning_flags
+    from core.inference.llama_cpp import (
+        LlamaCppBackend,
+        _DEFAULT_MAX_TOKENS_FLOOR,
+        _DEFAULT_T_MAX_PREDICT_MS,
+        detect_reasoning_flags,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -122,7 +127,12 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend, detect_reasoning_flags
+    from core.inference.llama_cpp import (
+        LlamaCppBackend,
+        _DEFAULT_MAX_TOKENS_FLOOR,
+        _DEFAULT_T_MAX_PREDICT_MS,
+        detect_reasoning_flags,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -185,6 +195,126 @@ import numpy as np
 from datetime import date as _date
 
 router = APIRouter()
+# Studio-only router (not mounted on /v1 OpenAI-compat).
+studio_router = APIRouter()
+
+
+# Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts
+# so is_disconnected() never fires. POST /inference/cancel looks up
+# in-flight cancel_events here by cancel_id (per-run) or session_id /
+# completion_id (fallbacks).
+_CANCEL_REGISTRY: dict[str, set[threading.Event]] = {}
+_CANCEL_LOCK = threading.Lock()
+
+# Cancel POSTs that arrive before registration are stashed; the next
+# matching __enter__ replays set() within the TTL.
+_PENDING_CANCELS: dict[str, float] = {}
+_PENDING_CANCEL_TTL_S = 30.0
+
+
+def _prune_pending(now: float) -> None:
+    for k in [
+        k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S
+    ]:
+        _PENDING_CANCELS.pop(k, None)
+
+
+class _TrackedCancel:
+    """Register cancel_event in _CANCEL_REGISTRY for the block's duration."""
+
+    def __init__(self, event: threading.Event, *keys):
+        self.event = event
+        self.keys = tuple(k for k in keys if k)
+
+    def __enter__(self):
+        # Register + consume-pending must be one critical section to close
+        # the TOCTOU race against a concurrent cancel POST.
+        should_cancel = False
+        with _CANCEL_LOCK:
+            for k in self.keys:
+                _CANCEL_REGISTRY.setdefault(k, set()).add(self.event)
+            now = time.monotonic()
+            _prune_pending(now)
+            for k in self.keys:
+                if k and _PENDING_CANCELS.pop(k, None) is not None:
+                    should_cancel = True
+        if should_cancel:
+            self.event.set()
+        return self.event
+
+    def __exit__(self, *exc):
+        with _CANCEL_LOCK:
+            for k in self.keys:
+                bucket = _CANCEL_REGISTRY.get(k)
+                if bucket is None:
+                    continue
+                bucket.discard(self.event)
+                if not bucket:
+                    _CANCEL_REGISTRY.pop(k, None)
+        return False
+
+
+def _cancel_by_keys(keys) -> int:
+    """Set cancel_event for matching registry entries; no stash.
+    session_id/completion_id are shared across runs on the same thread,
+    so stashing them would ghost-cancel the user's next request. Only
+    cancel_id is per-run unique (see _cancel_by_cancel_id_or_stash)."""
+    if not keys:
+        return 0
+    events: set[threading.Event] = set()
+    with _CANCEL_LOCK:
+        _prune_pending(time.monotonic())
+        for k in keys:
+            bucket = _CANCEL_REGISTRY.get(k)
+            if bucket:
+                events.update(bucket)
+    for ev in events:
+        ev.set()
+    return len(events)
+
+
+def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
+    """Atomic lookup-or-stash; pairs with _TrackedCancel.__enter__ to
+    close the TOCTOU race."""
+    now = time.monotonic()
+    events: set[threading.Event] = set()
+    with _CANCEL_LOCK:
+        _prune_pending(now)
+        bucket = _CANCEL_REGISTRY.get(cancel_id)
+        if bucket:
+            events.update(bucket)
+        else:
+            _PENDING_CANCELS[cancel_id] = now
+    for ev in events:
+        ev.set()
+    return len(events)
+
+
+async def _await_cancel_then_close(cancel_event, resp) -> None:
+    """Watch a threading.Event from asyncio and close ``resp`` when it fires.
+
+    Used by the passthrough streamers so a /cancel POST can interrupt
+    while the async iterator is blocked waiting for llama-server prefill.
+    Without this watcher the in-loop ``cancel_event.is_set()`` check is
+    unreachable until the first SSE chunk arrives, which is exactly the
+    proxy/Colab scenario the cancel POST exists to handle.
+
+    Polls a threading.Event because the cancel registry is keyed by
+    threading.Event so the synchronous /cancel handler can call .set().
+    50ms cadence adds at most that much latency to a prefill cancel; the
+    common-case streaming cancel path still observes the event in the
+    iterator's first iteration after the next chunk.
+    """
+    try:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0.05)
+        try:
+            await resp.aclose()
+        except Exception:
+            pass
+    except asyncio.CancelledError:
+        return
+
 
 # Appended to tool-use nudge to discourage plan-without-action
 _TOOL_ACTION_NUDGE = (
@@ -706,6 +836,48 @@ async def unload_model(
         raise HTTPException(status_code = 500, detail = f"Failed to unload model: {str(e)}")
 
 
+@studio_router.post("/cancel")
+async def cancel_inference(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Cancel in-flight inference requests.
+
+    Body (JSON, at least one key required):
+      cancel_id    - preferred: per-run UUID, matched exclusively.
+      session_id   - fallback when cancel_id is absent.
+      completion_id - fallback when cancel_id is absent.
+
+    A cancel_id arriving before its stream registers is stashed briefly
+    and replayed on registration. Returns {"cancelled": N}.
+    """
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception as e:
+        logger.debug("Failed to parse cancel request body: %s", e)
+        body = {}
+
+    cancel_id = body.get("cancel_id")
+    if isinstance(cancel_id, str) and cancel_id:
+        return {"cancelled": _cancel_by_cancel_id_or_stash(cancel_id)}
+
+    keys = []
+    # `message_id` is the Anthropic passthrough's per-run identifier --
+    # included so /v1/messages clients can cancel by their native id.
+    for k in ("completion_id", "session_id", "message_id"):
+        v = body.get(k)
+        if isinstance(v, str) and v:
+            keys.append(v)
+
+    if not keys:
+        return {"cancelled": 0}
+
+    n = _cancel_by_keys(keys)
+    return {"cancelled": n}
+
+
 @router.post("/generate/stream")
 async def generate_stream(
     request: GenerateRequest,
@@ -1169,6 +1341,9 @@ async def openai_chat_completions(
                 )
 
             if payload.stream:
+                _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+                _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+                _tracker.__enter__()
 
                 async def audio_input_stream():
                     try:
@@ -1185,10 +1360,17 @@ async def openai_chat_completions(
                         )
                         yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                        for chunk_text in audio_input_generate():
+                        gen = audio_input_generate()
+                        _DONE = object()
+                        while True:
+                            if cancel_event.is_set():
+                                break
                             if await request.is_disconnected():
                                 cancel_event.set()
                                 return
+                            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+                            if chunk_text is _DONE:
+                                break
                             if chunk_text:
                                 chunk = ChatCompletionChunk(
                                     id = completion_id,
@@ -1221,6 +1403,8 @@ async def openai_chat_completions(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
+                    finally:
+                        _tracker.__exit__(None, None, None)
 
                 return StreamingResponse(
                     audio_input_stream(),
@@ -1466,6 +1650,10 @@ async def openai_chat_completions(
 
             _tool_sentinel = object()
 
+            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker.__enter__()
+
             async def gguf_tool_stream():
                 try:
                     first_chunk = ChatCompletionChunk(
@@ -1488,6 +1676,8 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     while True:
+                        if cancel_event.is_set():
+                            break
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
@@ -1595,6 +1785,8 @@ async def openai_chat_completions(
                         },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
+                finally:
+                    _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
                 gguf_tool_stream(),
@@ -1628,6 +1820,9 @@ async def openai_chat_completions(
         _gguf_sentinel = object()
 
         if payload.stream:
+            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker.__enter__()
 
             async def gguf_stream_chunks():
                 try:
@@ -1652,6 +1847,8 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     while True:
+                        if cancel_event.is_set():
+                            break
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
@@ -1735,6 +1932,8 @@ async def openai_chat_completions(
                         },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
+                finally:
+                    _tracker.__exit__(None, None, None)
 
             return StreamingResponse(
                 gguf_stream_chunks(),
@@ -1834,6 +2033,9 @@ async def openai_chat_completions(
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
+        _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+        _tracker.__enter__()
 
         async def stream_chunks():
             try:
@@ -1861,6 +2063,9 @@ async def openai_chat_completions(
                 loop = asyncio.get_event_loop()
                 gen = generate()
                 while True:
+                    if cancel_event.is_set():
+                        backend.reset_generation_state()
+                        break
                     # next(gen, _DONE) returns _DONE instead of raising
                     # StopIteration — StopIteration cannot propagate
                     # through asyncio futures (Python limitation).
@@ -1916,6 +2121,8 @@ async def openai_chat_completions(
                     },
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
+            finally:
+                _tracker.__exit__(None, None, None)
 
         return StreamingResponse(
             stream_chunks(),
@@ -2596,7 +2803,9 @@ async def _responses_stream(
             ),
         )
 
-    body = _build_openai_passthrough_body(chat_req)
+    body = _build_openai_passthrough_body(
+        chat_req, backend_ctx = llama_backend.context_length
+    )
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
@@ -3081,6 +3290,8 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
+                session_id = payload.session_id,
+                cancel_id = payload.cancel_id,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -3441,6 +3652,7 @@ def _build_passthrough_payload(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    backend_ctx = None,
 ):
     body = {
         "messages": openai_messages,
@@ -3453,8 +3665,12 @@ def _build_passthrough_payload(
     }
     if stream:
         body["stream_options"] = {"include_usage": True}
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
+    body["max_tokens"] = (
+        max_tokens
+        if max_tokens is not None
+        else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
+    )
+    body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     if stop:
         body["stop"] = stop
     if min_p is not None:
@@ -3484,6 +3700,8 @@ async def _anthropic_passthrough_stream(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    session_id = None,
+    cancel_id = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -3501,7 +3719,13 @@ async def _anthropic_passthrough_stream(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
+        backend_ctx = llama_backend.context_length,
     )
+
+    # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST
+    # works without the caller having to know the local message_id.
+    _tracker = _TrackedCancel(cancel_event, cancel_id, session_id, message_id)
+    _tracker.__enter__()
 
     async def _stream():
         emitter = AnthropicPassthroughEmitter()
@@ -3535,15 +3759,28 @@ async def _anthropic_passthrough_stream(
         # has anything orphaned to finalize. Each aclose is wrapped in
         # `try: ... except Exception: pass` so anyio cleanup noise from
         # nested aclose paths can't bubble out.
-        client = httpx.AsyncClient(timeout = 600)
+        client = httpx.AsyncClient(
+            timeout = 600,
+            limits = httpx.Limits(max_keepalive_connections = 0),
+        )
         resp = None
         lines_iter = None
+        cancel_watcher = None
         try:
             req = client.build_request("POST", target_url, json = body)
             resp = await client.send(req, stream = True)
 
+            # See _openai_passthrough_stream for rationale: aiter_lines()
+            # blocks during llama-server prefill, so the in-loop cancel
+            # check is unreachable until the first SSE chunk arrives.
+            # The watcher closes `resp` on cancel, raising in aiter_lines.
+            cancel_watcher = asyncio.create_task(
+                _await_cancel_then_close(cancel_event, resp)
+            )
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
+                if cancel_event.is_set():
+                    break
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
@@ -3558,9 +3795,18 @@ async def _anthropic_passthrough_stream(
                     continue
                 for line in emitter.feed_chunk(chunk):
                     yield line
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            if not cancel_event.is_set():
+                raise
         except Exception as e:
             logger.error("anthropic_messages passthrough stream error: %s", e)
         finally:
+            if cancel_watcher is not None:
+                cancel_watcher.cancel()
+                try:
+                    await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -3575,6 +3821,7 @@ async def _anthropic_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
+            _tracker.__exit__(None, None, None)
 
         for line in emitter.finish():
             yield line
@@ -3621,6 +3868,7 @@ async def _anthropic_passthrough_non_streaming(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
+        backend_ctx = llama_backend.context_length,
     )
 
     async with httpx.AsyncClient() as client:
@@ -3742,7 +3990,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     return messages
 
 
-def _build_openai_passthrough_body(payload) -> dict:
+def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only explicitly-known OpenAI / llama-server fields are forwarded so that
@@ -3764,6 +4012,7 @@ def _build_openai_passthrough_body(payload) -> dict:
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
         tool_choice = tool_choice,
+        backend_ctx = backend_ctx,
     )
 
 
@@ -3784,103 +4033,56 @@ async def _openai_passthrough_stream(
     observes a standard OpenAI response.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length
+    )
 
-    # Dispatch the upstream request BEFORE returning StreamingResponse so
-    # transport errors and non-200 upstream statuses surface as real HTTP
-    # errors to the client. OpenAI SDKs rely on status codes to raise
-    # ``APIError``/``BadRequestError``/...; burying the failure inside a
-    # 200 SSE ``error`` frame silently breaks their error handling.
-    client = httpx.AsyncClient(timeout = 600)
-    resp = None
+    _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+    _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+    _tracker.__enter__()
+
+    # Outer guard: asyncio.CancelledError at `await client.send(...)` is
+    # a BaseException that bypasses `except httpx.RequestError`; without
+    # this the tracker leaks. The generator's finally only runs once
+    # iteration starts.
     try:
-        req = client.build_request("POST", target_url, json = body)
-        resp = await client.send(req, stream = True)
-    except httpx.RequestError as e:
-        # llama-server subprocess crashed / still starting / unreachable.
-        logger.error("openai passthrough stream: upstream unreachable: %s", e)
-        if resp is not None:
-            try:
-                await resp.aclose()
-            except Exception:
-                pass
-        try:
-            await client.aclose()
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code = 502,
-            detail = _friendly_error(e),
+        # Dispatch BEFORE returning StreamingResponse so transport errors
+        # and non-200 upstream statuses surface as real HTTP errors --
+        # OpenAI SDKs rely on status codes to raise APIError/BadRequestError.
+        client = httpx.AsyncClient(
+            timeout = 600,
+            limits = httpx.Limits(max_keepalive_connections = 0),
         )
-
-    if resp.status_code != 200:
-        err_bytes = await resp.aread()
-        err_text = err_bytes.decode("utf-8", errors = "replace")
-        logger.error(
-            "openai passthrough upstream error: status=%s body=%s",
-            resp.status_code,
-            err_text[:500],
-        )
-        upstream_status = resp.status_code
+        resp = None
         try:
-            await resp.aclose()
-        except Exception:
-            pass
-        try:
-            await client.aclose()
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code = upstream_status,
-            detail = f"llama-server error: {err_text[:500]}",
-        )
-
-    async def _stream():
-        # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
-        # avoid `async with` on the client/response AND explicitly save
-        # resp.aiter_lines() so we can close it ourselves in the finally
-        # block. See the long comment there for the full rationale on
-        # why the anonymous `async for raw_line in resp.aiter_lines():`
-        # pattern leaks an unclosed async generator that Python's
-        # asyncgen GC hook then finalizes in a different asyncio task,
-        # producing "Exception ignored in:" / "async generator ignored
-        # GeneratorExit" / anyio cancel-scope traces on Python 3.13 +
-        # httpcore 1.0.x.
-        lines_iter = None
-        try:
-            lines_iter = resp.aiter_lines()
-            async for raw_line in lines_iter:
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    break
-                if not raw_line:
-                    continue
-                if not raw_line.startswith("data: "):
-                    continue
-                # Relay the llama-server SSE chunk verbatim so the client
-                # sees its native `id`, `finish_reason`, `delta.tool_calls`,
-                # and final `usage` unchanged.
-                yield raw_line + "\n\n"
-                if raw_line[6:].strip() == "[DONE]":
-                    break
-        except Exception as e:
-            # Mid-stream failures still have to be reported inside the SSE
-            # body because the 200 response headers have already been
-            # committed by the time the first chunk flushes.
-            logger.error("openai passthrough stream error: %s", e)
-            err = {
-                "error": {
-                    "message": _friendly_error(e),
-                    "type": "server_error",
-                },
-            }
-            yield f"data: {json.dumps(err)}\n\n"
-        finally:
-            if lines_iter is not None:
+            req = client.build_request("POST", target_url, json = body)
+            resp = await client.send(req, stream = True)
+        except httpx.RequestError as e:
+            # llama-server subprocess crashed / still starting / unreachable.
+            logger.error("openai passthrough stream: upstream unreachable: %s", e)
+            if resp is not None:
                 try:
-                    await lines_iter.aclose()
+                    await resp.aclose()
                 except Exception:
                     pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code = 502,
+                detail = _friendly_error(e),
+            )
+
+        if resp.status_code != 200:
+            err_bytes = await resp.aread()
+            err_text = err_bytes.decode("utf-8", errors = "replace")
+            logger.error(
+                "openai passthrough upstream error: status=%s body=%s",
+                resp.status_code,
+                err_text[:500],
+            )
+            upstream_status = resp.status_code
             try:
                 await resp.aclose()
             except Exception:
@@ -3889,16 +4091,91 @@ async def _openai_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
+            raise HTTPException(
+                status_code = upstream_status,
+                detail = f"llama-server error: {err_text[:500]}",
+            )
 
-    return StreamingResponse(
-        _stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        async def _stream():
+            # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
+            # save resp.aiter_lines() so the finally block can aclose() it
+            # on our task. See that function for full rationale.
+            lines_iter = None
+            # During llama-server prefill, `aiter_lines()` blocks until the
+            # first SSE chunk arrives. The in-loop `cancel_event` check
+            # cannot fire until then, which is the exact proxy/Colab
+            # scenario the cancel POST is meant to recover from. Run a
+            # tiny watcher that closes `resp` as soon as cancel fires,
+            # unblocking the iterator with a RemoteProtocolError caught
+            # in the except clause below.
+            cancel_watcher = asyncio.create_task(
+                _await_cancel_then_close(cancel_event, resp)
+            )
+            try:
+                lines_iter = resp.aiter_lines()
+                async for raw_line in lines_iter:
+                    if cancel_event.is_set():
+                        break
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        break
+                    if not raw_line:
+                        continue
+                    if not raw_line.startswith("data: "):
+                        continue
+                    # Relay verbatim to preserve llama-server's native id,
+                    # finish_reason, delta.tool_calls, and usage chunks.
+                    yield raw_line + "\n\n"
+                    if raw_line[6:].strip() == "[DONE]":
+                        break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+                # Watcher closed resp on cancel. Emit nothing extra; the
+                # client either initiated the cancel or already disconnected.
+                if not cancel_event.is_set():
+                    raise
+            except Exception as e:
+                # 200 headers are already flushed; errors must be in the SSE body.
+                logger.error("openai passthrough stream error: %s", e)
+                err = {
+                    "error": {
+                        "message": _friendly_error(e),
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(err)}\n\n"
+            finally:
+                cancel_watcher.cancel()
+                try:
+                    await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
+                if lines_iter is not None:
+                    try:
+                        await lines_iter.aclose()
+                    except Exception:
+                        pass
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                _tracker.__exit__(None, None, None)
+
+        return StreamingResponse(
+            _stream(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except BaseException:
+        _tracker.__exit__(None, None, None)
+        raise
 
 
 async def _openai_passthrough_non_streaming(
@@ -3914,7 +4191,9 @@ async def _openai_passthrough_non_streaming(
     token counts.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length
+    )
 
     try:
         async with httpx.AsyncClient() as client:
