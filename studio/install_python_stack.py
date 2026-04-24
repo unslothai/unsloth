@@ -359,6 +359,28 @@ def _ensure_rocm_torch() -> None:
             )
 
 
+def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
+    """Return Windows-only subprocess kwargs that suppress console windows."""
+    if not IS_WINDOWS:
+        return {}
+
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_factory is not None and startf_use_showwindow:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def _infer_no_torch() -> bool:
     """Determine whether to run in no-torch (GGUF-only) mode.
 
@@ -412,9 +434,11 @@ _UNICODE_TO_ASCII: dict[str, str] = {
 
 
 def _safe_print(*args: object, **kwargs: object) -> None:
-    """Drop-in print() replacement that survives non-UTF-8 consoles."""
+    """Drop-in print() replacement that survives non-UTF-8 consoles and detached stdout."""
     try:
         print(*args, **kwargs)
+    except OSError:
+        return
     except UnicodeEncodeError:
         # Stringify, then swap emoji for ASCII equivalents
         text = " ".join(str(a) for a in args)
@@ -495,7 +519,7 @@ def _step(label: str, value: str, color_fn = None) -> None:
     if color_fn is None:
         color_fn = _green
     padded = label[:_COL]
-    print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
+    _safe_print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
 
 
 def _progress(label: str) -> None:
@@ -509,10 +533,13 @@ def _progress(label: str) -> None:
     bar = "=" * filled + "-" * (width - filled)
     pad = " " * (_COL - len(_LABEL))
     end = "\n" if _STEP >= _TOTAL else ""
-    sys.stdout.write(
-        f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
-    )
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(
+            f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
+        )
+        sys.stdout.flush()
+    except OSError:
+        pass
 
 
 def run(
@@ -525,6 +552,7 @@ def run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         _step("error", f"{label} failed (exit code {result.returncode})", _red)
@@ -627,6 +655,7 @@ def _bootstrap_uv() -> bool:
         ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if probe.returncode != 0:
         # Retry with --system (some envs need it when uv can't find a venv)
@@ -634,6 +663,7 @@ def _bootstrap_uv() -> bool:
             ["uv", "pip", "install", "--dry-run", "--system", "pip"],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            **_windows_hidden_subprocess_kwargs(),
         )
         if probe_sys.returncode != 0:
             return False  # uv is broken, fall back to pip
@@ -773,6 +803,7 @@ def pip_install(
                 uv_cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
+                **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
                 return
@@ -798,6 +829,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         [sys.executable, "-m", "pip", "show", package_name],
         capture_output = True,
         text = True,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         _step(_LABEL, f"package {package_name} not found, skipping patch", _red)
@@ -868,6 +900,7 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "--version"],
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
+                **_windows_hidden_subprocess_kwargs(),
             ).returncode
             == 0
         )
@@ -1140,6 +1173,7 @@ def install_python_stack() -> int:
         [sys.executable, "-m", "pip", "check"],
         stdout = subprocess.DEVNULL,
         stderr = subprocess.DEVNULL,
+        **_windows_hidden_subprocess_kwargs(),
     )
 
     _step(_LABEL, "installed")

@@ -10,10 +10,10 @@ import { Thread } from "@/components/assistant-ui/thread";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
-import {
-  Settings04Icon,
-} from "@hugeicons/core-free-icons";
+import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -39,6 +39,7 @@ import {
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
+  type CompareHandles,
   CompareHandlesProvider,
   RegisterCompareHandle,
   SharedComposer,
@@ -116,7 +117,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -166,6 +167,96 @@ const CompareContent = memo(function CompareContent({
   );
 });
 
+/**
+ * A single column in the compare layout. Hosts one ChatRuntimeProvider
+ * and one Thread rendered with hideComposer — the composer is shared
+ * across both panes and rendered outside the pane flex.
+ *
+ * Each pane is a flex item with `flex-1 basis-0 min-h-0 min-w-0` so on
+ * mobile (flex-col) they share height equally, and on desktop (flex-row)
+ * they share width equally. The `min-*` constraints are required for
+ * the inner viewport to scroll internally instead of spilling into the
+ * page.
+ */
+function ComparePane({
+  modelType,
+  pairId,
+  initialThreadId,
+  handleName,
+  header,
+  borderClassName,
+}: {
+  modelType: "base" | "lora" | "model1" | "model2";
+  pairId: string;
+  initialThreadId: string | undefined;
+  handleName: string;
+  header: ReactElement;
+  borderClassName?: string;
+}): ReactElement {
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
+        borderClassName,
+      )}
+    >
+      {header}
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+        <ChatRuntimeProvider
+          modelType={modelType}
+          pairId={pairId}
+          initialThreadId={initialThreadId}
+          syncActiveThreadId={false}
+        >
+          <RegisterCompareHandle name={handleName} />
+          <Thread hideComposer={true} hideWelcome={true} />
+        </ChatRuntimeProvider>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Shared shell for both compare variants. A vertical flex column with
+ * the two panes as siblings and the shared composer docked at the
+ * bottom. On mobile the panes stack (flex-col); on desktop they sit
+ * side by side (md:flex-row).
+ *
+ * Flex is used rather than CSS grid for the pane container so that
+ * viewport sizing stays stable across viewport-size transitions. Grid
+ * rows with 1fr were triggering resize thrash in assistant-ui's
+ * autoscroll hook on breakpoint crossings, leaving it stuck in a
+ * scroll-to-bottom loop.
+ */
+function CompareShell({
+  handlesRef,
+  children,
+  composer,
+}: {
+  handlesRef: CompareHandles;
+  children: ReactElement;
+  composer: ReactElement;
+}): ReactElement {
+  return (
+    <CompareHandlesProvider handlesRef={handlesRef}>
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
+        <div
+          data-tour="chat-compare-view"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col md:flex-row"
+        >
+          {children}
+        </div>
+        <div className="shrink-0 bg-background px-5 pb-2 pt-1">
+          <div className="mx-auto w-full max-w-[44rem]">{composer}</div>
+          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+            LLMs can make mistakes. Double-check all responses.
+          </p>
+        </div>
+      </div>
+    </CompareHandlesProvider>
+  );
+}
+
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
@@ -191,60 +282,86 @@ const LoraCompareContent = memo(function LoraCompareContent({
   }, [pairId]);
 
   return (
-    <CompareHandlesProvider handlesRef={handlesRef}>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          data-tour="chat-compare-view"
-          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
-        >
-          <div className="flex min-h-0 flex-col">
-            <div className="px-3 py-1.5">
+    <CompareShell
+      handlesRef={handlesRef}
+      composer={<SharedComposer handlesRef={handlesRef} />}
+    >
+      <>
+        <ComparePane
+          modelType="base"
+          pairId={pairId}
+          initialThreadId={baseThreadId}
+          handleName="base"
+          header={
+            <div className="shrink-0 px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col">
-              <ChatRuntimeProvider
-                modelType="base"
-                pairId={pairId}
-                initialThreadId={baseThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="base" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-                  <Thread hideComposer={true} hideWelcome={true} />
-                </div>
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
-            <div className="px-3 py-1.5 text-start md:text-end">
+          }
+        />
+        <ComparePane
+          modelType="lora"
+          pairId={pairId}
+          initialThreadId={loraThreadId}
+          handleName="lora"
+          borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
+          header={
+            <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col">
-              <ChatRuntimeProvider
-                modelType="lora"
-                pairId={pairId}
-                initialThreadId={loraThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="lora" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-                  <Thread hideComposer={true} hideWelcome={true} />
-                </div>
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-        </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
-          <SharedComposer handlesRef={handlesRef} />
-        </div>
-      </div>
-    </CompareHandlesProvider>
+          }
+        />
+      </>
+    </CompareShell>
   );
 });
+
+/**
+ * Per-pane header rendered inside GeneralCompareContent. Contains the
+ * model selector aligned with the global topbar height. The left pane
+ * reserves room for the mobile sidebar trigger; the right pane reserves
+ * room for the global settings button.
+ */
+function GeneralCompareHeader({
+  models,
+  loraModels,
+  value,
+  onValueChange,
+  onFoldersChange,
+  side,
+}: {
+  models: ModelOption[];
+  loraModels: LoraModelOption[];
+  value: string;
+  onValueChange: (
+    id: string,
+    meta: { isLora: boolean; ggufVariant?: string },
+  ) => void;
+  onFoldersChange?: () => void;
+  side: "left" | "right";
+}): ReactElement {
+  return (
+    <div
+      className={cn(
+        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
+        side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
+      )}
+    >
+      <ModelSelector
+        models={models}
+        loraModels={loraModels}
+        value={value}
+        onValueChange={onValueChange}
+        onFoldersChange={onFoldersChange}
+        variant="ghost"
+        className="max-w-[80%] !h-[34px]"
+      />
+    </div>
+  );
+}
 
 /** General path: any two models, sequential load → generate. */
 const GeneralCompareContent = memo(function GeneralCompareContent({
@@ -299,88 +416,64 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   }, [pairId]);
 
   return (
-    <CompareHandlesProvider handlesRef={handlesRef}>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          data-tour="chat-compare-view"
-          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
-        >
-          <div className="flex min-h-0 flex-col">
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3">
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                value={model1.id}
-                onValueChange={(id, meta) =>
-                  setModel1({
-                    id,
-                    isLora: meta.isLora,
-                    ggufVariant: meta.ggufVariant,
-                  })
-                }
-                onFoldersChange={onFoldersChange}
-                variant="ghost"
-                size="sm"
-                className="max-w-[80%]"
-              />
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col">
-              <ChatRuntimeProvider
-                modelType="model1"
-                pairId={pairId}
-                initialThreadId={model1ThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="model1" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-                  <Thread hideComposer={true} hideWelcome={true} />
-                </div>
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-          <div className="flex min-h-0 flex-col border-t border-sidebar-border md:border-t-0 md:border-l">
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3">
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                value={model2.id}
-                onValueChange={(id, meta) =>
-                  setModel2({
-                    id,
-                    isLora: meta.isLora,
-                    ggufVariant: meta.ggufVariant,
-                  })
-                }
-                onFoldersChange={onFoldersChange}
-                variant="ghost"
-                size="sm"
-                className="max-w-[80%]"
-              />
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col">
-              <ChatRuntimeProvider
-                modelType="model2"
-                pairId={pairId}
-                initialThreadId={model2ThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="model2" />
-                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-                  <Thread hideComposer={true} hideWelcome={true} />
-                </div>
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-        </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 bg-background px-4 pt-2 pb-4">
-          <SharedComposer
-            handlesRef={handlesRef}
-            model1={model1}
-            model2={model2}
-          />
-        </div>
-      </div>
-    </CompareHandlesProvider>
+    <CompareShell
+      handlesRef={handlesRef}
+      composer={
+        <SharedComposer
+          handlesRef={handlesRef}
+          model1={model1}
+          model2={model2}
+        />
+      }
+    >
+      <>
+        <ComparePane
+          modelType="model1"
+          pairId={pairId}
+          initialThreadId={model1ThreadId}
+          handleName="model1"
+          header={
+            <GeneralCompareHeader
+              side="left"
+              models={models}
+              loraModels={loraModels}
+              value={model1.id}
+              onValueChange={(id, meta) =>
+                setModel1({
+                  id,
+                  isLora: meta.isLora,
+                  ggufVariant: meta.ggufVariant,
+                })
+              }
+              onFoldersChange={onFoldersChange}
+            />
+          }
+        />
+        <ComparePane
+          modelType="model2"
+          pairId={pairId}
+          initialThreadId={model2ThreadId}
+          handleName="model2"
+          borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
+          header={
+            <GeneralCompareHeader
+              side="right"
+              models={models}
+              loraModels={loraModels}
+              value={model2.id}
+              onValueChange={(id, meta) =>
+                setModel2({
+                  id,
+                  isLora: meta.isLora,
+                  ggufVariant: meta.ggufVariant,
+                })
+              }
+              onFoldersChange={onFoldersChange}
+            />
+          }
+        />
+      </>
+    </CompareShell>
   );
 });
 
@@ -394,6 +487,37 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     return () => setSettingsOpen(false);
   }, [setSettingsOpen]);
+
+  useEffect(() => {
+    const threadId = search.thread;
+    if (!threadId) return;
+
+    let canceled = false;
+    void db.threads
+      .get(threadId)
+      .then((thread) => {
+        if (canceled || thread) return;
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        toast.info("Chat not found", {
+          description: "That thread no longer exists, so we opened a new chat.",
+        });
+        navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+          replace: true,
+        });
+      })
+      .catch(() => {
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [navigate, search.thread]);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
@@ -435,8 +559,7 @@ export function ChatPage(): ReactElement {
     if (search.compare) {
       return {
         mode: "compare",
-        pairId:
-          search.compare,
+        pairId: search.compare,
       };
     }
     if (search.thread) {
@@ -529,8 +652,14 @@ export function ChatPage(): ReactElement {
     },
     [modelSelectorLocked],
   );
-  const openSettings = useCallback(() => setSettingsOpen(true), [setSettingsOpen]);
-  const closeSettings = useCallback(() => setSettingsOpen(false), [setSettingsOpen]);
+  const openSettings = useCallback(
+    () => setSettingsOpen(true),
+    [setSettingsOpen],
+  );
+  const closeSettings = useCallback(
+    () => setSettingsOpen(false),
+    [setSettingsOpen],
+  );
   const { setPinned, isMobile } = useSidebar();
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
@@ -557,7 +686,9 @@ export function ChatPage(): ReactElement {
         .first()
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"];
+          const usage = metadata?.contextUsage as ReturnType<
+            typeof useChatRuntimeStore.getState
+          >["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
         });
     }
@@ -734,9 +865,10 @@ export function ChatPage(): ReactElement {
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <div
           className={cn(
-            "absolute top-0 left-0 right-2 z-30 flex h-11 shrink-0 items-center pr-2 bg-background",
+            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
-            view.mode === "compare" && "right-2 left-auto w-auto bg-transparent pl-0 pr-2",
+            view.mode === "compare" &&
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
           )}
         >
           <div className="flex items-center gap-1">
@@ -754,7 +886,7 @@ export function ChatPage(): ReactElement {
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                className="max-w-[62vw] sm:max-w-none"
+                className="max-w-[62vw] sm:max-w-none !h-[34px]"
               />
             )}
             {loadingModel && loadToastDismissed ? (
@@ -784,25 +916,36 @@ export function ChatPage(): ReactElement {
               {modelsError}
             </div>
           )}
-          <div className="flex-1" />
-          {view.mode === "single" && ggufContextLength && contextUsage ? (
-            <ContextUsageBar
-              used={contextUsage.totalTokens}
-              total={ggufContextLength}
-              cached={contextUsage.cachedTokens}
-              promptTokens={contextUsage.promptTokens}
-              completionTokens={contextUsage.completionTokens}
-            />
-          ) : null}
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(!settingsOpen)}
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Inference settings"
-            data-tour="chat-settings"
-          >
-            <HugeiconsIcon icon={Settings04Icon} className="size-5" />
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            {view.mode === "single" && ggufContextLength && contextUsage ? (
+              <ContextUsageBar
+                used={contextUsage.totalTokens}
+                total={ggufContextLength}
+                cached={contextUsage.cachedTokens}
+                promptTokens={contextUsage.promptTokens}
+                completionTokens={contextUsage.completionTokens}
+                className="h-[34px]"
+              />
+            ) : null}
+            {!settingsOpen && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(true)}
+                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Open configuration"
+                    data-tour="chat-settings"
+                  >
+                    <HugeiconsIcon icon={Settings05Icon} className="size-5" />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent side="bottom" sideOffset={6}>
+                  Open configuration
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
         </div>
 
         {view.mode === "single" ? (

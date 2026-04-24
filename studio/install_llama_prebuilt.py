@@ -46,6 +46,28 @@ EXIT_ERROR = 1
 EXIT_BUSY = 3
 
 
+def windows_hidden_subprocess_kwargs() -> dict[str, object]:
+    """Return Windows-only subprocess kwargs that suppress console windows."""
+    if sys.platform != "win32":
+        return {}
+
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_factory is not None and startf_use_showwindow:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -2469,6 +2491,7 @@ def run_capture(
         text = True,
         timeout = timeout,
         env = env,
+        **windows_hidden_subprocess_kwargs(),
     )
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
@@ -3640,6 +3663,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         return [
             "llama-server",
             "llama-quantize",
+            "libllama-common.so*",
             "libllama.so*",
             "libggml.so*",
             "libggml-base.so*",
@@ -4356,6 +4380,7 @@ def validate_quantize(
         text = True,
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
+        **windows_hidden_subprocess_kwargs(),
     )
     if (
         result.returncode != 0
@@ -4443,6 +4468,7 @@ def validate_server(
                     env = binary_env(
                         server_path, install_dir, host, runtime_line = runtime_line
                     ),
+                    **windows_hidden_subprocess_kwargs(),
                 )
                 deadline = time.time() + 20
                 startup_started = time.time()
@@ -4929,6 +4955,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "linux-cpu":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4937,6 +4964,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-cuda":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4952,6 +4980,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-rocm":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
