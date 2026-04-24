@@ -83,11 +83,20 @@ const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 /** Body characters that almost always indicate real LaTeX. */
 const LATEX_CHAR_RE = /[\\^_{}]/;
 
-/** Operators that strongly suggest a math expression. */
-const MATH_OP_RE = /[=+\-^_<>/*]/;
+/**
+ * Operators that strongly suggest a math expression. We deliberately
+ * leave out `^` and `_` because `LATEX_CHAR_RE` already short-circuits
+ * on those before we ever consult this regex.
+ */
+const MATH_OP_RE = /[=+\-<>/*]/;
 
-/** Trailing prose punctuation we strip before the currency check. */
-const TRAIL_PUNCT_RE = /[.,;:!?]+$/;
+/**
+ * Trailing chars stripped before the currency check. Includes prose
+ * punctuation plus the connectors `-` and `/` that appear in compact
+ * currency ranges like `$5-$10` or `$5/$10`; without them the body
+ * `5-` or `5/` would slip through the single-token math shortcut.
+ */
+const TRAIL_PUNCT_RE = /[.,;:!?\-/]+$/;
 
 /**
  * A standalone single letter (variable name) inside the body. We require
@@ -125,10 +134,10 @@ function looksLikeMathBody(body: string): boolean {
  * (`$...$`) on the same line. The closer must be unescaped, must not be
  * part of `$$`, and must lie inside a 200-character window. The body
  * must look like LaTeX so we don't pair two currency tokens that share
- * a line (e.g. "$5 to $10"). Bold-wrapped spans (`**$X$**`) are always
- * treated as math because LLMs reach for that pattern when they want
- * "bold math" and the heuristic would otherwise reject prose-shaped
- * bodies like "90 - x".
+ * a line (e.g. "$5 to $10"). Bold-wrapped spans (`**$X$**` and the
+ * underscore equivalent `__$X$__`) are always treated as math because
+ * LLMs reach for that pattern when they want "bold math" and the
+ * heuristic would otherwise reject prose-shaped bodies like "90 - x".
  */
 function hasInlineMathCloser(content: string, offset: number): boolean {
   const MAX_SPAN = 200;
@@ -142,14 +151,16 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
       i++;
       continue;
     }
-    if (
-      offset >= 2 &&
-      content.charCodeAt(offset - 1) === 0x2a /* * */ &&
-      content.charCodeAt(offset - 2) === 0x2a &&
-      content.charCodeAt(i + 1) === 0x2a &&
-      content.charCodeAt(i + 2) === 0x2a
-    ) {
-      return true;
+    if (offset >= 2) {
+      const op = content[offset - 1];
+      if (
+        (op === "*" || op === "_") &&
+        content[offset - 2] === op &&
+        content[i + 1] === op &&
+        content[i + 2] === op
+      ) {
+        return true;
+      }
     }
     return looksLikeMathBody(content.slice(offset + 1, i));
   }
