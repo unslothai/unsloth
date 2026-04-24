@@ -3,7 +3,7 @@
 
 import { GithubIcon, PlayCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useMemo } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "../dialogs/shared/field-label";
@@ -12,8 +12,8 @@ import type { ModelConfig, NodeConfig, SeedConfig } from "../types";
 
 type GithubScraperEasyViewProps = {
   configs: Record<string, NodeConfig>;
-  previewRows: number;
-  setPreviewRows: (rows: number) => void;
+  rows: number;
+  setRows: (rows: number) => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   onRun: () => void;
   runLoading: boolean;
@@ -23,8 +23,8 @@ type GithubScraperEasyViewProps = {
 
 export function GithubScraperEasyView({
   configs,
-  previewRows,
-  setPreviewRows,
+  rows,
+  setRows,
   updateConfig,
   onRun,
   runLoading,
@@ -44,6 +44,16 @@ export function GithubScraperEasyView({
       ) ?? null,
     [configs],
   );
+
+  // Local buffer for the Rows input so the user can hold transient invalid
+  // state (empty while backspacing, partial digits, etc.) without the parent
+  // snapping them back to 1 on every keystroke. The canonical ``rows`` value
+  // only advances when the buffer parses to a valid positive integer; on
+  // blur we clamp back to a sane default if the user left it empty.
+  const [rowsText, setRowsText] = useState(String(rows));
+  useEffect(() => {
+    setRowsText(String(rows));
+  }, [rows]);
 
   const handleSeedUpdate = (patch: Partial<SeedConfig>): void => {
     if (!seedConfig) return;
@@ -106,14 +116,33 @@ export function GithubScraperEasyView({
               hint="How many training pairs the LLM should produce."
             />
             <Input
-              type="number"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               className="nodrag"
-              min={1}
-              max={10000}
-              value={previewRows}
+              value={rowsText}
               onChange={(event) => {
-                const next = Number.parseInt(event.target.value, 10);
-                setPreviewRows(Number.isFinite(next) && next > 0 ? next : 1);
+                // Allow empty / partial strings while the user is editing.
+                // type="text" avoids the browser's number spinner and the
+                // related backspace quirks; we still parse + clamp below.
+                const raw = event.target.value.replace(/[^0-9]/g, "");
+                setRowsText(raw);
+                const next = Number.parseInt(raw, 10);
+                if (Number.isFinite(next) && next > 0 && next <= 10000) {
+                  setRows(next);
+                }
+              }}
+              onBlur={() => {
+                const next = Number.parseInt(rowsText, 10);
+                if (!Number.isFinite(next) || next < 1) {
+                  setRows(1);
+                  setRowsText("1");
+                } else if (next > 10000) {
+                  setRows(10000);
+                  setRowsText("10000");
+                } else {
+                  setRowsText(String(next));
+                }
               }}
             />
           </div>

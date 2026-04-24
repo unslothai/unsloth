@@ -298,6 +298,30 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
+            # Disable thinking for data-recipe inference on local providers.
+            # Reasoning models emit a <think>...</think> preamble before the
+            # answer, which roughly doubles generated token count per row and
+            # pushes the visible answer past data_designer's json-fence
+            # regex. Forward chat_template_kwargs={enable_thinking: False}
+            # through the OpenAI SDK's extra_body passthrough so llama-server
+            # renders the template without the reasoning preamble. Free-form
+            # llm-text columns benefit from the latency cut, and structured
+            # columns also stop leaking think tags into the grammar-
+            # constrained JSON (llama-server's GBNF path still enforces the
+            # schema either way).
+            params = mc.get("inference_parameters")
+            if not isinstance(params, dict):
+                params = {}
+                mc["inference_parameters"] = params
+            extra_body = params.get("extra_body")
+            if not isinstance(extra_body, dict):
+                extra_body = {}
+            tpl_kwargs = extra_body.get("chat_template_kwargs")
+            if not isinstance(tpl_kwargs, dict):
+                tpl_kwargs = {}
+            tpl_kwargs.setdefault("enable_thinking", False)
+            extra_body["chat_template_kwargs"] = tpl_kwargs
+            params["extra_body"] = extra_body
 
     # Forward each llm-structured column's output_format as an OpenAI
     # response_format so llama-server uses grammar-constrained sampling and

@@ -204,11 +204,8 @@ export function RecipeStudioPage({
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
   const supportsEasyMode =
     initialPayload?.ui?.seed_source_type === "github_repo" ||
-    (
-      initialPayload?.recipe?.seed_config as
-        | { source?: { seed_type?: string } }
-        | undefined
-    )?.source?.seed_type === "github_repo";
+    (initialPayload?.recipe?.seed_config as { source?: { seed_type?: string } } | undefined)
+      ?.source?.seed_type === "github_repo";
   const viewModeStorageKey = `recipe-studio:view-mode:${recipeId}`;
   const [activeView, setActiveViewState] = useState<RecipeStudioView>(() => {
     if (typeof window !== "undefined") {
@@ -219,9 +216,7 @@ export function RecipeStudioPage({
     return supportsEasyMode ? "easy" : "editor";
   });
   const setActiveView = useCallback(
-    (
-      next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView),
-    ) => {
+    (next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView)) => {
       setActiveViewState((prev) => {
         const resolved = typeof next === "function" ? next(prev) : next;
         if (typeof window !== "undefined") {
@@ -366,6 +361,7 @@ export function RecipeStudioPage({
     cancelExecution,
     loadExecutionDatasetPage,
     runPreview,
+    runFull,
     copyRecipe,
     importRecipe,
   } = useRecipeStudioActions({
@@ -399,6 +395,19 @@ export function RecipeStudioPage({
   const canvasInteractive = interactive && !executionLocked;
   const runBusy = previewLoading || fullLoading || executionLocked;
   const islandExecution = activeExecution ?? recentCompletedExecution;
+
+  // Easy mode runs a full run (artifact persisted, tracked in Runs pane)
+  // using runFull. runFull requires a non-empty fullRunName but the Easy form
+  // has no run-name input, so seed a default here as soon as Easy is active.
+  // User can still rename it from Advanced/Runs dialogs before clicking Run.
+  useEffect(() => {
+    if (!supportsEasyMode) return;
+    if (activeView !== "easy") return;
+    if (fullRunName.trim()) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+    const base = workflowName.trim() || "Easy run";
+    setFullRunName(`${base} ${stamp}`);
+  }, [supportsEasyMode, activeView, fullRunName, workflowName, setFullRunName]);
 
   const toggleInteractive = useCallback(() => {
     if (executionLocked) {
@@ -794,13 +803,18 @@ export function RecipeStudioPage({
             {activeView === "easy" ? (
               <GithubScraperEasyView
                 configs={configs}
-                previewRows={previewRows}
-                setPreviewRows={setPreviewRows}
+                rows={fullRows}
+                setRows={setFullRows}
                 updateConfig={updateConfig}
                 onRun={() => {
-                  void runPreview();
+                  // Easy mode is a full run (artifact persisted, tracked in
+                  // the Runs pane) capped at the user's row count. runFull
+                  // requires a non-empty fullRunName; the effect below
+                  // populates one on mount so the closure in runFull is
+                  // already up to date by the time the user clicks Run.
+                  void runFull();
                 }}
-                runLoading={previewLoading || executionLocked}
+                runLoading={fullLoading || executionLocked}
                 runErrors={runErrors}
                 onSwitchToAdvanced={() => setActiveView("editor")}
               />

@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactElement,
+} from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckmarkCircle02Icon,
@@ -32,7 +40,7 @@ import {
   formatCellValue,
   formatDuration,
   formatPercent,
-  hasExpandableTextCell,
+  isExpandableCellValue,
   parseAnalysisColumns,
   parseModelUsageRows,
   truncateCellValue,
@@ -63,7 +71,10 @@ export function ExecutionsView({
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
   >({});
-  const [expandedDatasetRowsByExecution, setExpandedDatasetRowsByExecution] = useState<
+  // Keyed by executionId then by column name. A true value means the user
+  // clicked that column's cell, so that column renders full-width / full-text
+  // (no 32rem cap, no 180-char truncation) until clicked again.
+  const [expandedDatasetColumnsByExecution, setExpandedDatasetColumnsByExecution] = useState<
     Record<string, Record<string, boolean>>
   >({});
   const [previewDatasetPageByExecution, setPreviewDatasetPageByExecution] = useState<
@@ -91,12 +102,31 @@ export function ExecutionsView({
     }
     return hiddenDatasetColumnsByExecution[selectedExecutionIdSafe] ?? [];
   }, [hiddenDatasetColumnsByExecution, selectedExecutionIdSafe]);
-  const expandedDatasetRows = useMemo(() => {
+  const expandedDatasetColumns = useMemo(() => {
     if (!selectedExecutionIdSafe) {
       return {};
     }
-    return expandedDatasetRowsByExecution[selectedExecutionIdSafe] ?? {};
-  }, [expandedDatasetRowsByExecution, selectedExecutionIdSafe]);
+    return expandedDatasetColumnsByExecution[selectedExecutionIdSafe] ?? {};
+  }, [expandedDatasetColumnsByExecution, selectedExecutionIdSafe]);
+
+  const handleToggleColumnExpanded = useCallback(
+    (columnName: string) => {
+      if (!selectedExecutionIdSafe) {
+        return;
+      }
+      setExpandedDatasetColumnsByExecution((current) => {
+        const columns = current[selectedExecutionIdSafe] ?? {};
+        return {
+          ...current,
+          [selectedExecutionIdSafe]: {
+            ...columns,
+            [columnName]: !columns[columnName],
+          },
+        };
+      });
+    },
+    [selectedExecutionIdSafe],
+  );
 
   const datasetColumnNames = useMemo(() => {
     if (!selectedExecution) {
@@ -126,7 +156,7 @@ export function ExecutionsView({
     return visibleDatasetColumnNames.map((name) => ({
       accessorKey: name,
       header: name,
-      cell: ({ getValue, row }) => {
+      cell: ({ getValue }) => {
         const rawValue = getValue();
         const imagePreview = resolveImagePreview(rawValue);
         if (imagePreview?.kind === "ready") {
@@ -151,23 +181,35 @@ export function ExecutionsView({
           );
         }
         const value = formatCellValue(rawValue);
-        const rowExpanded = Boolean(expandedDatasetRows[row.id]);
-        const rowHasExpandableCell = hasExpandableTextCell(
-          row.original,
-          visibleDatasetColumnNames,
-        );
-        const showTruncated = rowHasExpandableCell && !rowExpanded;
-
+        const canExpand = isExpandableCellValue(value);
+        const columnExpanded = Boolean(expandedDatasetColumns[name]);
+        const handleClick = canExpand
+          ? (event: MouseEvent<HTMLDivElement>) => {
+              event.stopPropagation();
+              handleToggleColumnExpanded(name);
+            }
+          : undefined;
         return (
-          <div className="max-w-[32rem]">
+          <div
+            className={cn(
+              columnExpanded ? "min-w-[48rem] max-w-none" : "max-w-[32rem]",
+              canExpand ? "cursor-pointer" : undefined,
+            )}
+            onClick={handleClick}
+          >
             <p className="whitespace-pre-wrap break-all">
-              {showTruncated ? truncateCellValue(value) : value}
+              {columnExpanded || !canExpand ? value : truncateCellValue(value)}
             </p>
           </div>
         );
       },
     }));
-  }, [expandedDatasetRows, selectedExecution, visibleDatasetColumnNames]);
+  }, [
+    expandedDatasetColumns,
+    handleToggleColumnExpanded,
+    selectedExecution,
+    visibleDatasetColumnNames,
+  ]);
 
   const analysisColumns = useMemo(
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
@@ -512,9 +554,6 @@ export function ExecutionsView({
                   totalPages={totalPages}
                   tableColumns={tableColumns}
                   datasetRowsForTable={datasetRowsForTable}
-                  visibleDatasetColumnNames={visibleDatasetColumnNames}
-                  expandedDatasetRows={expandedDatasetRows}
-                  selectedExecutionIdSafe={selectedExecutionIdSafe}
                   onSetHiddenColumns={(updater) => {
                     const selectedId = selectedExecution.id;
                     setHiddenDatasetColumnsByExecution((current) => {
@@ -546,18 +585,6 @@ export function ExecutionsView({
                       return;
                     }
                     onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
-                  }}
-                  onToggleRowExpanded={(rowId) => {
-                    setExpandedDatasetRowsByExecution((current) => {
-                      const rows = current[selectedExecution.id] ?? {};
-                      return {
-                        ...current,
-                        [selectedExecution.id]: {
-                          ...rows,
-                          [rowId]: !rows[rowId],
-                        },
-                      };
-                    });
                   }}
                 />
               </TabsContent>

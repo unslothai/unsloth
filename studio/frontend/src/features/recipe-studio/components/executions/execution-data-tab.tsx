@@ -13,10 +13,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
-import { hasExpandableTextCell } from "./executions-view-helpers";
 
 type ExecutionDataTabProps = {
   execution: RecipeExecutionRecord;
@@ -27,13 +25,9 @@ type ExecutionDataTabProps = {
   totalPages: number;
   tableColumns: ColumnDef<Record<string, unknown>>[];
   datasetRowsForTable: Record<string, unknown>[];
-  visibleDatasetColumnNames: string[];
-  expandedDatasetRows: Record<string, boolean>;
-  selectedExecutionIdSafe: string | null;
   onSetHiddenColumns: (updater: (current: string[]) => string[]) => void;
   onPrevPage: () => void;
   onNextPage: () => void;
-  onToggleRowExpanded: (rowId: string) => void;
 };
 
 export function ExecutionDataTab({
@@ -45,13 +39,9 @@ export function ExecutionDataTab({
   totalPages,
   tableColumns,
   datasetRowsForTable,
-  visibleDatasetColumnNames,
-  expandedDatasetRows,
-  selectedExecutionIdSafe,
   onSetHiddenColumns,
   onPrevPage,
   onNextPage,
-  onToggleRowExpanded,
 }: ExecutionDataTabProps): ReactElement {
   return (
     <div className="mt-3">
@@ -143,27 +133,7 @@ export function ExecutionDataTab({
         </p>
       ) : (
         <div className="max-h-[55vh] overflow-auto">
-          <DataTable
-            columns={tableColumns}
-            data={datasetRowsForTable}
-            getRowClassName={(row, _rowIndex, rowId) => {
-              const canExpand = hasExpandableTextCell(row, visibleDatasetColumnNames);
-              if (!canExpand) {
-                return undefined;
-              }
-              return cn(
-                "cursor-pointer",
-                expandedDatasetRows[rowId] ? "bg-primary/[0.05]" : "hover:bg-primary/[0.06]",
-              );
-            }}
-            onRowClick={(row, _rowIndex, rowId) => {
-              const canExpand = hasExpandableTextCell(row, visibleDatasetColumnNames);
-              if (!canExpand || !selectedExecutionIdSafe) {
-                return;
-              }
-              onToggleRowExpanded(rowId);
-            }}
-          />
+          <DataTable columns={tableColumns} data={datasetRowsForTable} />
         </div>
       )}
     </div>
