@@ -248,12 +248,20 @@ _TOOL_XML_RE = _re.compile(
 )
 logger = get_logger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 _WIKI_VAULT_ROOT = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
 _ROUTE_WIKI_MANAGER: Optional[WikiManager] = None
 _ROUTE_WIKI_INGESTOR: Optional[WikiIngestor] = None
-_RAG_MAX_PAGES = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_PAGES", "8"))
-_RAG_MAX_CHARS_PER_PAGE = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE", "1800"))
-_RAG_MAX_TOTAL_CHARS = int(os.getenv("UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS", "12000"))
+_RAG_MAX_PAGES = _env_int("UNSLOTH_WIKI_RAG_MAX_PAGES", 8)
+_RAG_MAX_CHARS_PER_PAGE = _env_int("UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE", 1800)
+_RAG_MAX_TOTAL_CHARS = _env_int("UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS", 12000)
 _RAG_INCLUDE_SOURCE_PAGES = os.getenv(
     "UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES", "true"
 ).strip().lower() not in {"0", "false", "no", "off"}

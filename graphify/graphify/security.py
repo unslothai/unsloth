@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-_ALLOWED_SCHEMES = {"http", "https", "file"}
+_ALLOWED_SCHEMES = {"http", "https"}
 _MAX_FETCH_BYTES = 52_428_800  # 50 MB hard cap for binary downloads
 _MAX_TEXT_BYTES = 10_485_760  # 10 MB hard cap for HTML / text
 
