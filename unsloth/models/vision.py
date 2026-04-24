@@ -1770,7 +1770,45 @@ class FastBaseModel:
         return model
 
 
-def check_dataset_for_missing_videos(dataset, column = "messages", raise_error = True):
+def _looks_like_message_list(value):
+    return isinstance(value, list) and (
+        len(value) == 0 or isinstance(value[0], dict)
+    )
+
+
+def _iter_message_lists(example, column):
+    if _looks_like_message_list(example):
+        yield example
+        return
+    if not isinstance(example, dict):
+        return
+    seen_keys = set()
+    for key in (column, "messages", "conversations", "prompt", "completion"):
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        value = example.get(key)
+        if _looks_like_message_list(value):
+            yield value
+
+
+def _local_path_from_video_value(video_path):
+    if video_path.startswith(("http://", "https://")):
+        return None
+    if not video_path.startswith("file://"):
+        return video_path
+    from urllib.parse import urlparse, unquote
+    from urllib.request import url2pathname
+    parsed = urlparse(video_path)
+    path = url2pathname(unquote(parsed.path))
+    if os.name == "nt" and len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return path
+
+
+def check_dataset_for_missing_videos(
+    dataset, column = "messages", raise_error = True, checked = None,
+):
     """
     Validate that all local video file paths referenced in a dataset actually exist.
 
@@ -1781,10 +1819,15 @@ def check_dataset_for_missing_videos(dataset, column = "messages", raise_error =
 
     Args:
         dataset:     A HuggingFace Dataset, list of dicts, or any iterable of examples.
+                     Do not pass a streaming IterableDataset; iterating here consumes
+                     it and subsequent training sees zero samples.
         column:      The column name whose value is a list of chat messages.
-                     Defaults to "messages".
+                     Defaults to "messages".  "conversations", "prompt" and
+                     "completion" columns are also scanned automatically to match
+                     the formats accepted by UnslothVisionDataCollator.
         raise_error: If True (default), raises FileNotFoundError listing all missing
                      files.  If False, emits a warning and returns the missing paths.
+        checked:     Optional set of already-checked paths for cross-call deduplication.
 
     Returns:
         List[str]: Missing file paths (empty list when all files exist).
@@ -1793,32 +1836,29 @@ def check_dataset_for_missing_videos(dataset, column = "messages", raise_error =
         FileNotFoundError: When raise_error=True and one or more paths are absent.
     """
     missing = []
-    checked = set()
+    if checked is None:
+        checked = set()
 
     for example in dataset:
-        messages = example.get(column, [])
-        if not isinstance(messages, list):
-            continue
-        for msg in messages:
-            content = msg.get("content", [])
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if not isinstance(item, dict) or item.get("type") != "video":
+        for messages in _iter_message_lists(example, column):
+            for msg in messages:
+                if not isinstance(msg, dict):
                     continue
-                video_path = item.get("video", "")
-                if not isinstance(video_path, str) or not video_path:
+                content = msg.get("content", [])
+                if not isinstance(content, list):
                     continue
-                # Remote URLs are not validated locally.
-                if video_path.startswith(("http://", "https://")):
-                    continue
-                # Strip file:// URI scheme so os.path.exists works.
-                path = video_path.removeprefix("file://")
-                if path in checked:
-                    continue
-                checked.add(path)
-                if not os.path.isfile(path):
-                    missing.append(path)
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "video":
+                        continue
+                    video_path = item.get("video", "")
+                    if not isinstance(video_path, str) or not video_path:
+                        continue
+                    path = _local_path_from_video_value(video_path)
+                    if path is None or path in checked:
+                        continue
+                    checked.add(path)
+                    if not os.path.isfile(path):
+                        missing.append(path)
 
     if missing:
         missing_list = "\n".join(f"  - {p}" for p in missing)
