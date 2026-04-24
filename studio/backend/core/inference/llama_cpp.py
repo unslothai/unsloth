@@ -609,19 +609,23 @@ class LlamaCppBackend:
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
                 return []
-            # torch.cuda enumerates GPUs RELATIVE to CUDA_VISIBLE_DEVICES
-            # (or HIP_VISIBLE_DEVICES on ROCm). Downstream we feed these
-            # IDs back into CUDA_VISIBLE_DEVICES for the llama-server
-            # subprocess, so we must translate visible ordinals back to
-            # physical indices first; otherwise launching with
-            # ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
+            # torch.cuda enumerates GPUs RELATIVE to the visibility mask.
+            # On NVIDIA builds the mask is CUDA_VISIBLE_DEVICES; on AMD
+            # ROCm builds it is HIP_VISIBLE_DEVICES (or ROCR_VISIBLE_DEVICES
+            # if HIP is unset). Downstream we feed these IDs back into the
+            # llama-server subprocess as CVD, so we must translate visible
+            # ordinals back to physical indices first; otherwise launching
+            # with ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
             # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
             physical_ids: Optional[list[int]] = None
-            cvd = (
-                os.environ.get("CUDA_VISIBLE_DEVICES")
-                or os.environ.get("HIP_VISIBLE_DEVICES")
-                or os.environ.get("ROCR_VISIBLE_DEVICES")
-            )
+            if getattr(torch.version, "hip", None) is not None:
+                cvd = (
+                    os.environ.get("HIP_VISIBLE_DEVICES")
+                    or os.environ.get("ROCR_VISIBLE_DEVICES")
+                    or os.environ.get("CUDA_VISIBLE_DEVICES")
+                )
+            else:
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
             if cvd and cvd.strip():
                 try:
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
@@ -1792,9 +1796,20 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            # Pin to selected GPU(s). On ROCm, llama-server (and any torch
+            # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
+            # narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
+            # the full HIP/ROCR set the parent inherited.
             if gpu_indices is not None:
-                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                pinned = ",".join(str(i) for i in gpu_indices)
+                env["CUDA_VISIBLE_DEVICES"] = pinned
+                try:
+                    import torch as _torch
+                    if getattr(_torch.version, "hip", None) is not None:
+                        env["HIP_VISIBLE_DEVICES"] = pinned
+                        env["ROCR_VISIBLE_DEVICES"] = pinned
+                except Exception:
+                    pass
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
