@@ -96,7 +96,7 @@ export function GithubCrawlerEasyView({
           <h2 className="text-base font-semibold">GitHub Crawler</h2>
           <p className="text-xs text-muted-foreground">
             Crawl real GitHub issues and PRs and turn each thread into a{" "}
-            <code>{"{user_request, grounded_response}"}</code> training pair.
+            <code>{"{User, Assistant}"}</code> training pair.
             Defaults use the server's <code>GH_TOKEN</code> env var and the
             bundled local model.
           </p>
