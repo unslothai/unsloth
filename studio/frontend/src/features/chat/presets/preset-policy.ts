@@ -13,6 +13,18 @@ export interface Preset {
   params: InferenceParams;
 }
 
+export type PresetOwnedParams = Pick<
+  InferenceParams,
+  | "temperature"
+  | "topP"
+  | "topK"
+  | "minP"
+  | "repetitionPenalty"
+  | "presencePenalty"
+  | "maxTokens"
+  | "systemPrompt"
+>;
+
 export const BUILTIN_PRESETS: Preset[] = [
   { name: "Default", params: { ...defaultInferenceParams } },
   {
@@ -97,10 +109,7 @@ export function normalizeCustomPresets(presets: Preset[]): Preset[] {
       usedNames.add(name);
       return {
         name,
-        params: {
-          ...defaultInferenceParams,
-          ...preset.params,
-        },
+        params: preset.params,
       };
     })
     .filter((preset): preset is Preset => preset !== null);
@@ -114,18 +123,54 @@ export function isSamePresetConfig(
   a: InferenceParams,
   b: InferenceParams,
 ): boolean {
+  const left = getPresetOwnedParams(a);
+  const right = getPresetOwnedParams(b);
   return (
-    a.temperature === b.temperature &&
-    a.topP === b.topP &&
-    a.topK === b.topK &&
-    a.minP === b.minP &&
-    a.repetitionPenalty === b.repetitionPenalty &&
-    a.presencePenalty === b.presencePenalty &&
-    a.maxSeqLength === b.maxSeqLength &&
-    a.maxTokens === b.maxTokens &&
-    a.systemPrompt === b.systemPrompt &&
-    (a.trustRemoteCode ?? false) === (b.trustRemoteCode ?? false)
+    left.temperature === right.temperature &&
+    left.topP === right.topP &&
+    left.topK === right.topK &&
+    left.minP === right.minP &&
+    left.repetitionPenalty === right.repetitionPenalty &&
+    left.presencePenalty === right.presencePenalty &&
+    left.maxTokens === right.maxTokens &&
+    left.systemPrompt === right.systemPrompt
   );
+}
+
+export function getPresetOwnedParams(
+  params: InferenceParams,
+): PresetOwnedParams {
+  return {
+    temperature: params.temperature,
+    topP: params.topP,
+    topK: params.topK,
+    minP: params.minP,
+    repetitionPenalty: params.repetitionPenalty,
+    presencePenalty: params.presencePenalty,
+    maxTokens: params.maxTokens,
+    systemPrompt: params.systemPrompt,
+  };
+}
+
+export function getPresetOwnedConfigKey(params: InferenceParams): string {
+  return JSON.stringify(getPresetOwnedParams(params));
+}
+
+export function toPresetParams(params: InferenceParams): InferenceParams {
+  return {
+    ...defaultInferenceParams,
+    ...getPresetOwnedParams(params),
+  };
+}
+
+export function applyPresetParams(
+  current: InferenceParams,
+  preset: InferenceParams,
+): InferenceParams {
+  return {
+    ...current,
+    ...getPresetOwnedParams(preset),
+  };
 }
 
 export type PresetSaveMode =

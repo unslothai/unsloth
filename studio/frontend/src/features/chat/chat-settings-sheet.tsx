@@ -70,16 +70,19 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
+  applyPresetParams,
   BUILTIN_PRESET_NAMES,
   BUILTIN_PRESETS,
   defaultInferenceParams,
   getBuiltinVariantName,
   getOrderedPresets,
+  getPresetOwnedConfigKey,
   getPresetSaveState,
   getPresetSource,
   getUniquePresetName,
   isSamePresetConfig,
   normalizeCustomPresets,
+  toPresetParams,
   type Preset,
 } from "./presets/preset-policy";
 import type { InferenceParams } from "./types/runtime";
@@ -138,18 +141,7 @@ function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
     ]);
     const seenImportedConfigKeys = new Set(
       [...BUILTIN_PRESETS, ...presets].map((preset) =>
-        JSON.stringify({
-          temperature: preset.params.temperature,
-          topP: preset.params.topP,
-          topK: preset.params.topK,
-          minP: preset.params.minP,
-          repetitionPenalty: preset.params.repetitionPenalty,
-          presencePenalty: preset.params.presencePenalty,
-          maxSeqLength: preset.params.maxSeqLength,
-          maxTokens: preset.params.maxTokens,
-          systemPrompt: preset.params.systemPrompt,
-          trustRemoteCode: preset.params.trustRemoteCode ?? false,
-        }),
+        getPresetOwnedConfigKey(preset.params),
       ),
     );
     const importedPresets = parsed
@@ -168,18 +160,7 @@ function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
         },
       }))
       .filter(({ importedParams }) => {
-        const configKey = JSON.stringify({
-          temperature: importedParams.temperature,
-          topP: importedParams.topP,
-          topK: importedParams.topK,
-          minP: importedParams.minP,
-          repetitionPenalty: importedParams.repetitionPenalty,
-          presencePenalty: importedParams.presencePenalty,
-          maxSeqLength: importedParams.maxSeqLength,
-          maxTokens: importedParams.maxTokens,
-          systemPrompt: importedParams.systemPrompt,
-          trustRemoteCode: importedParams.trustRemoteCode ?? false,
-        });
+        const configKey = getPresetOwnedConfigKey(importedParams);
         if (seenImportedConfigKeys.has(configKey)) return false;
         seenImportedConfigKeys.add(configKey);
         return true;
@@ -503,19 +484,8 @@ export function ChatSettingsPanel({
   function applyPreset(name: string) {
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      if (
-        modelRequiresTrustRemoteCode &&
-        !(p.params.trustRemoteCode ?? false)
-      ) {
-        toast.warning("This configuration turns custom code off", {
-          description:
-            "The current model needs custom code enabled to load. Keep it on for this model.",
-        });
-        return;
-      }
       onParamsChange({
-        ...p.params,
-        checkpoint: params.checkpoint,
+        ...applyPresetParams(params, p.params),
       });
       setActivePreset(name);
       setActivePresetSource(getPresetSource(name));
@@ -544,7 +514,7 @@ export function ChatSettingsPanel({
       : trimmed;
     setCustomPresets((prev) => {
       const next = prev.filter((p) => p.name !== saveName);
-      const merged = [...next, { name: saveName, params: { ...params } }];
+      const merged = [...next, { name: saveName, params: toPresetParams(params) }];
       saveCustomPresets(merged);
       return merged;
     });
@@ -569,18 +539,6 @@ export function ChatSettingsPanel({
     }
     const fallbackPreset =
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
-    if (
-      activePreset === name &&
-      fallbackPreset &&
-      modelRequiresTrustRemoteCode &&
-      !(fallbackPreset.params.trustRemoteCode ?? false)
-    ) {
-      toast.warning("Reset would turn custom code off", {
-        description:
-          "The current model needs custom code enabled to load. Keep it on for this model.",
-      });
-      return;
-    }
     setCustomPresets((prev) => {
       const next = prev.filter((preset) => preset.name !== name);
       saveCustomPresets(next);
@@ -589,8 +547,7 @@ export function ChatSettingsPanel({
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange({
-          ...fallbackPreset.params,
-          checkpoint: params.checkpoint,
+          ...applyPresetParams(params, fallbackPreset.params),
         });
         setActivePreset(fallbackPreset.name);
         setActivePresetSource("builtin-default");
