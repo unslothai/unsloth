@@ -387,9 +387,9 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
         count_key = f"{progress.repo}:{progress.resource}"
         if page_key not in job._source_seen_pages:
             job._source_seen_pages.add(page_key)
-            job._source_counts[count_key] = int(job._source_counts.get(count_key, 0)) + int(
-                page_items or 0
-            )
+            job._source_counts[count_key] = int(
+                job._source_counts.get(count_key, 0)
+            ) + int(page_items or 0)
 
     fetched_items = sum(job._source_counts.values())
     if fetched_items <= 0:
@@ -420,7 +420,9 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
             else (previous.page if previous else None)
         ),
         page_items = (
-            page_items if page_items is not None else (previous.page_items if previous else None)
+            page_items
+            if page_items is not None
+            else (previous.page_items if previous else None)
         ),
         fetched_items = fetched_items,
         estimated_total = estimated_total,
