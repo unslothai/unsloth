@@ -1,78 +1,54 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useAui, useAuiState } from "@assistant-ui/react";
-import { useEffect } from "react";
-import type { CompareHandle } from "../shared-composer";
+import { useEffect, useRef } from "react";
+import {
+  CompareHandlesProvider,
+  RegisterCompareHandle,
+  type CompareHandle,
+  type CompareHandles,
+} from "../shared-composer";
+import { ChatRuntimeProvider } from "../runtime-provider";
 
 /**
- * Registers a CompareHandle into a ref provided by the benchmark runner.
- * Only rendered when the visible SingleContent IS the benchmark target thread
- * (chat-page guards onHandleChange with view.threadId === benchmarkActiveThreadId).
+ * Invisible orchestration component. Mounts a hidden ChatRuntimeProvider
+ * connected to the benchmark target thread and exposes a stable CompareHandle
+ * getter to the runner. Completely independent of the visible SingleContent —
+ * no race condition with navigation possible.
  *
- * Waits for AUI to finish loading and switch to the target thread before
- * handing off the handle, matching the signals ThreadAutoSwitch uses.
+ * When currentThreadId changes (next model), ThreadAutoSwitch inside
+ * ChatRuntimeProvider switches the hidden runtime to the new thread.
+ * RegisterCompareHandle re-registers, and waitForHandle() in the runner
+ * picks up the fresh handle automatically via polling.
  */
-export function RegisterBenchmarkHandle({
-  setHandle,
-  threadId,
+export function BenchmarkOrchestrator({
+  currentThreadId,
+  onHandleReady,
 }: {
-  setHandle: (handle: CompareHandle | null) => void;
-  threadId: string;
-}): null {
-  const aui = useAui();
-  // Mirror the same signals ThreadAutoSwitch uses so we know exactly when
-  // AUI has finished switching to the target thread.
-  const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  currentThreadId: string | undefined;
+  onHandleReady: (getHandle: () => CompareHandle | null) => void;
+}) {
+  const handlesRef = useRef<Record<string, CompareHandle>>({}) as CompareHandles;
 
+  // Give the runner a stable getter that always reads the latest handle.
   useEffect(() => {
-    // Wait until the AUI runtime has loaded and switched to the target thread.
-    if (isLoading) return;
-    if (mainThreadId !== threadId) return;
+    onHandleReady(() => handlesRef.current["bench"] ?? null);
+  }, [onHandleReady]);
 
-    const handle: CompareHandle = {
-      append: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
-      startRun: () => {
-        const msgs = aui.thread().getState().messages;
-        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
-        aui.thread().startRun({ parentId: lastId });
-      },
-      cancel: () => aui.thread().cancelRun(),
-      isRunning: () => aui.thread().getState().isRunning,
-      /**
-       * Polls AUI thread state directly to detect run completion.
-       * Reliable because AUI state updates synchronously.
-       */
-      waitForRunEnd: () =>
-        new Promise<void>((resolve) => {
-          const startTime = Date.now();
-          let wasRunning = false;
-          const poll = () => {
-            const running = aui.thread().getState().isRunning;
-            if (running) wasRunning = true;
-            if (wasRunning && !running) {
-              resolve();
-              return;
-            }
-            // Safety timeout: if the run never starts within 10s, continue
-            if (!wasRunning && Date.now() - startTime > 10_000) {
-              resolve();
-              return;
-            }
-            setTimeout(poll, 100);
-          };
-          // Allow ~150ms for the AUI thread to start the run before polling
-          setTimeout(poll, 150);
-        }),
-    };
+  if (!currentThreadId) return null;
 
-    setHandle(handle);
-    return () => setHandle(null);
-  }, [aui, setHandle, threadId, mainThreadId, isLoading]);
-
-  return null;
+  return (
+    <div style={{ display: "none" }} aria-hidden="true">
+      <CompareHandlesProvider handlesRef={handlesRef}>
+        <ChatRuntimeProvider
+          modelType="base"
+          initialThreadId={currentThreadId}
+          syncActiveThreadId={false}
+        >
+          <RegisterCompareHandle name="bench" />
+        </ChatRuntimeProvider>
+      </CompareHandlesProvider>
+    </div>
+  );
 }
+

@@ -48,7 +48,7 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useBenchmarkStore } from "./stores/use-benchmark-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
-import { RegisterBenchmarkHandle } from "./benchmark/benchmark-content";
+import { BenchmarkOrchestrator } from "./benchmark/benchmark-content";
 import { BenchmarkProgressPill } from "./benchmark/benchmark-progress-pill";
 import { useBenchmarkRunner } from "./benchmark/use-benchmark-runner";
 
@@ -114,12 +114,10 @@ const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
   onBenchmarkSend,
-  onHandleChange,
 }: {
   threadId?: string;
   newThreadNonce?: string;
   onBenchmarkSend?: (text: string) => void;
-  onHandleChange?: (handle: CompareHandle | null) => void;
 }): ReactElement {
   return (
     <ChatRuntimeProvider
@@ -129,7 +127,6 @@ const SingleContent = memo(function SingleContent({
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onBenchmarkSend={onBenchmarkSend} />
-        {onHandleChange && threadId && <RegisterBenchmarkHandle setHandle={onHandleChange} threadId={threadId} />}
       </div>
     </ChatRuntimeProvider>
   );
@@ -578,13 +575,13 @@ export function ChatPage(): ReactElement {
     running: benchmarkRunning,
     activeThreadId: benchmarkActiveThreadId,
   } = useBenchmarkRunner();
-  // Holds the handle registered by RegisterBenchmarkHandle inside SingleContent.
-  // Updated whenever SingleContent mounts/remounts for a new thread.
-  const benchmarkHandleRef = useRef<CompareHandle | null>(null);
+  // Holds the getter function provided by BenchmarkOrchestrator once it mounts.
+  // Always reads handlesRef.current["bench"] from the hidden ChatRuntimeProvider.
+  const benchmarkHandleGetterRef = useRef<(() => CompareHandle | null) | null>(null);
 
-  const handleBenchmarkHandleChange = useCallback(
-    (handle: CompareHandle | null) => {
-      benchmarkHandleRef.current = handle;
+  const onBenchmarkHandleReady = useCallback(
+    (getter: () => CompareHandle | null) => {
+      benchmarkHandleGetterRef.current = getter;
     },
     [],
   );
@@ -593,7 +590,7 @@ export function ChatPage(): ReactElement {
     (text: string) => {
       void runBenchmark(
         [text],
-        () => benchmarkHandleRef.current,
+        () => benchmarkHandleGetterRef.current?.() ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
@@ -605,7 +602,7 @@ export function ChatPage(): ReactElement {
     (texts: string[]) => {
       void runBenchmark(
         texts,
-        () => benchmarkHandleRef.current,
+        () => benchmarkHandleGetterRef.current?.() ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
@@ -1030,21 +1027,6 @@ export function ChatPage(): ReactElement {
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             onBenchmarkSend={onBenchmarkSend}
-            onHandleChange={
-              // Only register the handle when the visible thread IS the benchmark
-              // target thread. Without this guard, setRunning(true) fires before
-              // navigation, causing SingleContent (still on the old key) to mount
-              // RegisterBenchmarkHandle with threadId=undefined, which immediately
-              // sets a stale handle pointing at the old/disappearing thread context.
-              // waitForHandle then returns that stale handle before the navigation
-              // even processes — the prompt goes to the wrong thread and the
-              // benchmark loop breaks.
-              benchmarkRunning &&
-              view.threadId != null &&
-              view.threadId === benchmarkActiveThreadId
-                ? handleBenchmarkHandleChange
-                : undefined
-            }
           />
         ) : (
           <CompareContent
@@ -1056,6 +1038,15 @@ export function ChatPage(): ReactElement {
           />
         )}
       </div>
+
+      {/* Hidden benchmark orchestrator: drives generation via its own
+          ChatRuntimeProvider so there is zero race with the visible UI */}
+      {benchmarkRunning && (
+        <BenchmarkOrchestrator
+          currentThreadId={benchmarkActiveThreadId ?? undefined}
+          onHandleReady={onBenchmarkHandleReady}
+        />
+      )}
 
       <ChatSettingsPanel
         open={settingsOpen}
