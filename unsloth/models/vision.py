@@ -1793,17 +1793,18 @@ def _iter_message_lists(example, column):
 
 
 def _local_path_from_video_value(video_path):
-    if video_path.startswith(("http://", "https://")):
-        return None
-    if not video_path.startswith("file://"):
+    if "://" not in video_path:
         return video_path
-    from urllib.parse import urlparse, unquote
+    if not video_path.startswith("file://"):
+        return None
+    from urllib.parse import urlparse
     from urllib.request import url2pathname
     parsed = urlparse(video_path)
-    path = url2pathname(unquote(parsed.path))
-    if os.name == "nt" and len(path) >= 3 and path[0] == "/" and path[2] == ":":
-        path = path[1:]
-    return path
+    # RFC 8089: only an empty authority or "localhost" refers to the local machine.
+    if parsed.netloc and parsed.netloc != "localhost":
+        return None
+    path = url2pathname(parsed.path)
+    return path or None
 
 
 def check_dataset_for_missing_videos(
@@ -1835,6 +1836,22 @@ def check_dataset_for_missing_videos(
     Raises:
         FileNotFoundError: When raise_error=True and one or more paths are absent.
     """
+    try:
+        from datasets import IterableDataset as _IterableDataset
+        if isinstance(dataset, _IterableDataset):
+            # why safe: iterating a streaming dataset would consume it and leave
+            # training with zero samples; warn and skip rather than validate.
+            warnings.warn(
+                "Unsloth: check_dataset_for_missing_videos received a streaming "
+                "IterableDataset; iterating would exhaust it and training would "
+                "see zero samples. Skipping validation - pass a map-style Dataset "
+                "or rely on the UnslothVisionDataCollator's per-batch check.",
+                stacklevel = 2,
+            )
+            return []
+    except ImportError:
+        pass
+
     missing = []
     if checked is None:
         checked = set()
