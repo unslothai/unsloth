@@ -1834,8 +1834,10 @@ class LlamaCppBackend:
                     if getattr(_torch.version, "hip", None) is not None:
                         env["HIP_VISIBLE_DEVICES"] = pinned
                         env["ROCR_VISIBLE_DEVICES"] = pinned
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "Failed to set ROCm visibility env vars for child: %s", e
+                    )
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
