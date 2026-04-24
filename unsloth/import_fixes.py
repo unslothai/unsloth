@@ -463,7 +463,7 @@ def fix_vllm_guided_decoding_params():
 
     if importlib.util.find_spec("vllm") is None:
         return
-    # GuidedDecodingParams is renamed to StructuredOutputsParams in vLLM
+    # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
     # https://github.com/vllm-project/vllm/pull/22772/files
     # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
     try:

@@ -1215,7 +1215,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 raise HTTPException(
                     status_code = 403,
                     detail = (
-                        "Path is not in the browsable allowlist. Register it via "
+                        "Path is not in the browseable allowlist. Register it via "
                         "POST /api/models/scan-folders first, or pick a directory "
                         "under your home folder."
                     ),
@@ -1232,7 +1232,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     raise HTTPException(
         status_code = 403,
         detail = (
-            "Path is not in the browsable allowlist. Register it via "
+            "Path is not in the browseable allowlist. Register it via "
             "POST /api/models/scan-folders first, or pick a directory "
             "under your home folder."
         ),
@@ -1246,7 +1246,7 @@ async def browse_folders(
         description = (
             "Directory to list. If omitted, defaults to the current user's "
             "home directory. Tilde (`~`) and relative paths are expanded. "
-            "Must resolve inside the allowlist of browsable roots (HOME, "
+            "Must resolve inside the allowlist of browseable roots (HOME, "
             "HF cache, Studio dirs, registered scan folders, well-known "
             "model dirs)."
         ),
