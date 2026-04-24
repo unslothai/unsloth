@@ -16,6 +16,22 @@ const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
+const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
+const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
+
+export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+export type ReasoningEffort = "low" | "medium" | "high";
+
+function loadReasoningEffort(fallback: ReasoningEffort): ReasoningEffort {
+  if (!canUseStorage()) return fallback;
+  try {
+    const raw = localStorage.getItem(REASONING_EFFORT_KEY);
+    if (raw === "low" || raw === "medium" || raw === "high") return raw;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
 let hasShownInferencePersistenceWarning = false;
 
 function canUseStorage(): boolean {
@@ -132,7 +148,8 @@ function loadInferenceParams(): InferenceParams {
 function saveInferenceParams(params: InferenceParams): boolean {
   if (!canUseStorage()) return false;
   try {
-    const { checkpoint: _, ...rest } = params;
+    const { checkpoint, ...rest } = params;
+    void checkpoint;
     localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
     return true;
   } catch {
@@ -145,6 +162,7 @@ type ChatRuntimeStore = {
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
+  cancelByThreadId: Record<string, () => void>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
@@ -152,9 +170,14 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
+  modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
+  reasoningStyle: ReasoningStyle;
+  reasoningEffort: ReasoningEffort;
+  supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   supportsTools: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
@@ -171,6 +194,7 @@ type ChatRuntimeStore = {
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   activeThreadId: string | null;
+  settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   contextUsage: {
@@ -181,17 +205,24 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   setModelLoading: (loading: boolean) => void;
+  setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
+  registerThreadCancel: (threadId: string, cancel: () => void) => void;
+  clearThreadCancel: (threadId: string) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (enabled: boolean) => void;
+  setReasoningStyle: (style: ReasoningStyle) => void;
+  setReasoningEffort: (effort: ReasoningEffort) => void;
+  setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
@@ -213,6 +244,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   models: [],
   loras: [],
   runningByThreadId: {},
+  cancelByThreadId: {},
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
@@ -220,9 +252,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
+  modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
   reasoningEnabled: true,
+  reasoningStyle: "enable_thinking",
+  reasoningEffort: loadReasoningEffort("medium"),
+  supportsPreserveThinking: false,
+  preserveThinking: loadBool(PRESERVE_THINKING_KEY, false),
   supportsTools: false,
   toolsEnabled: false,
   codeToolsEnabled: false,
@@ -233,17 +270,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "ngram-mod",
+  speculativeType: "default",
   loadedSpeculativeType: null,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   activeThreadId: null,
+  settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
   contextUsage: null,
   modelLoading: false,
   setModelLoading: (loading) => set({ modelLoading: loading }),
+  setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
+    set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set(() => {
       const persisted = saveInferenceParams(params);
@@ -268,6 +308,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       }
       return { runningByThreadId: next };
     }),
+  registerThreadCancel: (threadId, cancel) =>
+    set((state) => {
+      const next = { ...state.cancelByThreadId };
+      next[threadId] = cancel;
+      return { cancelByThreadId: next };
+    }),
+  clearThreadCancel: (threadId) =>
+    set((state) => {
+      if (!(threadId in state.cancelByThreadId)) return state;
+      const next = { ...state.cancelByThreadId };
+      delete next[threadId];
+      return { cancelByThreadId: next };
+    }),
   setAutoTitle: (autoTitle) =>
     set(() => {
       saveBool(AUTO_TITLE_KEY, autoTitle);
@@ -288,6 +341,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       activeGgufVariant: ggufVariant ?? null,
     })),
   setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
+  setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
@@ -298,22 +352,43 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
+      modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,
+      reasoningAlwaysOn: false,
       reasoningEnabled: true,
+      reasoningStyle: "enable_thinking",
+      supportsPreserveThinking: false,
       supportsTools: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "ngram-mod",
+      speculativeType: "default",
       loadedSpeculativeType: null,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
+  setReasoningEffort: (reasoningEffort) =>
+    set(() => {
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(REASONING_EFFORT_KEY, reasoningEffort);
+        } catch {
+          // ignore
+        }
+      }
+      return { reasoningEffort };
+    }),
+  setPreserveThinking: (preserveThinking) =>
+    set(() => {
+      saveBool(PRESERVE_THINKING_KEY, preserveThinking);
+      return { preserveThinking };
+    }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
   setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
