@@ -47,6 +47,7 @@ import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { RunDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
+import { GithubScraperEasyView } from "./easy/github-scraper-easy-view";
 import type {
   RecipeExecutionRecord,
   RecipeStudioView,
@@ -201,7 +202,28 @@ export function RecipeStudioPage({
     null,
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
+  const supportsEasyMode = initialPayload?.ui?.seed_source_type === "github_repo";
+  const viewModeStorageKey = `recipe-studio:view-mode:${recipeId}`;
+  const [activeView, setActiveViewState] = useState<RecipeStudioView>(() => {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem(viewModeStorageKey);
+      if (stored === "easy" && supportsEasyMode) return "easy";
+      if (stored === "editor" || stored === "executions") return stored;
+    }
+    return supportsEasyMode ? "easy" : "editor";
+  });
+  const setActiveView = useCallback(
+    (next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView)) => {
+      setActiveViewState((prev) => {
+        const resolved = typeof next === "function" ? next(prev) : next;
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(viewModeStorageKey, resolved);
+        }
+        return resolved;
+      });
+    },
+    [viewModeStorageKey],
+  );
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
@@ -326,6 +348,7 @@ export function RecipeStudioPage({
     validateResult,
     cancelExecution,
     loadExecutionDatasetPage,
+    runPreview,
     copyRecipe,
     importRecipe,
   } = useRecipeStudioActions({
@@ -739,6 +762,7 @@ export function RecipeStudioPage({
             savedAtLabel={savedAtLabel}
             workflowName={workflowName}
             warnings={getGraphWarnings(configs, edges)}
+            supportsEasyMode={supportsEasyMode}
             onWorkflowNameChange={setWorkflowName}
             onViewChange={setActiveView}
             onSaveRecipe={() => {
@@ -749,7 +773,20 @@ export function RecipeStudioPage({
             className="h-[75vh] w-full rounded-t-none"
             ref={flowContainerRef}
           >
-            {activeView === "editor" ? (
+            {activeView === "easy" ? (
+              <GithubScraperEasyView
+                configs={configs}
+                previewRows={previewRows}
+                setPreviewRows={setPreviewRows}
+                updateConfig={updateConfig}
+                onRun={() => {
+                  void runPreview();
+                }}
+                runLoading={previewLoading || executionLocked}
+                runErrors={runErrors}
+                onSwitchToAdvanced={() => setActiveView("editor")}
+              />
+            ) : activeView === "editor" ? (
               editorContent
             ) : (
               <ExecutionsView

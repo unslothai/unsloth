@@ -41,29 +41,30 @@
     "columns": [
       {
         "column_type": "llm-text",
-        "name": "normalized_question",
+        "name": "user_request",
         "drop": false,
         "model_alias": "model_1",
-        "prompt": "Rewrite the following GitHub {{ item_type }} into a single, standalone Unsloth support question a user would ask on Discord. Keep the key technical details (code snippets, tracebacks, versions) verbatim. Keep it 1-5 sentences. Output ONLY the rewritten question.\n\n--- INPUT ---\nRepo: {{ repo }}\nTitle: {{ title }}\nBody:\n{{ body }}\n\nFirst comments:\n{{ comments }}",
-        "system_prompt": "You rewrite real GitHub issue / PR threads into concise support questions. Preserve technical fidelity: do not invent facts.",
+        "prompt": "Read the GitHub {{ item_type }} below and write ONE realistic user request that could have produced it. Imagine a developer asking a GitHub co-author model to either file this {{ item_type }} or draft a PR that resolves it. Use first-person imperative phrasing (\"Open an issue...\", \"Draft a PR that...\", \"Investigate why...\"). Preserve concrete technical details (model names, flags, file paths, tracebacks) that appear in the thread. Keep it 1-3 sentences. Output ONLY the user request, no preamble.\n\n--- INPUT ---\nRepo: {{ repo }}\nType: {{ item_type }}\nTitle: {{ title }}\nBody:\n{{ body }}\n\nFirst comments:\n{{ comments }}",
+        "system_prompt": "You invert real GitHub threads into the user request that would have produced them. Faithful to the thread, no invented facts, no em-dashes, no emojis.",
         "with_trace": "none"
       },
       {
         "column_type": "llm-structured",
-        "name": "support_answer",
+        "name": "coauthor_response",
         "drop": false,
         "model_alias": "model_1",
-        "prompt": "You are writing one training row for an Unsloth support bot. Produce structured JSON grounded in the GitHub thread.\n\nSource issue / PR:\n- Repo: {{ repo }}\n- Title: {{ title }}\n- URL: {{ url }}\n- State: {{ state }}\n- Labels: {{ labels }}\n- Body: {{ body }}\n- First comments: {{ comments }}\n\nNormalized user question:\n{{ normalized_question }}\n\nRules:\n- `answer`: 80-200 words of Markdown grounded in the thread. Cite the source URL at least once inline as `[source: {{ url }}]`.\n- When the thread is procedural (install, upgrade, fix), include a short ```bash or ```python code block if one appears in the thread.\n- Name at least one concrete symbol (function, class, flag, env var, or file path) from the thread when available.\n- Never recommend `rm -rf`, force push, or other destructive commands without a warning.\n- No em-dashes, no emojis, no AI-disclaimer phrases. Only cite URLs / paths that appear in the thread.\n- `diagnosis_questions`: 1-4 follow-ups when the thread is missing info (versions, GPU, traceback). Empty list if the answer is complete.\n- `cites`: URLs / file paths actually used. Always include `{{ url }}`.\n- `confidence`: `high` / `medium` / `low`. Use `low` when ambiguous or out of scope.",
-        "system_prompt": "You write grounded Unsloth support answers. Faithful to the thread, no invented facts, no em-dashes, no emojis, no AI-disclaimer phrases.",
+        "prompt": "You are generating one training row for an Unsloth GitHub co-author model. Given the real GitHub thread and a synthesized user request, produce a grounded structured response.\n\nSource thread:\n- Repo: {{ repo }}\n- Type: {{ item_type }}\n- Title: {{ title }}\n- URL: {{ url }}\n- State: {{ state }}\n- Labels: {{ labels }}\n- Body: {{ body }}\n- First comments: {{ comments }}\n\nUser request:\n{{ user_request }}\n\nRules:\n- `response`: 100-250 words of Markdown grounded in the thread. If the thread is a closed / resolved issue, follow the `issue_fix_plan` shape: brief diagnosis, numbered fix steps, and a short repro. If the thread is a PR, follow the `explain_pr` shape: what changed, why, and which files or symbols were touched. If the thread is open / unresolved, answer honestly and ask for the missing info.\n- Cite the source URL at least once inline as `[source: {{ url }}]`.\n- Name at least one concrete symbol (function, class, flag, env var, or file path) from the thread when available.\n- Include a short ```bash or ```python code block ONLY if the thread itself contains that code or command.\n- Never recommend `rm -rf`, force push, or other destructive commands without an explicit warning.\n- No em-dashes, no emojis, no AI-disclaimer phrases. Only cite URLs / paths that appear in the thread.\n- `followups`: 0-4 follow-up questions when the thread is missing info (versions, GPU, traceback). Empty list if the response is complete.\n- `cites`: URLs / file paths actually used. Always include `{{ url }}`.\n- `task`: one of `explain_pr`, `issue_fix_plan`, `issue_solution`, `discussion_qa`. Pick the closest match.\n- `confidence`: `high` / `medium` / `low`. Use `low` when ambiguous or out of scope.",
+        "system_prompt": "You write grounded GitHub co-author responses for Unsloth. Faithful to the thread, no invented facts, no em-dashes, no emojis, no AI-disclaimer phrases.",
         "output_format": {
           "type": "object",
           "properties": {
-            "answer": {"type": "string", "minLength": 1},
-            "diagnosis_questions": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+            "response": {"type": "string", "minLength": 1},
+            "followups": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
             "cites": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+            "task": {"type": "string", "enum": ["explain_pr", "issue_fix_plan", "issue_solution", "discussion_qa"]},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
           },
-          "required": ["answer", "diagnosis_questions", "cites", "confidence"],
+          "required": ["response", "followups", "cites", "task", "confidence"],
           "additionalProperties": false
         }
       }
@@ -80,8 +81,8 @@
       {"id": "Local Model", "x": -1056, "y": 520, "width": 400},
       {"id": "model_1", "x": -544, "y": 488, "width": 400},
       {"id": "seed", "x": 0, "y": 140, "width": 400},
-      {"id": "normalized_question", "x": 0, "y": 440, "width": 400},
-      {"id": "support_answer", "x": 0, "y": 740, "width": 400},
+      {"id": "user_request", "x": 0, "y": 440, "width": 400},
+      {"id": "coauthor_response", "x": 0, "y": 740, "width": 400},
       {
         "id": "note_1",
         "x": 480,
@@ -89,7 +90,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_1",
-        "markdown": "### GitHub Support Bot\nReal GitHub data to synthetic Q&A pairs for support-bot fine-tuning.\n\n**Click `Run` below to generate 10 sample rows.** Defaults already point at `unslothai/unsloth` + `unslothai/unsloth-zoo`, use the server's `GH_TOKEN` env var, and run the bundled local model.\n\n**Upgrade to production**\n- Swap `unsloth/gemma-4-E2B-it-GGUF` for a larger model in the model_config node.\n- Replace the demo prompts on `normalized_question` / `support_answer` with the canonical codex pattern below (see Note 3).\n- Raise the seed `limit` from 100 to `0` (All) for a full backfill.\n- Raise `max_parallel_requests` back to 4 once your inference server can handle it.",
+        "markdown": "### GitHub Scraper\nReal GitHub issues and PRs turned into `{user_request, grounded_response}` training pairs. Mirrors two of the eleven canonical enrichment tasks in the `github_data_gatherer` dataset: `pr_requests_20` / `issue_requests_20` for the input side, and `explain_pr` / `issue_fix_plan` / `issue_solution` for the output side.\n\n**Click `Run` below for 10 sample rows.** Defaults point at `unslothai/unsloth` + `unslothai/unsloth-zoo`, use the server's `GH_TOKEN` env var, and run the bundled local model.\n\n**Upgrade to production**\n- Swap `unsloth/gemma-4-E2B-it-GGUF` for a stronger model (`gpt-5.4-mini` with `reasoning_effort=medium` is what the reference dataset uses).\n- Replace the demo prompts with the task-specific prompts from the reference dataset (see Note 3).\n- Raise the seed `limit` from 100 to `0` (All) for a full backfill.\n- Raise `max_parallel_requests` to 4 once the inference server can handle it.",
         "note_color": "#E0F2FE",
         "note_opacity": "35"
       },
@@ -100,7 +101,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_2",
-        "markdown": "The **normalize** step turns a raw GitHub thread (which often has title/body/comments scattered) into a single clean support question.\n\nTweak the prompt to:\n- always include the traceback\n- drop off-topic chitchat\n- target a specific user persona",
+        "markdown": "The **user_request** column inverts each GitHub thread into a realistic request a developer would give a co-author model (`\"Draft a PR that...\"`, `\"Investigate why...\"`). Same shape as the `pr_requests_20` and `issue_requests_20` enrichments.\n\nTweak the prompt to:\n- always keep the traceback verbatim\n- vary persona (newcomer, maintainer, ops)\n- split one thread into multiple alternative phrasings for data augmentation.",
         "note_color": "#E0F2FE",
         "note_opacity": "35"
       },
@@ -111,17 +112,17 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_3",
-        "markdown": "The **answer** block produces `{answer, diagnosis_questions, cites, confidence}`, ready to feed into the grounded RAG answerer.\n\n**Demo default**: 80-200 word answer, one inline `[source: <url>]` cite, `max_parallel_requests=1` so a small local model stays stable.\n\n**Production prompt (paste in):**\n- Require 150-300 word answers with 2+ citations.\n- Enforce named symbols (function / flag / env var / file path).\n- Code fences for every procedural step.\n- Use the resolved-issue / merged-PR template: `What changed / Fix location / Minimum repro`.\n- Reject rows containing em-dashes, emojis, or AI-disclaimer phrases.\n\nSee the Unsloth SupportBot dataset card for the full codex prompt we used to train `Gemma-4-Unsloth-Bot`.",
+        "markdown": "The **coauthor_response** block emits `{response, followups, cites, task, confidence}` and branches on thread type: closed issues become `issue_fix_plan` rows, PRs become `explain_pr` rows, everything else becomes `issue_solution` or `discussion_qa`.\n\n**Demo default**: 100-250 word response, one inline `[source: <url>]` cite, `max_parallel_requests=1` so a small local model stays stable.\n\n**Production prompt (paste in):**\n- Match the reference dataset's per-task prompts (`explain_pr`, `issue_fix_plan`, `pr_review_critique`, `pr_test_plan`, etc.).\n- Require 300 words for explanations, 6-12 bullets for test plans.\n- Enforce named symbols (function / flag / env var / file path).\n- Code fences only for content already in the thread.\n- Reject rows with em-dashes, emojis, or AI-disclaimer phrases.\n\nSee the `github_data_gatherer` dataset card for the full task catalog and the codex prompts used to train the reference GitHub model.",
         "note_color": "#E0F2FE",
         "note_opacity": "35"
       }
     ],
     "edges": [
-      {"from": "seed", "to": "normalized_question", "type": "canvas", "source_handle": "data-out-bottom", "target_handle": "data-in-top"},
-      {"from": "normalized_question", "to": "support_answer", "type": "canvas", "source_handle": "data-out-bottom", "target_handle": "data-in-top"},
+      {"from": "seed", "to": "user_request", "type": "canvas", "source_handle": "data-out-bottom", "target_handle": "data-in-top"},
+      {"from": "user_request", "to": "coauthor_response", "type": "canvas", "source_handle": "data-out-bottom", "target_handle": "data-in-top"},
       {"from": "Local Model", "to": "model_1", "type": "semantic", "source_handle": "semantic-out", "target_handle": "semantic-in"},
-      {"from": "model_1", "to": "normalized_question", "type": "semantic", "source_handle": "semantic-out", "target_handle": "data-in"},
-      {"from": "model_1", "to": "support_answer", "type": "semantic", "source_handle": "semantic-out-bottom", "target_handle": "data-in"}
+      {"from": "model_1", "to": "user_request", "type": "semantic", "source_handle": "semantic-out", "target_handle": "data-in"},
+      {"from": "model_1", "to": "coauthor_response", "type": "semantic", "source_handle": "semantic-out-bottom", "target_handle": "data-in"}
     ],
     "layout_direction": "LR"
   }

@@ -164,9 +164,9 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "structured-outputs-jinja",
   },
   {
-    title: "GitHub Support Bot",
+    title: "GitHub Scraper",
     description:
-      "Scrape real GitHub issues / PRs / commits (multi-repo) and turn each into a normalized question + structured answer for fine-tuning a support assistant.",
+      "Scrape real GitHub issues and PRs and invert each thread into a {user_request, grounded_response} training pair.",
     icon: GithubIcon,
     difficulty: "Intermediate",
     learningBadges: ["GitHub", "LLM Text", "Structured LLM"],

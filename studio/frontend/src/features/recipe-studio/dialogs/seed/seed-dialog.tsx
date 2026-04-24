@@ -75,7 +75,7 @@ type SeedDialogProps = {
   open: boolean;
 };
 
-function GithubRepoSeedForm({
+export function GithubRepoSeedForm({
   config,
   onUpdate,
 }: {
@@ -84,12 +84,13 @@ function GithubRepoSeedForm({
 }): ReactElement {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const limitStr = (config.github_limit ?? "100").trim();
+  const allMode = limitStr === "" || limitStr === "0";
   return (
     <div className="space-y-3 rounded-xl corner-squircle border border-border/60 p-3">
       <div className="grid gap-1.5">
         <FieldLabel
           label="GitHub repositories"
-          hint="One owner/name per line."
+          hint="One owner/name per line. Defaults to the two Unsloth repos."
         />
         <textarea
           className="nodrag min-h-20 w-full resize-y rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs font-mono"
@@ -101,7 +102,7 @@ function GithubRepoSeedForm({
       <div className="grid gap-1.5">
         <FieldLabel
           label="GitHub token"
-          hint="Use public_repo for public repos or repo for private repos. Leave blank to use the server's GH_TOKEN / GITHUB_TOKEN env var."
+          hint="Personal access token with repo scope. Leave blank to use the server's GH_TOKEN / GITHUB_TOKEN env var."
         />
         <Input
           type="password"
@@ -114,17 +115,29 @@ function GithubRepoSeedForm({
       <div className="grid gap-1.5">
         <FieldLabel
           label="Items per repo"
-          hint="How many issues/PRs/commits to fetch from each repo (1-5000)."
+          hint="How many issues/PRs/commits to fetch from each repo. Toggle All to scrape everything."
         />
-        <Input
-          type="number"
-          className="nodrag"
-          min={1}
-          max={5000}
-          value={limitStr}
-          onChange={(e) => onUpdate({ github_limit: e.target.value })}
-          placeholder="100"
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            type="number"
+            className="nodrag flex-1"
+            min={1}
+            max={100000}
+            disabled={allMode}
+            value={allMode ? "" : limitStr}
+            onChange={(e) => onUpdate({ github_limit: e.target.value })}
+            placeholder={allMode ? "All" : "100"}
+          />
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+            <Checkbox
+              checked={allMode}
+              onCheckedChange={(v) =>
+                onUpdate({ github_limit: v === true ? "0" : "100" })
+              }
+            />
+            <span>All</span>
+          </label>
+        </div>
       </div>
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
         <CollapsibleTrigger asChild={true}>
