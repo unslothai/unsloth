@@ -392,12 +392,19 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
-          const paramsBeforeLoad = useChatRuntimeStore.getState().params;
-          const trustRemoteCode = paramsBeforeLoad.trustRemoteCode ?? false;
-          const maxSeqLength = paramsBeforeLoad.maxSeqLength;
-          const hfToken = useChatRuntimeStore.getState().hfToken || null;
+          const stateBeforeUnload = useChatRuntimeStore.getState();
+          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
+          const previousIsGguf =
+            previousModel?.isGguf === true
+            || previousVariant != null
+            || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+          const rollbackMaxSeqLength = previousIsGguf
+            ? (stateBeforeUnload.ggufContextLength ?? 0)
+            : maxSeqLength;
+          const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
-            useChatRuntimeStore.getState().modelRequiresTrustRemoteCode;
+            stateBeforeUnload.modelRequiresTrustRemoteCode;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -551,7 +558,7 @@ export function useChatModelRuntime() {
                 await loadModel({
                   model_path: previousCheckpoint,
                   hf_token: hfToken,
-                  max_seq_length: maxSeqLength,
+                  max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
