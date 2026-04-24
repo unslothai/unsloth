@@ -16,11 +16,11 @@ import json
 import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-# The scraper_impl gh_client reads GH_TOKEN at import time and raises if
-# missing, so we defer the imports until `scrape()` runs with a resolved token.
+# Defer scraper_impl imports until `scrape()` runs with a resolved token.
 _IMPL_DIR = Path(__file__).parent / "scraper_impl"
 
 
@@ -154,9 +154,8 @@ def _flatten_commit_row(r: dict, repo: str) -> dict:
 
 def scrape(cfg: ScrapeConfig, base_dir: Path):
     token = _resolve_token(cfg.token)
-    os.environ["GH_TOKEN"] = token
     GitHubClient, RepoScraper = _load_impl()
-    client = GitHubClient()
+    client = GitHubClient(token = token)
     base_dir.mkdir(parents = True, exist_ok = True)
 
     # Per-resource trial limits. limit <= 0 means "all": use a very large cap.
@@ -180,13 +179,18 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
             trial_limits = trial_limits,
         )
         try:
-            scraper.scrape_repo_meta()
+            repo_meta = scraper.scrape_repo_meta()
             if "issues" in cfg.item_types:
                 scraper.scrape_issues()
             if "pulls" in cfg.item_types:
                 scraper.scrape_prs()
             if "commits" in cfg.item_types:
-                scraper.scrape_commits()
+                default_ref = repo_meta.get("defaultBranchRef") or {}
+                default_branch = (
+                    default_ref.get("name") if isinstance(default_ref, dict) else None
+                )
+                branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
+                scraper.scrape_commits(branch = branch)
         finally:
             scraper.close()
 
@@ -217,9 +221,10 @@ def materialize_to_jsonl(cfg: ScrapeConfig, out_dir: Path) -> Path:
     out_dir.mkdir(parents = True, exist_ok = True)
     tag = "-".join(r.replace("/", "__") for r in cfg.repos)[:120]
     kinds = "-".join(cfg.item_types)
-    fname = f"github_{tag}__{kinds}__{cfg.limit}_{int(time.time())}.jsonl"
+    run_id = f"{int(time.time())}-{uuid.uuid4().hex[:12]}"
+    fname = f"github_{tag}__{kinds}__{cfg.limit}_{run_id}.jsonl"
     out = out_dir / fname
-    rows = scrape(cfg, out_dir / "raw")
+    rows = scrape(cfg, out_dir / "raw-runs" / run_id)
     with out.open("w", encoding = "utf-8") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii = False) + "\n")

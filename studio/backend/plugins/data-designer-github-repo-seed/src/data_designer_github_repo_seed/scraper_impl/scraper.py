@@ -96,7 +96,7 @@ class RepoScraper:
             )
 
     # ----- repo meta -----
-    def scrape_repo_meta(self) -> None:
+    def scrape_repo_meta(self) -> Dict[str, Any]:
         data = self.client.graphql(
             Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name}
         )
@@ -104,6 +104,7 @@ class RepoScraper:
         repo = data.get("data", {}).get("repository") or {}
         repo["_fetchedAt"] = ts()
         self.writers["repo_meta"].write(repo)
+        return repo
 
     # ----- issues -----
     def scrape_issues(self) -> int:
@@ -674,8 +675,9 @@ def main():
             owner, name = repo_spec.split("/")
             scraper = RepoScraper(owner, name, data_dir, client, trial_limits)
             try:
-                if not only or "meta" in only:
-                    scraper.scrape_repo_meta()
+                repo_meta: Dict[str, Any] = {}
+                if not only or "meta" in only or "commits" in only:
+                    repo_meta = scraper.scrape_repo_meta()
                 if not only or "labels" in only:
                     scraper.scrape_labels()
                 if not only or "milestones" in only:
@@ -689,7 +691,12 @@ def main():
                 if not only or "pulls" in only:
                     scraper.scrape_prs()
                 if not only or "commits" in only:
-                    scraper.scrape_commits()
+                    default_ref = repo_meta.get("defaultBranchRef") or {}
+                    default_branch = (
+                        default_ref.get("name") if isinstance(default_ref, dict) else None
+                    )
+                    branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
+                    scraper.scrape_commits(branch = branch)
             finally:
                 scraper.close()
     finally:

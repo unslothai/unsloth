@@ -15,15 +15,10 @@ import requests
 
 log = logging.getLogger("gh_client")
 
-GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-if not GH_TOKEN:
-    raise RuntimeError("GH_TOKEN not set in environment")
-
 GRAPHQL_URL = "https://api.github.com/graphql"
 REST_BASE = "https://api.github.com"
 
-DEFAULT_HEADERS = {
-    "Authorization": f"Bearer {GH_TOKEN}",
+BASE_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "github-data-gatherer/1.0",
@@ -35,9 +30,19 @@ class RateLimitError(Exception):
 
 
 class GitHubClient:
-    def __init__(self, min_remaining_graphql: int = 100, min_remaining_rest: int = 100):
+    def __init__(
+        self,
+        min_remaining_graphql: int = 100,
+        min_remaining_rest: int = 100,
+        token: str | None = None,
+    ):
+        token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if not token:
+            raise RuntimeError("GH_TOKEN not set in environment")
         self.session = requests.Session()
-        self.session.headers.update(DEFAULT_HEADERS)
+        self.session.headers.update(
+            {**BASE_HEADERS, "Authorization": f"Bearer {token}"}
+        )
         self.min_remaining_graphql = min_remaining_graphql
         self.min_remaining_rest = min_remaining_rest
         self.graphql_remaining: Optional[int] = None

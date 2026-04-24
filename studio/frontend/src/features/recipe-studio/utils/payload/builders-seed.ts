@@ -6,6 +6,7 @@ import type { NodeConfig, SeedConfig } from "../../types";
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
+const GITHUB_ITEM_TYPES = new Set(["issues", "pulls", "commits"]);
 
 function parseIntStrict(value: string | undefined): number | null {
   const trimmed = value?.trim();
@@ -85,22 +86,49 @@ export function buildSeedConfig(
       errors.push(`Seed ${config.name}: at least one repo is required.`);
       return undefined;
     }
+    const invalidRepo = repos.find((repo) => {
+      const parts = repo.split("/");
+      return parts.length !== 2 || parts.some((part) => !part);
+    });
+    if (invalidRepo) {
+      errors.push(
+        `Seed ${config.name}: GitHub repositories must use owner/name format.`,
+      );
+      return undefined;
+    }
+    const itemTypes = config.github_item_types?.length
+      ? config.github_item_types
+      : ["issues", "pulls"];
+    if (itemTypes.some((itemType) => !GITHUB_ITEM_TYPES.has(itemType))) {
+      errors.push(`Seed ${config.name}: GitHub item types invalid.`);
+      return undefined;
+    }
     const limitNum = parseIntStrict(config.github_limit ?? "100");
+    if (limitNum === null || limitNum < 1 || limitNum > 5000) {
+      errors.push(
+        `Seed ${config.name}: GitHub items per repo must be an integer from 1 to 5000.`,
+      );
+      return undefined;
+    }
     const maxCommentsNum = parseIntStrict(config.github_max_comments_per_item ?? "30");
+    if (maxCommentsNum === null || maxCommentsNum < 0 || maxCommentsNum > 200) {
+      errors.push(
+        `Seed ${config.name}: GitHub max comments per item must be an integer from 0 to 200.`,
+      );
+      return undefined;
+    }
     source = {
       // biome-ignore lint/style/useNamingConvention: api schema
       seed_type: "github_repo",
       repos,
       token: (config.github_token ?? "").trim(),
       // biome-ignore lint/style/useNamingConvention: api schema
-      item_types: config.github_item_types?.length
-        ? config.github_item_types
-        : ["issues", "pulls"],
-      limit: limitNum !== null ? limitNum : 100,
+      item_types: itemTypes,
+      limit: limitNum,
       // biome-ignore lint/style/useNamingConvention: api schema
       include_comments: config.github_include_comments ?? true,
       // biome-ignore lint/style/useNamingConvention: api schema
-      max_comments_per_item: maxCommentsNum !== null ? maxCommentsNum : 30,
+      max_comments_per_item: maxCommentsNum,
     };
   } else {
     source = {
