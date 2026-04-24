@@ -582,11 +582,13 @@ class LlamaCppBackend:
             if result.returncode == 0:
                 allowed: Optional[set[int]] = None
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if cvd is not None and cvd.strip():
+                if cvd is not None:
                     try:
                         # `if x.strip()` filters trailing-comma masks like
                         # "0,1," which would otherwise raise ValueError on
-                        # an empty token. Matches the torch fallback path.
+                        # an empty token. An explicitly empty mask (CVD="")
+                        # yields an empty `allowed` set so all GPUs are
+                        # filtered out, matching the codebase convention.
                         allowed = set(
                             int(x.strip()) for x in cvd.split(",") if x.strip()
                         )
@@ -645,8 +647,11 @@ class LlamaCppBackend:
                 )
             else:
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
+            if cvd is not None:
                 try:
+                    # Empty mask (CVD="") yields an empty list so the
+                    # below loop produces no GPUs, consistent with the
+                    # nvidia-smi path and utils/hardware/hardware.py.
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
                 except ValueError:
                     physical_ids = None
