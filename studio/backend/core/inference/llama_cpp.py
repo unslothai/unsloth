@@ -2448,6 +2448,8 @@ class LlamaCppBackend:
                             "timings": _metadata_timings,
                         }
 
+        except GeneratorExit:
+            return
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
@@ -3162,6 +3164,8 @@ class LlamaCppBackend:
                 # Continue the loop to let model respond with context
                 continue
 
+            except GeneratorExit:
+                return
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
             except Exception as e:
@@ -3341,6 +3345,8 @@ class LlamaCppBackend:
                             "timings": _merged_timings,
                         }
 
+        except GeneratorExit:
+            return
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
