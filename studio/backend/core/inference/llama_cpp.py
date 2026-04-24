@@ -609,10 +609,35 @@ class LlamaCppBackend:
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
                 return []
+            # torch.cuda enumerates GPUs RELATIVE to CUDA_VISIBLE_DEVICES
+            # (or HIP_VISIBLE_DEVICES on ROCm). Downstream we feed these
+            # IDs back into CUDA_VISIBLE_DEVICES for the llama-server
+            # subprocess, so we must translate visible ordinals back to
+            # physical indices first; otherwise launching with
+            # ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
+            # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
+            physical_ids: Optional[list[int]] = None
+            cvd = (
+                os.environ.get("CUDA_VISIBLE_DEVICES")
+                or os.environ.get("HIP_VISIBLE_DEVICES")
+                or os.environ.get("ROCR_VISIBLE_DEVICES")
+            )
+            if cvd and cvd.strip():
+                try:
+                    physical_ids = [
+                        int(x.strip()) for x in cvd.split(",") if x.strip()
+                    ]
+                except ValueError:
+                    physical_ids = None
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
-                gpus.append((ordinal, int(free_bytes // (1024 * 1024))))
+                idx = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                gpus.append((idx, free_bytes // (1024 * 1024)))
             return gpus
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
