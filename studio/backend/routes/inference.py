@@ -2711,7 +2711,9 @@ async def _responses_stream(
             ),
         )
 
-    body = _build_openai_passthrough_body(chat_req, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        chat_req, backend_ctx = llama_backend.context_length
+    )
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
@@ -3918,7 +3920,9 @@ async def _openai_passthrough_stream(
     observes a standard OpenAI response.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length
+    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -4054,7 +4058,9 @@ async def _openai_passthrough_non_streaming(
     token counts.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    body = _build_openai_passthrough_body(payload, backend_ctx = llama_backend.context_length)
+    body = _build_openai_passthrough_body(
+        payload, backend_ctx = llama_backend.context_length
+    )
 
     try:
         async with httpx.AsyncClient() as client:

@@ -2582,8 +2582,8 @@ class LlamaCppBackend:
                 payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
             payload["max_tokens"] = (
                 max_tokens
-            if max_tokens is not None
-            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+                if max_tokens is not None
+                else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
