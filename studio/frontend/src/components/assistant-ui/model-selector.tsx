@@ -80,12 +80,16 @@ function ModelSelectorTrigger({
         {isLoaded && (
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
-        <span className="font-heading font-medium text-[16px] text-black dark:text-white">
-          {currentModel?.name ?? "Select model"}
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="truncate font-heading text-[16px] font-medium leading-none text-black dark:text-white">
+            {currentModel?.name ?? "Select model"}
+          </span>
+          {currentModel?.description && (
+            <span className="shrink-0 text-xs leading-none text-muted-foreground">
+              {currentModel.description}
+            </span>
+          )}
         </span>
-        {currentModel?.description && (
-          <span className="text-muted-foreground text-xs">{currentModel.description}</span>
-        )}
         <HugeiconsIcon
           icon={ArrowDown01Icon}
           strokeWidth={1.75}

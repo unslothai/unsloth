@@ -886,7 +886,7 @@ export function ChatPage(): ReactElement {
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                className="max-w-[62vw] sm:max-w-none !h-[34px]"
+                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
             {loadingModel && loadToastDismissed ? (
@@ -910,12 +910,17 @@ export function ChatPage(): ReactElement {
                 onStop={cancelLoading}
               />
             ) : null}
+            {view.mode === "single" && !loadingModel && modelsError ? (
+              <div
+                className="relative top-0.5 max-w-[28rem] truncate pl-0.5 text-xs text-destructive"
+                title={modelsError}
+                role="status"
+                aria-live="polite"
+              >
+                {modelsError}
+              </div>
+            ) : null}
           </div>
-          {modelsError && (
-            <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
-              {modelsError}
-            </div>
-          )}
           <div className="ml-auto flex items-center gap-2">
             {view.mode === "single" && ggufContextLength && contextUsage ? (
               <ContextUsageBar
