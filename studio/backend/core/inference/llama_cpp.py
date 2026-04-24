@@ -584,7 +584,12 @@ class LlamaCppBackend:
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
                 if cvd is not None and cvd.strip():
                     try:
-                        allowed = set(int(x.strip()) for x in cvd.split(","))
+                        # `if x.strip()` filters trailing-comma masks like
+                        # "0,1," which would otherwise raise ValueError on
+                        # an empty token. Matches the torch fallback path.
+                        allowed = set(
+                            int(x.strip()) for x in cvd.split(",") if x.strip()
+                        )
                     except ValueError:
                         pass
                 gpus: list[tuple[int, int]] = []
@@ -596,6 +601,10 @@ class LlamaCppBackend:
                         if allowed is not None and idx not in allowed:
                             continue
                         gpus.append((idx, free_mib))
+                # Match the docstring's sort-by-id guarantee. nvidia-smi
+                # almost always returns sorted output, but driver order
+                # is not formally guaranteed.
+                gpus.sort(key = lambda g: g[0])
                 if gpus:
                     return gpus
         except Exception as e:
