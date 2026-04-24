@@ -53,6 +53,21 @@ _INTENT_SIGNAL = re.compile(
     r")"
 )
 _MAX_REPROMPTS = 3
+
+# Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
+# 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
+# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
+# but the llama.cpp README notes it ONLY fires after a newline has been
+# generated -- a model stuck in a long unbroken non-newline sequence is
+# unbounded by it. So we still want a token cap as the front-line limiter.
+#
+# The cap is the model's effective context length when we know it,
+# falling back to a generous floor when metadata is unavailable. 4096 was
+# too low: Qwen3 / gpt-oss reasoning traces routinely exceed it, and any
+# OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
+# curl) sees responses silently truncated mid-sentence.
+_DEFAULT_MAX_TOKENS_FLOOR = 32768
+_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -549,14 +564,24 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per GPU.
 
-        Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Order:
+          1. ``nvidia-smi`` (NVIDIA CUDA hosts) -- respects
+             ``CUDA_VISIBLE_DEVICES``.
+          2. ``torch.cuda.mem_get_info`` -- universal fallback that
+             works on AMD ROCm too because the HIP runtime
+             reuses the entire ``torch.cuda.*`` namespace. Covers the
+             AMD case for issue #5106 (nvidia-smi-only probe silently
+             returned [] on AMD hosts) and also rescues NVIDIA hosts
+             where ``nvidia-smi`` is missing from PATH.
+
+        Returns list of (gpu_index, free_mib) sorted by index. Empty
+        list if no supported GPU is reachable.
         """
         import os
 
+        # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
                 [
@@ -569,30 +594,95 @@ class LlamaCppBackend:
                 timeout = 10,
                 **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode != 0:
-                return []
-
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
-
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
-            return gpus
+            if result.returncode == 0:
+                allowed: Optional[set[int]] = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None:
+                    try:
+                        # `if x.strip()` filters trailing-comma masks like
+                        # "0,1," which would otherwise raise ValueError on
+                        # an empty token. An explicitly empty mask (CVD="")
+                        # yields an empty `allowed` set so all GPUs are
+                        # filtered out, matching the codebase convention.
+                        allowed = set(
+                            int(x.strip()) for x in cvd.split(",") if x.strip()
+                        )
+                    except ValueError:
+                        pass
+                gpus: list[tuple[int, int]] = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                # Match the docstring's sort-by-id guarantee. nvidia-smi
+                # almost always returns sorted output, but driver order
+                # is not formally guaranteed.
+                gpus.sort(key = lambda g: g[0])
+                if gpus:
+                    return gpus
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        try:
+            import torch
+
+            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
+                return []
+            if not hasattr(torch.cuda, "mem_get_info"):
+                return []
+            # torch.cuda enumerates GPUs RELATIVE to the visibility mask.
+            # On NVIDIA builds the mask is CUDA_VISIBLE_DEVICES; on AMD
+            # ROCm builds it is HIP_VISIBLE_DEVICES (or ROCR_VISIBLE_DEVICES
+            # if HIP is unset). Downstream we feed these IDs back into the
+            # llama-server subprocess as CVD, so we must translate visible
+            # ordinals back to physical indices first; otherwise launching
+            # with ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
+            # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
+            physical_ids: Optional[list[int]] = None
+            # Match the codebase convention in
+            # ``utils/hardware/hardware.py::_get_parent_visible_gpu_spec``:
+            # treat an explicitly empty mask (``HIP_VISIBLE_DEVICES=""``)
+            # as "set to no GPUs" rather than falling through to the next
+            # var. ``or`` would coerce empty string to falsy and silently
+            # promote the wrong source.
+            if getattr(torch.version, "hip", None) is not None:
+                hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+                rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+                cvd = (
+                    hip_v
+                    if hip_v is not None
+                    else rocr_v
+                    if rocr_v is not None
+                    else os.environ.get("CUDA_VISIBLE_DEVICES")
+                )
+            else:
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    # Empty mask (CVD="") yields an empty list so the
+                    # below loop produces no GPUs, consistent with the
+                    # nvidia-smi path and utils/hardware/hardware.py.
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+            gpus = []
+            for ordinal in range(torch.cuda.device_count()):
+                free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
+                idx = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                gpus.append((idx, free_bytes // (1024 * 1024)))
+            # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
+            return sorted(gpus, key = lambda g: g[0])
+        except Exception as e:
+            logger.debug(f"torch GPU probe failed: {e}")
             return []
 
     @staticmethod
@@ -1563,7 +1653,7 @@ class LlamaCppBackend:
             # existing text (code refactoring, summarization, reasoning).
             # For general chat with low repetition, overhead is ~5 ms.
             #
-            # Benchmarks from llama.cpp PRs #18471, #19164:
+            # Benchmarks from upstream llama.cpp speculative-decoding PRs:
             #   Scenario                        | Without | With    | Speedup
             #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
             #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
@@ -1576,11 +1666,21 @@ class LlamaCppBackend:
             # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
             # ref: https://github.com/ggml-org/llama.cpp/pull/19164
             # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            # ``"default"`` -> let llama-server pick a sensible spec
+            # config via ``--spec-default``. Explicit type names are
+            # passed through with the manual draft tuning we've shipped
+            # historically so power users keep their overrides.
             _valid_spec_types = {"ngram-simple", "ngram-mod"}
-            if speculative_type and speculative_type in _valid_spec_types:
-                if not is_vision:  # spec decoding disabled for vision models
-                    cmd.extend(["--spec-type", speculative_type])
-                    if speculative_type == "ngram-mod":
+            normalized_spec = (
+                speculative_type.lower().strip() if speculative_type else None
+            )
+            if normalized_spec and normalized_spec != "off" and not is_vision:
+                if normalized_spec == "default":
+                    cmd.append("--spec-default")
+                    self._speculative_type = "default"
+                elif normalized_spec in _valid_spec_types:
+                    cmd.extend(["--spec-type", normalized_spec])
+                    if normalized_spec == "ngram-mod":
                         cmd.extend(
                             [
                                 "--spec-ngram-size-n",
@@ -1591,7 +1691,7 @@ class LlamaCppBackend:
                                 "64",
                             ]
                         )
-                    self._speculative_type = speculative_type
+                    self._speculative_type = normalized_spec
                 else:
                     self._speculative_type = None
             else:
@@ -1748,9 +1848,29 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            # Pin to selected GPU(s). On ROCm, llama-server (and any torch
+            # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
+            # narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
+            # the full HIP/ROCR set the parent inherited.
             if gpu_indices is not None:
-                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                pinned = ",".join(str(i) for i in gpu_indices)
+                env["CUDA_VISIBLE_DEVICES"] = pinned
+                try:
+                    import torch as _torch
+
+                    if getattr(_torch.version, "hip", None) is not None:
+                        env["HIP_VISIBLE_DEVICES"] = pinned
+                        env["ROCR_VISIBLE_DEVICES"] = pinned
+                except Exception as e:
+                    logger.debug(
+                        "Failed to set ROCm visibility env vars for child: %s", e
+                    )
+
+            # Defensive kill: if a concurrent load slipped past Phase 1
+            # (because its `self._process` was None at the time) and
+            # already stored a Popen handle here, drop that orphan
+            # before we overwrite the reference. See issue #5161.
+            self._kill_process()
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -2446,8 +2566,15 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        # Default cap to the model's effective context length when known,
+        # otherwise the conservative floor. The wall-clock backstop below
+        # keeps a stuck model from running indefinitely either way.
+        payload["max_tokens"] = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -2467,7 +2594,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
@@ -2666,8 +2795,12 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
-            if max_tokens is not None:
-                payload["max_tokens"] = max_tokens
+            payload["max_tokens"] = (
+                max_tokens
+                if max_tokens is not None
+                else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+            )
+            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -2706,7 +2839,10 @@ class LlamaCppBackend:
                     write = 10,
                     pool = 10,
                 )
-                with httpx.Client(timeout = stream_timeout) as client:
+                with httpx.Client(
+                    timeout = stream_timeout,
+                    limits = httpx.Limits(max_keepalive_connections = 0),
+                ) as client:
                     with self._stream_with_retry(
                         client,
                         url,
@@ -3319,8 +3455,12 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
-        if max_tokens is not None:
-            stream_payload["max_tokens"] = max_tokens
+        stream_payload["max_tokens"] = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
@@ -3339,7 +3479,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
