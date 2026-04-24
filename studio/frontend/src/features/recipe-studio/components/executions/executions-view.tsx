@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent,
-  type ReactElement,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckmarkCircle02Icon,
@@ -43,7 +35,6 @@ import {
   isExpandableCellValue,
   parseAnalysisColumns,
   parseModelUsageRows,
-  truncateCellValue,
 } from "./executions-view-helpers";
 
 type ExecutionsViewProps = {
@@ -71,12 +62,6 @@ export function ExecutionsView({
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
   >({});
-  // Keyed by executionId then by column name. A true value means the user
-  // clicked that column's cell, so that column renders full-width / full-text
-  // (no 32rem cap, no 180-char truncation) until clicked again.
-  const [expandedDatasetColumnsByExecution, setExpandedDatasetColumnsByExecution] = useState<
-    Record<string, Record<string, boolean>>
-  >({});
   const [previewDatasetPageByExecution, setPreviewDatasetPageByExecution] = useState<
     Record<string, number>
   >({});
@@ -102,32 +87,6 @@ export function ExecutionsView({
     }
     return hiddenDatasetColumnsByExecution[selectedExecutionIdSafe] ?? [];
   }, [hiddenDatasetColumnsByExecution, selectedExecutionIdSafe]);
-  const expandedDatasetColumns = useMemo(() => {
-    if (!selectedExecutionIdSafe) {
-      return {};
-    }
-    return expandedDatasetColumnsByExecution[selectedExecutionIdSafe] ?? {};
-  }, [expandedDatasetColumnsByExecution, selectedExecutionIdSafe]);
-
-  const handleToggleColumnExpanded = useCallback(
-    (columnName: string) => {
-      if (!selectedExecutionIdSafe) {
-        return;
-      }
-      setExpandedDatasetColumnsByExecution((current) => {
-        const columns = current[selectedExecutionIdSafe] ?? {};
-        return {
-          ...current,
-          [selectedExecutionIdSafe]: {
-            ...columns,
-            [columnName]: !columns[columnName],
-          },
-        };
-      });
-    },
-    [selectedExecutionIdSafe],
-  );
-
   const datasetColumnNames = useMemo(() => {
     if (!selectedExecution) {
       return [];
@@ -149,6 +108,36 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
+  // Columns where at least one row has text long enough that it would wrap at
+  // the default narrow width. We give those columns a wider min-width so the
+  // text is readable without clicking anything. The table's wrapper already
+  // scrolls horizontally, so a few wide columns just add a horizontal
+  // scrollbar instead of squeezing everything into the viewport.
+  const wideColumns = useMemo(() => {
+    const result = new Set<string>();
+    if (!selectedExecution) {
+      return result;
+    }
+    for (const row of selectedExecution.dataset) {
+      for (const name of visibleDatasetColumnNames) {
+        if (result.has(name)) {
+          continue;
+        }
+        const raw = row[name];
+        if (resolveImagePreview(raw)) {
+          continue;
+        }
+        if (isExpandableCellValue(formatCellValue(raw))) {
+          result.add(name);
+        }
+      }
+      if (result.size === visibleDatasetColumnNames.length) {
+        break;
+      }
+    }
+    return result;
+  }, [selectedExecution, visibleDatasetColumnNames]);
+
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!selectedExecution) {
       return [];
@@ -161,7 +150,7 @@ export function ExecutionsView({
         const imagePreview = resolveImagePreview(rawValue);
         if (imagePreview?.kind === "ready") {
           return (
-            <div className="max-w-[32rem]">
+            <div>
               <img
                 src={imagePreview.src}
                 alt={`${name} preview`}
@@ -173,43 +162,21 @@ export function ExecutionsView({
         }
         if (imagePreview?.kind === "too_large") {
           return (
-            <div className="max-w-[32rem]">
-              <p className="text-xs text-muted-foreground">
-                Image too large to preview
-              </p>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Image too large to preview
+            </p>
           );
         }
         const value = formatCellValue(rawValue);
-        const canExpand = isExpandableCellValue(value);
-        const columnExpanded = Boolean(expandedDatasetColumns[name]);
-        const handleClick = canExpand
-          ? (event: MouseEvent<HTMLDivElement>) => {
-              event.stopPropagation();
-              handleToggleColumnExpanded(name);
-            }
-          : undefined;
+        const isWide = wideColumns.has(name);
         return (
-          <div
-            className={cn(
-              columnExpanded ? "min-w-[48rem] max-w-none" : "max-w-[32rem]",
-              canExpand ? "cursor-pointer" : undefined,
-            )}
-            onClick={handleClick}
-          >
-            <p className="whitespace-pre-wrap break-all">
-              {columnExpanded || !canExpand ? value : truncateCellValue(value)}
-            </p>
+          <div className={cn(isWide ? "min-w-[48rem]" : "min-w-[12rem]")}>
+            <p className="whitespace-pre-wrap break-all">{value}</p>
           </div>
         );
       },
     }));
-  }, [
-    expandedDatasetColumns,
-    handleToggleColumnExpanded,
-    selectedExecution,
-    visibleDatasetColumnNames,
-  ]);
+  }, [selectedExecution, visibleDatasetColumnNames, wideColumns]);
 
   const analysisColumns = useMemo(
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
