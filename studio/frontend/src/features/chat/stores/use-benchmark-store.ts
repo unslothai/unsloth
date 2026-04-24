@@ -32,7 +32,7 @@ export interface BenchmarkStore {
 
 export const useBenchmarkStore = create<BenchmarkStore>((set, get) => ({
   benchmarkMode: false,
-  benchmarkName: `Benchmark ${new Date().toLocaleDateString()}`,
+  benchmarkName: `Benchmark ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
   benchmarkSelectedModelIds: [],
   activeBenchmarkId: null,
   activeBenchmarkThreadIds: {},
@@ -45,7 +45,7 @@ export const useBenchmarkStore = create<BenchmarkStore>((set, get) => ({
       benchmarkMode: next,
       // Reset name and selection when entering a fresh benchmark session
       benchmarkName: next
-        ? `Benchmark ${new Date().toLocaleDateString()}`
+        ? `Benchmark ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
         : get().benchmarkName,
       benchmarkSelectedModelIds: next ? get().benchmarkSelectedModelIds : [],
       activeBenchmarkId: next ? null : get().activeBenchmarkId,

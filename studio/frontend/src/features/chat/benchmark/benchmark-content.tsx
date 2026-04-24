@@ -7,23 +7,18 @@ import type { CompareHandle } from "../shared-composer";
 
 /**
  * Registers a CompareHandle into a ref provided by the benchmark runner.
- * Must be rendered INSIDE the visible SingleContent's ChatRuntimeProvider so
- * that handle.append() drives the thread the user is actually watching,
- * causing messages to stream live in the UI.
+ * Only rendered when the visible SingleContent IS the benchmark target thread
+ * (chat-page guards onHandleChange with view.threadId === benchmarkActiveThreadId).
  *
- * When `threadId` is provided the handle is NOT registered until:
- *   1. The AUI runtime has finished loading its thread list (!isLoading), AND
- *   2. AUI's mainThreadId matches threadId (ThreadAutoSwitch completed).
- *
- * Using AUI's own state avoids any race between the AUI thread switch and
- * the Zustand activeThreadId update that a Zustand subscription would have.
+ * Waits for AUI to finish loading and switch to the target thread before
+ * handing off the handle, matching the signals ThreadAutoSwitch uses.
  */
 export function RegisterBenchmarkHandle({
   setHandle,
   threadId,
 }: {
   setHandle: (handle: CompareHandle | null) => void;
-  threadId?: string;
+  threadId: string;
 }): null {
   const aui = useAui();
   // Mirror the same signals ThreadAutoSwitch uses so we know exactly when
@@ -34,7 +29,7 @@ export function RegisterBenchmarkHandle({
   useEffect(() => {
     // Wait until the AUI runtime has loaded and switched to the target thread.
     if (isLoading) return;
-    if (threadId && mainThreadId !== threadId) return;
+    if (mainThreadId !== threadId) return;
 
     const handle: CompareHandle = {
       append: (content) =>

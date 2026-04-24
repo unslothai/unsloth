@@ -129,7 +129,7 @@ const SingleContent = memo(function SingleContent({
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onBenchmarkSend={onBenchmarkSend} />
-        {onHandleChange && <RegisterBenchmarkHandle setHandle={onHandleChange} threadId={threadId} />}
+        {onHandleChange && threadId && <RegisterBenchmarkHandle setHandle={onHandleChange} threadId={threadId} />}
       </div>
     </ChatRuntimeProvider>
   );
@@ -576,6 +576,7 @@ export function ChatPage(): ReactElement {
     cancel: cancelBenchmark,
     progress: benchmarkProgress,
     running: benchmarkRunning,
+    activeThreadId: benchmarkActiveThreadId,
   } = useBenchmarkRunner();
   // Holds the handle registered by RegisterBenchmarkHandle inside SingleContent.
   // Updated whenever SingleContent mounts/remounts for a new thread.
@@ -1029,7 +1030,21 @@ export function ChatPage(): ReactElement {
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             onBenchmarkSend={onBenchmarkSend}
-            onHandleChange={benchmarkRunning ? handleBenchmarkHandleChange : undefined}
+            onHandleChange={
+              // Only register the handle when the visible thread IS the benchmark
+              // target thread. Without this guard, setRunning(true) fires before
+              // navigation, causing SingleContent (still on the old key) to mount
+              // RegisterBenchmarkHandle with threadId=undefined, which immediately
+              // sets a stale handle pointing at the old/disappearing thread context.
+              // waitForHandle then returns that stale handle before the navigation
+              // even processes — the prompt goes to the wrong thread and the
+              // benchmark loop breaks.
+              benchmarkRunning &&
+              view.threadId != null &&
+              view.threadId === benchmarkActiveThreadId
+                ? handleBenchmarkHandleChange
+                : undefined
+            }
           />
         ) : (
           <CompareContent
