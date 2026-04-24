@@ -18,11 +18,10 @@ import {
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
-import {
-  DEFAULT_INFERENCE_PARAMS,
-  type ChatLoraSummary,
-  type ChatModelSummary,
-  type InferenceParams,
+import type {
+  ChatLoraSummary,
+  ChatModelSummary,
+  InferenceParams,
 } from "../types/runtime";
 
 type SelectedModelInput = {
@@ -411,14 +410,19 @@ export function useChatModelRuntime() {
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
           const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
-          const maxSeqLength = previousModel?.isGguf ? 
-              stateBeforeUnload.customContextLength 
-              ?? stateBeforeUnload.ggufContextLength 
-              ?? DEFAULT_INFERENCE_PARAMS.maxSeqLength 
-            : stateBeforeUnload.params.maxSeqLength;
+          const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
+          const previousIsGguf =
+            previousModel?.isGguf === true
+            || previousVariant != null
+            || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+          const rollbackMaxSeqLength = previousIsGguf
+            ? (stateBeforeUnload.customContextLength
+                ?? stateBeforeUnload.ggufContextLength
+                ?? 0)
+            : maxSeqLength;
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
-            useChatRuntimeStore.getState().modelRequiresTrustRemoteCode;
+            stateBeforeUnload.modelRequiresTrustRemoteCode;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -534,7 +538,7 @@ export function useChatModelRuntime() {
                 await loadModel({
                   model_path: previousCheckpoint,
                   hf_token: hfToken,
-                  max_seq_length: maxSeqLength,
+                  max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
