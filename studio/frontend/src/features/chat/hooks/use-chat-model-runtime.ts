@@ -253,7 +253,9 @@ export function useChatModelRuntime() {
             max_context_length: statusRes.max_context_length,
             native_context_length: statusRes.native_context_length,
             supports_reasoning: statusRes.supports_reasoning,
+            reasoning_style: statusRes.reasoning_style,
             reasoning_always_on: statusRes.reasoning_always_on,
+            supports_preserve_thinking: statusRes.supports_preserve_thinking,
             supports_tools: statusRes.supports_tools,
             speculative_type: statusRes.speculative_type,
           };
@@ -265,6 +267,8 @@ export function useChatModelRuntime() {
         // Restore reasoning/tools support flags and context length
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
+        const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
+        const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         const currentGgufContextLength = statusRes.is_gguf
           ? (statusRes.context_length ?? null)
@@ -279,7 +283,14 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
+          reasoningStyle,
+          supportsPreserveThinking,
           supportsTools,
+          // Reset per-turn reasoning flag so models that do not support
+          // reasoning do not inherit a stale off state from a prior model.
+          reasoningEnabled: supportsReasoning
+            ? useChatRuntimeStore.getState().reasoningEnabled
+            : true,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,
@@ -289,11 +300,11 @@ export function useChatModelRuntime() {
           loadedSpeculativeType: currentSpecType,
         });
 
-        // Set reasoning default for Qwen3.5 small models
+        // Set reasoning default for Qwen3.5/3.6 small models
         if (supportsReasoning) {
           let reasoningDefault = true;
           const mid = statusRes.active_model.toLowerCase();
-          if (mid.includes("qwen3.5")) {
+          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
             const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
             if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
               reasoningDefault = false;
@@ -408,12 +419,19 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
-          const paramsBeforeLoad = useChatRuntimeStore.getState().params;
-          const trustRemoteCode = paramsBeforeLoad.trustRemoteCode ?? false;
-          const maxSeqLength = paramsBeforeLoad.maxSeqLength;
-          const hfToken = useChatRuntimeStore.getState().hfToken || null;
+          const stateBeforeUnload = useChatRuntimeStore.getState();
+          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
+          const previousIsGguf =
+            previousModel?.isGguf === true
+            || previousVariant != null
+            || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+          const rollbackMaxSeqLength = previousIsGguf
+            ? (stateBeforeUnload.ggufContextLength ?? 0)
+            : maxSeqLength;
+          const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
-            useChatRuntimeStore.getState().modelRequiresTrustRemoteCode;
+            stateBeforeUnload.modelRequiresTrustRemoteCode;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -437,9 +455,10 @@ export function useChatModelRuntime() {
             const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
             // GGUF: use custom context length, or 0 = model's native context
             // Non-GGUF: use the Max Seq Length slider value
+            const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
             const effectiveMaxSeqLength = customContextLength != null
               ? customContextLength
-              : ggufVariant != null ? (ggufContextLength ?? 0) : maxSeqLength;
+              : (ggufVariant != null || isDirectGgufFile) ? (ggufContextLength ?? 0) : maxSeqLength;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: hfToken,
@@ -461,11 +480,11 @@ export function useChatModelRuntime() {
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
-            // Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();
-              if (mid.includes("qwen3.5")) {
+              if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
                 const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
                 if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
                   reasoningDefault = false;
@@ -497,6 +516,8 @@ export function useChatModelRuntime() {
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
+              reasoningStyle: loadResponse.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: loadResponse.supports_tools ?? false,
               codeToolsEnabled: loadResponse.supports_tools ?? false,
@@ -508,12 +529,14 @@ export function useChatModelRuntime() {
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });
-            // Qwen3/3.5: apply thinking-mode-specific params after load
+            // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
               const store = useChatRuntimeStore.getState();
+              const mid = modelId.toLowerCase();
+              const needsPresencePenalty = mid.includes("qwen3.5") || mid.includes("qwen3.6");
               const p = reasoningDefault
-                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
+                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
               store.setParams({ ...store.params, ...p });
             }
             await refresh();
@@ -526,7 +549,7 @@ export function useChatModelRuntime() {
                 await loadModel({
                   model_path: previousCheckpoint,
                   hf_token: hfToken,
-                  max_seq_length: maxSeqLength,
+                  max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,

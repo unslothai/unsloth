@@ -41,6 +41,7 @@ const initialState: TrainingRuntimeState = {
   evalLossHistory: [],
   resetGeneration: 0,
   stopRequested: false,
+  selectedHistoryRunId: null,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -170,6 +171,9 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       startError: null,
       sseConnected: false,
     }),
+
+  setSelectedHistoryRunId: (selectedHistoryRunId) =>
+    set({ selectedHistoryRunId }),
 
   applyStatus: (payload) =>
     set((state) => {

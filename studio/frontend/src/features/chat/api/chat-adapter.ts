@@ -385,6 +385,8 @@ async function autoLoadSmallestModel(): Promise<{
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
+              reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
               toolsEnabled: loadResp.supports_tools ?? false,
               codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -433,6 +435,14 @@ async function autoLoadSmallestModel(): Promise<{
             sfLoadResp.requires_trust_remote_code ?? false,
           );
           store.setParams({ ...store.params, maxTokens: 4096 });
+          useChatRuntimeStore.setState({
+            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
+            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
+            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
+            reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
+            supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
+            supportsTools: sfLoadResp.supports_tools ?? false,
+          });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
             name: sfLoadResp.display_name ?? repo.repo_id,
@@ -455,13 +465,13 @@ async function autoLoadSmallestModel(): Promise<{
     // No cached models found — try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
-      description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
+      description: "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/Qwen3.5-4B-GGUF",
+          model_path: "unsloth/gemma-4-E2B-it-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
@@ -471,7 +481,7 @@ async function autoLoadSmallestModel(): Promise<{
         return { loaded: false, blockedByTrustRemoteCode };
       }
       const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-GGUF",
+        model_path: "unsloth/gemma-4-E2B-it-GGUF",
         hf_token: hfToken,
         max_seq_length: 0,
         load_in_4bit: true,
@@ -479,20 +489,20 @@ async function autoLoadSmallestModel(): Promise<{
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
       });
-      useChatRuntimeStore.getState().setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
+      useChatRuntimeStore.getState().setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
       store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-GGUF",
+        id: "unsloth/gemma-4-E2B-it-GGUF",
+        name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-GGUF")) {
+      if (!store.models.some((m) => m.id === "unsloth/gemma-4-E2B-it-GGUF")) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -501,6 +511,8 @@ async function autoLoadSmallestModel(): Promise<{
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
+        reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
         toolsEnabled: loadResp.supports_tools ?? false,
         codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -509,7 +521,7 @@ async function autoLoadSmallestModel(): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
       });
-      toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
+      toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -696,7 +708,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
       try {
-        const { supportsReasoning, reasoningEnabled } = runtime;
+        const {
+          supportsReasoning,
+          reasoningEnabled,
+          reasoningStyle,
+          reasoningEffort,
+          supportsPreserveThinking,
+          preserveThinking,
+        } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -712,7 +731,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
-            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
+            ...(supportsReasoning
+              ? reasoningStyle === "reasoning_effort"
+                ? { reasoning_effort: reasoningEffort }
+                : { enable_thinking: reasoningEnabled }
+              : {}),
+            ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
             ...(supportsTools && (toolsEnabled || codeToolsEnabled)
               ? {
                   enable_tools: true,

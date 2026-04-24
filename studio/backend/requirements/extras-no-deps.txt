@@ -2,7 +2,7 @@
 descript-audio-codec
 descript-audiotools
 julius
-torchcodec
+torchcodec==0.10.0
 snac
 
 # peft 0.19.0 causes export subprocess shutdown issues in Studio;

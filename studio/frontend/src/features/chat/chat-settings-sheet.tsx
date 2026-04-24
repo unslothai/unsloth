@@ -52,13 +52,17 @@ import {
   CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
-  PencilEdit01Icon,
   Settings02Icon,
+  Settings05Icon,
   SlidersHorizontalIcon,
-  UserSettings01Icon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Tooltip,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -476,8 +480,6 @@ interface ChatSettingsPanelProps {
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
-  autoTitle: boolean;
-  onAutoTitleChange: (enabled: boolean) => void;
   onReloadModel?: () => void;
 }
 
@@ -486,8 +488,6 @@ export function ChatSettingsPanel({
   onOpenChange,
   params,
   onParamsChange,
-  autoTitle,
-  onAutoTitleChange,
   onReloadModel,
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
@@ -743,17 +743,37 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div className="flex items-center gap-2 px-4 py-3">
-        <HugeiconsIcon
-          icon={PencilEdit01Icon}
-          className="size-4 text-muted-foreground/70"
-        />
-        <span className="flex-1 text-base font-semibold tracking-tight">
-          Configuration
-        </span>
+      <div className="aui-thread-viewport relative h-full overflow-y-auto">
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 pl-2 pr-2 pt-[11px] backdrop-blur">
+        {isMobile ? (
+          <span className="flex h-[34px] flex-1 items-center pl-1 text-base font-semibold tracking-tight">
+            Configuration
+          </span>
+        ) : (
+          <>
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onOpenChange?.(false)}
+                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close configuration"
+                >
+                  <HugeiconsIcon icon={Settings05Icon} className="size-5" />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                Close configuration
+              </TooltipContent>
+            </Tooltip>
+            <span className="flex h-[34px] flex-1 items-center text-base font-semibold tracking-tight">
+              Configuration
+            </span>
+          </>
+        )}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-1.5">
+      <div className="px-1.5">
         {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
         <div className="mt-4 px-2 pb-3">
           <div className="space-y-1.5">
@@ -893,7 +913,7 @@ export function ChatSettingsPanel({
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
             placeholder="You are a helpful assistant..."
-            className="min-h-20 text-xs corner-squircle"
+            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle focus-visible:ring-[1px]"
             rows={3}
           />
         </div>
@@ -1174,26 +1194,8 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection
-          icon={UserSettings01Icon}
-          label="Preferences"
-          defaultOpen={true}
-        >
-          <div className="flex flex-col gap-3 py-1">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-medium">Auto title</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Generate short title after reply.
-                </div>
-              </div>
-              <Switch checked={autoTitle} onCheckedChange={onAutoTitleChange} />
-            </div>
-            <HfTokenField />
-          </div>
-        </CollapsibleSection>
-
         <ChatTemplateSection onReloadModel={onReloadModel} />
+      </div>
       </div>
       <Dialog
         open={systemPromptEditorOpen}
@@ -1224,7 +1226,8 @@ export function ChatSettingsPanel({
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
-              className="min-h-[24rem] text-sm leading-6 corner-squircle"
+              fieldSizing="fixed"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
               rows={14}
             />
           </div>
@@ -1268,9 +1271,9 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
+      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 ${open ? "w-[17rem]" : "w-0"}`}
     >
-      <div className="flex h-full w-[17rem] flex-col">{settingsContent}</div>
+      <div className="h-full w-[17rem]">{settingsContent}</div>
     </aside>
   );
 }
@@ -1348,29 +1351,6 @@ function AutoHealToolCallsToggle() {
   );
 }
 
-function HfTokenField() {
-  const hfToken = useChatRuntimeStore((s) => s.hfToken);
-  const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="min-w-0">
-        <div className="text-xs font-medium">Hugging Face Token</div>
-        <div className="text-[11px] text-muted-foreground">
-          For downloading gated or private models.
-        </div>
-      </div>
-      <Input
-        type="password"
-        value={hfToken}
-        placeholder="hf_..."
-        className="h-7 text-xs font-mono"
-        onChange={(e) => setHfToken(e.target.value)}
-      />
-    </div>
-  );
-}
-
 function ChatTemplateSection({
   onReloadModel,
 }: {
@@ -1391,7 +1371,7 @@ function ChatTemplateSection({
         <Textarea
           value={displayValue}
           onChange={(e) => setOverride(e.target.value)}
-          className="min-h-32 font-mono text-[10px] leading-relaxed md:text-[10px] corner-squircle"
+          className="min-h-32 max-h-64 overflow-y-auto font-mono text-[10px] leading-relaxed md:text-[10px] corner-squircle"
           rows={6}
           spellCheck={false}
         />

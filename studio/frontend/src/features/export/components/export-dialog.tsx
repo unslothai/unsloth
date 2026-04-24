@@ -272,12 +272,13 @@ export function ExportDialog({
   exportSuccess,
   exportOutputPath,
 }: ExportDialogProps) {
-  // Live log capture is only meaningful for export methods that run
-  // a slow subprocess operation with interesting stdout: merged and
-  // gguf. LoRA adapter export is a fast disk write and would just
-  // show a blank panel, so we hide it there.
+  // Live log capture is useful for any export path executed by the
+  // backend worker, including LoRA adapter-only export.
   const showLogPanel =
-    exportMethod === "merged" || exportMethod === "gguf";
+    exportMethod === "merged" ||
+    exportMethod === "gguf" ||
+    exportMethod === "lora";
+  const showCompletionScreen = exportSuccess && !showLogPanel;
 
   const { lines: logLines, connected: logConnected, error: logError } =
     useExportLogs(exporting && showLogPanel, exportMethod, open);
@@ -314,7 +315,7 @@ export function ExportDialog({
         className={showLogPanel ? "sm:max-w-2xl" : "sm:max-w-lg"}
         onInteractOutside={(e) => { if (exporting) e.preventDefault(); }}
       >
-        {exportSuccess ? (
+        {showCompletionScreen ? (
           <>
             <div className="flex flex-col items-center gap-3 py-6">
               <div className="flex size-12 items-center justify-center rounded-full bg-emerald-500/10">
@@ -460,6 +461,27 @@ export function ExportDialog({
               )}
             </AnimatePresence>
 
+            {/* Success banner for log-driven exports.
+                Keep users on the log screen after completion so they can
+                inspect conversion output before closing. */}
+            {exportSuccess && showLogPanel && (
+              <div className="flex items-start gap-2 rounded-lg bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
+                <HugeiconsIcon icon={CheckmarkCircle02Icon} className="mt-0.5 size-4 shrink-0" />
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span>
+                    {destination === "hub"
+                      ? "Export finished and pushed to Hugging Face Hub."
+                      : "Export finished successfully."}
+                  </span>
+                  {exportOutputPath ? (
+                    <code className="select-all break-all font-mono text-[12px] text-foreground/90" title={exportOutputPath}>
+                      {exportOutputPath}
+                    </code>
+                  ) : null}
+                </div>
+              </div>
+            )}
+
             {/* Error banner */}
             {exportError && (
               <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
@@ -577,14 +599,16 @@ export function ExportDialog({
                 onClick={() => onOpenChange(false)}
                 disabled={exporting}
               >
-                Cancel
+                {exportSuccess ? "Done" : "Cancel"}
               </Button>
-              <Button onClick={onExport} disabled={exporting}>
+              <Button onClick={onExport} disabled={exporting || exportSuccess}>
                 {exporting ? (
                   <span className="flex items-center gap-2">
                     <Spinner className="size-4" />
                     Exporting…
                   </span>
+                ) : exportSuccess ? (
+                  "Export Complete"
                 ) : (
                   "Start Export"
                 )}

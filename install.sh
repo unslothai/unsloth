@@ -35,6 +35,7 @@ substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
+TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _VERBOSE=false
@@ -54,6 +55,7 @@ for arg in "$@"; do
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
+        --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
@@ -142,6 +144,24 @@ if [ "$_next_is_python" = true ]; then
     exit 1
 fi
 
+# Validate --package to prevent injection into shell/Python commands.
+# Must start with a letter/digit (rejects leading dashes that uv would parse as flags).
+case "$PACKAGE_NAME" in
+    [!a-zA-Z0-9]*)
+        echo "❌ ERROR: --package name must start with a letter or digit." >&2
+        exit 1 ;;
+    *[!a-zA-Z0-9._-]*)
+        echo "❌ ERROR: --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" >&2
+        exit 1 ;;
+esac
+
+# ── Tauri structured output ──
+tauri_log() {
+    if [ "$TAURI_MODE" = true ]; then
+        echo "[TAURI:$1] $2"
+    fi
+}
+
 PYTHON_VERSION=""  # resolved after platform detection
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -190,6 +210,12 @@ _smart_apt_install() {
 
     if [ -z "$_STILL_MISSING" ]; then
         return 0
+    fi
+
+    # In Tauri mode, report needed packages and exit — Rust handles elevation
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "NEED_SUDO" "$_STILL_MISSING"
+        exit 2
     fi
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
@@ -752,6 +778,7 @@ printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
 # ── Detect platform ──
+tauri_log "STEP" "Detecting platform"
 OS="linux"
 if [ "$(uname)" = "Darwin" ]; then
     OS="macos"
@@ -804,6 +831,7 @@ fi
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+tauri_log "STEP" "Checking system dependencies"
 MISSING=""
 
 command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
@@ -868,6 +896,7 @@ else
 fi
 
 # ── Install uv ──
+tauri_log "STEP" "Installing uv package manager"
 UV_MIN_VERSION="0.7.14"
 
 version_ge() {
@@ -922,6 +951,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
 fi
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
+tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
 
 _MIGRATED=false
@@ -1304,6 +1334,7 @@ case "$TORCH_INDEX_URL" in
 esac
 
 # ── Install unsloth directly into the venv (no activation needed) ──
+tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
@@ -1316,7 +1347,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.5" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1324,7 +1355,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.5" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -1481,13 +1512,14 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         esac
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.4.5" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1498,12 +1530,12 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.4.5" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
@@ -1523,17 +1555,19 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+    tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.5" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.8" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
 fi
 
 # ── Run studio setup ──
+tauri_log "STEP" "Running Studio setup"
 # When --local, use the repo's own setup.sh directly.
 # Otherwise, find it inside the installed package.
 SETUP_SH=""
@@ -1554,6 +1588,7 @@ if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
 fi
 
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    tauri_log "ERROR" "Could not find studio/setup.sh in the installed package"
     echo "❌ ERROR: Could not find studio/setup.sh in the installed package."
     exit 1
 fi
@@ -1571,24 +1606,32 @@ if ! command -v bash >/dev/null 2>&1; then
 fi
 
 step "setup" "running unsloth studio update..."
-# install.sh already installs base packages (unsloth + unsloth-zoo) and
-# no-torch-runtime.txt above, so tell install_python_stack.py to skip
-# the base step to avoid redundant reinstallation.
 _SKIP_BASE=1
-# Run setup.sh outside set -e so that a llama.cpp build failure (exit 1)
-# does not skip PATH setup, shortcuts, and launch below.  We capture the
-# exit code and propagate it after post-install steps finish.
 _SETUP_EXIT=0
+# Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+_SKIP_FRONTEND=0
+if [ "$TAURI_MODE" = true ]; then
+    _SKIP_FRONTEND=1
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
+    SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
+    # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
+    # value inherited from the parent shell (e.g. a previous --local run in
+    # the same session) does not silently flip a normal install onto the
+    # local-dev path in setup.sh and install_python_stack.py. Mirrors the
+    # reset already done in install.ps1 for PowerShell.
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
+    SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    STUDIO_LOCAL_INSTALL=0 \
+    STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
@@ -1622,21 +1665,24 @@ case ":$PATH:" in
         ;;
 esac
 
-create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
+# Non-Tauri installs keep shortcuts even if setup reports failure.
+if [ "$TAURI_MODE" != true ]; then
+    create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
+fi
 
 # If setup.sh failed, report and exit now.
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
-    substep "Check the output above for details, then re-run:"
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        substep "  unsloth studio update --local"
-    else
-        substep "  unsloth studio update"
-    fi
     echo ""
     exit "$_SETUP_EXIT"
+fi
+
+# ── Tauri mode: done, skip shortcuts and auto-launch ──
+if [ "$TAURI_MODE" = true ]; then
+    tauri_log "DONE" ""
+    exit 0
 fi
 
 echo ""

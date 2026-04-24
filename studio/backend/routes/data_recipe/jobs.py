@@ -57,6 +57,20 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
     return f"http://127.0.0.1:{int(port)}/v1"
 
 
+def _request_has_desktop_access_token(request: Request) -> bool:
+    auth_header = request.headers.get("authorization")
+    if not auth_header:
+        return False
+
+    parts = auth_header.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+
+    from auth.authentication import is_desktop_access_token
+
+    return is_desktop_access_token(parts[1])
+
+
 def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     """Return the set of model_aliases that are actually referenced by an
     LLM column. Used to narrow the "Chat model loaded" gate so that orphan
@@ -154,6 +168,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
         token = create_access_token(
             subject = "unsloth",
             expires_delta = timedelta(hours = 24),
+            desktop = _request_has_desktop_access_token(request),
         )
 
     # Defensively strip any stale "external"-only fields the frontend may
