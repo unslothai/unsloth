@@ -177,6 +177,7 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
             base_dir = base_dir,
             client = client,
             trial_limits = trial_limits,
+            light = True,
         )
         try:
             repo_meta = scraper.scrape_repo_meta()

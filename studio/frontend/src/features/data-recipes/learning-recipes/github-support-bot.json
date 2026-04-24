@@ -19,7 +19,8 @@
         "provider": "Local Model",
         "inference_parameters": {
           "temperature": 0.4,
-          "max_tokens": 1500
+          "max_tokens": 800,
+          "max_parallel_requests": 1
         }
       }
     ],
@@ -52,7 +53,8 @@
         "name": "support_answer",
         "drop": false,
         "model_alias": "model_1",
-        "prompt": "You are the Unsloth support assistant. Answer the user's question grounded in how Unsloth actually works. Produce structured JSON.\n\nSource issue/PR:\n- Repo: {{ repo }}\n- Title: {{ title }}\n- URL: {{ url }}\n- State: {{ state }}\n- Labels: {{ labels }}\n\nNormalized user question:\n{{ normalized_question }}\n\nRules:\n- `answer` is 3-8 sentences of Markdown. Include a python code block when showing usage.\n- `diagnosis_questions` is 1-4 extra questions the user should answer if the info is insufficient (versions, GPU, full traceback). Empty list if the answer is complete.\n- `cites` is a list of references the answer is grounded in (doc paths, GitHub URLs). Always include the source `url` above.\n- `confidence` is one of `high` / `medium` / `low`. Use `low` when ambiguous or out of scope.\n- Never invent APIs. If uncertain, set confidence=`low` and ask diagnosis_questions rather than fabricating.",
+        "prompt": "You are writing one training row for an Unsloth support bot. Produce structured JSON grounded in the GitHub thread.\n\nSource issue / PR:\n- Repo: {{ repo }}\n- Title: {{ title }}\n- URL: {{ url }}\n- State: {{ state }}\n- Labels: {{ labels }}\n- Body: {{ body }}\n- First comments: {{ comments }}\n\nNormalized user question:\n{{ normalized_question }}\n\nRules:\n- `answer`: 80-200 words of Markdown grounded in the thread. Cite the source URL at least once inline as `[source: {{ url }}]`.\n- When the thread is procedural (install, upgrade, fix), include a short ```bash or ```python code block if one appears in the thread.\n- Name at least one concrete symbol (function, class, flag, env var, or file path) from the thread when available.\n- Never recommend `rm -rf`, force push, or other destructive commands without a warning.\n- No em-dashes, no emojis, no AI-disclaimer phrases. Only cite URLs / paths that appear in the thread.\n- `diagnosis_questions`: 1-4 follow-ups when the thread is missing info (versions, GPU, traceback). Empty list if the answer is complete.\n- `cites`: URLs / file paths actually used. Always include `{{ url }}`.\n- `confidence`: `high` / `medium` / `low`. Use `low` when ambiguous or out of scope.",
+        "system_prompt": "You write grounded Unsloth support answers. Faithful to the thread, no invented facts, no em-dashes, no emojis, no AI-disclaimer phrases.",
         "output_format": {
           "type": "object",
           "properties": {
@@ -87,7 +89,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_1",
-        "markdown": "### GitHub Support Bot\nReal GitHub data to synthetic Q&A pairs for support-bot fine-tuning.\n\n**1. Click the Source Data node (top-left of the canvas) to enter:**\n- **Repos**: one `owner/name` per line\n- **GitHub token**: your `GH_TOKEN` (or leave blank to use the server's env var)\n- Item types (issues / pulls / commits) and per-resource limit\n\n**2. Click `Run` below and set the number of rows** (defaults to 10 for a quick test).\n\nThe built-in `github_repo` seed reader does rate-limit-aware GraphQL scraping. Each scraped item becomes a row with `title`, `body`, `comments`, `labels`, etc. Two LLM blocks turn it into `{normalized_question, support_answer}`. Answers are structured JSON with `answer` / `diagnosis_questions` / `cites` / `confidence`.",
+        "markdown": "### GitHub Support Bot\nReal GitHub data to synthetic Q&A pairs for support-bot fine-tuning.\n\n**Click `Run` below to generate 10 sample rows.** Defaults already point at `unslothai/unsloth` + `unslothai/unsloth-zoo`, use the server's `GH_TOKEN` env var, and run the bundled local model.\n\n**Upgrade to production**\n- Swap `unsloth/gemma-4-E2B-it-GGUF` for a larger model in the model_config node.\n- Replace the demo prompts on `normalized_question` / `support_answer` with the canonical codex pattern below (see Note 3).\n- Raise the seed `limit` from 100 to `0` (All) for a full backfill.\n- Raise `max_parallel_requests` back to 4 once your inference server can handle it.",
         "note_color": "#E0F2FE",
         "note_opacity": "35"
       },
@@ -109,7 +111,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_3",
-        "markdown": "The **answer** block enforces a JSON shape that maps directly onto the grounded RAG answerer format.\n\nFields:\n- `answer` (Markdown with code)\n- `diagnosis_questions` (follow-ups)\n- `cites` (doc + GitHub URLs)\n- `confidence` (high/medium/low)\n\nThis is key: uniform schema = less cleanup later.",
+        "markdown": "The **answer** block produces `{answer, diagnosis_questions, cites, confidence}`, ready to feed into the grounded RAG answerer.\n\n**Demo default**: 80-200 word answer, one inline `[source: <url>]` cite, `max_parallel_requests=1` so a small local model stays stable.\n\n**Production prompt (paste in):**\n- Require 150-300 word answers with 2+ citations.\n- Enforce named symbols (function / flag / env var / file path).\n- Code fences for every procedural step.\n- Use the resolved-issue / merged-PR template: `What changed / Fix location / Minimum repro`.\n- Reject rows containing em-dashes, emojis, or AI-disclaimer phrases.\n\nSee the Unsloth SupportBot dataset card for the full codex prompt we used to train `Gemma-4-Unsloth-Bot`.",
         "note_color": "#E0F2FE",
         "note_opacity": "35"
       }
