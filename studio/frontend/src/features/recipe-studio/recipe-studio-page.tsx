@@ -47,7 +47,7 @@ import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { RunDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
-import { GithubScraperEasyView } from "./easy/github-scraper-easy-view";
+import { GithubCrawlerEasyView } from "./easy/github-crawler-easy-view";
 import type {
   RecipeExecutionRecord,
   RecipeStudioView,
@@ -801,7 +801,7 @@ export function RecipeStudioPage({
             ref={flowContainerRef}
           >
             {activeView === "easy" ? (
-              <GithubScraperEasyView
+              <GithubCrawlerEasyView
                 configs={configs}
                 rows={fullRows}
                 setRows={setFullRows}

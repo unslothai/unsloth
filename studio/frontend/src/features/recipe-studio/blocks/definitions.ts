@@ -179,7 +179,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "seed",
     type: "seed_github",
     title: "GitHub repositories",
-    description: "Scrape issues, pull requests, and commits from one or more GitHub repos.",
+    description: "Crawl issues, pull requests, and commits from one or more GitHub repos.",
     icon: GithubIcon,
     dialogKey: "seed",
     createConfig: (id, existing) => makeSeedConfig(id, existing, "github_repo"),

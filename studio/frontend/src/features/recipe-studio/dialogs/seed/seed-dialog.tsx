@@ -366,7 +366,7 @@ export function GithubRepoSeedForm({
           <p id={limitHelpId} className="text-xs text-muted-foreground">
             Estimate before comments: up to {estimatedItems.toLocaleString()}{" "}
             rows ({repos.length || 0} repos × {itemTypes.length} item types ×{" "}
-            {boundedLimit} limit). Commit scraping uses each repo's default
+            {boundedLimit} limit). Commit crawling uses each repo's default
             branch.
           </p>
         </div>
@@ -506,7 +506,7 @@ function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
     return {
       title: "GitHub data loads during Check or Run",
       description:
-        "Configure repos, item types, and limits above. GitHub scraping can take minutes on large repos; watch logs for page and rate-limit updates.",
+        "Configure repos, item types, and limits above. GitHub crawling can take minutes on large repos; watch logs for page and rate-limit updates.",
     };
   }
   return {

@@ -143,9 +143,9 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
   },
   {
     id: "github-support-bot",
-    title: "GitHub Scraper",
+    title: "GitHub Crawler",
     description:
-      "Scrape real GitHub issues and PRs and turn each thread into a {user_request, grounded_response} training pair.",
+      "Crawl real GitHub issues and PRs and turn each thread into a {user_request, grounded_response} training pair.",
     loadPayload: () => loadPayloadFromUrl(githubSupportBotUrl),
   },
 ];

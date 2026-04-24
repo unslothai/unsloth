@@ -27,6 +27,28 @@ export type PublishRecipeJobResponse = {
   message: string;
 };
 
+export type SourceProgressResponse = {
+  source?: string | null;
+  status?: string | null;
+  repo?: string | null;
+  resource?: string | null;
+  page?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  page_items?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  fetched_items?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  estimated_total?: number | null;
+  percent?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  rate_remaining?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  retry_after_sec?: number | null;
+  message?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  updated_at?: number | null;
+};
+
 export type JobStatusResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
   job_id: string;
@@ -61,6 +83,8 @@ export type JobStatusResponse = {
     ok?: number | null;
     failed?: number | null;
   };
+  // biome-ignore lint/style/useNamingConvention: api schema
+  source_progress?: SourceProgressResponse | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   model_usage?: Record<string, unknown>;
   rows?: number | null;

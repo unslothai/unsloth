@@ -436,7 +436,7 @@ export function useRecipeExecutions({
       }
 
       // Flip to the Runs pane BEFORE we run ensureLocalModelLoaded + validate.
-      // Validation re-scrapes the seed (multiple seconds for the github_repo
+      // Validation re-crawls the seed (multiple seconds for the github_repo
       // reader) and the user otherwise stares at a "Running..." button with
       // nothing else changing. runExecution() later no-ops this callback if
       // the view has already been flipped, so we fire it once here.

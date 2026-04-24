@@ -33,6 +33,60 @@ from .worker import run_job_process
 _CTX = mp.get_context("spawn")
 
 
+def _github_source_estimated_total(recipe: dict) -> int | None:
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return None
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "github_repo":
+        return None
+
+    repos_raw = source.get("repos")
+    repos = (
+        [repo for repo in repos_raw if isinstance(repo, str) and repo.strip()]
+        if isinstance(repos_raw, list)
+        else []
+    )
+    item_types_raw = source.get("item_types")
+    item_types = (
+        [
+            item
+            for item in item_types_raw
+            if isinstance(item, str) and item in {"issues", "pulls", "commits"}
+        ]
+        if isinstance(item_types_raw, list)
+        else []
+    )
+    try:
+        limit = int(source.get("limit") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not repos or not item_types or limit <= 0:
+        return None
+    return len(repos) * len(item_types) * limit
+
+
+def _source_progress_status(job: Job) -> dict[str, Any] | None:
+    progress = job.source_progress
+    if progress is None:
+        return None
+    return {
+        "source": progress.source,
+        "status": progress.status,
+        "repo": progress.repo,
+        "resource": progress.resource,
+        "page": progress.page,
+        "page_items": progress.page_items,
+        "fetched_items": progress.fetched_items,
+        "estimated_total": progress.estimated_total,
+        "percent": progress.percent,
+        "rate_remaining": progress.rate_remaining,
+        "retry_after_sec": progress.retry_after_sec,
+        "message": progress.message,
+        "updated_at": progress.updated_at,
+    }
+
+
 @dataclass
 class Subscription:
     replay: list[dict]
@@ -104,6 +158,9 @@ class JobManager:
             job_id = uuid.uuid4().hex
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
+            self._job.source_progress_estimated_total = _github_source_estimated_total(
+                recipe
+            )
             self._job.internal_api_key_id = internal_api_key_id
             self._events.clear()
             self._seq = 0
@@ -176,6 +233,7 @@ class JobManager:
                     "ok": job.column_progress.ok,
                     "failed": job.column_progress.failed,
                 },
+                "source_progress": _source_progress_status(job),
                 "model_usage": {
                     name: {
                         "model": usage.model,

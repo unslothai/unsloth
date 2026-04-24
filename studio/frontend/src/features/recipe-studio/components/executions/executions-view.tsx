@@ -554,6 +554,7 @@ export function ExecutionsView({
                   totalPages={totalPages}
                   tableColumns={tableColumns}
                   datasetRowsForTable={datasetRowsForTable}
+                  onOpenOverview={() => setDetailTab("overview")}
                   onSetHiddenColumns={(updater) => {
                     const selectedId = selectedExecution.id;
                     setHiddenDatasetColumnsByExecution((current) => {

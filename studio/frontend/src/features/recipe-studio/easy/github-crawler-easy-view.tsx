@@ -10,7 +10,7 @@ import { FieldLabel } from "../dialogs/shared/field-label";
 import { GithubRepoSeedForm } from "../dialogs/seed/seed-dialog";
 import type { ModelConfig, NodeConfig, SeedConfig } from "../types";
 
-type GithubScraperEasyViewProps = {
+type GithubCrawlerEasyViewProps = {
   configs: Record<string, NodeConfig>;
   rows: number;
   setRows: (rows: number) => void;
@@ -21,7 +21,7 @@ type GithubScraperEasyViewProps = {
   onSwitchToAdvanced: () => void;
 };
 
-export function GithubScraperEasyView({
+export function GithubCrawlerEasyView({
   configs,
   rows,
   setRows,
@@ -30,7 +30,7 @@ export function GithubScraperEasyView({
   runLoading,
   runErrors,
   onSwitchToAdvanced,
-}: GithubScraperEasyViewProps): ReactElement {
+}: GithubCrawlerEasyViewProps): ReactElement {
   const seedConfig = useMemo(
     () =>
       Object.values(configs).find((c): c is SeedConfig => c.kind === "seed") ??
@@ -93,9 +93,9 @@ export function GithubScraperEasyView({
           <HugeiconsIcon icon={GithubIcon} className="size-5" />
         </div>
         <div className="flex-1 min-w-0">
-          <h2 className="text-base font-semibold">GitHub Scraper</h2>
+          <h2 className="text-base font-semibold">GitHub Crawler</h2>
           <p className="text-xs text-muted-foreground">
-            Scrape real GitHub issues and PRs and turn each thread into a{" "}
+            Crawl real GitHub issues and PRs and turn each thread into a{" "}
             <code>{"{user_request, grounded_response}"}</code> training pair.
             Defaults use the server's <code>GH_TOKEN</code> env var and the
             bundled local model.

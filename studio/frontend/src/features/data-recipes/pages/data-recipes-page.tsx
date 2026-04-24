@@ -164,9 +164,9 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "structured-outputs-jinja",
   },
   {
-    title: "GitHub Scraper",
+    title: "GitHub Crawler",
     description:
-      "Scrape real GitHub issues and PRs and invert each thread into a {user_request, grounded_response} training pair.",
+      "Crawl real GitHub issues and PRs and invert each thread into a {user_request, grounded_response} training pair.",
     icon: GithubIcon,
     difficulty: "Intermediate",
     learningBadges: ["GitHub", "LLM Text", "Structured LLM"],
