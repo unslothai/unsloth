@@ -12,8 +12,8 @@ import type { ModelConfig, NodeConfig, SeedConfig } from "../types";
 
 type GithubScraperEasyViewProps = {
   configs: Record<string, NodeConfig>;
-  previewRows: number;
-  setPreviewRows: (rows: number) => void;
+  rows: number;
+  setRows: (rows: number) => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   onRun: () => void;
   runLoading: boolean;
@@ -23,8 +23,8 @@ type GithubScraperEasyViewProps = {
 
 export function GithubScraperEasyView({
   configs,
-  previewRows,
-  setPreviewRows,
+  rows,
+  setRows,
   updateConfig,
   onRun,
   runLoading,
@@ -110,10 +110,10 @@ export function GithubScraperEasyView({
               className="nodrag"
               min={1}
               max={10000}
-              value={previewRows}
+              value={rows}
               onChange={(event) => {
                 const next = Number.parseInt(event.target.value, 10);
-                setPreviewRows(Number.isFinite(next) && next > 0 ? next : 1);
+                setRows(Number.isFinite(next) && next > 0 ? next : 1);
               }}
             />
           </div>
