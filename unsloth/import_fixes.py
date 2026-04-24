@@ -1422,7 +1422,9 @@ def patch_peft_weight_converter_compatibility():
             patched.append((conversion_cls, original_init))
         return patched
 
-    def _build_peft_weight_mapping_compat(weight_conversions, adapter_name, peft_config):
+    def _build_peft_weight_mapping_compat(
+        weight_conversions, adapter_name, peft_config
+    ):
         patched_classes = _patch_weight_converter_ctors(weight_conversions)
         try:
             return original_build(weight_conversions, adapter_name, peft_config)
