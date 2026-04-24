@@ -7,7 +7,7 @@ class _AutoModelLike:
 
 
 class _FakeLazyMapping:
-    def __init__(self, entries, extra_content=None, broken_keys=()):
+    def __init__(self, entries, extra_content = None, broken_keys = ()):
         self._entries = dict(entries)
         self._config_mapping = {k: f"Cfg_{k}" for k in self._entries}
         self._model_mapping = {k: f"Mdl_{k}" for k in self._entries}
@@ -35,15 +35,40 @@ class _FakeLazyMapping:
         raise KeyError(attr)
 
 
-class CfgA: pass
-class CfgB: pass
-class CfgBChild(CfgB): pass
-class ModelA: pass
-class ModelB: pass
-class RegBase: pass
-class RegChild(RegBase): pass
-class RegModel: pass
-class UnknownCfg: pass
+class CfgA:
+    pass
+
+
+class CfgB:
+    pass
+
+
+class CfgBChild(CfgB):
+    pass
+
+
+class ModelA:
+    pass
+
+
+class ModelB:
+    pass
+
+
+class RegBase:
+    pass
+
+
+class RegChild(RegBase):
+    pass
+
+
+class RegModel:
+    pass
+
+
+class UnknownCfg:
+    pass
 
 
 def test_fast_path_exact_match():
@@ -61,7 +86,7 @@ def test_fallback_subclass_match_via_lazy_mapping():
 def test_broken_lazy_entry_does_not_crash():
     m = _FakeLazyMapping(
         {"broken": (CfgA, ModelA), "b": (CfgB, ModelB)},
-        broken_keys=("broken",),
+        broken_keys = ("broken",),
     )
     am = _AutoModelLike(m)
     assert resolve_model_class(am, CfgBChild()) is ModelB
@@ -76,7 +101,7 @@ def test_unknown_config_returns_none():
 def test_extra_content_subclass_fallback():
     m = _FakeLazyMapping(
         {"a": (CfgA, ModelA)},
-        extra_content={RegBase: RegModel},
+        extra_content = {RegBase: RegModel},
     )
     am = _AutoModelLike(m)
     assert resolve_model_class(am, RegChild()) is RegModel
@@ -85,7 +110,7 @@ def test_extra_content_subclass_fallback():
 def test_extra_content_exact_match_fast_path():
     m = _FakeLazyMapping(
         {"a": (CfgA, ModelA)},
-        extra_content={RegBase: RegModel},
+        extra_content = {RegBase: RegModel},
     )
     am = _AutoModelLike(m)
     assert resolve_model_class(am, RegBase()) is RegModel
@@ -94,8 +119,8 @@ def test_extra_content_exact_match_fast_path():
 def test_broken_entry_with_extra_content_subclass():
     m = _FakeLazyMapping(
         {"broken": (CfgA, ModelA)},
-        extra_content={RegBase: RegModel},
-        broken_keys=("broken",),
+        extra_content = {RegBase: RegModel},
+        broken_keys = ("broken",),
     )
     am = _AutoModelLike(m)
     assert resolve_model_class(am, RegChild()) is RegModel

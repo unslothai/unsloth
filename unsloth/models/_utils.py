@@ -429,7 +429,9 @@ def resolve_model_class(auto_model, config):
             except Exception:
                 continue
         if result is None:
-            for extra_cls, extra_model in getattr(mapping, "_extra_content", {}).items():
+            for extra_cls, extra_model in getattr(
+                mapping, "_extra_content", {}
+            ).items():
                 try:
                     if isinstance(config, extra_cls):
                         result = extra_model
