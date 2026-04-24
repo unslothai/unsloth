@@ -11,6 +11,7 @@ type ModelLoadDescriptionProps = {
   progressPercent?: number | null;
   progressLabel?: string | null;
   onStop?: () => void;
+  anotherModelRunning?: boolean;
 };
 
 function clampProgress(value: number): number {
@@ -46,6 +47,7 @@ export function ModelLoadDescription({
   progressPercent,
   progressLabel,
   onStop,
+  anotherModelRunning,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top of the render so the JSX below stays flat --
@@ -93,6 +95,11 @@ export function ModelLoadDescription({
         >
           Cancel
         </Button>
+      ) : null}
+      {anotherModelRunning ? (
+        <p className="mt-1.5 border-t border-amber-200/50 pt-1.5 text-[11px] leading-relaxed text-amber-600 dark:border-amber-700/30 dark:text-amber-400">
+          Another model is generating — you can send a message once it finishes.
+        </p>
       ) : null}
     </div>
   );
