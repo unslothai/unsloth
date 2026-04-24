@@ -855,7 +855,8 @@ async def cancel_inference(
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse cancel request body: %s", e)
         body = {}
 
     cancel_id = body.get("cancel_id")
