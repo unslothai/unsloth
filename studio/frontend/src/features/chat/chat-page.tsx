@@ -48,7 +48,6 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { usePromptEvalStore } from "./stores/use-prompt-eval-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
-import { PromptEvalOrchestrator } from "./prompt-eval/prompt-eval-content";
 import { PromptEvalProgressPill } from "./prompt-eval/prompt-eval-progress-pill";
 import { usePromptEvalRunner } from "./prompt-eval/use-prompt-eval-runner";
 
@@ -114,10 +113,12 @@ const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
   onPromptEvalSend,
+  promptEvalHandlesRef,
 }: {
   threadId?: string;
   newThreadNonce?: string;
   onPromptEvalSend?: (text: string) => void;
+  promptEvalHandlesRef?: CompareHandles;
 }): ReactElement {
   return (
     <ChatRuntimeProvider
@@ -125,6 +126,11 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
     >
+      {promptEvalHandlesRef && (
+        <CompareHandlesProvider handlesRef={promptEvalHandlesRef}>
+          <RegisterCompareHandle name="eval" />
+        </CompareHandlesProvider>
+      )}
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onPromptEvalSend={onPromptEvalSend} />
       </div>
@@ -573,24 +579,19 @@ export function ChatPage(): ReactElement {
     cancel: cancelPromptEval,
     progress: promptEvalProgress,
     running: promptEvalRunning,
-    activeThreadId: promptEvalActiveThreadId,
   } = usePromptEvalRunner();
-  // Holds the getter function provided by PromptEvalOrchestrator once it mounts.
-  // Always reads handlesRef.current["eval"] from the hidden ChatRuntimeProvider.
-  const promptEvalHandleGetterRef = useRef<(() => CompareHandle | null) | null>(null);
-
-  const onPromptEvalHandleReady = useCallback(
-    (getter: () => CompareHandle | null) => {
-      promptEvalHandleGetterRef.current = getter;
-    },
-    [],
-  );
+  // Stable ref into which SingleContent registers the visible thread's handle.
+  // When SingleContent remounts for a new thread (key changes), the old handle
+  // is deleted on unmount and a fresh one is registered on mount. The two-phase
+  // waitForHandle in the runner relies on this lifecycle to detect the stale
+  // → fresh transition correctly (fixes double-send and no-live-display).
+  const singleChatHandlesRef = useRef<Record<string, CompareHandle>>({}) as CompareHandles;
 
   const onPromptEvalSend = useCallback(
     (text: string) => {
       void runPromptEval(
         [text],
-        () => promptEvalHandleGetterRef.current?.() ?? null,
+        () => singleChatHandlesRef.current["eval"] ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
@@ -602,7 +603,7 @@ export function ChatPage(): ReactElement {
     (texts: string[]) => {
       void runPromptEval(
         texts,
-        () => promptEvalHandleGetterRef.current?.() ?? null,
+        () => singleChatHandlesRef.current["eval"] ?? null,
         (threadId: string) =>
           navigate({ to: "/chat", search: { thread: threadId } }),
       );
@@ -1050,6 +1051,7 @@ export function ChatPage(): ReactElement {
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             onPromptEvalSend={onPromptEvalSend}
+            promptEvalHandlesRef={promptEvalRunning ? singleChatHandlesRef : undefined}
           />
         ) : (
           <CompareContent
@@ -1061,15 +1063,6 @@ export function ChatPage(): ReactElement {
           />
         )}
       </div>
-
-      {/* Hidden benchmark orchestrator: drives generation via its own
-          ChatRuntimeProvider so there is zero race with the visible UI */}
-      {promptEvalRunning && (
-        <PromptEvalOrchestrator
-          currentThreadId={promptEvalActiveThreadId ?? undefined}
-          onHandleReady={onPromptEvalHandleReady}
-        />
-      )}
 
       <ChatSettingsPanel
         open={settingsOpen}

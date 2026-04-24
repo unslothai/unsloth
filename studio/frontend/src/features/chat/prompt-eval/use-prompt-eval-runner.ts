@@ -9,15 +9,35 @@ import { usePromptEvalStore } from "../stores/use-prompt-eval-store";
 import type { CompareHandle } from "../shared-composer";
 import type { PromptEvalProgress } from "./types";
 
-/** Poll until the orchestrator registers its handle or timeout expires. */
+/**
+ * Wait for the visible thread's handle to be ready after navigation.
+ *
+ * Two-phase to avoid returning a stale handle from the previous model:
+ *   Phase 1 – if a previousHandle is given, wait until it's cleared
+ *              (React unmounts the old SingleContent after key change).
+ *   Phase 2 – wait until a fresh, non-previous handle appears
+ *              (React mounts the new SingleContent and registers its handle).
+ */
 async function waitForHandle(
   getHandle: () => CompareHandle | null,
-  timeoutMs = 8000,
+  previousHandle: CompareHandle | null,
+  timeoutMs = 12000,
 ): Promise<CompareHandle | null> {
   const deadline = Date.now() + timeoutMs;
+
+  // Phase 1: wait for the stale handle to disappear (gives React time to
+  // unmount the old SingleContent and delete the old handle).
+  if (previousHandle !== null) {
+    while (Date.now() < deadline) {
+      if (getHandle() !== previousHandle) break;
+      await new Promise<void>((r) => setTimeout(r, 20));
+    }
+  }
+
+  // Phase 2: wait for the fresh handle for the new thread.
   while (Date.now() < deadline) {
     const h = getHandle();
-    if (h) return h;
+    if (h !== null && h !== previousHandle) return h;
     await new Promise<void>((r) => setTimeout(r, 50));
   }
   return null;
@@ -123,7 +143,11 @@ export function usePromptEvalRunner() {
         usePromptEvalStore.getState().setActiveBenchmark(promptEvalId, threadIds);
       }
 
-      // Run the prompt(s) through each selected model
+      // Run the prompt(s) through each selected model.
+      // Track the last-used handle so waitForHandle can detect when the old
+      // SingleContent unmounts (handle cleared) before accepting a new one.
+      let previousHandle: CompareHandle | null = null;
+
       for (let mi = 0; mi < selectedIds.length; mi++) {
         if (cancelRef.current) break;
         const modelId = selectedIds[mi];
@@ -190,8 +214,10 @@ export function usePromptEvalRunner() {
         setActiveThreadId(threadId);
         navigateToThread(threadId);
 
-        // 3. Wait for the visible thread's handle to be ready after navigation
-        const handle = await waitForHandle(getHandle);
+        // 3. Wait for the visible thread's handle to be ready after navigation.
+        // Pass previousHandle so Phase 1 waits for the stale handle to clear
+        // before accepting a fresh one (fixes double-send on model transitions).
+        const handle = await waitForHandle(getHandle, previousHandle);
         if (!handle || cancelRef.current) break;
 
         // 4. Send each prompt in order, waiting for each response to complete
@@ -211,6 +237,10 @@ export function usePromptEvalRunner() {
           handle.append([{ type: "text", text: promptText }]);
           await handle.waitForRunEnd();
         }
+
+        // Remember this handle so the next iteration's waitForHandle
+        // Phase 1 can wait for it to be cleared before accepting a new one.
+        previousHandle = handle;
       }
 
       setProgress((p) =>
