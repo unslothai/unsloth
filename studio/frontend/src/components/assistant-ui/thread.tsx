@@ -83,6 +83,25 @@ import {
 } from "react";
 import { toast } from "sonner";
 
+const AnotherModelBanner: FC = () => {
+  const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const thisThreadInStore = useChatRuntimeStore((s) =>
+    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
+  );
+  const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
+  if (thisThreadIsRunning || thisThreadInStore || !anyRunning) return null;
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center pt-2">
+      <div className="pointer-events-auto rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 shadow-sm dark:border-amber-800/40 dark:bg-amber-950/20">
+        <span className="text-xs text-amber-700 dark:text-amber-400">
+          Another model is generating, you can send a message once it finishes.
+        </span>
+      </div>
+    </div>
+  );
+};
+
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
@@ -112,6 +131,7 @@ export const Thread: FC<{
           "calc(var(--thread-max-width) - 2.5rem)",
       }}
     >
+      <AnotherModelBanner />
       <IntentAwareScrollProvider value={autoScrollContext}>
         <ThreadPrimitive.Viewport
           ref={viewportRef}
@@ -316,13 +336,6 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <ComposerAttachments />
         <PendingAudioChip />
         <ToolStatusDisplay />
-        {anotherThreadRunning && (
-          <div className="mb-2 mx-2 mt-1 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800/40 dark:bg-amber-950/20">
-            <span className="text-xs text-amber-700 dark:text-amber-400">
-              Another model is generating — you can send a message once it finishes.
-            </span>
-          </div>
-        )}
         <ComposerPrimitive.Input
           placeholder="Send a message..."
           className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
