@@ -30,8 +30,7 @@ def _extract_fns_via_ast(source_path, fn_names, extra_ns = None):
     tree = ast.parse(source, filename = str(source_path))
     wanted = set(fn_names)
     nodes = [
-        n for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name in wanted
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted
     ]
     missing = wanted - {n.name for n in nodes}
     if missing:
@@ -256,10 +255,14 @@ def test_collator_dedupes_across_batches(make_auto_validating_collator):
 def test_conversations_column_missing_detected(check_dataset_for_missing_videos):
     """Missing videos under the 'conversations' column must be reported."""
     ds = [
-        {"conversations": [
-            {"role": "user",
-             "content": [{"type": "video", "video": "/nonexistent/conv.mp4"}]}
-        ]},
+        {
+            "conversations": [
+                {
+                    "role": "user",
+                    "content": [{"type": "video", "video": "/nonexistent/conv.mp4"}],
+                }
+            ]
+        },
     ]
     with pytest.raises(FileNotFoundError):
         check_dataset_for_missing_videos(ds)
@@ -269,8 +272,15 @@ def test_prompt_completion_column_missing_detected(check_dataset_for_missing_vid
     """Missing videos under 'prompt'/'completion' columns must be reported."""
     ds = [
         {
-            "prompt":     [{"role": "user",      "content": [{"type": "video", "video": "/nonexistent/p.mp4"}]}],
-            "completion": [{"role": "assistant", "content": [{"type": "text",  "text": "hi"}]}],
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": [{"type": "video", "video": "/nonexistent/p.mp4"}],
+                }
+            ],
+            "completion": [
+                {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+            ],
         },
     ]
     with pytest.raises(FileNotFoundError) as exc_info:
@@ -285,8 +295,12 @@ def test_raw_message_list_example_missing_detected(check_dataset_for_missing_vid
     crash with AttributeError on .get.
     """
     ds = [
-        [{"role": "user",
-          "content": [{"type": "video", "video": "/nonexistent/raw.mp4"}]}],
+        [
+            {
+                "role": "user",
+                "content": [{"type": "video", "video": "/nonexistent/raw.mp4"}],
+            }
+        ],
     ]
     with pytest.raises(FileNotFoundError):
         check_dataset_for_missing_videos(ds)
@@ -306,7 +320,9 @@ def test_file_uri_percent_encoded(check_dataset_for_missing_videos, tmp_path):
     target = tmp_path / "my video.mp4"
     target.write_bytes(b"x")
     uri = "file://" + str(target).replace(" ", "%20")
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
+    ds = [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
+    ]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -315,7 +331,9 @@ def test_file_uri_localhost_host(check_dataset_for_missing_videos, tmp_path):
     target = tmp_path / "clip.mp4"
     target.write_bytes(b"x")
     uri = f"file://localhost{target}"
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
+    ds = [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
+    ]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -324,7 +342,13 @@ def test_checked_set_reused_across_calls(check_dataset_for_missing_videos, tmp_p
     target = tmp_path / "clip.mp4"
     target.write_bytes(b"x")
     shared = set()
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": str(target)}]}]}]
+    ds = [
+        {
+            "messages": [
+                {"role": "user", "content": [{"type": "video", "video": str(target)}]}
+            ]
+        }
+    ]
     check_dataset_for_missing_videos(ds, checked = shared)
     assert str(target) in shared
     check_dataset_for_missing_videos(ds, checked = shared)
@@ -344,20 +368,35 @@ def test_checked_set_reused_across_calls(check_dataset_for_missing_videos, tmp_p
 def test_non_file_remote_scheme_skipped(check_dataset_for_missing_videos, uri):
     """Any URI scheme other than file:// must be treated as remote and skipped;
     no false FileNotFoundError against os.path.isfile on the raw URI."""
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
+    ds = [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
+    ]
     assert check_dataset_for_missing_videos(ds) == []
 
 
 def test_file_uri_non_localhost_host_skipped(check_dataset_for_missing_videos):
     """file://<non-localhost>/path must skip local validation (RFC 8089)."""
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": "file://nas-server/share/clip.mp4"}]}]}]
+    ds = [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "video", "video": "file://nas-server/share/clip.mp4"}
+                    ],
+                }
+            ]
+        }
+    ]
     assert check_dataset_for_missing_videos(ds) == []
 
 
 @pytest.mark.parametrize("uri", ["file://", "file://hostname"])
 def test_degenerate_file_uri_skipped(check_dataset_for_missing_videos, uri):
     """Degenerate file URIs (no path component) must not produce a blank missing entry."""
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
+    ds = [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
+    ]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -367,7 +406,9 @@ def test_file_uri_double_encoded_percent(check_dataset_for_missing_videos, tmp_p
     target = tmp_path / "clip%20.mp4"
     target.write_bytes(b"x")
     uri = "file://" + str(target).replace("%", "%25")
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}]
+    ds = [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": uri}]}]}
+    ]
     assert check_dataset_for_missing_videos(ds) == []
 
 
@@ -386,9 +427,22 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
         # assertion is that '://' not in the value means the validator must
         # round-trip it unchanged.
         path = str(target)
-    ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": path}]}]}]
+    ds = [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": path}]}]}
+    ]
     assert check_dataset_for_missing_videos(ds) == []
-    ds_missing = [{"messages": [{"role": "user", "content": [{"type": "video", "video": "C:/definitely/missing.mp4"}]}]}]
+    ds_missing = [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "video", "video": "C:/definitely/missing.mp4"}
+                    ],
+                }
+            ]
+        }
+    ]
     with pytest.raises(FileNotFoundError) as exc:
         check_dataset_for_missing_videos(ds_missing)
     assert "C:/definitely/missing.mp4" in str(exc.value)
@@ -401,7 +455,11 @@ def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
 
     def gen():
         for p in ("/nonexistent/a.mp4", "/nonexistent/b.mp4"):
-            yield {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
+            yield {
+                "messages": [
+                    {"role": "user", "content": [{"type": "video", "video": p}]}
+                ]
+            }
 
     ds = IterableDataset.from_generator(gen)
     with warnings.catch_warnings(record = True) as caught:
@@ -422,11 +480,14 @@ def test_collator_applies_formatting_func_before_validation(
     checked; the super call must receive the already-formatted examples and
     not re-apply formatting_func.
     """
+
     def fmt(example):
         return {
             "messages": [
-                {"role": "user",
-                 "content": [{"type": "video", "video": example["video_id"]}]}
+                {
+                    "role": "user",
+                    "content": [{"type": "video", "video": example["video_id"]}],
+                }
             ]
         }
 

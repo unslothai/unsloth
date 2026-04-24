@@ -1771,9 +1771,7 @@ class FastBaseModel:
 
 
 def _looks_like_message_list(value):
-    return isinstance(value, list) and (
-        len(value) == 0 or isinstance(value[0], dict)
-    )
+    return isinstance(value, list) and (len(value) == 0 or isinstance(value[0], dict))
 
 
 def _iter_message_lists(example, column):
@@ -1799,6 +1797,7 @@ def _local_path_from_video_value(video_path):
         return None
     from urllib.parse import urlparse
     from urllib.request import url2pathname
+
     parsed = urlparse(video_path)
     # RFC 8089: only an empty authority or "localhost" refers to the local machine.
     if parsed.netloc and parsed.netloc != "localhost":
@@ -1808,7 +1807,10 @@ def _local_path_from_video_value(video_path):
 
 
 def check_dataset_for_missing_videos(
-    dataset, column = "messages", raise_error = True, checked = None,
+    dataset,
+    column = "messages",
+    raise_error = True,
+    checked = None,
 ):
     """
     Validate that all local video file paths referenced in a dataset actually exist.
@@ -1838,6 +1840,7 @@ def check_dataset_for_missing_videos(
     """
     try:
         from datasets import IterableDataset as _IterableDataset
+
         if isinstance(dataset, _IterableDataset):
             # why safe: iterating a streaming dataset would consume it and leave
             # training with zero samples; warn and skip rather than validate.
