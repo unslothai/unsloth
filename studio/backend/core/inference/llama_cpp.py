@@ -1302,15 +1302,7 @@ class LlamaCppBackend:
 
         Returns True if server started and health check passed.
         """
-        # Cancel any load that is currently in flight before clearing the
-        # event for ourselves. Without this, a second load_model that
-        # races a first one can both pass the Phase 1 kill (because the
-        # first hasn't stored its Popen handle yet), each download
-        # independently, and each spawn a server -- the first one
-        # becomes an orphan that holds the model in RAM until OOM kicks
-        # in. See issue #5161.
-        self._cancel_event.set()
-        self._cancel_event = threading.Event()
+        self._cancel_event.clear()
 
         # ── Phase 1: kill old process (under lock, fast) ──────────
         with self._lock:
