@@ -163,14 +163,23 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
+        # data_designer's BaseInferenceParams is a pydantic model with
+        # extra="forbid", so response_format cannot sit at the top level of
+        # inference_parameters. It does expose an `extra_body: dict` pass-
+        # through that the OpenAI client spreads into the request body at the
+        # top level, which is where llama-server reads response_format from.
         # llama.cpp server shape (tools/server/README.md): the schema sits
         # directly under response_format, not nested in a json_schema object
         # the way OpenAI's Chat Completions API expects. llama-server converts
         # the schema to a GBNF grammar and applies it during sampling.
-        params["response_format"] = {
+        extra_body = params.get("extra_body")
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        extra_body["response_format"] = {
             "type": "json_schema",
             "schema": output_format,
         }
+        params["extra_body"] = extra_body
         new_configs.append(clone)
         column["model_alias"] = clone_alias
 
