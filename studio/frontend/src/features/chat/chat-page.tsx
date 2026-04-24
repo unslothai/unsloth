@@ -910,7 +910,7 @@ export function ChatPage(): ReactElement {
                 onStop={cancelLoading}
               />
             ) : null}
-            {view.mode === "single" && !loadingModel && modelsError ? (
+            {!loadingModel && modelsError ? (
               <div
                 className="relative top-0.5 max-w-[28rem] truncate pl-0.5 text-xs text-destructive"
                 title={modelsError}
