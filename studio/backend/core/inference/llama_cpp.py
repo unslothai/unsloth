@@ -1805,6 +1805,7 @@ class LlamaCppBackend:
                 env["CUDA_VISIBLE_DEVICES"] = pinned
                 try:
                     import torch as _torch
+
                     if getattr(_torch.version, "hip", None) is not None:
                         env["HIP_VISIBLE_DEVICES"] = pinned
                         env["ROCR_VISIBLE_DEVICES"] = pinned
