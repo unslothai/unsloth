@@ -31,18 +31,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+  type KeyboardEvent,
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "@/lib/utils";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
 import { inspectSeedDataset, inspectSeedUpload } from "../../api";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
+  GithubItemType,
   SeedConfig,
   SeedSamplingStrategy,
   SeedSelectionType,
@@ -51,10 +56,11 @@ import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-t
 import { HfDatasetCombobox } from "../../components/shared/hf-dataset-combobox";
 import { FieldLabel } from "../shared/field-label";
 
-const SAMPLING_OPTIONS: Array<{ value: SeedSamplingStrategy; label: string }> = [
-  { value: "ordered", label: "Ordered" },
-  { value: "shuffle", label: "Shuffle" },
-];
+const SAMPLING_OPTIONS: Array<{ value: SeedSamplingStrategy; label: string }> =
+  [
+    { value: "ordered", label: "Ordered" },
+    { value: "shuffle", label: "Shuffle" },
+  ];
 
 const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
   { value: "none", label: "None" },
@@ -68,12 +74,62 @@ const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
 const PREVIEW_TRUNCATE_AT = 320;
+const GITHUB_TRAILING_PUNCTUATION_RE = /[),.;]+$/g;
+const GITHUB_SSH_PREFIX_RE = /^git@github\.com:/i;
+const URL_PROTOCOL_RE = /^https?:\/\//i;
+const WWW_PREFIX_RE = /^www\./i;
+const URL_QUERY_OR_HASH_RE = /[?#]/;
+const GIT_SUFFIX_RE = /\.git$/i;
+const GITHUB_REPO_INPUT_SPLIT_RE = /[\s,]+/;
+const GITHUB_REPO_PART_RE = /^[A-Za-z0-9_.-]+$/;
 
 type SeedDialogProps = {
   config: SeedConfig;
   onUpdate: (patch: Partial<SeedConfig>) => void;
   open: boolean;
 };
+
+function normalizeGithubRepoInput(value: string): string {
+  let raw = value.trim().replace(GITHUB_TRAILING_PUNCTUATION_RE, "");
+  if (!raw) {
+    return "";
+  }
+  raw = raw.replace(GITHUB_SSH_PREFIX_RE, "https://github.com/");
+  raw = raw.replace(URL_PROTOCOL_RE, "");
+  raw = raw.replace(WWW_PREFIX_RE, "");
+  if (raw.toLowerCase().startsWith("github.com/")) {
+    raw = raw.slice("github.com/".length);
+  }
+  raw = raw.split(URL_QUERY_OR_HASH_RE)[0] ?? "";
+  raw = raw.replace(GIT_SUFFIX_RE, "");
+  const parts = raw.split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]}/${parts[1]}`;
+  }
+  return raw;
+}
+
+function splitGithubRepoInput(value: string): string[] {
+  return value
+    .split(GITHUB_REPO_INPUT_SPLIT_RE)
+    .map(normalizeGithubRepoInput)
+    .filter(Boolean);
+}
+
+function getGithubRepoError(repo: string): string | null {
+  const parts = repo.split("/");
+  if (parts.length !== 2 || parts.some((part) => !part.trim())) {
+    return "Use owner/name.";
+  }
+  if (parts.some((part) => !GITHUB_REPO_PART_RE.test(part))) {
+    return "Use only GitHub repo characters.";
+  }
+  return null;
+}
+
+function githubLimitString(value: string | undefined): string {
+  return (value ?? "100").trim();
+}
 
 function GithubRepoSeedForm({
   config,
@@ -83,112 +139,299 @@ function GithubRepoSeedForm({
   onUpdate: (patch: Partial<SeedConfig>) => void;
 }): ReactElement {
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const limitStr = (config.github_limit ?? "100").trim();
+  const [repoDraft, setRepoDraft] = useState("");
+  const repoInputId = useId();
+  const repoHelpId = useId();
+  const repoErrorId = useId();
+  const tokenId = useId();
+  const tokenHelpId = useId();
+  const limitId = useId();
+  const limitHelpId = useId();
+  const commentsId = useId();
+  const includeCommentsId = useId();
+  const commentsHelpId = useId();
+  const repos = useMemo(
+    () => splitGithubRepoInput(config.github_repo_slug ?? ""),
+    [config.github_repo_slug],
+  );
+  const repoErrors = repos
+    .map((repo, index) => ({ repo, index, error: getGithubRepoError(repo) }))
+    .filter((item) => item.error);
+  const hasRepoErrors = repoErrors.length > 0;
+  const configuredItemTypes = config.github_item_types;
+  const itemTypes: GithubItemType[] =
+    configuredItemTypes && configuredItemTypes.length > 0
+      ? configuredItemTypes
+      : ["issues", "pulls"];
+  const limitNum = Number.parseInt(githubLimitString(config.github_limit), 10);
+  const boundedLimit = Number.isFinite(limitNum)
+    ? Math.min(5000, Math.max(1, limitNum))
+    : 100;
+  const estimatedItems = repos.length * itemTypes.length * boundedLimit;
+  const includeComments = config.github_include_comments ?? true;
+  const hasToken = Boolean(config.github_token?.trim());
+
+  function updateRepos(nextRepos: string[]): void {
+    const seen = new Set<string>();
+    const deduped = nextRepos.filter((repo) => {
+      const key = repo.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+    onUpdate({ github_repo_slug: deduped.join("\n") });
+  }
+
+  function addRepos(raw: string): void {
+    const next = splitGithubRepoInput(raw);
+    if (next.length === 0) {
+      return;
+    }
+    updateRepos([...repos, ...next]);
+    setRepoDraft("");
+  }
+
+  function removeRepo(index: number): void {
+    updateRepos(repos.filter((_, i) => i !== index));
+  }
+
+  function handleRepoKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (["Enter", ",", " "].includes(event.key)) {
+      event.preventDefault();
+      addRepos(repoDraft);
+    } else if (event.key === "Backspace" && !repoDraft && repos.length > 0) {
+      event.preventDefault();
+      removeRepo(repos.length - 1);
+    }
+  }
+
   return (
     <div className="space-y-3 rounded-xl corner-squircle border border-border/60 p-3">
       <div className="grid gap-1.5">
         <FieldLabel
           label="GitHub repositories"
-          hint="One owner/name per line."
+          htmlFor={repoInputId}
+          hint="Paste owner/name entries or GitHub URLs. Newlines, commas, and spaces are accepted."
         />
-        <textarea
-          className="nodrag min-h-20 w-full resize-y rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs font-mono"
-          value={config.github_repo_slug ?? ""}
-          onChange={(e) => onUpdate({ github_repo_slug: e.target.value })}
-          placeholder="unslothai/unsloth&#10;unslothai/unsloth-zoo"
-        />
+        <div
+          className={cn(
+            "nodrag flex min-h-20 flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-1.5",
+            hasRepoErrors && "border-red-500/70",
+          )}
+        >
+          {repos.map((repo, index) => {
+            const error = getGithubRepoError(repo);
+            return (
+              <span
+                key={`${repo}-${index}`}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-mono",
+                  error
+                    ? "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300"
+                    : "border-border/60 bg-muted/60",
+                )}
+              >
+                {repo}
+                <button
+                  type="button"
+                  className="rounded-full px-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                  onClick={() => removeRepo(index)}
+                  aria-label={`Remove ${repo}`}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
+          <input
+            id={repoInputId}
+            className="min-w-36 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            value={repoDraft}
+            onChange={(event) => setRepoDraft(event.target.value)}
+            onKeyDown={handleRepoKeyDown}
+            onBlur={() => addRepos(repoDraft)}
+            onPaste={(event) => {
+              const pasted = event.clipboardData.getData("text");
+              if (pasted) {
+                event.preventDefault();
+                addRepos(pasted);
+              }
+            }}
+            placeholder={
+              repos.length === 0
+                ? "unslothai/unsloth or GitHub URL"
+                : "Add repo…"
+            }
+            aria-invalid={hasRepoErrors}
+            aria-describedby={`${repoHelpId}${hasRepoErrors ? ` ${repoErrorId}` : ""}`}
+          />
+        </div>
+        <p id={repoHelpId} className="text-xs text-muted-foreground">
+          Stored as one <code>owner/name</code> repo per line in the recipe.
+        </p>
+        {hasRepoErrors && (
+          <ul id={repoErrorId} className="space-y-0.5 text-xs text-red-600">
+            {repoErrors.map((item) => (
+              <li key={`${item.repo}-${item.index}`}>
+                Row {item.index + 1}: {item.error}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
+
       <div className="grid gap-1.5">
         <FieldLabel
-          label="GitHub token"
-          hint="Use public_repo for public repos or repo for private repos. Leave blank to use the server's GH_TOKEN / GITHUB_TOKEN env var."
+          label="GitHub token (optional)"
+          htmlFor={tokenId}
+          hint="Prefer the server GH_TOKEN / GITHUB_TOKEN env var. Use public_repo for public repos or repo for private repos."
         />
         <Input
+          id={tokenId}
           type="password"
           className="nodrag"
           value={config.github_token ?? ""}
           onChange={(e) => onUpdate({ github_token: e.target.value })}
-          placeholder="ghp_... (optional if server has GH_TOKEN)"
+          placeholder="Leave blank to use server GH_TOKEN"
+          aria-describedby={tokenHelpId}
         />
+        <p id={tokenHelpId} className="text-xs text-muted-foreground">
+          Blank is safest for saved/shared recipes because Studio will read the
+          server environment at run time.
+        </p>
+        {hasToken && (
+          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
+            Personal access tokens are sensitive. Prefer server env vars when
+            possible, and avoid sharing recipes that contain a PAT.
+          </p>
+        )}
       </div>
-      <div className="grid gap-1.5">
-        <FieldLabel
-          label="Items per repo"
-          hint="How many issues/PRs/commits to fetch from each repo (1-5000)."
-        />
-        <Input
-          type="number"
-          className="nodrag"
-          min={1}
-          max={5000}
-          value={limitStr}
-          onChange={(e) => onUpdate({ github_limit: e.target.value })}
-          placeholder="100"
-        />
-      </div>
+
+      <fieldset className="space-y-3 rounded-lg border border-border/60 p-3">
+        <legend className="px-1 text-xs font-semibold uppercase text-muted-foreground">
+          Fetch scope
+        </legend>
+        <div className="grid gap-1.5">
+          <FieldLabel
+            label="Items per repo"
+            htmlFor={limitId}
+            hint="How many issues/PRs/commits to fetch from each repo (1-5000)."
+          />
+          <Input
+            id={limitId}
+            type="number"
+            className="nodrag"
+            min={1}
+            max={5000}
+            value={githubLimitString(config.github_limit)}
+            onChange={(e) => onUpdate({ github_limit: e.target.value })}
+            placeholder="100"
+            aria-describedby={limitHelpId}
+          />
+          <p id={limitHelpId} className="text-xs text-muted-foreground">
+            Estimate before comments: up to {estimatedItems.toLocaleString()}{" "}
+            rows ({repos.length || 0} repos × {itemTypes.length} item types ×{" "}
+            {boundedLimit} limit). Commit scraping uses each repo's default
+            branch.
+          </p>
+        </div>
+
+        <div className="grid gap-1.5">
+          <span className="text-xs font-semibold uppercase text-muted-foreground">
+            Item types
+          </span>
+          <div className="flex flex-wrap gap-3 text-xs">
+            {(["issues", "pulls", "commits"] as const).map((kind) => {
+              const checked = itemTypes.includes(kind);
+              const itemTypeId = `${repoInputId}-${kind}`;
+              return (
+                <label
+                  key={kind}
+                  htmlFor={itemTypeId}
+                  className="flex cursor-pointer items-center gap-1.5"
+                >
+                  <Checkbox
+                    id={itemTypeId}
+                    checked={checked}
+                    onCheckedChange={(v) => {
+                      const next =
+                        v === true
+                          ? Array.from(new Set([...itemTypes, kind]))
+                          : itemTypes.filter((k) => k !== kind);
+                      onUpdate({
+                        github_item_types: next.length > 0 ? next : ["issues"],
+                      });
+                    }}
+                  />
+                  <span>{kind}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+        <label
+          htmlFor={includeCommentsId}
+          className="flex cursor-pointer items-center gap-1.5 text-xs"
+        >
+          <Checkbox
+            id={includeCommentsId}
+            checked={includeComments}
+            onCheckedChange={(v) =>
+              onUpdate({ github_include_comments: v === true })
+            }
+          />
+          <span>Include issue/PR comments</span>
+        </label>
+        <div className="grid gap-1.5 pl-5">
+          <FieldLabel
+            label="Max comments / item"
+            htmlFor={commentsId}
+            hint="Comments are concatenated into the comments column for issues and PRs."
+          />
+          <Input
+            id={commentsId}
+            type="number"
+            className="nodrag"
+            min={0}
+            max={200}
+            disabled={!includeComments}
+            value={config.github_max_comments_per_item ?? "30"}
+            onChange={(e) =>
+              onUpdate({ github_max_comments_per_item: e.target.value })
+            }
+            aria-describedby={commentsHelpId}
+          />
+          <p id={commentsHelpId} className="text-xs text-muted-foreground">
+            Comments increase GraphQL cost and can make Check/Run look quiet
+            while GitHub pages and rate-limit waits stream in logs.
+          </p>
+        </div>
+      </fieldset>
+
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
         <CollapsibleTrigger asChild={true}>
           <button
             type="button"
             className="text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
           >
-            {advancedOpen ? "Hide advanced" : "Advanced"}
+            {advancedOpen ? "Hide source options" : "Source notes"}
           </button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="mt-2 space-y-3">
-          <div className="grid gap-1.5">
-            <FieldLabel
-              label="Item types"
-              hint="Which GitHub resources to scrape per repo."
-            />
-            <div className="flex flex-wrap gap-3 text-xs">
-              {(["issues", "pulls", "commits"] as const).map((kind) => {
-                const current = config.github_item_types ?? ["issues", "pulls"];
-                const checked = current.includes(kind);
-                return (
-                  <label key={kind} className="flex cursor-pointer items-center gap-1.5">
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={(v) => {
-                        const next = v === true
-                          ? Array.from(new Set([...current, kind]))
-                          : current.filter((k) => k !== kind);
-                        onUpdate({ github_item_types: next.length ? next : ["issues"] });
-                      }}
-                    />
-                    <span>{kind}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-          <div className="grid gap-1.5">
-            <FieldLabel
-              label="Max comments / item"
-              hint="Comments are concatenated into the comments column."
-            />
-            <Input
-              type="number"
-              className="nodrag"
-              min={0}
-              max={200}
-              value={config.github_max_comments_per_item ?? "30"}
-              onChange={(e) => onUpdate({ github_max_comments_per_item: e.target.value })}
-            />
-          </div>
-          <label className="flex cursor-pointer items-center gap-1.5 text-xs">
-            <Checkbox
-              checked={config.github_include_comments ?? true}
-              onCheckedChange={(v) => onUpdate({ github_include_comments: v === true })}
-            />
-            <span>Include comments</span>
-          </label>
+        <CollapsibleContent className="mt-2 space-y-2 text-xs text-muted-foreground">
+          <p>
+            Backed by Studio's built-in <code>github_repo</code> seed reader: a
+            rate-limit-aware GraphQL scraper for issues, pull requests, and
+            commits.
+          </p>
+          <p>
+            Large repos can take minutes. Use small limits for previews, then
+            increase for full runs.
+          </p>
         </CollapsibleContent>
       </Collapsible>
-      <p className="text-xs text-muted-foreground">
-        Backed by Studio's built-in <code>github_repo</code> seed reader: a
-        rate-limit-aware GraphQL scraper for issues, pull requests, and commits.
-      </p>
     </div>
   );
 }
@@ -203,7 +446,8 @@ function getErrorMessage(error: unknown, fallback: string): string {
 function stringifyCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
   try {
     return JSON.stringify(value);
   } catch {
@@ -229,7 +473,8 @@ function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
   if (mode === "local") {
     return {
       title: "No preview yet",
-      description: "Upload a CSV, JSON, or JSONL file and click Load to see a sample.",
+      description:
+        "Upload a CSV, JSON, or JSONL file and click Load to see a sample.",
     };
   }
   if (mode === "unstructured") {
@@ -239,9 +484,17 @@ function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
         "Upload your documents and the preview will appear once processing is done.",
     };
   }
+  if (mode === "github_repo") {
+    return {
+      title: "GitHub data loads during Check or Run",
+      description:
+        "Configure repos, item types, and limits above. GitHub scraping can take minutes on large repos; watch logs for page and rate-limit updates.",
+    };
+  }
   return {
     title: "No preview yet",
-    description: "Select a Hugging Face dataset and click Load to see a sample.",
+    description:
+      "Select a Hugging Face dataset and click Load to see a sample.",
   };
 }
 
@@ -293,24 +546,32 @@ async function fileToBase64Payload(file: File): Promise<string> {
   });
 }
 
-export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactElement {
+export function SeedDialog({
+  config,
+  onUpdate,
+  open,
+}: SeedDialogProps): ReactElement {
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const advancedOpen = config.advancedOpen === true;
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
-  const [expandedPreviewRows, setExpandedPreviewRows] = useState<Record<number, boolean>>({});
+  const [expandedPreviewRows, setExpandedPreviewRows] = useState<
+    Record<number, boolean>
+  >({});
   const [localFile, setLocalFile] = useState<File | null>(null);
-  const [unstructuredFiles, setUnstructuredFiles] = useState<FileEntry[]>(() => {
-    if (config.unstructured_file_ids?.length) {
-      return config.unstructured_file_ids.map((id, i) => ({
-        id,
-        name: config.unstructured_file_names?.[i] ?? "Unknown",
-        size: config.unstructured_file_sizes?.[i] ?? 0,
-        status: "ok" as const,
-      }));
-    }
-    return [];
-  });
+  const [unstructuredFiles, setUnstructuredFiles] = useState<FileEntry[]>(
+    () => {
+      if (config.unstructured_file_ids?.length) {
+        return config.unstructured_file_ids.map((id, i) => ({
+          id,
+          name: config.unstructured_file_names?.[i] ?? "Unknown",
+          size: config.unstructured_file_sizes?.[i] ?? 0,
+          status: "ok" as const,
+        }));
+      }
+      return [];
+    },
+  );
 
   const mode = config.seed_source_type ?? "hf";
   const previewEmpty = getPreviewEmptyStateCopy(mode);
@@ -359,7 +620,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         status: "ok" as const,
       })),
     );
-  }, [open, mode, unstructuredFiles.length, config.unstructured_file_ids, config.unstructured_file_names, config.unstructured_file_sizes]);
+  }, [
+    open,
+    mode,
+    unstructuredFiles.length,
+    config.unstructured_file_ids,
+    config.unstructured_file_names,
+    config.unstructured_file_sizes,
+  ]);
 
   const handleUnstructuredFilesChange = useCallback(
     (updater: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => {
@@ -409,142 +677,135 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     const { chunkSize, chunkOverlap } = resolveChunking(config);
     const fileKey = okFiles.map((f) => `${f.id}|${f.name}`).join(",");
     return `unstructured:${fileKey}|${chunkSize}|${chunkOverlap}`;
-  }, [
-    config,
-    localFile,
-    mode,
-    unstructuredFiles,
-  ]);
+  }, [config, localFile, mode, unstructuredFiles]);
 
-  const loadSeedMetadata = useCallback(async (opts?: { silent?: boolean }): Promise<boolean> => {
-    const loadKey = getCurrentLoadKey();
-    if (!opts?.silent) {
-      setInspectError(null);
-    }
-    setIsInspecting(true);
-    try {
-      if (mode === "hf") {
-        const datasetName = config.hf_repo_id.trim();
-        if (!datasetName) {
-          throw new Error("Dataset repo is required.");
-        }
-        const response = await inspectSeedDataset({
-          dataset_name: datasetName,
-          hf_token: config.hf_token?.trim() || undefined,
-          split: config.hf_split?.trim() || undefined,
-          subset: config.hf_subset?.trim() || undefined,
-          preview_size: 10,
-        });
-        onUpdate({
-          hf_path: response.resolved_path,
-          seed_columns: response.columns,
-          seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
-            response.columns.includes(name),
-          ),
-          seed_preview_rows: response.preview_rows ?? [],
-          hf_split: response.split ?? "",
-          hf_subset: response.subset ?? "",
-          local_file_name: "",
-          unstructured_file_ids: [],
-          unstructured_file_names: [],
-          unstructured_file_sizes: [],
-        });
-        setPreviewRows(response.preview_rows ?? []);
-        setLastLoadedKey(loadKey);
-        return true;
-      }
-
-      if (mode === "local") {
-        if (!localFile) {
-          throw new Error("Select a local CSV/JSON/JSONL file first.");
-        }
-        if (localFile.size > MAX_UPLOAD_BYTES) {
-          throw new Error("File too large (max 50MB).");
-        }
-        const payload = await fileToBase64Payload(localFile);
-        const response = await inspectSeedUpload({
-          filename: localFile.name,
-          content_base64: payload,
-          preview_size: 10,
-        });
-        onUpdate({
-          hf_path: response.resolved_path,
-          seed_columns: response.columns,
-          seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
-            response.columns.includes(name),
-          ),
-          seed_preview_rows: response.preview_rows ?? [],
-          hf_repo_id: "",
-          hf_subset: "",
-          hf_split: "",
-          local_file_name: localFile.name,
-          unstructured_file_ids: [],
-          unstructured_file_names: [],
-          unstructured_file_sizes: [],
-        });
-        setPreviewRows(response.preview_rows ?? []);
-        setLastLoadedKey(loadKey);
-        return true;
-      }
-
-      if (mode === "unstructured") {
-        const fileIds = unstructuredFiles
-          .filter((f) => f.status === "ok")
-          .map((f) => f.id);
-        const fileNames = unstructuredFiles
-          .filter((f) => f.status === "ok")
-          .map((f) => f.name);
-
-        if (fileIds.length === 0) {
-          setInspectError("No files uploaded");
-          return false;
-        }
-
-        const { chunkSize, chunkOverlap } = resolveChunking(config);
-        const response = await inspectSeedUpload({
-          block_id: config.id,
-          file_ids: fileIds,
-          file_names: fileNames,
-          preview_size: 10,
-          seed_source_type: "unstructured",
-          unstructured_chunk_size: chunkSize,
-          unstructured_chunk_overlap: chunkOverlap,
-        });
-
-        onUpdate({
-          hf_path: response.resolved_path,
-          resolved_paths: response.resolved_paths ?? [],
-          seed_columns: response.columns,
-          seed_preview_rows: response.preview_rows ?? [],
-          unstructured_file_ids: fileIds,
-          unstructured_file_names: fileNames,
-          unstructured_file_sizes: unstructuredFiles
-            .filter((f) => f.status === "ok")
-            .map((f) => f.size),
-        });
-        setPreviewRows(response.preview_rows ?? []);
-        setLastLoadedKey(loadKey);
-        return true;
-      }
-
-      return false;
-    } catch (error) {
+  const loadSeedMetadata = useCallback(
+    async (opts?: { silent?: boolean }): Promise<boolean> => {
+      const loadKey = getCurrentLoadKey();
       if (!opts?.silent) {
-        setInspectError(getErrorMessage(error, "Failed to load seed metadata."));
+        setInspectError(null);
       }
-      setPreviewRows([]);
-      return false;
-    } finally {
-      setIsInspecting(false);
-    }
-  }, [
-    config,
-    getCurrentLoadKey,
-    localFile,
-    mode,
-    onUpdate,
-    unstructuredFiles,
-  ]);
+      setIsInspecting(true);
+      try {
+        if (mode === "hf") {
+          const datasetName = config.hf_repo_id.trim();
+          if (!datasetName) {
+            throw new Error("Dataset repo is required.");
+          }
+          const response = await inspectSeedDataset({
+            dataset_name: datasetName,
+            hf_token: config.hf_token?.trim() || undefined,
+            split: config.hf_split?.trim() || undefined,
+            subset: config.hf_subset?.trim() || undefined,
+            preview_size: 10,
+          });
+          onUpdate({
+            hf_path: response.resolved_path,
+            seed_columns: response.columns,
+            seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
+              response.columns.includes(name),
+            ),
+            seed_preview_rows: response.preview_rows ?? [],
+            hf_split: response.split ?? "",
+            hf_subset: response.subset ?? "",
+            local_file_name: "",
+            unstructured_file_ids: [],
+            unstructured_file_names: [],
+            unstructured_file_sizes: [],
+          });
+          setPreviewRows(response.preview_rows ?? []);
+          setLastLoadedKey(loadKey);
+          return true;
+        }
+
+        if (mode === "local") {
+          if (!localFile) {
+            throw new Error("Select a local CSV/JSON/JSONL file first.");
+          }
+          if (localFile.size > MAX_UPLOAD_BYTES) {
+            throw new Error("File too large (max 50MB).");
+          }
+          const payload = await fileToBase64Payload(localFile);
+          const response = await inspectSeedUpload({
+            filename: localFile.name,
+            content_base64: payload,
+            preview_size: 10,
+          });
+          onUpdate({
+            hf_path: response.resolved_path,
+            seed_columns: response.columns,
+            seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
+              response.columns.includes(name),
+            ),
+            seed_preview_rows: response.preview_rows ?? [],
+            hf_repo_id: "",
+            hf_subset: "",
+            hf_split: "",
+            local_file_name: localFile.name,
+            unstructured_file_ids: [],
+            unstructured_file_names: [],
+            unstructured_file_sizes: [],
+          });
+          setPreviewRows(response.preview_rows ?? []);
+          setLastLoadedKey(loadKey);
+          return true;
+        }
+
+        if (mode === "unstructured") {
+          const fileIds = unstructuredFiles
+            .filter((f) => f.status === "ok")
+            .map((f) => f.id);
+          const fileNames = unstructuredFiles
+            .filter((f) => f.status === "ok")
+            .map((f) => f.name);
+
+          if (fileIds.length === 0) {
+            setInspectError("No files uploaded");
+            return false;
+          }
+
+          const { chunkSize, chunkOverlap } = resolveChunking(config);
+          const response = await inspectSeedUpload({
+            block_id: config.id,
+            file_ids: fileIds,
+            file_names: fileNames,
+            preview_size: 10,
+            seed_source_type: "unstructured",
+            unstructured_chunk_size: chunkSize,
+            unstructured_chunk_overlap: chunkOverlap,
+          });
+
+          onUpdate({
+            hf_path: response.resolved_path,
+            resolved_paths: response.resolved_paths ?? [],
+            seed_columns: response.columns,
+            seed_preview_rows: response.preview_rows ?? [],
+            unstructured_file_ids: fileIds,
+            unstructured_file_names: fileNames,
+            unstructured_file_sizes: unstructuredFiles
+              .filter((f) => f.status === "ok")
+              .map((f) => f.size),
+          });
+          setPreviewRows(response.preview_rows ?? []);
+          setLastLoadedKey(loadKey);
+          return true;
+        }
+
+        return false;
+      } catch (error) {
+        if (!opts?.silent) {
+          setInspectError(
+            getErrorMessage(error, "Failed to load seed metadata."),
+          );
+        }
+        setPreviewRows([]);
+        return false;
+      } finally {
+        setIsInspecting(false);
+      }
+    },
+    [config, getCurrentLoadKey, localFile, mode, onUpdate, unstructuredFiles],
+  );
 
   useEffect(() => {
     const wasOpen = wasOpenRef.current;
@@ -581,7 +842,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     return [];
   }, [config.seed_columns, previewRows]);
   const selectedSeedDropColumns = useMemo(
-    () => (config.seed_drop_columns ?? []).filter((name) => name.trim().length > 0),
+    () =>
+      (config.seed_drop_columns ?? []).filter((name) => name.trim().length > 0),
     [config.seed_drop_columns],
   );
   const selectedSeedDropSet = useMemo(
@@ -658,10 +920,11 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   className="nodrag"
                   placeholder="hf_..."
                   value={config.hf_token ?? ""}
-                  onChange={(event) => onUpdate({ hf_token: event.target.value })}
+                  onChange={(event) =>
+                    onUpdate({ hf_token: event.target.value })
+                  }
                 />
               </div>
-
             </>
           )}
 
@@ -722,7 +985,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             <GithubRepoSeedForm config={config} onUpdate={onUpdate} />
           )}
 
-          {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
+          {inspectError && (
+            <p className="text-xs text-red-600">{inspectError}</p>
+          )}
 
           {mode !== "unstructured" && mode !== "github_repo" && (
             <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
@@ -748,8 +1013,15 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                           onCheckedChange={(value) => {
                             const isChecked = value === true;
                             const next = isChecked
-                              ? Array.from(new Set([...selectedSeedDropColumns, columnName]))
-                              : selectedSeedDropColumns.filter((name) => name !== columnName);
+                              ? Array.from(
+                                  new Set([
+                                    ...selectedSeedDropColumns,
+                                    columnName,
+                                  ]),
+                                )
+                              : selectedSeedDropColumns.filter(
+                                  (name) => name !== columnName,
+                                );
                             onUpdate({ seed_drop_columns: next });
                           }}
                         />
@@ -782,7 +1054,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 <Select
                   value={config.sampling_strategy}
                   onValueChange={(value) =>
-                    onUpdate({ sampling_strategy: value as SeedSamplingStrategy })
+                    onUpdate({
+                      sampling_strategy: value as SeedSamplingStrategy,
+                    })
                   }
                 >
                   <SelectTrigger className="nodrag w-full" id={samplingId}>
@@ -835,9 +1109,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       id={chunkSizeId}
                       className="nodrag"
                       inputMode="numeric"
-                      value={config.unstructured_chunk_size ?? String(DEFAULT_CHUNK_SIZE)}
+                      value={
+                        config.unstructured_chunk_size ??
+                        String(DEFAULT_CHUNK_SIZE)
+                      }
                       onChange={(event) =>
-                        onUpdate({ unstructured_chunk_size: event.target.value })
+                        onUpdate({
+                          unstructured_chunk_size: event.target.value,
+                        })
                       }
                     />
                   </div>
@@ -856,7 +1135,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                         String(DEFAULT_CHUNK_OVERLAP)
                       }
                       onChange={(event) =>
-                        onUpdate({ unstructured_chunk_overlap: event.target.value })
+                        onUpdate({
+                          unstructured_chunk_overlap: event.target.value,
+                        })
                       }
                     />
                   </div>
@@ -866,21 +1147,31 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               {config.selection_type === "index_range" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Start" hint="Inclusive start row index for index_range." />
+                    <FieldLabel
+                      label="Start"
+                      hint="Inclusive start row index for index_range."
+                    />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
                       value={config.selection_start ?? ""}
-                      onChange={(event) => onUpdate({ selection_start: event.target.value })}
+                      onChange={(event) =>
+                        onUpdate({ selection_start: event.target.value })
+                      }
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <FieldLabel label="End" hint="Inclusive end row index for index_range." />
+                    <FieldLabel
+                      label="End"
+                      hint="Inclusive end row index for index_range."
+                    />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
                       value={config.selection_end ?? ""}
-                      onChange={(event) => onUpdate({ selection_end: event.target.value })}
+                      onChange={(event) =>
+                        onUpdate({ selection_end: event.target.value })
+                      }
                     />
                   </div>
                 </div>
@@ -894,17 +1185,24 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       className="nodrag"
                       inputMode="numeric"
                       value={config.selection_index ?? ""}
-                      onChange={(event) => onUpdate({ selection_index: event.target.value })}
+                      onChange={(event) =>
+                        onUpdate({ selection_index: event.target.value })
+                      }
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Partitions" hint="Total number of partitions." />
+                    <FieldLabel
+                      label="Partitions"
+                      hint="Total number of partitions."
+                    />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
                       value={config.selection_num_partitions ?? ""}
                       onChange={(event) =>
-                        onUpdate({ selection_num_partitions: event.target.value })
+                        onUpdate({
+                          selection_num_partitions: event.target.value,
+                        })
                       }
                     />
                   </div>
@@ -952,7 +1250,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       <TableRow
                         key={`row-${rowIdx}`}
                         className={cn(
-                          rowHasExpandableText(row) && "cursor-pointer hover:bg-primary/[0.06]",
+                          rowHasExpandableText(row) &&
+                            "cursor-pointer hover:bg-primary/[0.06]",
                           expandedPreviewRows[rowIdx] && "bg-primary/[0.05]",
                         )}
                         onClick={() => {
@@ -972,7 +1271,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                             className="max-w-[260px] whitespace-pre-wrap break-words text-xs"
                           >
                             {(() => {
-                              const imagePreview = resolveImagePreview(row[col]);
+                              const imagePreview = resolveImagePreview(
+                                row[col],
+                              );
                               if (imagePreview?.kind === "ready") {
                                 return (
                                   <img
@@ -987,8 +1288,11 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                                 return "Image too large to preview";
                               }
                               const value = stringifyCell(row[col]);
-                              const rowHasExpandableCell = rowHasExpandableText(row);
-                              const rowExpanded = Boolean(expandedPreviewRows[rowIdx]);
+                              const rowHasExpandableCell =
+                                rowHasExpandableText(row);
+                              const rowExpanded = Boolean(
+                                expandedPreviewRows[rowIdx],
+                              );
                               return rowHasExpandableCell && !rowExpanded
                                 ? truncatePreviewValue(value)
                                 : value;
