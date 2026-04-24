@@ -290,6 +290,32 @@ def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
     return len(events)
 
 
+async def _await_cancel_then_close(cancel_event, resp) -> None:
+    """Watch a threading.Event from asyncio and close ``resp`` when it fires.
+
+    Used by the passthrough streamers so a /cancel POST can interrupt
+    while the async iterator is blocked waiting for llama-server prefill.
+    Without this watcher the in-loop ``cancel_event.is_set()`` check is
+    unreachable until the first SSE chunk arrives, which is exactly the
+    proxy/Colab scenario the cancel POST exists to handle.
+
+    Polls a threading.Event because the cancel registry is keyed by
+    threading.Event so the synchronous /cancel handler can call .set().
+    50ms cadence adds at most that much latency to a prefill cancel; the
+    common-case streaming cancel path still observes the event in the
+    iterator's first iteration after the next chunk.
+    """
+    try:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0.05)
+        try:
+            await resp.aclose()
+        except Exception:
+            pass
+    except asyncio.CancelledError:
+        return
+
+
 # Appended to tool-use nudge to discourage plan-without-action
 _TOOL_ACTION_NUDGE = (
     " IMPORTANT: Always call tools directly -- never write code yourself."
@@ -3732,10 +3758,18 @@ async def _anthropic_passthrough_stream(
         )
         resp = None
         lines_iter = None
+        cancel_watcher = None
         try:
             req = client.build_request("POST", target_url, json = body)
             resp = await client.send(req, stream = True)
 
+            # See _openai_passthrough_stream for rationale: aiter_lines()
+            # blocks during llama-server prefill, so the in-loop cancel
+            # check is unreachable until the first SSE chunk arrives.
+            # The watcher closes `resp` on cancel, raising in aiter_lines.
+            cancel_watcher = asyncio.create_task(
+                _await_cancel_then_close(cancel_event, resp)
+            )
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
                 if cancel_event.is_set():
@@ -3754,9 +3788,18 @@ async def _anthropic_passthrough_stream(
                     continue
                 for line in emitter.feed_chunk(chunk):
                     yield line
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            if not cancel_event.is_set():
+                raise
         except Exception as e:
             logger.error("anthropic_messages passthrough stream error: %s", e)
         finally:
+            if cancel_watcher is not None:
+                cancel_watcher.cancel()
+                try:
+                    await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -4051,6 +4094,16 @@ async def _openai_passthrough_stream(
             # save resp.aiter_lines() so the finally block can aclose() it
             # on our task. See that function for full rationale.
             lines_iter = None
+            # During llama-server prefill, `aiter_lines()` blocks until the
+            # first SSE chunk arrives. The in-loop `cancel_event` check
+            # cannot fire until then, which is the exact proxy/Colab
+            # scenario the cancel POST is meant to recover from. Run a
+            # tiny watcher that closes `resp` as soon as cancel fires,
+            # unblocking the iterator with a RemoteProtocolError caught
+            # in the except clause below.
+            cancel_watcher = asyncio.create_task(
+                _await_cancel_then_close(cancel_event, resp)
+            )
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in lines_iter:
@@ -4068,6 +4121,11 @@ async def _openai_passthrough_stream(
                     yield raw_line + "\n\n"
                     if raw_line[6:].strip() == "[DONE]":
                         break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+                # Watcher closed resp on cancel. Emit nothing extra; the
+                # client either initiated the cancel or already disconnected.
+                if not cancel_event.is_set():
+                    raise
             except Exception as e:
                 # 200 headers are already flushed; errors must be in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
@@ -4079,6 +4137,11 @@ async def _openai_passthrough_stream(
                 }
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
+                cancel_watcher.cancel()
+                try:
+                    await cancel_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
                 if lines_iter is not None:
                     try:
                         await lines_iter.aclose()

@@ -5,6 +5,7 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import { getAuthToken } from "@/features/auth/session";
+import { apiUrl } from "@/lib/api-base";
 import {
   generateAudio,
   listCachedGguf,
@@ -723,7 +724,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
-        void fetch("/api/inference/cancel", {
+        // Use apiUrl so the cancel POST reaches the right origin in
+        // Tauri production builds (where the webview origin is not the
+        // backend at 127.0.0.1:<port>). Browser/dev builds get the empty
+        // base, so the path is unchanged there.
+        void fetch(apiUrl("/api/inference/cancel"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
