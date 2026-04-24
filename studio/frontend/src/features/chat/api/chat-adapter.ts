@@ -386,6 +386,8 @@ async function autoLoadSmallestModel(): Promise<{
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
+              reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
               toolsEnabled: loadResp.supports_tools ?? false,
               codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -434,6 +436,14 @@ async function autoLoadSmallestModel(): Promise<{
             sfLoadResp.requires_trust_remote_code ?? false,
           );
           store.setParams({ ...store.params, maxTokens: 4096 });
+          useChatRuntimeStore.setState({
+            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
+            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
+            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
+            reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
+            supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
+            supportsTools: sfLoadResp.supports_tools ?? false,
+          });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
             name: sfLoadResp.display_name ?? repo.repo_id,
@@ -502,6 +512,8 @@ async function autoLoadSmallestModel(): Promise<{
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
+        reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
         toolsEnabled: loadResp.supports_tools ?? false,
         codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -728,7 +740,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           abortSignal.addEventListener("abort", onAbortCancel, { once: true });
         }
 
-        const { supportsReasoning, reasoningEnabled } = runtime;
+        const {
+          supportsReasoning,
+          reasoningEnabled,
+          reasoningStyle,
+          reasoningEffort,
+          supportsPreserveThinking,
+          preserveThinking,
+        } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -746,7 +765,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             cancel_id: cancelId,
             ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
-            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
+            ...(supportsReasoning
+              ? reasoningStyle === "reasoning_effort"
+                ? { reasoning_effort: reasoningEffort }
+                : { enable_thinking: reasoningEnabled }
+              : {}),
+            ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
             ...(supportsTools && (toolsEnabled || codeToolsEnabled)
               ? {
                   enable_tools: true,
