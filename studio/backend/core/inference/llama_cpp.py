@@ -88,6 +88,75 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 
+_TOOL_TEMPLATE_MARKERS = (
+    "{%- if tools %}",
+    "{%- if tools -%}",
+    "{% if tools %}",
+    "{% if tools -%}",
+    '"role" == "tool"',
+    "'role' == 'tool'",
+    'message.role == "tool"',
+    "message.role == 'tool'",
+)
+
+
+def detect_reasoning_flags(
+    chat_template: Optional[str],
+    model_identifier: Optional[str] = None,
+    *,
+    log_source: Optional[str] = None,
+) -> dict:
+    """Classify a chat template's reasoning and tool-calling capabilities."""
+    flags = {
+        "supports_reasoning": False,
+        "reasoning_style": "enable_thinking",
+        "reasoning_always_on": False,
+        "supports_preserve_thinking": False,
+        "supports_tools": False,
+    }
+    if not chat_template:
+        return flags
+    tpl = chat_template
+    prefix = f"{log_source}: " if log_source else ""
+
+    if "enable_thinking" in tpl:
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking"
+        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+    elif "reasoning_effort" in tpl:
+        # gpt-oss / Harmony templates use reasoning_effort
+        # ("low" | "medium" | "high") instead of a boolean.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "reasoning_effort"
+        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+    elif "thinking" in tpl:
+        # DeepSeek uses 'thinking' instead of 'enable_thinking'
+        normalized_id = (model_identifier or "").lower()
+        if "deepseek" in normalized_id:
+            flags["supports_reasoning"] = True
+            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+
+    # Hardcoded <think> tags or reasoning_content in the template mean
+    # thinking is always on (no toggle to disable it).
+    if not flags["supports_reasoning"]:
+        if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
+            flags["supports_reasoning"] = True
+            flags["reasoning_always_on"] = True
+            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+
+    # preserve_thinking is an independent kwarg on some Qwen templates
+    # that keeps historical <think> blocks in prior assistant turns.
+    if "preserve_thinking" in tpl:
+        flags["supports_preserve_thinking"] = True
+        logger.info(f"{prefix}model supports preserve_thinking")
+
+    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+        flags["supports_tools"] = True
+        logger.info(f"{prefix}model supports tool calling")
+
+    return flags
+
+
 def _env_float(name: str, default: float, min_value: float) -> float:
     raw = os.getenv(name)
     if raw is None:

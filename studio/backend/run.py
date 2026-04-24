@@ -248,6 +248,7 @@ def run_server(
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
+    api_only: bool = False,
     wiki_watcher: bool | None = None,
     wiki_auto_query: bool | None = None,
     wiki_lint_every: int | None = None,
@@ -419,6 +420,11 @@ if __name__ == "__main__":
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    parser.add_argument(
+        "--api-only",
+        action = "store_true",
+        help = "Run API server only, no frontend serving (for Tauri desktop app)",
+    )
     watcher_group = parser.add_mutually_exclusive_group()
     watcher_group.add_argument(
         "--wiki-watcher",
@@ -478,6 +484,7 @@ if __name__ == "__main__":
         host = args.host,
         port = args.port,
         silent = args.silent,
+        api_only = args.api_only,
         wiki_watcher = args.wiki_watcher,
         wiki_auto_query = args.wiki_auto_query,
         wiki_lint_every = args.wiki_lint_every,
