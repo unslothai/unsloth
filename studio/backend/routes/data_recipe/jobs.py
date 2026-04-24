@@ -163,14 +163,23 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
+        # data_designer's BaseInferenceParams is a pydantic model with
+        # extra="forbid", so response_format cannot sit at the top level of
+        # inference_parameters. It does expose an `extra_body: dict` pass-
+        # through that the OpenAI client spreads into the request body at the
+        # top level, which is where llama-server reads response_format from.
         # llama.cpp server shape (tools/server/README.md): the schema sits
         # directly under response_format, not nested in a json_schema object
         # the way OpenAI's Chat Completions API expects. llama-server converts
         # the schema to a GBNF grammar and applies it during sampling.
-        params["response_format"] = {
+        extra_body = params.get("extra_body")
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        extra_body["response_format"] = {
             "type": "json_schema",
             "schema": output_format,
         }
+        params["extra_body"] = extra_body
         new_configs.append(clone)
         column["model_alias"] = clone_alias
 
@@ -344,15 +353,19 @@ def create_job(payload: RecipePayload, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
-    mgr = get_job_manager()
+    # Single try block covers get_job_manager() AND mgr.start() so a workflow
+    # key minted above never outlives the request even when an unexpected
+    # exception type (TypeError from a stale kwarg, OSError from a queue
+    # write, etc.) bubbles up. Without the bare except, such exceptions let
+    # the sk-unsloth-* key live until its 24h TTL.
     try:
+        mgr = get_job_manager()
         job_id = mgr.start(
             recipe = recipe,
             run = run,
             internal_api_key_id = internal_api_key_id,
         )
     except RuntimeError as exc:
-        # Clean up the workflow key if the job could not be started.
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
@@ -360,6 +373,10 @@ def create_job(payload: RecipePayload, request: Request):
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except Exception:
+        if internal_api_key_id is not None:
+            _revoke_internal_api_key_safe(internal_api_key_id)
+        raise
 
     return {"job_id": job_id}
 
