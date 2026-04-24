@@ -604,6 +604,7 @@ class LlamaCppBackend:
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         try:
             import torch
+
             if not hasattr(torch, "cuda") or not torch.cuda.is_available():
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
