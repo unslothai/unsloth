@@ -178,7 +178,9 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
+def _inject_local_providers(
+    recipe: dict[str, Any], request: Request
+) -> Optional[int]:
     """
     Mutate recipe dict in-place: for any provider with is_local=True,
     fill in the endpoint pointing at this server and inject a short-lived
@@ -255,7 +257,9 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         # surface instead of a second JWT code path). The key is marked
         # internal so it is hidden from the user's API-key list, and the
         # caller revokes it when the job terminates.
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(hours = 24)
+        ).isoformat()
         token, row = storage.create_api_key(
             username = "unsloth",
             name = "data-recipe workflow",
@@ -344,15 +348,19 @@ def create_job(payload: RecipePayload, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
-    mgr = get_job_manager()
+    # Single try block covers get_job_manager() AND mgr.start() so a workflow
+    # key minted above never outlives the request even when an unexpected
+    # exception type (TypeError from a stale kwarg, OSError from a queue
+    # write, etc.) bubbles up. Without the bare except, such exceptions let
+    # the sk-unsloth-* key live until its 24h TTL.
     try:
+        mgr = get_job_manager()
         job_id = mgr.start(
             recipe = recipe,
             run = run,
             internal_api_key_id = internal_api_key_id,
         )
     except RuntimeError as exc:
-        # Clean up the workflow key if the job could not be started.
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
@@ -360,6 +368,10 @@ def create_job(payload: RecipePayload, request: Request):
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except Exception:
+        if internal_api_key_id is not None:
+            _revoke_internal_api_key_safe(internal_api_key_id)
+        raise
 
     return {"job_id": job_id}
 
