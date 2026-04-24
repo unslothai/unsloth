@@ -24,6 +24,19 @@ import type {
   InferenceParams,
 } from "../types/runtime";
 
+// The simplified Speculative Decoding control surfaces "default" (which
+// maps to llama.cpp's --spec-default) and "off". A backend status / load
+// response can still report the older manual modes (ngram-mod,
+// ngram-simple) when a model is loaded via the API or carried over from an
+// older Studio version. The Select would render an empty trigger for those
+// values, so coerce them to "default" -- llama.cpp's own --spec-default
+// picks an equivalent strategy and keeps the dropdown coherent.
+function normalizeSpeculativeType(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  if (v === "default" || v === "off") return v;
+  return "default";
+}
+
 type SelectedModelInput = {
   id: string;
   isLora?: boolean;
@@ -279,7 +292,7 @@ export function useChatModelRuntime() {
         const ggufNativeContextLength = statusRes.is_gguf
           ? (statusRes.native_context_length ?? null)
           : null;
-        const currentSpecType = statusRes.speculative_type ?? null;
+        const currentSpecType = normalizeSpeculativeType(statusRes.speculative_type);
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
@@ -492,7 +505,7 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
-            const loadedSpec = loadResponse.speculative_type ?? null;
+            const loadedSpec = normalizeSpeculativeType(loadResponse.speculative_type);
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;

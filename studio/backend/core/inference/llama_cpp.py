@@ -1574,11 +1574,21 @@ class LlamaCppBackend:
             # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
             # ref: https://github.com/ggml-org/llama.cpp/pull/19164
             # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            # ``"default"`` -> let llama-server pick a sensible spec
+            # config via ``--spec-default``. Explicit type names are
+            # passed through with the manual draft tuning we've shipped
+            # historically so power users keep their overrides.
             _valid_spec_types = {"ngram-simple", "ngram-mod"}
-            if speculative_type and speculative_type in _valid_spec_types:
-                if not is_vision:  # spec decoding disabled for vision models
-                    cmd.extend(["--spec-type", speculative_type])
-                    if speculative_type == "ngram-mod":
+            normalized_spec = (
+                speculative_type.lower().strip() if speculative_type else None
+            )
+            if normalized_spec and normalized_spec != "off" and not is_vision:
+                if normalized_spec == "default":
+                    cmd.append("--spec-default")
+                    self._speculative_type = "default"
+                elif normalized_spec in _valid_spec_types:
+                    cmd.extend(["--spec-type", normalized_spec])
+                    if normalized_spec == "ngram-mod":
                         cmd.extend(
                             [
                                 "--spec-ngram-size-n",
@@ -1589,7 +1599,7 @@ class LlamaCppBackend:
                                 "64",
                             ]
                         )
-                    self._speculative_type = speculative_type
+                    self._speculative_type = normalized_spec
                 else:
                     self._speculative_type = None
             else:
@@ -1749,6 +1759,12 @@ class LlamaCppBackend:
             # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
             if gpu_indices is not None:
                 env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+
+            # Defensive kill: if a concurrent load slipped past Phase 1
+            # (because its `self._process` was None at the time) and
+            # already stored a Popen handle here, drop that orphan
+            # before we overwrite the reference. See issue #5161.
+            self._kill_process()
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
