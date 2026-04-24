@@ -1295,10 +1295,7 @@ async def openai_chat_completions(
     # that only know the OpenAI shape (data_designer recipe runs, etc.)
     # can still control the reasoning preamble.
     _extra = getattr(payload, "model_extra", None)
-    if (
-        payload.enable_thinking is None
-        and isinstance(_extra, dict)
-    ):
+    if payload.enable_thinking is None and isinstance(_extra, dict):
         _tpl_kw = _extra.get("chat_template_kwargs")
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
@@ -1466,9 +1463,8 @@ async def openai_chat_completions(
     # decoding does not require ``supports_tools`` - the grammar machinery
     # is independent of tool-call parsing.
     _has_response_format = _extract_response_format(payload) is not None
-    _tools_passthrough = (
-        llama_backend.supports_tools
-        and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
+    _tools_passthrough = llama_backend.supports_tools and (
+        (payload.tools and len(payload.tools) > 0) or _has_tool_messages
     )
     if (
         using_gguf
@@ -4309,7 +4305,8 @@ async def _openai_passthrough_non_streaming(
             # Wrap is best-effort; fall through to the verbatim body if
             # the response is not JSON-shaped or the structure is unusual.
             logger.warning(
-                "response_format fence wrap skipped: %s", exc,
+                "response_format fence wrap skipped: %s",
+                exc,
             )
 
     # Pass the upstream body through as raw bytes — skips a redundant

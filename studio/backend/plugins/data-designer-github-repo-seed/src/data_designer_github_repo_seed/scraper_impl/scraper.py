@@ -126,11 +126,7 @@ class RepoScraper:
         # instead of fetching a full 50-item page and discarding 49.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
-        per_page = (
-            min(page_cap, trial_cap)
-            if trial_cap and trial_cap > 0
-            else page_cap
-        )
+        per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
         while True:
             page += 1
             vars_ = {
@@ -243,11 +239,7 @@ class RepoScraper:
         # previews so limit=1 does not fetch a whole 25-item page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
-        per_page = (
-            min(page_cap, trial_cap)
-            if trial_cap and trial_cap > 0
-            else page_cap
-        )
+        per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
         while True:
             page += 1
             vars_ = {
@@ -555,11 +547,7 @@ class RepoScraper:
         page = 0
         page_cap = 100
         trial_cap = self.trial_limits.get(key)
-        per_page = (
-            min(page_cap, trial_cap)
-            if trial_cap and trial_cap > 0
-            else page_cap
-        )
+        per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
         while True:
             page += 1
             vars_ = {
