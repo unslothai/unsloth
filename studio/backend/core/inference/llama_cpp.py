@@ -549,14 +549,24 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per GPU.
 
-        Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Order:
+          1. ``nvidia-smi`` (NVIDIA CUDA hosts) -- respects
+             ``CUDA_VISIBLE_DEVICES``.
+          2. ``torch.cuda.mem_get_info`` -- universal fallback that
+             works on AMD ROCm too because the HIP runtime
+             reuses the entire ``torch.cuda.*`` namespace. Covers the
+             AMD case for issue #5106 (nvidia-smi-only probe silently
+             returned [] on AMD hosts) and also rescues NVIDIA hosts
+             where ``nvidia-smi`` is missing from PATH.
+
+        Returns list of (gpu_index, free_mib) sorted by index. Empty
+        list if no supported GPU is reachable.
         """
         import os
 
+        # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
                 [
@@ -569,30 +579,42 @@ class LlamaCppBackend:
                 timeout = 10,
                 **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode != 0:
+            if result.returncode == 0:
+                allowed: Optional[set[int]] = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None and cvd.strip():
+                    try:
+                        allowed = set(int(x.strip()) for x in cvd.split(","))
+                    except ValueError:
+                        pass
+                gpus: list[tuple[int, int]] = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                if gpus:
+                    return gpus
+        except Exception as e:
+            logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        try:
+            import torch
+            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
                 return []
-
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
-
+            if not hasattr(torch.cuda, "mem_get_info"):
+                return []
             gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
+            for ordinal in range(torch.cuda.device_count()):
+                free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
+                gpus.append((ordinal, int(free_bytes // (1024 * 1024))))
             return gpus
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"torch GPU probe failed: {e}")
             return []
 
     @staticmethod
