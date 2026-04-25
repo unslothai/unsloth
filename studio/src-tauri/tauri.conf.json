@@ -21,12 +21,7 @@
         "visible": false,
         "resizable": false
       }
-    ],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "id": "main",
-      "tooltip": "Unsloth Studio (Desktop)"
-    }
+    ]
   },
   "plugins": {
     "updater": {
@@ -42,6 +37,10 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
+    "publisher": "Unsloth AI",
+    "homepage": "https://unsloth.ai/",
+    "copyright": "© 2026 Unsloth AI. All rights reserved.",
+    "license": "AGPL-3.0-only",
     "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "resources": {
       "../../install.sh": "install.sh",
@@ -54,6 +53,17 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh",
+        "installerIcon": "./icons/icon.ico",
+        "headerImage": "./windows/branding/nsis-header.bmp",
+        "sidebarImage": "./windows/branding/nsis-sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    },
     "linux": {
       "deb": {
         "postRemoveScript": "./linux/postremove.sh"
