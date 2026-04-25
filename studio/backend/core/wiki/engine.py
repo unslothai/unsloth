@@ -2247,7 +2247,9 @@ class LLMWikiEngine:
         kept = blocks[-limit:]
         trimmed = len(blocks) - len(kept)
         base = self._remove_markdown_section(text, "Incremental Updates").rstrip()
-        rebuilt = f"{base}\n\n## Incremental Updates\n\n" + "\n\n".join(kept).strip() + "\n"
+        rebuilt = (
+            f"{base}\n\n## Incremental Updates\n\n" + "\n\n".join(kept).strip() + "\n"
+        )
         return rebuilt, trimmed
 
     def _archive_target_for_page(self, rel_path: str) -> Tuple[Path, str]:
