@@ -37,6 +37,25 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+def _safe_env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Parse an integer env var safely with fallback and optional lower bound."""
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        value = default
+    else:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid integer for %s=%r; using default %d",
+                name,
+                raw,
+                default,
+            )
+            value = default
+    return max(minimum, value)
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for gpt-oss harmony channel protocol.
 
@@ -234,9 +253,10 @@ class InferenceBackend:
         # Wiki watcher lifecycle is owned by FastAPI app lifespan in main.py.
         # Keeping it centralized prevents duplicate ingestion from multiple observers.
         self.wiki_watcher = None
-        self._chat_history_flush_seconds = max(
-            0,
-            int(os.getenv("UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS", "600")),
+        self._chat_history_flush_seconds = _safe_env_int(
+            "UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS",
+            600,
+            minimum = 0,
         )
         self._pending_chat_history_blocks: list[str] = []
         self._chat_history_buffer_started_at: Optional[float] = None

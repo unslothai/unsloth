@@ -342,6 +342,53 @@ def test_upsert_knowledge_page_keeps_single_incremental_section(tmp_path: Path):
     assert second.count("- Achieved highest clustering NMI") == 1
 
 
+def test_upsert_knowledge_page_caps_incremental_updates(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+    engine.cfg.knowledge_max_incremental_updates = 2
+
+    page = tmp_path / "wiki" / "entities" / "forge.md"
+    page.write_text(
+        "---\n"
+        "title: Forge\n"
+        "type: entity\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Forge\n\n"
+        "## Summary\n"
+        "Foundational optimization representation model.\n\n"
+        "## Facts\n"
+        "- Supports transfer learning\n\n"
+        "## Contradictions\n\n"
+        "## Sources\n"
+        "- [[sources/forge-paper]] (Forge Paper)\n",
+        encoding = "utf-8",
+    )
+
+    for idx, fact in enumerate(["Fact One", "Fact Two", "Fact Three"], start = 1):
+        engine._upsert_knowledge_page(
+            folder = engine.entities_dir,
+            page_name = "Forge",
+            page_type = "entity",
+            summary = "Foundational optimization representation model.",
+            facts = [fact],
+            contradictions = [],
+            source_title = "Forge Paper",
+            source_slug = "forge-paper",
+            updated_at = f"2026-04-20T1{idx}:00:00+00:00",
+        )
+
+    text = page.read_text(encoding = "utf-8")
+    updates = engine._extract_markdown_section(text, "Incremental Updates")
+
+    assert updates.count("### New facts") == 2
+    assert "- Fact Three" in updates
+    assert "- Fact Two" in updates
+    assert "- Fact One" not in updates
+
+
 def test_engine_surfaces_extraction_diagnostics(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1076,6 +1123,51 @@ def test_enrich_analysis_pages_web_gap_fill_dry_run_does_not_write_pages(
     assert "concepts/semantic-layering.md" in web_gap_fill["created_pages"]
 
 
+def test_enrich_analysis_pages_can_compact_knowledge_updates(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    entity_page = tmp_path / "wiki" / "entities" / "forge.md"
+    entity_page.write_text(
+        "---\n"
+        "title: Forge\n"
+        "type: entity\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Forge\n\n"
+        "## Summary\nStable summary.\n\n"
+        "## Facts\n- Initial fact\n\n"
+        "## Contradictions\n\n"
+        "## Sources\n- [[sources/forge-paper]]\n\n"
+        "## Incremental Updates\n\n"
+        "### Update 1\n- one\n\n"
+        "### Update 2\n- two\n\n"
+        "### Update 3\n- three\n\n"
+        "### Update 4\n- four\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.enrich_analysis_pages(
+        dry_run = False,
+        max_analysis_pages = 10,
+        compact_knowledge_pages = True,
+        max_incremental_updates = 2,
+    )
+
+    compaction = report.get("knowledge_compaction", {})
+    assert compaction.get("enabled") is True
+    assert compaction.get("compacted_pages") == 1
+
+    updated = entity_page.read_text(encoding = "utf-8")
+    updates = engine._extract_markdown_section(updated, "Incremental Updates")
+    assert updates.count("### ") == 2
+    assert "### Update 4" in updates
+    assert "### Update 3" in updates
+    assert "### Update 1" not in updates
+
+
 def test_retry_fallback_analysis_pages_retries_only_fallback_pages(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1556,3 +1648,53 @@ def test_merge_duplicate_normalizes_misplaced_frontmatter_blocks(tmp_path: Path)
     assert merged.count("## Merge History") == 1
     assert "title: Forge-Mip-Sat" in merged
     assert "concepts/forge-sat.md" in merged
+
+
+def test_merge_maintenance_can_compact_knowledge_updates_without_merges(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    entity_page = tmp_path / "wiki" / "entities" / "forge.md"
+    entity_page.write_text(
+        "---\n"
+        "title: Forge\n"
+        "type: entity\n"
+        "updated_at: 2026-04-20T00:00:00+00:00\n"
+        "---\n\n"
+        "# Forge\n\n"
+        "## Summary\nStable summary.\n\n"
+        "## Facts\n- Initial fact\n\n"
+        "## Contradictions\n\n"
+        "## Sources\n- [[sources/forge-paper]]\n\n"
+        "## Incremental Updates\n\n"
+        "### Update 1\n- one\n\n"
+        "### Update 2\n- two\n\n"
+        "### Update 3\n- three\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.merge_duplicate_knowledge_pages(
+        dry_run = False,
+        include_entities = True,
+        include_concepts = False,
+        similarity_threshold = 0.75,
+        max_merges = 8,
+        compact_knowledge_pages = True,
+        max_incremental_updates = 2,
+    )
+
+    assert report["status"] == "ok"
+    assert report["planned_merges"] == 0
+    compaction = report.get("knowledge_compaction", {})
+    assert compaction.get("enabled") is True
+    assert compaction.get("compacted_pages") == 1
+
+    updated = entity_page.read_text(encoding = "utf-8")
+    updates = engine._extract_markdown_section(updated, "Incremental Updates")
+    assert updates.count("### ") == 2
+    assert "### Update 3" in updates
+    assert "### Update 1" not in updates

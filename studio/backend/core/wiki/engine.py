@@ -324,6 +324,13 @@ _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES = _env_int(
     minimum = 1,
     maximum = _MERGE_MAINTENANCE_MAX_MERGES,
 )
+_KNOWLEDGE_MAX_INCREMENTAL_UPDATES = 256
+_KNOWLEDGE_DEFAULT_MAX_INCREMENTAL_UPDATES = _env_int(
+    "UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES",
+    48,
+    minimum = 1,
+    maximum = _KNOWLEDGE_MAX_INCREMENTAL_UPDATES,
+)
 
 
 _TERM_STOPWORDS: Set[str] = {
@@ -483,6 +490,14 @@ class WikiConfig:
     low_unique_ratio_threshold: float = field(
         default_factory = lambda: _env_float(
             "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_THRESHOLD", 0.25, minimum = 0.01, maximum = 1.0
+        )
+    )
+    knowledge_max_incremental_updates: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES",
+            _KNOWLEDGE_DEFAULT_MAX_INCREMENTAL_UPDATES,
+            minimum = 1,
+            maximum = _KNOWLEDGE_MAX_INCREMENTAL_UPDATES,
         )
     )
     enrichment_fill_gaps_from_web: bool = field(
@@ -913,6 +928,8 @@ class LLMWikiEngine:
         include_concepts: bool = True,
         similarity_threshold: float = 0.75,
         max_merges: int = _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES,
+        compact_knowledge_pages: bool = False,
+        max_incremental_updates: Optional[int] = None,
     ) -> Dict[str, Any]:
         threshold = max(0.5, min(1.0, float(similarity_threshold)))
         merge_limit = max(1, min(_MERGE_MAINTENANCE_MAX_MERGES, int(max_merges)))
@@ -1077,6 +1094,27 @@ class LLMWikiEngine:
                 if not dry_run:
                     page_path.write_text(updated, encoding = "utf-8")
 
+        knowledge_compaction: Dict[str, Any] = {
+            "enabled": bool(compact_knowledge_pages),
+            "dry_run": bool(dry_run),
+            "scanned_pages": 0,
+            "compacted_pages": 0,
+            "trimmed_update_blocks": 0,
+            "max_incremental_updates": (
+                max(1, int(max_incremental_updates))
+                if max_incremental_updates is not None
+                else int(self.cfg.knowledge_max_incremental_updates)
+            ),
+            "changes": [],
+        }
+        if compact_knowledge_pages:
+            knowledge_compaction = self.compact_knowledge_pages(
+                dry_run = dry_run,
+                include_entities = include_entities,
+                include_concepts = include_concepts,
+                max_incremental_updates = max_incremental_updates,
+            )
+
         if not dry_run and (applied_merges > 0 or rewritten_pages > 0):
             self._rebuild_index()
             self._append_log(
@@ -1100,6 +1138,76 @@ class LLMWikiEngine:
             "skipped": skipped,
             "merges": merges,
             "errors": errors,
+            "knowledge_compaction": knowledge_compaction,
+        }
+
+    def compact_knowledge_pages(
+        self,
+        dry_run: bool = False,
+        include_entities: bool = True,
+        include_concepts: bool = True,
+        max_incremental_updates: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        limit = (
+            int(self.cfg.knowledge_max_incremental_updates)
+            if max_incremental_updates is None
+            else max(1, int(max_incremental_updates))
+        )
+
+        folders: List[Tuple[str, Path]] = []
+        if include_entities:
+            folders.append(("entities", self.entities_dir))
+        if include_concepts:
+            folders.append(("concepts", self.concepts_dir))
+
+        scanned_pages = 0
+        compacted_pages = 0
+        trimmed_update_blocks = 0
+        changes: List[Dict[str, Any]] = []
+
+        for prefix, folder in folders:
+            for page_path in sorted(folder.glob("*.md")):
+                scanned_pages += 1
+                rel_page = f"{prefix}/{page_path.name}"
+                original = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                updated, trimmed = self._trim_incremental_update_section(
+                    original,
+                    max_incremental_updates = limit,
+                )
+                if trimmed <= 0:
+                    continue
+
+                compacted_pages += 1
+                trimmed_update_blocks += trimmed
+                changes.append(
+                    {
+                        "page": rel_page,
+                        "trimmed_update_blocks": trimmed,
+                        "max_incremental_updates": limit,
+                    }
+                )
+
+                if not dry_run:
+                    page_path.write_text(updated, encoding = "utf-8")
+
+        if compacted_pages > 0 and not dry_run:
+            self._rebuild_index()
+            self._append_log(
+                f"## [{self._today()}] compact-knowledge | maintenance\n"
+                f"- Scanned pages: {scanned_pages}\n"
+                f"- Compacted pages: {compacted_pages}\n"
+                f"- Trimmed update blocks: {trimmed_update_blocks}\n"
+                f"- Max incremental updates per page: {limit}\n"
+            )
+
+        return {
+            "enabled": True,
+            "dry_run": bool(dry_run),
+            "scanned_pages": scanned_pages,
+            "compacted_pages": compacted_pages,
+            "trimmed_update_blocks": trimmed_update_blocks,
+            "max_incremental_updates": limit,
+            "changes": changes,
         }
 
     def retry_fallback_analysis_pages(
@@ -1226,6 +1334,8 @@ class LLMWikiEngine:
         max_analysis_pages: int = 64,
         fill_gaps_from_web: Optional[bool] = None,
         max_web_gap_queries: Optional[int] = None,
+        compact_knowledge_pages: bool = False,
+        max_incremental_updates: Optional[int] = None,
     ) -> Dict[str, Any]:
         web_gap_fill_enabled = (
             self.cfg.enrichment_fill_gaps_from_web
@@ -1322,6 +1432,27 @@ class LLMWikiEngine:
                 f"- Updated analysis pages: {updated_pages}\n"
             )
 
+        knowledge_compaction: Dict[str, Any] = {
+            "enabled": bool(compact_knowledge_pages),
+            "dry_run": bool(dry_run),
+            "scanned_pages": 0,
+            "compacted_pages": 0,
+            "trimmed_update_blocks": 0,
+            "max_incremental_updates": (
+                max(1, int(max_incremental_updates))
+                if max_incremental_updates is not None
+                else int(self.cfg.knowledge_max_incremental_updates)
+            ),
+            "changes": [],
+        }
+        if compact_knowledge_pages:
+            knowledge_compaction = self.compact_knowledge_pages(
+                dry_run = dry_run,
+                include_entities = True,
+                include_concepts = True,
+                max_incremental_updates = max_incremental_updates,
+            )
+
         return {
             "status": "ok",
             "dry_run": bool(dry_run),
@@ -1329,6 +1460,7 @@ class LLMWikiEngine:
             "updated_pages": updated_pages,
             "changes": changes,
             "web_gap_fill": web_gap_fill_report,
+            "knowledge_compaction": knowledge_compaction,
         }
 
     def _normalize_web_text(self, text: str, max_chars: int) -> str:
@@ -1914,6 +2046,10 @@ class LLMWikiEngine:
         combined_updates = "\n\n".join(
             [block for block in update_blocks if block]
         ).strip()
+        combined_updates = self._trim_incremental_updates_text(
+            combined_updates,
+            max_incremental_updates = self.cfg.knowledge_max_incremental_updates,
+        )
 
         final_text = f"{merged_base}\n\n## Incremental Updates\n\n{combined_updates}\n"
         p.write_text(final_text, encoding = "utf-8")
@@ -2057,6 +2193,62 @@ class LLMWikiEngine:
                 break
 
         return out
+
+    def _split_incremental_update_blocks(self, updates_text: str) -> List[str]:
+        text = str(updates_text or "").strip()
+        if not text:
+            return []
+
+        starts = [m.start() for m in re.finditer(r"(?m)^###\s+", text)]
+        if not starts:
+            return [text]
+
+        blocks: List[str] = []
+        if starts[0] > 0:
+            prefix = text[: starts[0]].strip()
+            if prefix:
+                blocks.append(prefix)
+
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+            block = text[start:end].strip()
+            if block:
+                blocks.append(block)
+
+        return blocks
+
+    def _trim_incremental_updates_text(
+        self,
+        updates_text: str,
+        max_incremental_updates: int,
+    ) -> str:
+        limit = max(1, int(max_incremental_updates))
+        blocks = self._split_incremental_update_blocks(updates_text)
+        if not blocks:
+            return ""
+        if len(blocks) <= limit:
+            return "\n\n".join(blocks).strip()
+        return "\n\n".join(blocks[-limit:]).strip()
+
+    def _trim_incremental_update_section(
+        self,
+        text: str,
+        max_incremental_updates: int,
+    ) -> Tuple[str, int]:
+        updates = self._extract_markdown_section(text, "Incremental Updates")
+        if not updates.strip():
+            return text, 0
+
+        blocks = self._split_incremental_update_blocks(updates)
+        limit = max(1, int(max_incremental_updates))
+        if len(blocks) <= limit:
+            return text, 0
+
+        kept = blocks[-limit:]
+        trimmed = len(blocks) - len(kept)
+        base = self._remove_markdown_section(text, "Incremental Updates").rstrip()
+        rebuilt = f"{base}\n\n## Incremental Updates\n\n" + "\n\n".join(kept).strip() + "\n"
+        return rebuilt, trimmed
 
     def _archive_target_for_page(self, rel_path: str) -> Tuple[Path, str]:
         rel = Path(str(rel_path).replace("\\", "/"))

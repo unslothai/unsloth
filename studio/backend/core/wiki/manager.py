@@ -150,6 +150,8 @@ class WikiManager:
         max_analysis_pages: int = 64,
         fill_gaps_from_web: Optional[bool] = None,
         max_web_gap_queries: Optional[int] = None,
+        compact_knowledge_pages: bool = False,
+        max_incremental_updates: Optional[int] = None,
     ) -> Dict:
         """Enrich analysis pages using index-driven link suggestions."""
         return self.engine.enrich_analysis_pages(
@@ -157,6 +159,8 @@ class WikiManager:
             max_analysis_pages = max_analysis_pages,
             fill_gaps_from_web = fill_gaps_from_web,
             max_web_gap_queries = max_web_gap_queries,
+            compact_knowledge_pages = compact_knowledge_pages,
+            max_incremental_updates = max_incremental_updates,
         )
 
     def retry_fallback_analysis_pages(
@@ -177,6 +181,8 @@ class WikiManager:
         include_concepts: bool = True,
         similarity_threshold: float = 0.75,
         max_merges: int = _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES,
+        compact_knowledge_pages: bool = False,
+        max_incremental_updates: Optional[int] = None,
     ) -> Dict:
         """Merge duplicate entity/concept pages and rewrite wiki links."""
         return self.engine.merge_duplicate_knowledge_pages(
@@ -185,4 +191,6 @@ class WikiManager:
             include_concepts = include_concepts,
             similarity_threshold = similarity_threshold,
             max_merges = max_merges,
+            compact_knowledge_pages = compact_knowledge_pages,
+            max_incremental_updates = max_incremental_updates,
         )

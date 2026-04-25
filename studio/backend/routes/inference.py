@@ -1104,6 +1104,8 @@ async def wiki_enrich(
             max_analysis_pages = payload.max_analysis_pages,
             fill_gaps_from_web = payload.fill_gaps_from_web,
             max_web_gap_queries = payload.max_web_gap_queries,
+            compact_knowledge_pages = payload.compact_knowledge_pages,
+            max_incremental_updates = payload.max_incremental_updates,
         )
     except Exception as exc:
         raise HTTPException(
@@ -1118,6 +1120,7 @@ async def wiki_enrich(
         updated_pages = int(report.get("updated_pages", 0)),
         changes = [dict(item) for item in report.get("changes", [])],
         web_gap_fill = dict(report.get("web_gap_fill", {})),
+        knowledge_compaction = dict(report.get("knowledge_compaction", {})),
     )
 
 
@@ -1172,6 +1175,8 @@ async def wiki_merge_maintenance(
             include_concepts = payload.include_concepts,
             similarity_threshold = payload.similarity_threshold,
             max_merges = payload.max_merges,
+            compact_knowledge_pages = payload.compact_knowledge_pages,
+            max_incremental_updates = payload.max_incremental_updates,
         )
     except Exception as exc:
         raise HTTPException(
@@ -1193,6 +1198,7 @@ async def wiki_merge_maintenance(
         skipped = [dict(item) for item in report.get("skipped", [])],
         merges = [dict(item) for item in report.get("merges", [])],
         errors = [str(item) for item in report.get("errors", [])],
+        knowledge_compaction = dict(report.get("knowledge_compaction", {})),
     )
 
 

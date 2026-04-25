@@ -40,6 +40,12 @@ _WIKI_MERGE_MAINTENANCE_MAX_MERGES_DEFAULT = _env_int(
     minimum = 1,
     maximum = 512,
 )
+_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES_DEFAULT = _env_int(
+    "UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES",
+    48,
+    minimum = 1,
+    maximum = 256,
+)
 
 
 class LoadRequest(BaseModel):
@@ -756,6 +762,16 @@ class WikiEnrichRequest(BaseModel):
         le = 100,
         description = "Maximum number of lint gaps to search on the web during one enrich run",
     )
+    compact_knowledge_pages: bool = Field(
+        False,
+        description = "If true, trim oversized Incremental Updates sections in entity/concept pages after enrichment",
+    )
+    max_incremental_updates: int = Field(
+        _WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES_DEFAULT,
+        ge = 1,
+        le = 256,
+        description = "Maximum Incremental Updates blocks retained per entity/concept page during compaction",
+    )
 
 
 class WikiEnrichResponse(BaseModel):
@@ -767,6 +783,7 @@ class WikiEnrichResponse(BaseModel):
     updated_pages: int
     changes: list[Dict[str, Any]]
     web_gap_fill: Dict[str, Any]
+    knowledge_compaction: Dict[str, Any]
 
 
 class WikiRetryFallbackRequest(BaseModel):
@@ -826,6 +843,16 @@ class WikiMergeMaintenanceRequest(BaseModel):
         le = 512,
         description = "Maximum number of merges to plan/apply in a single run (default from UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES)",
     )
+    compact_knowledge_pages: bool = Field(
+        False,
+        description = "If true, trim oversized Incremental Updates sections in entity/concept pages after merge maintenance",
+    )
+    max_incremental_updates: int = Field(
+        _WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES_DEFAULT,
+        ge = 1,
+        le = 256,
+        description = "Maximum Incremental Updates blocks retained per entity/concept page during compaction",
+    )
 
 
 class WikiMergeMaintenanceResponse(BaseModel):
@@ -844,6 +871,7 @@ class WikiMergeMaintenanceResponse(BaseModel):
     skipped: list[Dict[str, Any]]
     merges: list[Dict[str, Any]]
     errors: list[str]
+    knowledge_compaction: Dict[str, Any]
 
 
 class WikiQueryRequest(BaseModel):

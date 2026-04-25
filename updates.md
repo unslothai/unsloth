@@ -699,3 +699,103 @@ Addressed two correctness issues raised in automated review:
 Added regression tests:
 - `studio/backend/tests/test_wiki_archive_stale.py`
 - `studio/backend/tests/test_wiki_watcher.py::test_watcher_start_schedules_raw_dir_recursively`
+
+## April 2026 Follow-up (P2 fixes + rewrite controls)
+
+This follow-up addresses two review-flagged P2 issues and adds explicit rewrite/compaction controls to maintenance/enrichment APIs so wiki pages do not grow unboundedly.
+
+### Additional changed files
+- `graphify/graphify/ingest.py`
+- `studio/backend/core/inference/inference.py`
+- `studio/backend/core/wiki/engine.py`
+- `studio/backend/core/wiki/manager.py`
+- `studio/backend/routes/inference.py`
+- `studio/backend/models/inference.py`
+- `studio/backend/tests/test_wiki_rag_pipeline.py`
+- `updates.md`
+
+### 1) Graphify tweet oEmbed import bug fixed
+Issue:
+- `_fetch_tweet(...)` used `urllib.request.Request/urlopen` without importing `urllib.request`.
+
+Fix:
+- Added `import urllib.request` in `graphify/graphify/ingest.py`.
+
+Impact:
+- Tweet/oEmbed fetch path no longer silently degrades due to `AttributeError` when oEmbed is otherwise available.
+
+### 2) Inference startup env parsing hardened
+Issue:
+- `InferenceBackend` parsed `UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS` with raw `int(os.getenv(...))` during backend initialization.
+- Non-numeric values could crash import/startup.
+
+Fix:
+- Added `_safe_env_int(...)` helper in `studio/backend/core/inference/inference.py`.
+- Replaced the direct cast with guarded parsing + fallback default (`600`) and minimum bound (`0`).
+
+Impact:
+- Invalid env values no longer prevent inference backend startup.
+
+### 3) Rewrite/compaction controls for maintenance + enrichment
+Findings:
+- `analysis` enrichment/retry paths already used upsert-style section rewrites.
+- Entity/concept knowledge pages could still grow over time via `## Incremental Updates` accumulation.
+
+Implemented controls:
+- New wiki env knob:
+  - `UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES` (default `48`, max `256`)
+- `_upsert_knowledge_page(...)` now trims `Incremental Updates` to the configured maximum.
+- New engine maintenance helper:
+  - `compact_knowledge_pages(...)`
+  - Trims oversized `Incremental Updates` blocks in `entities/*` and `concepts/*`.
+
+API additions:
+- `POST /api/inference/wiki/enrich`
+  - `compact_knowledge_pages: bool = false`
+  - `max_incremental_updates: int`
+  - response now includes `knowledge_compaction` report.
+- `POST /api/inference/wiki/merge-maintenance`
+  - `compact_knowledge_pages: bool = false`
+  - `max_incremental_updates: int`
+  - response now includes `knowledge_compaction` report.
+
+Behavioral note:
+- With compaction enabled, enrichment/merge flows can actively rewrite oversized knowledge pages (not just append), while preserving recent incremental history.
+
+### 4) Verification
+Targeted checks passed:
+- `graphify/tests/test_ingest.py` -> `8 passed`
+- `studio/backend/tests/test_wiki_rag_pipeline.py -k "upsert_knowledge_page_caps_incremental_updates or enrich_analysis_pages_can_compact_knowledge_updates or merge_maintenance_can_compact_knowledge_updates_without_merges"` -> `3 passed`
+- `py_compile studio/backend/core/inference/inference.py` -> success
+
+### 5) Future add-ons (deferred): chat web-search -> wiki ingestion
+Status:
+- Not implemented in this follow-up.
+- Captured here as a potential roadmap only.
+
+Current behavior snapshot:
+- `web_search` tool output is emitted via tool events and rendered in chat UI source/tool blocks.
+- It is not automatically ingested into wiki source pages today.
+- Route-level chat history flush currently snapshots incoming chat messages before the GGUF tool loop, so tool outputs are typically not part of that persisted batch.
+
+Potential phased rollout:
+1. Phase A (low-risk, URL-only ingest)
+  - Ingest only successful `web_search` calls that used the `url` argument (full page fetch mode).
+  - Hook at GGUF tool event handling in `studio/backend/routes/inference.py` when `tool_end` is available.
+  - Write a wiki source page through existing wiki manager ingest path, with `source_ref` set to the URL.
+
+2. Phase B (safety + quality guardrails)
+  - Add opt-in env flag (default off), for example: `UNSLOTH_WIKI_INGEST_WEB_SEARCH=false`.
+  - Skip known non-content/error results (for example: `No results found`, `Search failed`, `Blocked`, fetch errors).
+  - Add dedupe/rate controls (canonical URL + content hash; per-thread/per-request limits).
+
+3. Phase C (provenance + retrieval tuning)
+  - Persist minimal provenance (query, URL, tool_call_id, timestamp) in source metadata.
+  - Optionally tag web-derived pages so ranking can down-weight them unless explicitly requested.
+
+Suggested tests when implemented:
+- Unit: tool_end URL path triggers ingest once.
+- Unit: dedupe + error-skip behavior.
+- Integration: ingested web page is retrievable through wiki query context.
+
+No API/runtime changes were made for this deferred item.
