@@ -35,6 +35,7 @@ type RecipeStudioHeaderProps = {
   savedAtLabel: string;
   workflowName: string;
   warnings?: GraphWarning[];
+  supportsEasyMode?: boolean;
   onWorkflowNameChange: (value: string) => void;
   onViewChange: (view: RecipeStudioView) => void;
   onSaveRecipe: () => void;
@@ -47,6 +48,7 @@ export function RecipeStudioHeader({
   savedAtLabel,
   workflowName,
   warnings = [],
+  supportsEasyMode = false,
   onWorkflowNameChange,
   onViewChange,
   onSaveRecipe,
@@ -55,7 +57,7 @@ export function RecipeStudioHeader({
   const [editingWorkflowName, setEditingWorkflowName] = useState(false);
 
   function handleViewValueChange(value: string): void {
-    if (value === "editor" || value === "executions") {
+    if (value === "easy" || value === "editor" || value === "executions") {
       onViewChange(value);
     }
   }
@@ -128,10 +130,17 @@ export function RecipeStudioHeader({
       </div>
       <div className="justify-self-center">
         <Tabs value={activeView} onValueChange={handleViewValueChange}>
-            <TabsList>
-            <TabsTrigger value="editor">{t("recipe.header.editor")}</TabsTrigger>
-            <TabsTrigger value="executions">{t("recipe.header.runs")}</TabsTrigger>
-            </TabsList>
+          <TabsList>
+            {supportsEasyMode && (
+              <TabsTrigger value="easy">Easy</TabsTrigger>
+            )}
+            <TabsTrigger value="editor">
+              {supportsEasyMode ? "Advanced" : t("recipe.header.editor")}
+            </TabsTrigger>
+            <TabsTrigger value="executions">
+              {t("recipe.header.runs")}
+            </TabsTrigger>
+          </TabsList>
         </Tabs>
       </div>
       <div className="flex items-center justify-self-end gap-2">

@@ -146,10 +146,18 @@ def get_connection() -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             last_used_at TEXT,
             expires_at TEXT,
-            is_active  INTEGER NOT NULL DEFAULT 1
+            is_active  INTEGER NOT NULL DEFAULT 1,
+            is_internal INTEGER NOT NULL DEFAULT 0
         );
         """
     )
+    api_key_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")
+    }
+    if "is_internal" not in api_key_columns:
+        conn.execute(
+            "ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -592,11 +600,15 @@ def create_api_key(
     username: str,
     name: str,
     expires_at: Optional[str] = None,
+    internal: bool = False,
 ) -> Tuple[str, dict]:
     """Create a new API key for *username*.
 
     Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
-    exactly once.  The database only stores the SHA-256 hash.
+    exactly once.  The database only stores the PBKDF2 hash.
+
+    Pass ``internal=True`` for keys minted by workflows (e.g. data-recipe
+    runs) that should not appear in user-facing key listings.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _pbkdf2_api_key(raw_key)
@@ -607,10 +619,18 @@ def create_api_key(
     try:
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, key_prefix, key_hash, name, now, expires_at),
+            (
+                username,
+                key_prefix,
+                key_hash,
+                name,
+                now,
+                expires_at,
+                1 if internal else 0,
+            ),
         )
         conn.commit()
         cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
@@ -620,19 +640,33 @@ def create_api_key(
         conn.close()
 
 
-def list_api_keys(username: str) -> list:
-    """Return all API keys for *username* (never exposes ``key_hash``)."""
+def list_api_keys(username: str, include_internal: bool = False) -> list:
+    """Return API keys for *username*. Internal workflow keys are hidden
+    by default so they do not clutter user-facing UIs."""
     conn = get_connection()
     try:
-        cur = conn.execute(
-            """
-            SELECT id, username, key_prefix, name, created_at, last_used_at, expires_at, is_active
-            FROM api_keys
-            WHERE username = ?
-            ORDER BY created_at DESC
-            """,
-            (username,),
-        )
+        if include_internal:
+            cur = conn.execute(
+                """
+                SELECT id, username, key_prefix, name, created_at, last_used_at,
+                       expires_at, is_active, is_internal
+                FROM api_keys
+                WHERE username = ?
+                ORDER BY created_at DESC
+                """,
+                (username,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT id, username, key_prefix, name, created_at, last_used_at,
+                       expires_at, is_active, is_internal
+                FROM api_keys
+                WHERE username = ? AND is_internal = 0
+                ORDER BY created_at DESC
+                """,
+                (username,),
+            )
         return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
@@ -645,6 +679,24 @@ def revoke_api_key(username: str, key_id: int) -> bool:
         cursor = conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ? AND username = ?",
             (key_id, username),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def revoke_internal_api_key(key_id: int) -> bool:
+    """Revoke an internal workflow-minted key without requiring a username.
+
+    Used by the recipe runner to retire its sk-unsloth-* key once the job
+    terminates, shrinking the window a leaked key could be abused.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND is_internal = 1",
+            (key_id,),
         )
         conn.commit()
         return cursor.rowcount > 0
