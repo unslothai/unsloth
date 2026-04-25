@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/features/i18n";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import {
@@ -36,17 +37,20 @@ function formatEta(value: number | null | undefined): string {
   return `${metric}s`;
 }
 
-function statusLabel(input: {
+function statusLabel(
+  input: {
   complete: boolean;
   inProgress: boolean;
-}): string {
+},
+  t: (key: "recipe.progress.completed" | "recipe.progress.inProgress" | "recipe.progress.status") => string,
+): string {
   if (input.complete) {
-    return "Run completed";
+    return t("recipe.progress.completed");
   }
   if (input.inProgress) {
-    return "Run in progress";
+    return t("recipe.progress.inProgress");
   }
-  return "Run status";
+  return t("recipe.progress.status");
 }
 
 export function ExecutionProgressIsland({
@@ -56,6 +60,7 @@ export function ExecutionProgressIsland({
   onMinimizedChange,
   onViewExecutions,
 }: ExecutionProgressIslandProps): ReactElement {
+  const { t } = useI18n();
   const complete = execution.status === "completed";
   const inProgress = isExecutionInProgress(execution.status);
   const progressPercent = execution.progress?.percent ?? (complete ? 100 : 0);
@@ -91,7 +96,7 @@ export function ExecutionProgressIsland({
             )}
           />
           <p className="truncate text-xs font-medium text-foreground">
-            {statusLabel({ complete, inProgress })}
+            {statusLabel({ complete, inProgress }, t)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -105,8 +110,10 @@ export function ExecutionProgressIsland({
             type="button"
             onClick={() => onMinimizedChange(!minimized)}
             className="inline-flex size-8 shrink-0 items-center justify-center rounded border border-border/70 text-muted-foreground transition hover:bg-muted/50"
-            aria-label={minimized ? "Expand progress" : "Minimize progress"}
-            title={minimized ? "Expand" : "Minimize"}
+            aria-label={
+              minimized ? t("recipe.progress.expandProgress") : t("recipe.progress.minimizeProgress")
+            }
+            title={minimized ? t("recipe.progress.expand") : t("recipe.progress.minimize")}
           >
             <HugeiconsIcon
               icon={minimized ? ArrowDown01Icon : ArrowUp01Icon}
@@ -123,17 +130,17 @@ export function ExecutionProgressIsland({
       {!minimized && (
         <>
           <div className="grid grid-cols-2 gap-2 px-3 pt-2 text-[11px] text-muted-foreground sm:grid-cols-4">
-            <p className="truncate" title={`Done: ${formatMetricValue(execution.progress?.done)}`}>
-              Done: {formatMetricValue(execution.progress?.done)}
+            <p className="truncate" title={`${t("recipe.progress.done")}: ${formatMetricValue(execution.progress?.done)}`}>
+              {t("recipe.progress.done")}: {formatMetricValue(execution.progress?.done)}
             </p>
-            <p className="truncate" title={`Total: ${formatMetricValue(execution.progress?.total)}`}>
-              Total: {formatMetricValue(execution.progress?.total)}
+            <p className="truncate" title={`${t("recipe.progress.total")}: ${formatMetricValue(execution.progress?.total)}`}>
+              {t("recipe.progress.total")}: {formatMetricValue(execution.progress?.total)}
             </p>
-            <p className="truncate" title={`Rate: ${formatMetricValue(execution.progress?.rate)}`}>
-              Rate: {formatMetricValue(execution.progress?.rate)}
+            <p className="truncate" title={`${t("recipe.progress.rate")}: ${formatMetricValue(execution.progress?.rate)}`}>
+              {t("recipe.progress.rate")}: {formatMetricValue(execution.progress?.rate)}
             </p>
-            <p className="truncate" title={`ETA: ${formatEta(execution.progress?.eta_sec)}`}>
-              ETA: {formatEta(execution.progress?.eta_sec)}
+            <p className="truncate" title={`${t("recipe.progress.eta")}: ${formatEta(execution.progress?.eta_sec)}`}>
+              {t("recipe.progress.eta")}: {formatEta(execution.progress?.eta_sec)}
             </p>
           </div>
           <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
@@ -145,15 +152,15 @@ export function ExecutionProgressIsland({
               className="truncate"
               title={execution.current_column ?? "--"}
             >
-              Column: {execution.current_column ?? "--"}
+              {t("recipe.progress.column")}: {execution.current_column ?? "--"}
             </p>
           </div>
           {showBatch && (
             <div
               className="mt-1 truncate px-3 text-[11px] text-muted-foreground"
-              title={`Batch: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
+              title={`${t("recipe.progress.batch")}: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
             >
-              Batch: {execution.batch?.idx ?? "--"}/{execution.batch?.total ?? "--"}
+              {t("recipe.progress.batch")}: {execution.batch?.idx ?? "--"}/{execution.batch?.total ?? "--"}
             </div>
           )}
           <div className="px-3 pb-2 pt-2">
@@ -164,7 +171,7 @@ export function ExecutionProgressIsland({
               className="h-7 w-full text-[11px]"
               onClick={onViewExecutions}
             >
-              View run details
+              {t("recipe.progress.viewRunDetails")}
             </Button>
           </div>
         </>

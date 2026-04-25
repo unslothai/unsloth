@@ -73,11 +73,13 @@ import {
   getEstimatedSize,
 } from "./constants";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { exportTourSteps } from "./tour";
+import { useI18n } from "@/features/i18n";
+import { getExportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
 export function ExportPage() {
+  const { t } = useI18n();
   const { hfToken, setHfToken } = useTrainingConfigStore(
     useShallow((s) => ({
       hfToken: s.hfToken,
@@ -134,7 +136,7 @@ export function ExportPage() {
 
   const tour = useGuidedTourController({
     id: "export",
-    steps: exportTourSteps,
+    steps: getExportTourSteps(t),
   });
 
   // ---- Fetch checkpoints on mount ----
@@ -151,7 +153,7 @@ export function ExportPage() {
       .catch((err) => {
         if (!cancelled) {
           setCheckpointError(
-            err instanceof Error ? err.message : "Failed to load checkpoints",
+            err instanceof Error ? err.message : t("export.page.error.loadCheckpoints"),
           );
         }
       })
@@ -174,7 +176,7 @@ export function ExportPage() {
       .catch((error) => {
         if (controller.signal.aborted) return;
         setLocalModelsError(
-          error instanceof Error ? error.message : "Failed to load local models",
+          error instanceof Error ? error.message : t("export.page.error.loadLocalModels"),
         );
       })
       .finally(() => {
@@ -204,8 +206,8 @@ export function ExportPage() {
   const isQuantized = !!selectedModelData?.is_quantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
   const trainingMethodLabel = selectedModelData?.peft_type
-    ? "LoRA / QLoRA"
-    : "Full Fine-tune";
+    ? t("export.page.trainingMethod.lora")
+    : t("export.page.trainingMethod.full");
   const sourceBaseModelName = sourceMode === "model"
     ? selectedSourceModel ?? "—"
     : baseModelName;
@@ -274,11 +276,11 @@ export function ExportPage() {
     () =>
       sourceMode === "model"
         ? [
-            "Select a Hugging Face or local model to export from",
-            "GGUF is used for non-finetuned model exports",
-            "Pick one or more GGUF quantization levels",
-            "Click Export and choose your destination",
-            "Test your model and compare outputs in Chat",
+            t("export.page.guide.model.1"),
+            t("export.page.guide.model.2"),
+            t("export.page.guide.model.3"),
+            t("export.page.guide.model.4"),
+            t("export.page.guide.model.5"),
           ]
         : GUIDE_STEPS,
     [sourceMode],
@@ -491,7 +493,7 @@ export function ExportPage() {
       setExportSuccess(true);
     } catch (err) {
       setExportError(
-        err instanceof Error ? err.message : "Export failed",
+        err instanceof Error ? err.message : t("export.page.error.exportFailed"),
       );
     } finally {
       try {
@@ -529,17 +531,17 @@ export function ExportPage() {
 
         <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Export Model
+            {t("export.page.title")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Export fine-tuned or base models for deployment
+            {t("export.page.subtitle")}
           </p>
         </div>
 
         <SectionCard
           icon={<HugeiconsIcon icon={PackageIcon} className="size-5" />}
-          title="Export Configuration"
-          description="Select source, method, and quantization"
+          title={t("export.page.config.title")}
+          description={t("export.page.config.description")}
           accent="emerald"
           featured={true}
           className="shadow-border ring-1 ring-border"
@@ -548,7 +550,7 @@ export function ExportPage() {
           {loadingCheckpoints && (
             <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
               <Spinner className="size-4" />
-              Loading checkpoints…
+              {t("export.page.loadingCheckpoints")}
             </div>
           )}
 
@@ -566,7 +568,9 @@ export function ExportPage() {
                 <div className="flex flex-col gap-2">
                   <div className="flex items-end justify-between">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      {sourceMode === "checkpoint" ? "Training Run" : "Model Source"}
+                      {sourceMode === "checkpoint"
+                        ? t("export.page.trainingRun")
+                        : t("export.page.modelSource")}
                       <Tooltip>
                         <TooltipTrigger asChild={true}>
                           <button
@@ -581,8 +585,8 @@ export function ExportPage() {
                         </TooltipTrigger>
                         <TooltipContent>
                           {sourceMode === "checkpoint"
-                            ? "Select the training run that produced the checkpoints you want to export."
-                            : "Select a Hugging Face model or local model path to export directly to GGUF."}
+                            ? t("export.page.trainingRunHint")
+                            : t("export.page.modelSourceHint")}
                         </TooltipContent>
                       </Tooltip>
                     </label>
@@ -596,8 +600,8 @@ export function ExportPage() {
                       className="text-xs text-primary underline cursor-pointer leading-none"
                     >
                       {sourceMode === "checkpoint"
-                        ? "Use Hugging Face / Local Model"
-                        : "Use Training Checkpoints"}
+                        ? t("export.page.useHfOrLocal")
+                        : t("export.page.useTrainingCheckpoints")}
                     </button>
                   </div>
 
@@ -620,8 +624,8 @@ export function ExportPage() {
                             <SelectValue
                               placeholder={
                                 models.length === 0
-                                  ? "No training runs found"
-                                  : "Select a training run…"
+                                  ? t("export.page.noTrainingRuns")
+                                  : t("export.page.selectTrainingRun")
                               }
                             />
                           </SelectTrigger>
@@ -645,8 +649,9 @@ export function ExportPage() {
                                   <span className="flex items-center gap-2">
                                     {displayName}
                                     <span className="text-muted-foreground text-xs">
-                                      {m.checkpoints.length} checkpoint
-                                      {m.checkpoints.length !== 1 ? "s" : ""}
+                                      {t("export.page.checkpointCount")
+                                        .replace("{count}", String(m.checkpoints.length))
+                                        .replace("{suffix}", m.checkpoints.length !== 1 ? "s" : "")}
                                     </span>
                                     {timeStr && (
                                       <span className="text-muted-foreground text-xs">
@@ -663,7 +668,7 @@ export function ExportPage() {
 
                       <div data-tour="export-checkpoint" className="flex flex-col gap-2">
                         <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          Checkpoint
+                          {t("export.page.checkpoint")}
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
                               <button
@@ -677,15 +682,14 @@ export function ExportPage() {
                               </button>
                             </TooltipTrigger>
                             <TooltipContent>
-                              Choose a saved checkpoint to export. Lower loss
-                              generally means better quality.{" "}
+                              {t("export.page.checkpointHint")}{" "}
                               <a
                                 href="https://unsloth.ai/docs/basics/inference-and-deployment"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-primary underline"
                               >
-                                Read more
+                                {t("export.page.readMore")}
                               </a>
                             </TooltipContent>
                           </Tooltip>
@@ -699,10 +703,10 @@ export function ExportPage() {
                             <SelectValue
                               placeholder={
                                 !selectedModelIdx
-                                  ? "Select a training run first"
+                                  ? t("export.page.selectTrainingRunFirst")
                                   : checkpointsForModel.length === 0
-                                    ? "No checkpoints found"
-                                    : "Select a checkpoint…"
+                                    ? t("export.page.noCheckpoints")
+                                    : t("export.page.selectCheckpoint")
                               }
                             />
                           </SelectTrigger>
@@ -713,7 +717,7 @@ export function ExportPage() {
                                   {cp.display_name}
                                   {cp.loss != null && (
                                     <span className="text-muted-foreground text-xs">
-                                      loss: {cp.loss.toFixed(4)}
+                                      {t("export.page.loss")}: {cp.loss.toFixed(4)}
                                     </span>
                                   )}
                                 </span>
@@ -738,14 +742,14 @@ export function ExportPage() {
                           className="flex-1"
                           onClick={() => setModelSource("hf")}
                         >
-                          Hugging Face
+                          {t("export.page.hf")}
                         </Button>
                         <Button
                           variant={modelSource === "local" ? "dark" : "outline"}
                           className="flex-1"
                           onClick={() => setModelSource("local")}
                         >
-                          Local Model
+                          {t("export.page.localModel")}
                         </Button>
                       </div>
 
@@ -753,7 +757,7 @@ export function ExportPage() {
                         <>
                           <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-muted-foreground">
-                              Hugging Face Model
+                              {t("export.page.hfModel")}
                             </label>
                             <div ref={hfComboboxAnchorRef}>
                               <Combobox
@@ -767,7 +771,7 @@ export function ExportPage() {
                                 autoHighlight={true}
                               >
                                 <ComboboxInput
-                                  placeholder="Search models..."
+                                  placeholder={t("export.page.searchModels")}
                                   className="w-full"
                                   onBlur={() =>
                                     applyHfSourceModel(hfModelInputRef.current)
@@ -785,10 +789,10 @@ export function ExportPage() {
                                 <ComboboxContent anchor={hfComboboxAnchorRef}>
                                   {isLoadingHfModels ? (
                                     <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                                      <Spinner className="size-4" /> Searching…
+                                      <Spinner className="size-4" /> {t("export.page.searching")}
                                     </div>
                                   ) : (
-                                    <ComboboxEmpty>No models found</ComboboxEmpty>
+                                    <ComboboxEmpty>{t("export.page.noModels")}</ComboboxEmpty>
                                   )}
                                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                     {(id: string) => (
@@ -820,14 +824,14 @@ export function ExportPage() {
                               htmlFor="hf-export-trust-remote-code"
                               className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
                             >
-                              Trust remote code
+                              {t("export.page.trustRemoteCode")}
                             </label>
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <button
                                   type="button"
                                   className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
+                                  aria-label={t("export.page.trustRemoteCodeAbout")}
                                 >
                                   <HugeiconsIcon
                                     icon={InformationCircleIcon}
@@ -839,15 +843,13 @@ export function ExportPage() {
                                 side="top"
                                 className="max-w-[260px] text-xs"
                               >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
+                                {t("export.page.trustRemoteCodeHint")}
                               </TooltipContent>
                             </Tooltip>
                           </div>
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
-                              Hugging Face Token (Optional)
+                              {t("export.page.hfTokenOptional")}
                             </label>
                             <InputGroup>
                               <InputGroupAddon>
@@ -863,14 +865,14 @@ export function ExportPage() {
                               />
                             </InputGroup>
                             {isCheckingToken && (
-                              <p className="text-xs text-muted-foreground">Checking token…</p>
+                              <p className="text-xs text-muted-foreground">{t("export.page.checkingToken")}</p>
                             )}
                           </div>
                         </>
                       ) : (
                         <div className="flex flex-col gap-2">
                           <label className="text-xs font-medium text-muted-foreground">
-                            Local Model Path
+                            {t("export.page.localModelPath")}
                           </label>
                           <div ref={localComboboxAnchorRef}>
                             <Combobox
@@ -891,8 +893,8 @@ export function ExportPage() {
                               <ComboboxInput
                                 placeholder={
                                   isLoadingLocalModels
-                                    ? "Scanning local and cached models..."
-                                    : "./models/my-model"
+                                    ? t("export.page.scanningLocalAndCache")
+                                    : t("export.page.localModelPlaceholder")
                                 }
                                 className="w-full"
                                 onBlur={() => applyLocalSourceModel(localModelInputRef.current)}
@@ -909,24 +911,24 @@ export function ExportPage() {
                               <ComboboxContent anchor={localComboboxAnchorRef}>
                                 {isLoadingLocalModels ? (
                                   <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                                    <Spinner className="size-4" /> Scanning...
+                                    <Spinner className="size-4" /> {t("export.page.scanning")}
                                   </div>
                                 ) : localModelsError ? (
                                   <div className="px-3 py-2 text-xs text-red-500">
                                     {localModelsError}
                                   </div>
                                 ) : (
-                                  <ComboboxEmpty>No local models found</ComboboxEmpty>
+                                  <ComboboxEmpty>{t("export.page.noLocalModels")}</ComboboxEmpty>
                                 )}
                                 <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
                                       model?.source === "hf_cache"
-                                        ? "HF cache"
+                                        ? t("export.page.sourceHfCache")
                                         : model?.source === "custom"
-                                          ? "Custom Folders"
-                                          : "Local dir";
+                                          ? t("export.page.sourceCustomFolders")
+                                          : t("export.page.sourceLocalDir");
                                     return (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">
@@ -944,15 +946,18 @@ export function ExportPage() {
                           </div>
                           {isLoadingLocalModels ? (
                             <p className="text-[10px] text-muted-foreground">
-                              Scanning local models...
+                              {t("export.page.scanningLocal")}
                             </p>
                           ) : localModelsError ? (
                             <p className="text-[10px] text-red-500">{localModelsError}</p>
                           ) : (
                             <p className="text-[10px] text-muted-foreground">
                               {exportableLocalModels.length > 0
-                                ? `${exportableLocalModels.length} local/cached models found`
-                                : "No local models found. Enter path manually."}
+                                ? t("export.page.localModelsFound").replace(
+                                    "{count}",
+                                    String(exportableLocalModels.length),
+                                  )
+                                : t("export.page.noLocalModelsManual")}
                             </p>
                           )}
                         </div>
@@ -960,7 +965,7 @@ export function ExportPage() {
 
                       <div className="rounded-xl bg-muted/50 p-3">
                         <p className="text-[11px] text-muted-foreground">
-                          Direct model exports currently support GGUF only.
+                          {t("export.page.directModelGgufOnly")}
                         </p>
                       </div>
                     </motion.div>
@@ -970,28 +975,28 @@ export function ExportPage() {
                   {sourceMode === "checkpoint" && (
                     <div className="rounded-xl bg-muted/50 p-3 flex flex-col gap-2">
                       <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                        Training Info
+                        {t("export.page.trainingInfo")}
                       </span>
                       <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Base Model</span>
+                          <span className="text-muted-foreground">{t("export.page.summary.baseModel")}</span>
                           <span className="font-medium">{baseModelName}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Method</span>
+                          <span className="text-muted-foreground">{t("export.page.summary.method")}</span>
                           <span className="font-medium">
                             {trainingMethodLabel}
                           </span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Checkpoints</span>
+                          <span className="text-muted-foreground">{t("export.page.summary.checkpoints")}</span>
                           <span className="font-medium">
                             {checkpointsForModel.length}
                           </span>
                         </div>
                         {isAdapter && (
                           <div className="flex justify-between">
-                            <span className="text-muted-foreground">LoRA Rank</span>
+                            <span className="text-muted-foreground">{t("export.page.summary.loraRank")}</span>
                             <span className="font-medium">{loraRank}</span>
                           </div>
                         )}
@@ -1002,7 +1007,7 @@ export function ExportPage() {
 
                 <div className="flex flex-col gap-2.5">
                   <span className="text-xs font-medium text-muted-foreground">
-                    Quick Guide
+                    {t("export.page.quickGuide")}
                   </span>
                   <ol className="flex flex-col gap-3">
                     {exportGuideSteps.map((step, i) => (
@@ -1032,11 +1037,11 @@ export function ExportPage() {
                 }
                 disabledReason={
                   !isAdapter && isQuantized
-                    ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                    ? t("export.page.disabledReason.prequantized")
                     : sourceMode === "model"
-                      ? "Only GGUF export is available for direct model export"
+                      ? t("export.page.disabledReason.ggufOnly")
                       : !isAdapter
-                        ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
+                        ? t("export.page.disabledReason.fullFinetune")
                         : undefined
                 }
               />
@@ -1064,7 +1069,7 @@ export function ExportPage() {
                   disabled={!canExport}
                   onClick={() => { setExportSuccess(false); setExportError(null); setDialogOpen(true); }}
                 >
-                  Export Model
+                  {t("export.page.title")}
                 </Button>
               </div>
             </>

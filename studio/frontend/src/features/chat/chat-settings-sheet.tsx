@@ -46,6 +46,9 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useI18n } from "@/features/i18n";
+import type { TranslationKey } from "@/features/i18n/messages";
+import { translate, useI18nStore } from "@/features/i18n/store";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -123,7 +126,9 @@ function canUseStorage(): boolean {
 }
 
 function getUniquePresetName(baseName: string, usedNames: Set<string>): string {
-  const normalizedBase = baseName.trim() || "Imported Prompt";
+  const locale = useI18nStore.getState().locale;
+  const normalizedBase =
+    baseName.trim() || translate(locale, "chat.settings.preset.importedPrompt");
   let nextName = normalizedBase;
   let suffix = 2;
   while (usedNames.has(nextName)) {
@@ -304,11 +309,13 @@ function getPresetSaveState({
   activePreset,
   presets,
   activePresetDirty,
+  t,
 }: {
   rawName: string;
   activePreset: string;
   presets: Preset[];
   activePresetDirty: boolean;
+  t: (key: TranslationKey) => string;
 }): PresetSaveState {
   const trimmedName = rawName.trim();
   if (!trimmedName) {
@@ -316,8 +323,8 @@ function getPresetSaveState({
       mode: "disabled",
       canSubmit: false,
       isSaveReady: false,
-      buttonLabel: "Save",
-      title: "Enter a preset name",
+      buttonLabel: t("chat.settings.preset.save"),
+      title: t("chat.settings.preset.enterName"),
     };
   }
 
@@ -328,12 +335,18 @@ function getPresetSaveState({
       mode: isActiveMatch ? "overwrite-active" : "overwrite-other",
       canSubmit: !isActiveMatch || activePresetDirty,
       isSaveReady: !isActiveMatch || activePresetDirty,
-      buttonLabel: isActiveMatch && !activePresetDirty ? "Saved" : "Overwrite",
+      buttonLabel:
+        isActiveMatch && !activePresetDirty
+          ? t("chat.settings.preset.saved")
+          : t("chat.settings.preset.overwrite"),
       title: isActiveMatch
         ? activePresetDirty
-          ? "Save current settings to this preset"
-          : "No unsaved changes"
-        : `Overwrite preset "${trimmedName}"`,
+          ? t("chat.settings.preset.saveCurrent")
+          : t("chat.settings.preset.noUnsaved")
+        : t("chat.settings.preset.overwriteNamed").replace(
+            "{name}",
+            trimmedName,
+          ),
     };
   }
 
@@ -341,8 +354,8 @@ function getPresetSaveState({
     mode: "create",
     canSubmit: true,
     isSaveReady: true,
-    buttonLabel: "Save as New",
-    title: `Save current settings as "${trimmedName}"`,
+    buttonLabel: t("chat.settings.preset.saveAsNew"),
+    title: t("chat.settings.preset.saveAsNamed").replace("{name}", trimmedName),
   };
 }
 
@@ -490,6 +503,7 @@ export function ChatSettingsPanel({
   onParamsChange,
   onReloadModel,
 }: ChatSettingsPanelProps) {
+  const { t } = useI18n();
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -574,8 +588,9 @@ export function ChatSettingsPanel({
         activePreset,
         presets,
         activePresetDirty,
+        t,
       }),
-    [activePreset, activePresetDirty, presetNameInput, presets],
+    [activePreset, activePresetDirty, presetNameInput, presets, t],
   );
   const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
   const trustRemoteCodeMissing =
@@ -594,9 +609,8 @@ export function ChatSettingsPanel({
         modelRequiresTrustRemoteCode &&
         !(p.params.trustRemoteCode ?? false)
       ) {
-        toast.warning("This configuration turns custom code off", {
-          description:
-            "The current model needs custom code enabled to load. Keep it on for this model.",
+        toast.warning(t("chat.settings.toast.customCodeOff.title"), {
+          description: t("chat.settings.toast.customCodeOff.description"),
         });
         return;
       }
@@ -618,7 +632,7 @@ export function ChatSettingsPanel({
   function savePresetWithName(rawName: string) {
     const trimmed = rawName.trim();
     if (!trimmed) {
-      toast.error("Enter a preset name");
+      toast.error(t("chat.settings.toast.enterPresetName"));
       return;
     }
     setCustomPresets((prev) => {
@@ -662,9 +676,8 @@ export function ChatSettingsPanel({
       modelRequiresTrustRemoteCode &&
       !(fallbackPreset.params.trustRemoteCode ?? false)
     ) {
-      toast.warning("Reset would turn custom code off", {
-        description:
-          "The current model needs custom code enabled to load. Keep it on for this model.",
+      toast.warning(t("chat.settings.toast.resetCustomCodeOff.title"), {
+        description: t("chat.settings.toast.customCodeOff.description"),
       });
       return;
     }
@@ -743,31 +756,34 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto">
+      <div
+        data-force-translate="true"
+        className="aui-thread-viewport relative h-full overflow-y-auto"
+      >
       <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 pl-2 pr-2 pt-[11px] backdrop-blur">
         {isMobile ? (
           <span className="flex h-[34px] flex-1 items-center pl-1 text-base font-semibold tracking-tight">
-            Configuration
+            {t("chat.settings.configuration")}
           </span>
         ) : (
           <>
             <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
+            <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
                   className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close configuration"
+                  aria-label={t("chat.settings.closeConfiguration")}
                 >
                   <HugeiconsIcon icon={Settings05Icon} className="size-5" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="bottom" sideOffset={6}>
-                Close configuration
+                {t("chat.settings.closeConfiguration")}
               </TooltipContent>
             </Tooltip>
             <span className="flex h-[34px] flex-1 items-center text-base font-semibold tracking-tight">
-              Configuration
+              {t("chat.settings.configuration")}
             </span>
           </>
         )}
@@ -790,7 +806,7 @@ export function ChatSettingsPanel({
                         savePresetWithName(presetNameInput);
                       }
                     }}
-                    placeholder="Preset name"
+                    placeholder={t("chat.settings.preset.name")}
                     maxLength={80}
                     autoComplete="off"
                     className={cn(
@@ -798,7 +814,7 @@ export function ChatSettingsPanel({
                       presetSaveState.isSaveReady &&
                         "text-foreground placeholder:text-primary/45",
                     )}
-                    aria-label="Inference preset name"
+                    aria-label={t("chat.settings.preset.inferenceName")}
                   />
                   <InputGroupAddon
                     align="inline-end"
@@ -810,8 +826,8 @@ export function ChatSettingsPanel({
                         variant="ghost"
                         size="icon-sm"
                         className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
-                        title="Choose a preset"
-                        aria-label="Open preset list"
+                        title={t("chat.settings.preset.choose")}
+                        aria-label={t("chat.settings.preset.openList")}
                       >
                         <HugeiconsIcon
                           icon={ArrowDown01Icon}
@@ -875,15 +891,15 @@ export function ChatSettingsPanel({
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
-                      ? "Reset selected preset to built-in defaults"
-                      : "Delete selected preset"
-                    : "No saved override to delete"
+                      ? t("chat.settings.preset.resetBuiltIn")
+                      : t("chat.settings.preset.deleteSelected")
+                    : t("chat.settings.preset.noOverride")
                 }
               >
                 <span className="inline-flex shrink-0 items-center pr-1.5">
                   <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                 </span>
-                Delete
+                {t("chat.settings.delete")}
               </Button>
             </div>
           </div>
@@ -895,7 +911,7 @@ export function ChatSettingsPanel({
               htmlFor="system-prompt"
               className="block text-xs font-medium"
             >
-              System Prompt
+              {t("chat.settings.systemPrompt")}
             </label>
             <Button
               type="button"
@@ -903,16 +919,16 @@ export function ChatSettingsPanel({
               size="sm"
               className="h-6 px-2 text-[11px]"
               onClick={openSystemPromptEditor}
-              title="Open the full system prompt editor"
+              title={t("chat.settings.systemPrompt.openEditor")}
             >
-              Edit
+              {t("chat.settings.edit")}
             </Button>
           </div>
           <Textarea
             id="system-prompt"
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
-            placeholder="You are a helpful assistant..."
+            placeholder={t("chat.settings.systemPrompt.placeholder")}
             className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle focus-visible:ring-[1px]"
             rows={3}
           />
@@ -920,7 +936,7 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection
           icon={Settings02Icon}
-          label="Model"
+          label={t("chat.settings.section.model")}
           defaultOpen={true}
         >
           <div className="flex flex-col gap-3 py-1">
@@ -928,7 +944,7 @@ export function ChatSettingsPanel({
               <>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">Context Length</span>
+                    <span className="text-xs font-medium">{t("chat.settings.model.contextLength")}</span>
                     <Input
                       type="number"
                       value={
@@ -983,17 +999,19 @@ export function ChatSettingsPanel({
                     typeof ctxDisplayValue === "number" &&
                     ctxDisplayValue > ggufMaxContextLength && (
                       <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity (
-                        {ggufMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
+                        {t("chat.settings.model.vramExceeded")
+                          .replace(
+                            "{tokens}",
+                            ggufMaxContextLength.toLocaleString(),
+                          )}
                       </p>
                     )}
                 </div>
                 <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium">KV Cache Dtype</div>
+                    <div className="text-xs font-medium">{t("chat.settings.model.kvCacheDtype")}</div>
                     <div className="text-[11px] text-muted-foreground">
-                      Quantize KV cache to reduce VRAM.
+                      {t("chat.settings.model.kvCacheHint")}
                     </div>
                   </div>
                   <div className="w-full min-w-0">
@@ -1020,10 +1038,10 @@ export function ChatSettingsPanel({
                   <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium">
-                        Speculative Decoding
+                        {t("chat.settings.model.speculativeDecoding")}
                       </div>
                       <div className="text-[11px] text-muted-foreground">
-                        Speed up generation with no VRAM cost.
+                        {t("chat.settings.model.speculativeHint")}
                       </div>
                     </div>
                     <div className="w-full min-w-0">
@@ -1037,8 +1055,8 @@ export function ChatSettingsPanel({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="ngram-mod">On</SelectItem>
-                          <SelectItem value="off">Off</SelectItem>
+                          <SelectItem value="ngram-mod">{t("chat.settings.on")}</SelectItem>
+                          <SelectItem value="off">{t("chat.settings.off")}</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1051,7 +1069,7 @@ export function ChatSettingsPanel({
                       onClick={() => onReloadModel?.()}
                       className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
                     >
-                      Apply
+                      {t("chat.settings.apply")}
                     </button>
                     <button
                       type="button"
@@ -1062,7 +1080,7 @@ export function ChatSettingsPanel({
                       }}
                       className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
                     >
-                      Reset
+                      {t("chat.settings.reset")}
                     </button>
                   </div>
                 )}
@@ -1072,10 +1090,9 @@ export function ChatSettingsPanel({
               <>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium">Enable custom code</div>
+                    <div className="text-xs font-medium">{t("chat.settings.model.enableCustomCode")}</div>
                     <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only
-                      enable if sure.
+                      {t("chat.settings.model.enableCustomCodeHint")}
                     </div>
                   </div>
                   <Switch
@@ -1086,12 +1103,10 @@ export function ChatSettingsPanel({
                 {trustRemoteCodeMissing && (
                   <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
                     <AlertTitle className="text-[11px] font-medium">
-                      Keep custom code enabled for this model
+                      {t("chat.settings.model.keepCustomCode")}
                     </AlertTitle>
                     <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
+                      {t("chat.settings.model.keepCustomCodeHint")}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -1102,12 +1117,12 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection
           icon={SlidersHorizontalIcon}
-          label="Sampling"
+          label={t("chat.settings.section.sampling")}
           defaultOpen={true}
         >
           <div className="flex flex-col gap-5">
             <ParamSlider
-              label="Temperature"
+              label={t("chat.settings.sampling.temperature")}
               value={params.temperature}
               min={0}
               max={2}
@@ -1115,25 +1130,25 @@ export function ChatSettingsPanel({
               onChange={set("temperature")}
             />
             <ParamSlider
-              label="Top P"
+              label={t("chat.settings.sampling.topP")}
               value={params.topP}
               min={0}
               max={1}
               step={0.05}
               onChange={set("topP")}
-              displayValue={params.topP === 1 ? "Off" : undefined}
+              displayValue={params.topP === 1 ? t("chat.settings.off") : undefined}
             />
             <ParamSlider
-              label="Top K"
+              label={t("chat.settings.sampling.topK")}
               value={params.topK}
               min={0}
               max={100}
               step={1}
               onChange={set("topK")}
-              displayValue={params.topK === 0 ? "Off" : undefined}
+              displayValue={params.topK === 0 ? t("chat.settings.off") : undefined}
             />
             <ParamSlider
-              label="Min P"
+              label={t("chat.settings.sampling.minP")}
               value={params.minP}
               min={0}
               max={1}
@@ -1141,26 +1156,26 @@ export function ChatSettingsPanel({
               onChange={set("minP")}
             />
             <ParamSlider
-              label="Repetition Penalty"
+              label={t("chat.settings.sampling.repetitionPenalty")}
               value={params.repetitionPenalty}
               min={1}
               max={2}
               step={0.05}
               onChange={set("repetitionPenalty")}
-              displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
+              displayValue={params.repetitionPenalty === 1 ? t("chat.settings.off") : undefined}
             />
             <ParamSlider
-              label="Presence Penalty"
+              label={t("chat.settings.sampling.presencePenalty")}
               value={params.presencePenalty}
               min={0}
               max={2}
               step={0.1}
               onChange={set("presencePenalty")}
-              displayValue={params.presencePenalty === 0 ? "Off" : undefined}
+              displayValue={params.presencePenalty === 0 ? t("chat.settings.off") : undefined}
             />
             {!isGguf && (
               <ParamSlider
-                label="Max Seq Length"
+                label={t("chat.settings.sampling.maxSeqLength")}
                 value={params.maxSeqLength}
                 min={128}
                 max={32768}
@@ -1169,7 +1184,7 @@ export function ChatSettingsPanel({
               />
             )}
             <ParamSlider
-              label="Max Tokens"
+              label={t("chat.settings.sampling.maxTokens")}
               value={params.maxTokens}
               min={64}
               max={isGguf && ggufContextLength ? ggufContextLength : 32768}
@@ -1179,14 +1194,14 @@ export function ChatSettingsPanel({
                 isGguf &&
                 ggufContextLength &&
                 params.maxTokens >= ggufContextLength
-                  ? "Max"
+                  ? t("chat.settings.max")
                   : undefined
               }
             />
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection icon={Wrench01Icon} label="Tools">
+        <CollapsibleSection icon={Wrench01Icon} label={t("chat.settings.section.tools")}>
           <div className="flex flex-col gap-3 py-1">
             <AutoHealToolCallsToggle />
             <MaxToolCallsSlider />
@@ -1208,24 +1223,22 @@ export function ChatSettingsPanel({
           overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
-            <DialogTitle>Edit System Prompt</DialogTitle>
+            <DialogTitle>{t("chat.settings.systemPrompt.editTitle")}</DialogTitle>
             <DialogDescription>
-              This prompt is part of the current configuration and saves with
-              the preset.
+              {t("chat.settings.systemPrompt.editDescription")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
             <div className="space-y-0.5 px-0.5">
-              <div className="text-[11px] font-medium">Prompt editor</div>
+              <div className="text-[11px] font-medium">{t("chat.settings.systemPrompt.editor")}</div>
               <p className="text-[11px] text-muted-foreground">
-                Use this for longer edits. Save writes back to the active
-                configuration only.
+                {t("chat.settings.systemPrompt.editorHint")}
               </p>
             </div>
             <Textarea
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
-              placeholder="You are a helpful assistant..."
+              placeholder={t("chat.settings.systemPrompt.placeholder")}
               fieldSizing="fixed"
               className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
               rows={14}
@@ -1240,14 +1253,14 @@ export function ChatSettingsPanel({
                 setSystemPromptEditorOpen(false);
               }}
             >
-              Cancel
+              {t("chat.settings.cancel")}
             </Button>
             <Button
               type="button"
               onClick={saveSystemPromptEditor}
               disabled={!systemPromptEditorDirty}
             >
-              Save
+              {t("chat.settings.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1260,8 +1273,8 @@ export function ChatSettingsPanel({
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent side="right" className="w-[18rem] p-0">
           <SheetHeader className="sr-only">
-            <SheetTitle>Configuration</SheetTitle>
-            <SheetDescription>Chat inference settings</SheetDescription>
+            <SheetTitle>{t("chat.settings.configuration")}</SheetTitle>
+            <SheetDescription>{t("chat.settings.sheetDescription")}</SheetDescription>
           </SheetHeader>
           <div className="flex h-full flex-col">{settingsContent}</div>
         </SheetContent>
@@ -1279,6 +1292,7 @@ export function ChatSettingsPanel({
 }
 
 function MaxToolCallsSlider() {
+  const { t } = useI18n();
   const maxToolCalls = useChatRuntimeStore((s) => s.maxToolCallsPerMessage);
   const setMaxToolCalls = useChatRuntimeStore(
     (s) => s.setMaxToolCallsPerMessage,
@@ -1289,20 +1303,25 @@ function MaxToolCallsSlider() {
 
   return (
     <ParamSlider
-      label="Max Tool Calls Per Message"
+      label={t("chat.settings.tools.maxToolCalls")}
       value={sliderValue}
       min={0}
       max={41}
       step={1}
       onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
       displayValue={
-        sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined
+        sliderValue >= 41
+          ? t("chat.settings.max")
+          : sliderValue === 0
+            ? t("chat.settings.off")
+            : undefined
       }
     />
   );
 }
 
 function ToolCallTimeoutSlider() {
+  const { t } = useI18n();
   const timeout = useChatRuntimeStore((s) => s.toolCallTimeout);
   const setTimeout_ = useChatRuntimeStore((s) => s.setToolCallTimeout);
 
@@ -1311,14 +1330,14 @@ function ToolCallTimeoutSlider() {
 
   const displayValue =
     sliderValue >= 31
-      ? "Max"
+      ? t("chat.settings.max")
       : sliderValue === 1
-        ? "1 minute"
-        : `${sliderValue} minutes`;
+        ? t("chat.settings.minuteOne")
+        : t("chat.settings.minutesMany").replace("{count}", String(sliderValue));
 
   return (
     <ParamSlider
-      label="Max Tool Call Duration"
+      label={t("chat.settings.tools.maxToolDuration")}
       value={sliderValue}
       min={1}
       max={31}
@@ -1330,6 +1349,7 @@ function ToolCallTimeoutSlider() {
 }
 
 function AutoHealToolCallsToggle() {
+  const { t } = useI18n();
   const autoHealToolCalls = useChatRuntimeStore((s) => s.autoHealToolCalls);
   const setAutoHealToolCalls = useChatRuntimeStore(
     (s) => s.setAutoHealToolCalls,
@@ -1338,9 +1358,9 @@ function AutoHealToolCallsToggle() {
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
-        <div className="text-xs font-medium">Auto Heal Tool Calls 🦥</div>
+        <div className="text-xs font-medium">{t("chat.settings.tools.autoHeal")}</div>
         <div className="text-[11px] text-muted-foreground">
-          Fix malformed tool calls from the model automatically.
+          {t("chat.settings.tools.autoHealHint")}
         </div>
       </div>
       <Switch
@@ -1356,6 +1376,7 @@ function ChatTemplateSection({
 }: {
   onReloadModel?: () => void;
 }) {
+  const { t } = useI18n();
   const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
   const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
   const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
@@ -1366,7 +1387,7 @@ function ChatTemplateSection({
   const isModified = override !== null;
 
   return (
-    <CollapsibleSection icon={CodeIcon} label="Chat Template">
+    <CollapsibleSection icon={CodeIcon} label={t("chat.settings.section.chatTemplate")}>
       <div className="flex flex-col gap-2 py-1">
         <Textarea
           value={displayValue}
@@ -1385,14 +1406,14 @@ function ChatTemplateSection({
                 }}
                 className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
               >
-                Apply & Reload
+                {t("chat.settings.applyReload")}
               </button>
               <button
                 type="button"
                 onClick={() => setOverride(null)}
                 className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
               >
-                Revert changes
+                {t("chat.settings.revertChanges")}
               </button>
             </>
           )}

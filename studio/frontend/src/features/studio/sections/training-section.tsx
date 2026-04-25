@@ -17,6 +17,7 @@ import {
   useTrainingConfigStore,
   validateTrainingConfig,
 } from "@/features/training";
+import { useI18n } from "@/features/i18n";
 import {
   Archive04Icon,
   ChartAverageIcon,
@@ -29,10 +30,6 @@ import { useRef } from "react";
 import { toast } from "sonner";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 
-const chartConfig = {
-  loss: { label: "Loss", color: "#3b82f6" },
-} satisfies ChartConfig;
-
 const placeholderData = [
   { step: 0, loss: 2.5 },
   { step: 10, loss: 2.1 },
@@ -43,6 +40,7 @@ const placeholderData = [
 ];
 
 export function TrainingSection() {
+  const { t } = useI18n();
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
   const isLoadingModel = store.isLoadingModelDefaults || store.isCheckingVision;
@@ -55,6 +53,10 @@ export function TrainingSection() {
   const hasMessage = !!(startError || isIncompatible || (!configValidation.ok && configValidation.message));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const chartConfig = {
+    loss: { label: t("studio.training.metric.loss"), color: "#3b82f6" },
+  } satisfies ChartConfig;
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -65,16 +67,16 @@ export function TrainingSection() {
       try {
         const config = parseYamlConfig(reader.result as string);
         store.applyConfigPatch(config);
-        toast.success("Config loaded", { description: file.name });
+        toast.success(t("studio.training.toast.configLoaded"), { description: file.name });
       } catch (err) {
-        toast.error("Failed to load config", {
+        toast.error(t("studio.training.toast.configLoadFailed"), {
           description:
-            err instanceof Error ? err.message : "Invalid YAML file",
+            err instanceof Error ? err.message : t("studio.training.toast.invalidYaml"),
         });
       }
     };
     reader.onerror = () => {
-      toast.error("Failed to read file");
+      toast.error(t("studio.training.toast.readFailed"));
     };
     reader.readAsText(file);
   };
@@ -98,15 +100,15 @@ export function TrainingSection() {
 
   const handleResetConfig = () => {
     store.resetToModelDefaults();
-    toast.success("Parameters reset to model defaults");
+    toast.success(t("studio.training.toast.resetDefaults"));
   };
 
   return (
     <div data-tour="studio-training" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-        title="Training"
-        description="Monitor and control training"
+        title={t("studio.training.title")}
+        description={t("studio.training.description")}
         accent="blue"
         className={hasMessage ? "min-h-studio-config-column" : "h-studio-config-column"}
       >
@@ -147,10 +149,10 @@ export function TrainingSection() {
               className="size-5 text-muted-foreground/50"
             />
             <p className="text-sm font-medium text-muted-foreground">
-              No training data yet
+              {t("studio.training.chart.noData")}
             </p>
             <p className="text-xs text-muted-foreground/60">
-              Start training to see loss progress
+              {t("studio.training.chart.startHint")}
             </p>
           </div>
         </div>
@@ -163,7 +165,13 @@ export function TrainingSection() {
           disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
-          {isStarting ? "Starting..." : isLoadingModel ? "Loading model..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
+          {isStarting
+            ? t("studio.training.starting")
+            : isLoadingModel
+              ? t("studio.training.loadingModel")
+              : store.isCheckingDataset
+                ? t("studio.training.checkingDataset")
+                : t("studio.training.start")}
         </Button>
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
@@ -171,8 +179,8 @@ export function TrainingSection() {
         {isIncompatible && (
           <p className="text-xs text-red-500 leading-relaxed">
             {!store.isAudioModel && store.isDatasetAudio === true
-              ? "This model does not support audio. Switch to an audio-capable model or choose a non-audio dataset."
-              : "Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset."}
+              ? t("studio.training.error.audioUnsupported")
+              : t("studio.training.error.multimodalUnsupported")}
           </p>
         )}
         {!configValidation.ok && configValidation.message && !isIncompatible && (
@@ -180,7 +188,7 @@ export function TrainingSection() {
         )}
 
         {/* Upload / Save / Reset */}
-        <p className="text-xs text-muted-foreground">Training Config</p>
+        <p className="text-xs text-muted-foreground">{t("studio.training.config.title")}</p>
         <div className="grid grid-cols-3 gap-2">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -191,10 +199,10 @@ export function TrainingSection() {
                 onClick={() => fileInputRef.current?.click()}
               >
                 <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                Upload
+                {t("studio.training.config.upload")}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Load a saved YAML config</TooltipContent>
+            <TooltipContent>{t("studio.training.config.uploadHint")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -206,10 +214,10 @@ export function TrainingSection() {
                 onClick={handleSaveConfig}
               >
                 <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
-                Save
+                {t("studio.training.config.save")}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Download current config as YAML</TooltipContent>
+            <TooltipContent>{t("studio.training.config.saveHint")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -221,10 +229,10 @@ export function TrainingSection() {
                 disabled={!store.selectedModel}
               >
                 <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
-                Reset
+                {t("studio.training.config.reset")}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Reset to model defaults</TooltipContent>
+            <TooltipContent>{t("studio.training.config.resetHint")}</TooltipContent>
           </Tooltip>
         </div>
         <input

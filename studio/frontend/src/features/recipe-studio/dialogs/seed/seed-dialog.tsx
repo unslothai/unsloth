@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/tabs";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/features/i18n";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
 import { inspectSeedDataset, inspectSeedUpload } from "../../api";
 import { resolveImagePreview } from "../../utils/image-preview";
@@ -50,17 +51,6 @@ import type {
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { HfDatasetCombobox } from "../../components/shared/hf-dataset-combobox";
 import { FieldLabel } from "../shared/field-label";
-
-const SAMPLING_OPTIONS: Array<{ value: SeedSamplingStrategy; label: string }> = [
-  { value: "ordered", label: "Ordered" },
-  { value: "shuffle", label: "Shuffle" },
-];
-
-const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
-  { value: "none", label: "None" },
-  { value: "index_range", label: "Index range" },
-  { value: "partition_block", label: "Partition block" },
-];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -104,26 +94,28 @@ function truncatePreviewValue(value: string): string {
   return `${value.slice(0, PREVIEW_TRUNCATE_AT)}…`;
 }
 
-function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
+function getPreviewEmptyStateCopy(
+  mode: SeedConfig["seed_source_type"],
+  t: (key: "recipe.seed.preview.emptyTitle" | "recipe.seed.preview.emptyLocal" | "recipe.seed.preview.emptyUnstructured" | "recipe.seed.preview.emptyHf") => string,
+): {
   title: string;
   description: string;
 } {
   if (mode === "local") {
     return {
-      title: "No preview yet",
-      description: "Upload a CSV, JSON, or JSONL file and click Load to see a sample.",
+      title: t("recipe.seed.preview.emptyTitle"),
+      description: t("recipe.seed.preview.emptyLocal"),
     };
   }
   if (mode === "unstructured") {
     return {
-      title: "No preview yet",
-      description:
-        "Upload your documents and the preview will appear once processing is done.",
+      title: t("recipe.seed.preview.emptyTitle"),
+      description: t("recipe.seed.preview.emptyUnstructured"),
     };
   }
   return {
-    title: "No preview yet",
-    description: "Select a Hugging Face dataset and click Load to see a sample.",
+    title: t("recipe.seed.preview.emptyTitle"),
+    description: t("recipe.seed.preview.emptyHf"),
   };
 }
 
@@ -162,7 +154,7 @@ function resolveChunking(config: SeedConfig): {
   return { chunkSize, chunkOverlap };
 }
 
-async function fileToBase64Payload(file: File): Promise<string> {
+async function fileToBase64Payload(file: File, errorMessage: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -170,12 +162,13 @@ async function fileToBase64Payload(file: File): Promise<string> {
       const parts = value.split(",");
       resolve(parts.length > 1 ? parts[1] : value);
     };
-    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.onerror = () => reject(new Error(errorMessage));
     reader.readAsDataURL(file);
   });
 }
 
 export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactElement {
+  const { t } = useI18n();
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const advancedOpen = config.advancedOpen === true;
@@ -186,7 +179,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     if (config.unstructured_file_ids?.length) {
       return config.unstructured_file_ids.map((id, i) => ({
         id,
-        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        name: config.unstructured_file_names?.[i] ?? t("recipe.seed.unknownFile"),
         size: config.unstructured_file_sizes?.[i] ?? 0,
         status: "ok" as const,
       }));
@@ -195,7 +188,22 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   });
 
   const mode = config.seed_source_type ?? "hf";
-  const previewEmpty = getPreviewEmptyStateCopy(mode);
+  const previewEmpty = getPreviewEmptyStateCopy(mode, t);
+  const samplingOptions: Array<{ value: SeedSamplingStrategy; label: string }> = useMemo(
+    () => [
+      { value: "ordered", label: t("recipe.seed.sampling.ordered") },
+      { value: "shuffle", label: t("recipe.seed.sampling.shuffle") },
+    ],
+    [t],
+  );
+  const selectionOptions: Array<{ value: SeedSelectionType; label: string }> = useMemo(
+    () => [
+      { value: "none", label: t("recipe.seed.selection.none") },
+      { value: "index_range", label: t("recipe.seed.selection.indexRange") },
+      { value: "partition_block", label: t("recipe.seed.selection.partitionBlock") },
+    ],
+    [t],
+  );
 
   const prevModeRef = useRef(mode);
   useEffect(() => {
@@ -211,7 +219,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         setUnstructuredFiles(
           config.unstructured_file_ids.map((id, i) => ({
             id,
-            name: config.unstructured_file_names?.[i] ?? "Unknown",
+            name: config.unstructured_file_names?.[i] ?? t("recipe.seed.unknownFile"),
             size: config.unstructured_file_sizes?.[i] ?? 0,
             status: "ok" as const,
           })),
@@ -236,7 +244,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     setUnstructuredFiles(
       config.unstructured_file_ids.map((id, i) => ({
         id,
-        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        name: config.unstructured_file_names?.[i] ?? t("recipe.seed.unknownFile"),
         size: config.unstructured_file_sizes?.[i] ?? 0,
         status: "ok" as const,
       })),
@@ -308,7 +316,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       if (mode === "hf") {
         const datasetName = config.hf_repo_id.trim();
         if (!datasetName) {
-          throw new Error("Dataset repo is required.");
+          throw new Error(t("recipe.seed.error.datasetRequired"));
         }
         const response = await inspectSeedDataset({
           dataset_name: datasetName,
@@ -338,12 +346,15 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
       if (mode === "local") {
         if (!localFile) {
-          throw new Error("Select a local CSV/JSON/JSONL file first.");
+          throw new Error(t("recipe.seed.error.localFileRequired"));
         }
         if (localFile.size > MAX_UPLOAD_BYTES) {
-          throw new Error("File too large (max 50MB).");
+          throw new Error(t("recipe.seed.error.fileTooLarge"));
         }
-        const payload = await fileToBase64Payload(localFile);
+        const payload = await fileToBase64Payload(
+          localFile,
+          t("recipe.seed.error.readFile"),
+        );
         const response = await inspectSeedUpload({
           filename: localFile.name,
           content_base64: payload,
@@ -378,7 +389,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           .map((f) => f.name);
 
         if (fileIds.length === 0) {
-          setInspectError("No files uploaded");
+          setInspectError(t("recipe.seed.error.noFilesUploaded"));
           return false;
         }
 
@@ -412,7 +423,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       return false;
     } catch (error) {
       if (!opts?.silent) {
-        setInspectError(getErrorMessage(error, "Failed to load seed metadata."));
+        setInspectError(getErrorMessage(error, t("recipe.seed.error.failedLoadMetadata")));
       }
       setPreviewRows([]);
       return false;
@@ -484,8 +495,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   return (
     <Tabs defaultValue="config" className="w-full min-w-0">
       <TabsList className="w-full">
-        <TabsTrigger value="config">Config</TabsTrigger>
-        <TabsTrigger value="preview">Preview</TabsTrigger>
+        <TabsTrigger value="config">{t("recipe.seed.tab.config")}</TabsTrigger>
+        <TabsTrigger value="preview">{t("recipe.seed.tab.preview")}</TabsTrigger>
       </TabsList>
 
       <TabsContent value="config" className="min-w-0 pt-3">
@@ -494,9 +505,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             <>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Dataset"
+                  label={t("recipe.seed.dataset.label")}
                   htmlFor={datasetId}
-                  hint="Hugging Face dataset repo id (org/repo)."
+                  hint={t("recipe.seed.dataset.hint")}
                 />
                 <div className="flex items-center gap-2">
                   <HfDatasetCombobox
@@ -504,7 +515,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     className="flex-1"
                     value={config.hf_repo_id}
                     accessToken={config.hf_token?.trim() || undefined}
-                    placeholder="org/repo"
+                    placeholder={t("recipe.seed.dataset.placeholder")}
                     onValueChange={(nextValue) =>
                       onUpdate({
                         hf_repo_id: nextValue,
@@ -524,21 +535,21 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     onClick={() => void loadSeedMetadata()}
                     disabled={isInspecting || !config.hf_repo_id.trim()}
                   >
-                    {isInspecting ? "Loading..." : "Load"}
+                    {isInspecting ? t("recipe.common.loading") : t("recipe.common.load")}
                   </Button>
                 </div>
               </div>
 
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="HF token (optional)"
+                  label={t("recipe.seed.hfToken.label")}
                   htmlFor={tokenId}
-                  hint="Only needed for private/gated datasets."
+                  hint={t("recipe.seed.hfToken.hint")}
                 />
                 <Input
                   id={tokenId}
                   className="nodrag"
-                  placeholder="hf_..."
+                  placeholder={t("settings.general.hfToken.placeholder")}
                   value={config.hf_token ?? ""}
                   onChange={(event) => onUpdate({ hf_token: event.target.value })}
                 />
@@ -550,8 +561,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           {mode === "local" && (
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Structured file"
-                hint="Upload CSV, JSON, or JSONL seed file."
+                label={t("recipe.seed.localFile.label")}
+                hint={t("recipe.seed.localFile.hint")}
               />
               <div className="flex items-center gap-2">
                 <Input
@@ -577,15 +588,15 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   onClick={() => void loadSeedMetadata()}
                   disabled={isInspecting || !localFile}
                 >
-                  {isInspecting ? "Loading..." : "Load"}
+                  {isInspecting ? t("recipe.common.loading") : t("recipe.common.load")}
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Max 50MB per file.
+                {t("recipe.seed.localFile.maxSize")}
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">
-                  Selected: {localFile?.name ?? config.local_file_name?.trim()}
+                  {t("recipe.seed.localFile.selected")}: {localFile?.name ?? config.local_file_name?.trim()}
                 </p>
               )}
             </div>
@@ -605,12 +616,12 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           {mode !== "unstructured" && (
             <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
               <FieldLabel
-                label="Drop specific seed columns"
-                hint="Dropped columns stay usable in prompts/expressions but are omitted from final dataset."
+                label={t("recipe.seed.dropColumns.label")}
+                hint={t("recipe.seed.dropColumns.hint")}
               />
               {previewColumns.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  Load columns to select which seed fields to drop.
+                  {t("recipe.seed.dropColumns.emptyHint")}
                 </p>
               ) : (
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -646,16 +657,16 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           >
             <CollapsibleTrigger asChild={true}>
               <CollapsibleSectionTriggerButton
-                label="Advanced source options"
+                label={t("recipe.seed.advanced.label")}
                 open={advancedOpen}
               />
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 space-y-3">
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Sampling strategy"
+                  label={t("recipe.seed.sampling.label")}
                   htmlFor={samplingId}
-                  hint="Ordered keeps row order. Shuffle randomizes sampled rows."
+                  hint={t("recipe.seed.sampling.hint")}
                 />
                 <Select
                   value={config.sampling_strategy}
@@ -664,10 +675,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   }
                 >
                   <SelectTrigger className="nodrag w-full" id={samplingId}>
-                    <SelectValue placeholder="Select sampling" />
+                    <SelectValue placeholder={t("recipe.seed.sampling.select")} />
                   </SelectTrigger>
                   <SelectContent>
-                    {SAMPLING_OPTIONS.map((option) => (
+                    {samplingOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
                         {option.label}
                       </SelectItem>
@@ -678,9 +689,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Selection strategy"
+                  label={t("recipe.seed.selection.label")}
                   htmlFor={selectionId}
-                  hint="Select all, a row range, or partition block."
+                  hint={t("recipe.seed.selection.hint")}
                 />
                 <Select
                   value={config.selection_type}
@@ -689,10 +700,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   }
                 >
                   <SelectTrigger className="nodrag w-full" id={selectionId}>
-                    <SelectValue placeholder="Select selection" />
+                    <SelectValue placeholder={t("recipe.seed.selection.select")} />
                   </SelectTrigger>
                   <SelectContent>
-                    {SELECTION_OPTIONS.map((option) => (
+                    {selectionOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
                         {option.label}
                       </SelectItem>
@@ -705,9 +716,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Chunk size"
+                      label={t("recipe.seed.chunkSize.label")}
                       htmlFor={chunkSizeId}
-                      hint="Characters per chunk."
+                      hint={t("recipe.seed.chunkSize.hint")}
                     />
                     <Input
                       id={chunkSizeId}
@@ -721,9 +732,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   </div>
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Chunk overlap"
+                      label={t("recipe.seed.chunkOverlap.label")}
                       htmlFor={chunkOverlapId}
-                      hint="Shared chars between adjacent chunks."
+                      hint={t("recipe.seed.chunkOverlap.hint")}
                     />
                     <Input
                       id={chunkOverlapId}
@@ -744,7 +755,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               {config.selection_type === "index_range" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Start" hint="Inclusive start row index for index_range." />
+                    <FieldLabel label={t("recipe.seed.indexRange.start")} hint={t("recipe.seed.indexRange.startHint")} />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -753,7 +764,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <FieldLabel label="End" hint="Inclusive end row index for index_range." />
+                    <FieldLabel label={t("recipe.seed.indexRange.end")} hint={t("recipe.seed.indexRange.endHint")} />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -767,7 +778,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               {config.selection_type === "partition_block" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Index" hint="Partition index to load." />
+                    <FieldLabel label={t("recipe.seed.partition.index")} hint={t("recipe.seed.partition.indexHint")} />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -776,7 +787,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <FieldLabel label="Partitions" hint="Total number of partitions." />
+                    <FieldLabel label={t("recipe.seed.partition.partitions")} hint={t("recipe.seed.partition.partitionsHint")} />
                     <Input
                       className="nodrag"
                       inputMode="numeric"
@@ -805,14 +816,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   </EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent className="text-xs text-muted-foreground">
-                  Preview appears here after loading source metadata.
+                  {t("recipe.seed.preview.appearsHint")}
                 </EmptyContent>
               </Empty>
             </div>
           ) : (
             <div className="space-y-2">
               <div className="text-xs text-muted-foreground">
-                Loaded columns: {previewColumns.join(", ") || "None"}
+                {t("recipe.seed.preview.loadedColumns")}: {previewColumns.join(", ") || t("recipe.seed.selection.none")}
               </div>
               <div className="max-h-[360px] overflow-y-auto overflow-x-hidden rounded-xl corner-squircle border border-border/60">
                 <Table className="corner-squircle min-w-max">
@@ -862,7 +873,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                                 );
                               }
                               if (imagePreview?.kind === "too_large") {
-                                return "Image too large to preview";
+                                return t("recipe.seed.preview.imageTooLarge");
                               }
                               const value = stringifyCell(row[col]);
                               const rowHasExpandableCell = rowHasExpandableText(row);

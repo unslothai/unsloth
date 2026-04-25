@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { LlmConfig, Score } from "../../types";
 import { FieldLabel } from "../shared/field-label";
 
@@ -24,6 +25,7 @@ export function LlmScoresTab({
   config,
   onUpdate,
 }: LlmScoresTabProps): ReactElement {
+  const { t } = useI18n();
   const scores = config.scores ?? [];
 
   function updateScores(nextScores: Score[]): void {
@@ -98,26 +100,26 @@ export function LlmScoresTab({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <FieldLabel
-          label="Scorers"
-          hint="Rubrics used by LLM Judge to score each generated row."
+          label={t("recipe.llm.scores.scorers")}
+          hint={t("recipe.llm.scores.scorersHint")}
         />
         {scores.length > 0 && (
           <Button type="button" size="xs" variant="outline" onClick={addScore}>
-            Add scorer
+            {t("recipe.llm.scores.addScorer")}
           </Button>
         )}
       </div>
       {scores.length === 0 && (
         <Empty className="rounded-xl border border-dashed border-border/70 p-5">
           <EmptyHeader>
-            <EmptyTitle className="text-sm">No scorers yet</EmptyTitle>
+            <EmptyTitle className="text-sm">{t("recipe.llm.scores.noneTitle")}</EmptyTitle>
             <EmptyDescription className="text-xs">
-              Add a scorer rubric before running judge generation.
+              {t("recipe.llm.scores.noneDescription")}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent className="max-w-none">
             <Button type="button" size="sm" onClick={addScore}>
-              Add first scorer
+              {t("recipe.llm.scores.addFirstScorer")}
             </Button>
           </EmptyContent>
         </Empty>
@@ -129,7 +131,7 @@ export function LlmScoresTab({
         >
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs font-semibold text-foreground">
-              {score.name.trim() || `Scorer ${index + 1}`}
+              {score.name.trim() || `${t("recipe.llm.scores.scorer")} ${index + 1}`}
             </p>
             <Button
               type="button"
@@ -137,12 +139,12 @@ export function LlmScoresTab({
               variant="ghost"
               onClick={() => removeScore(index)}
             >
-              Remove
+              {t("recipe.llm.scores.remove")}
             </Button>
           </div>
           <Input
             className="nodrag h-8 text-xs"
-            placeholder="Score name"
+            placeholder={t("recipe.llm.scores.scoreName")}
             value={score.name}
             onChange={(event) =>
               updateScore(index, { name: event.target.value })
@@ -150,7 +152,7 @@ export function LlmScoresTab({
           />
           <Textarea
             className="corner-squircle nodrag min-h-[56px] text-xs"
-            placeholder="Score description"
+            placeholder={t("recipe.llm.scores.scoreDescription")}
             value={score.description}
             onChange={(event) =>
               updateScore(index, { description: event.target.value })
@@ -164,7 +166,7 @@ export function LlmScoresTab({
               >
                 <Input
                   className="nodrag h-7 text-xs"
-                  placeholder="Value"
+                  placeholder={t("recipe.llm.scores.value")}
                   value={option.value}
                   onChange={(event) =>
                     updateOption(index, optionIndex, {
@@ -174,7 +176,7 @@ export function LlmScoresTab({
                 />
                 <Input
                   className="nodrag h-7 text-xs"
-                  placeholder="Description"
+                  placeholder={t("recipe.llm.scores.description")}
                   value={option.description}
                   onChange={(event) =>
                     updateOption(index, optionIndex, {
@@ -188,7 +190,7 @@ export function LlmScoresTab({
                   variant="ghost"
                   onClick={() => removeOption(index, optionIndex)}
                 >
-                  x
+                  {t("recipe.llm.scores.remove")}
                 </Button>
               </div>
             ))}
@@ -198,7 +200,7 @@ export function LlmScoresTab({
               variant="outline"
               onClick={() => addOption(index)}
             >
-              Add option
+              {t("recipe.llm.scores.addOption")}
             </Button>
           </div>
         </div>

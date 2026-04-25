@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useI18n } from "@/features/i18n";
 import { toastError } from "@/shared/toast";
 import {
   ArrowRight01Icon,
@@ -101,19 +102,26 @@ function McpServerCard({
   ) => void;
   onRemoveProviderEnv: (index: number, envIndex: number) => void;
 }): ReactElement {
+  const { t } = useI18n();
   const args = provider.args && provider.args.length > 0 ? provider.args : [""];
   const envVars =
     provider.env && provider.env.length > 0
       ? provider.env
       : [{ key: "", value: "" }];
-  const summaryTitle = provider.name.trim() || `Tool server ${index + 1}`;
+  const summaryTitle =
+    provider.name.trim() || `${t("recipe.toolProfile.server.title")} ${index + 1}`;
   const transportLabel =
-    provider.provider_type === "stdio" ? "Local command" : "HTTP";
-  const toolsLabel = typeof toolsCount === "number" ? `${toolsCount} tools` : null;
+    provider.provider_type === "stdio"
+      ? t("recipe.toolProfile.transport.localCommand")
+      : t("recipe.toolProfile.transport.http");
+  const toolsLabel =
+    typeof toolsCount === "number"
+      ? `${toolsCount} ${t("recipe.toolProfile.toolsCount")}`
+      : null;
   const description =
     provider.provider_type === "stdio"
-      ? "Runs a local tool server."
-      : "Calls a remote tool server.";
+      ? t("recipe.toolProfile.server.localDescription")
+      : t("recipe.toolProfile.server.remoteDescription");
 
   return (
     <Collapsible open={open} onOpenChange={onOpenChange}>
@@ -166,11 +174,14 @@ function McpServerCard({
           )}
 
           <div className="grid gap-1.5">
-            <FieldLabel label="Server name" hint="Name shown in this tool access setup." />
+            <FieldLabel
+              label={t("recipe.toolProfile.serverName.label")}
+              hint={t("recipe.toolProfile.serverName.hint")}
+            />
             <Input
               className="nodrag"
               value={provider.name}
-              placeholder="context7"
+              placeholder={t("recipe.toolProfile.serverName.placeholder")}
               onChange={(event) =>
                 onUpdateProviderAt(index, { name: event.target.value })
               }
@@ -187,19 +198,26 @@ function McpServerCard({
             }
           >
               <TabsList className="w-full">
-                <TabsTrigger value="stdio">Local command</TabsTrigger>
-                <TabsTrigger value="streamable_http">HTTP endpoint</TabsTrigger>
+                <TabsTrigger value="stdio">
+                  {t("recipe.toolProfile.transport.localCommand")}
+                </TabsTrigger>
+                <TabsTrigger value="streamable_http">
+                  {t("recipe.toolProfile.transport.httpEndpoint")}
+                </TabsTrigger>
               </TabsList>
           </Tabs>
 
           {provider.provider_type === "stdio" ? (
             <div className="space-y-4">
               <div className="grid gap-1.5">
-                <FieldLabel label="Command" hint="Command used to start the tool server." />
+                <FieldLabel
+                  label={t("recipe.toolProfile.command.label")}
+                  hint={t("recipe.toolProfile.command.hint")}
+                />
                 <Input
                   className="nodrag"
                   value={provider.command ?? ""}
-                  placeholder="npx"
+                  placeholder={t("recipe.toolProfile.command.placeholder")}
                   onChange={(event) =>
                     onUpdateProviderAt(index, { command: event.target.value })
                   }
@@ -208,7 +226,10 @@ function McpServerCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <FieldLabel label="Arguments" hint="Optional command arguments." />
+                  <FieldLabel
+                    label={t("recipe.toolProfile.arguments.label")}
+                    hint={t("recipe.toolProfile.arguments.hint")}
+                  />
                   <Button
                     type="button"
                     size="xs"
@@ -216,7 +237,7 @@ function McpServerCard({
                     onClick={() => onAddProviderArg(index)}
                   >
                     <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                    Add arg
+                    {t("recipe.toolProfile.arguments.add")}
                   </Button>
                 </div>
                 {args.map((arg, argIndex) => (
@@ -224,7 +245,11 @@ function McpServerCard({
                     <Input
                       className="nodrag"
                       value={arg}
-                      placeholder={argIndex === 0 ? "-y" : "argument"}
+                      placeholder={
+                        argIndex === 0
+                          ? t("recipe.toolProfile.arguments.firstPlaceholder")
+                          : t("recipe.toolProfile.arguments.placeholder")
+                      }
                       onChange={(event) =>
                         onUpdateProviderArg(index, argIndex, event.target.value)
                       }
@@ -243,7 +268,10 @@ function McpServerCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <FieldLabel label="Environment variables" hint="Optional values passed to the tool server." />
+                  <FieldLabel
+                    label={t("recipe.toolProfile.env.label")}
+                    hint={t("recipe.toolProfile.env.hint")}
+                  />
                   <Button
                     type="button"
                     size="xs"
@@ -251,7 +279,7 @@ function McpServerCard({
                     onClick={() => onAddProviderEnv(index)}
                   >
                     <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                    Add env
+                    {t("recipe.toolProfile.env.add")}
                   </Button>
                 </div>
                 {envVars.map((item, envIndex) => (
@@ -262,7 +290,7 @@ function McpServerCard({
                     <Input
                       className="nodrag"
                       value={item.key}
-                      placeholder="KEY"
+                      placeholder={t("recipe.toolProfile.env.keyPlaceholder")}
                       onChange={(event) =>
                         onUpdateProviderEnv(index, envIndex, {
                           key: event.target.value,
@@ -272,7 +300,7 @@ function McpServerCard({
                     <Input
                       className="nodrag"
                       value={item.value}
-                      placeholder="value"
+                      placeholder={t("recipe.toolProfile.env.valuePlaceholder")}
                       onChange={(event) =>
                         onUpdateProviderEnv(index, envIndex, {
                           value: event.target.value,
@@ -294,11 +322,14 @@ function McpServerCard({
           ) : (
             <div className="space-y-4">
               <div className="grid gap-1.5">
-                <FieldLabel label="Endpoint" hint="URL for the tool server." />
+                <FieldLabel
+                  label={t("recipe.toolProfile.endpoint.label")}
+                  hint={t("recipe.toolProfile.endpoint.hint")}
+                />
                 <Input
                   className="nodrag"
                   value={provider.endpoint ?? ""}
-                  placeholder="https://example.com/mcp"
+                  placeholder={t("recipe.toolProfile.endpoint.placeholder")}
                   onChange={(event) =>
                     onUpdateProviderAt(index, { endpoint: event.target.value })
                   }
@@ -307,13 +338,13 @@ function McpServerCard({
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="grid gap-1.5">
                   <FieldLabel
-                    label="API key environment variable"
-                    hint="Optional environment variable that stores the API key."
+                    label={t("recipe.toolProfile.apiKeyEnv.label")}
+                    hint={t("recipe.toolProfile.apiKeyEnv.hint")}
                   />
                   <Input
                     className="nodrag"
                     value={provider.api_key_env ?? ""}
-                    placeholder="TOOL_SERVER_API_KEY"
+                    placeholder={t("recipe.toolProfile.apiKeyEnv.placeholder")}
                     onChange={(event) =>
                       onUpdateProviderAt(index, {
                         // biome-ignore lint/style/useNamingConvention: api schema
@@ -324,13 +355,13 @@ function McpServerCard({
                 </div>
                 <div className="grid gap-1.5">
                   <FieldLabel
-                    label="API key"
-                    hint="Optional API key."
+                    label={t("recipe.toolProfile.apiKey.label")}
+                    hint={t("recipe.toolProfile.apiKey.hint")}
                   />
                   <Input
                     className="nodrag"
                     value={provider.api_key ?? ""}
-                    placeholder="token"
+                    placeholder={t("recipe.toolProfile.apiKey.placeholder")}
                     onChange={(event) =>
                       onUpdateProviderAt(index, {
                         // biome-ignore lint/style/useNamingConvention: api schema
@@ -352,6 +383,7 @@ export function ToolProfileDialog({
   config,
   onUpdate,
 }: ToolProfileDialogProps): ReactElement {
+  const { t } = useI18n();
   const providers = config.mcp_providers;
   const [activeTab, setActiveTab] = useState<"profile" | "servers">(
     providers.length > 0 ? "profile" : "servers",
@@ -533,8 +565,8 @@ export function ToolProfileDialog({
     const readyProviders = providers.filter(isProviderReadyForToolFetch);
     if (readyProviders.length === 0) {
       toastError(
-        "No tool servers are ready",
-        "Add a server name plus a command or endpoint first.",
+        t("recipe.toolProfile.toast.noServersReadyTitle"),
+        t("recipe.toolProfile.toast.noServersReadyDescription"),
       );
       return;
     }
@@ -566,14 +598,19 @@ export function ToolProfileDialog({
         Object.fromEntries(
           response.providers
             .filter((provider) => provider.name.trim() && provider.error)
-            .map((provider) => [provider.name.trim(), provider.error ?? "Failed to load tools."]),
+            .map((provider) => [
+              provider.name.trim(),
+              provider.error ?? t("recipe.toolProfile.toast.loadToolsFailedShort"),
+            ]),
         ),
       );
       setDuplicateTools(response.duplicate_tools ?? {});
     } catch (error) {
       toastError(
-        "Couldn't load tools",
-        error instanceof Error ? error.message : "We couldn't load the tools for these servers.",
+        t("recipe.toolProfile.toast.couldNotLoadToolsTitle"),
+        error instanceof Error
+          ? error.message
+          : t("recipe.toolProfile.toast.couldNotLoadToolsDescription"),
       );
     } finally {
       setLoadingTools(false);
@@ -608,13 +645,17 @@ export function ToolProfileDialog({
       className="w-full"
     >
       <TabsList className="w-full">
-        <TabsTrigger value="servers">1. Add servers</TabsTrigger>
-        <TabsTrigger value="profile">2. Choose tools</TabsTrigger>
+        <TabsTrigger value="servers">
+          {t("recipe.toolProfile.tab.addServers")}
+        </TabsTrigger>
+        <TabsTrigger value="profile">
+          {t("recipe.toolProfile.tab.chooseTools")}
+        </TabsTrigger>
       </TabsList>
 
       <TabsContent value="profile" className="space-y-4 pt-3">
         <NameField
-          label="Tool access name"
+          label={t("recipe.toolProfile.accessName.label")}
           value={config.name}
           onChange={(value) => onUpdate({ name: value })}
         />
@@ -622,36 +663,35 @@ export function ToolProfileDialog({
         {!hasProviders ? (
           <div className="space-y-3">
             <EmptyState
-              title="Add a server to start choosing tools"
-              description="Set up a server first, then come back here to choose which tools this step can use."
+              title={t("recipe.toolProfile.empty.addServerTitle")}
+              description={t("recipe.toolProfile.empty.addServerDescription")}
             />
             <Button
               type="button"
               variant="outline"
               onClick={() => setActiveTab("servers")}
             >
-              Add servers first
+              {t("recipe.toolProfile.action.addServersFirst")}
             </Button>
           </div>
         ) : (
           <>
             <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
               <p className="text-sm font-semibold text-foreground">
-                Pick which tools this setup may use
+                {t("recipe.toolProfile.pickTools.title")}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                1. Load tool names from your servers. 2. Leave the list empty to
-                allow all tools, or add only the ones this step should use.
+                {t("recipe.toolProfile.pickTools.description")}
               </p>
             </div>
             <div className="space-y-3 rounded-2xl border border-border/60 bg-muted/10 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-foreground">
-                    Available tools
+                    {t("recipe.toolProfile.availableTools.title")}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Load tool names so you can pick from a list instead of guessing.
+                    {t("recipe.toolProfile.availableTools.description")}
                   </p>
                 </div>
                 <Button
@@ -663,14 +703,16 @@ export function ToolProfileDialog({
                     void loadTools();
                   }}
                 >
-                  {loadingTools ? "Loading..." : "Load tools"}
+                  {loadingTools
+                    ? t("recipe.common.loading")
+                    : t("recipe.toolProfile.action.loadTools")}
                 </Button>
               </div>
 
               {Object.keys(toolsByProvider).length === 0 &&
                 Object.keys(providerErrors).length === 0 && (
                   <p className="text-xs text-muted-foreground">
-                    Load tools to browse what's available.
+                    {t("recipe.toolProfile.availableTools.empty")}
                   </p>
                 )}
 
@@ -696,8 +738,7 @@ export function ToolProfileDialog({
 
               {Object.entries(duplicateTools).length > 0 && (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                  Some tool names appear on more than one server:
-                  {" "}
+                  {t("recipe.toolProfile.duplicates.prefix")}{" "}
                   {Object.entries(duplicateTools)
                     .map(([toolName, providerList]) => `${toolName} (${providerList.join(", ")})`)
                     .join("; ")}
@@ -707,8 +748,8 @@ export function ToolProfileDialog({
 
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Tools this setup may use"
-                hint="Leave this empty to allow every tool from these servers."
+                label={t("recipe.toolProfile.allowTools.label")}
+                hint={t("recipe.toolProfile.allowTools.hint")}
               />
               <ChipInput
                 values={config.allow_tools ?? []}
@@ -727,14 +768,14 @@ export function ToolProfileDialog({
                     ),
                   })
                 }
-                placeholder="Type tool name and press Enter"
+                placeholder={t("recipe.toolProfile.allowTools.placeholder")}
               />
             </div>
 
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
               <CollapsibleTrigger asChild={true}>
                 <CollapsibleSectionTriggerButton
-                  label="Tool-call limits"
+                  label={t("recipe.toolProfile.limits.label")}
                   open={advancedOpen}
                 />
               </CollapsibleTrigger>
@@ -742,8 +783,8 @@ export function ToolProfileDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Max tool-use turns"
-                      hint="How many back-and-forth tool calls an AI step can make."
+                      label={t("recipe.toolProfile.limits.maxTurns")}
+                      hint={t("recipe.toolProfile.limits.maxTurnsHint")}
                     />
                     <Input
                       className="nodrag"
@@ -758,8 +799,8 @@ export function ToolProfileDialog({
                   </div>
                   <div className="grid gap-1.5">
                     <FieldLabel
-                      label="Timeout (seconds)"
-                      hint="How long to wait when loading or calling tools."
+                      label={t("recipe.toolProfile.limits.timeout")}
+                      hint={t("recipe.toolProfile.limits.timeoutHint")}
                     />
                     <Input
                       className="nodrag"
@@ -782,28 +823,27 @@ export function ToolProfileDialog({
       <TabsContent value="servers" className="space-y-4 pt-3">
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">
-            Add one or more tool servers
+            {t("recipe.toolProfile.servers.title")}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            After your servers are ready, switch to Choose tools to load names
-            and decide which ones this setup should allow.
+            {t("recipe.toolProfile.servers.description")}
           </p>
         </div>
         <div className="flex items-center justify-between gap-3">
           <FieldLabel
-            label="Tool servers"
-            hint="These servers belong to this tool access setup and can be reused by linked AI steps."
+            label={t("recipe.toolProfile.servers.label")}
+            hint={t("recipe.toolProfile.servers.hint")}
           />
           <Button type="button" size="xs" variant="outline" onClick={addProvider}>
             <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-            Add server
+            {t("recipe.toolProfile.action.addServer")}
           </Button>
         </div>
 
         {!hasProviders ? (
           <EmptyState
-            title="No tool servers yet"
-            description="Add one or more servers here, then go back to Access to load and choose tools."
+            title={t("recipe.toolProfile.servers.emptyTitle")}
+            description={t("recipe.toolProfile.servers.emptyDescription")}
           />
         ) : (
           <div className="space-y-3">

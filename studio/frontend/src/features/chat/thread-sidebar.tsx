@@ -21,6 +21,7 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useI18n } from "@/features/i18n";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
 import { deleteChatItem, useChatSidebarItems } from "./hooks/use-chat-sidebar-items";
@@ -39,6 +40,7 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
+  const { t } = useI18n();
   const { items } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeId =
@@ -60,7 +62,7 @@ export function ThreadSidebar({
   return (
     <>
       <SidebarHeader className="px-4 py-3">
-        <span className="text-base font-semibold tracking-tight">Playground</span>
+        <span className="text-base font-semibold tracking-tight">{t("thread.playground")}</span>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup className="px-4 pt-1">
@@ -69,14 +71,14 @@ export function ThreadSidebar({
               <SidebarMenuItem>
                 <SidebarMenuButton onClick={onNewThread}>
                   <HugeiconsIcon icon={PencilEdit02Icon} />
-                  <span>New Chat</span>
+                  <span>{t("nav.newChat")}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {showCompare ? (
                 <SidebarMenuItem>
                   <SidebarMenuButton data-tour="chat-compare" onClick={onNewCompare}>
                     <HugeiconsIcon icon={ColumnInsertIcon} />
-                    <span>Compare</span>
+                    <span>{t("nav.compare")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ) : null}
@@ -84,7 +86,7 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          <SidebarGroupLabel className="text-xs font-medium text-muted-foreground/80">Your Chats</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-xs font-medium text-muted-foreground/80">{t("thread.yourChats")}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => (
@@ -93,12 +95,12 @@ export function ThreadSidebar({
                     isActive={activeId === item.id}
                     onClick={() => onSelect(viewForItem(item))}
                   >
-                    <span>{item.title}</span>
+                    <span data-no-translate>{item.title}</span>
                   </SidebarMenuButton>
                   <SidebarMenuAction
                     showOnHover={true}
                     onClick={() => handleDelete(item)}
-                    title="Delete"
+                    title={t("nav.delete")}
                   >
                     <HugeiconsIcon icon={Delete02Icon} />
                   </SidebarMenuAction>
@@ -107,7 +109,7 @@ export function ThreadSidebar({
             </SidebarMenu>
             {items.length === 0 && (
               <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-                No threads yet
+                {t("thread.noThreadsYet")}
               </p>
             )}
           </SidebarGroupContent>
@@ -121,7 +123,7 @@ export function ThreadSidebar({
           className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
         >
           <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
-          <span>Learn more in docs</span>
+          <span>{t("thread.learnDocs")}</span>
         </a>
         <a
           href="https://unsloth.ai/docs/new/changelog"
@@ -130,7 +132,7 @@ export function ThreadSidebar({
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={NewReleasesIcon} className="size-4 shrink-0" strokeWidth={2} />
-          <span>What&apos;s new</span>
+          <span>{t("thread.whatsNew")}</span>
         </a>
       </SidebarFooter>
     </>

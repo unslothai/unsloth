@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
@@ -33,6 +34,7 @@ export function DatetimeDialog({
   config,
   onUpdate,
 }: DatetimeDialogProps): ReactElement {
+  const { t } = useI18n();
   const startId = `${config.id}-datetime-start`;
   const endId = `${config.id}-datetime-end`;
   const unitId = `${config.id}-datetime-unit`;
@@ -52,9 +54,9 @@ export function DatetimeDialog({
         <div className="grid gap-2 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Start"
+              label={t("recipe.sampler.datetime.start")}
               htmlFor={startId}
-              hint="Earliest datetime allowed."
+              hint={t("recipe.sampler.datetime.startHint")}
             />
             <Input
               id={startId}
@@ -68,9 +70,9 @@ export function DatetimeDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="End"
+              label={t("recipe.sampler.datetime.end")}
               htmlFor={endId}
-              hint="Latest datetime allowed."
+              hint={t("recipe.sampler.datetime.endHint")}
             />
             <Input
               id={endId}
@@ -85,16 +87,16 @@ export function DatetimeDialog({
         </div>
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Unit"
+            label={t("recipe.sampler.datetime.unit")}
             htmlFor={unitId}
-            hint="Sampling granularity for generated timestamps."
+            hint={t("recipe.sampler.datetime.unitHint")}
           />
           <Select
             value={config.datetime_unit ?? ""}
             onValueChange={(value) => updateField("datetime_unit", value)}
           >
             <SelectTrigger className="nodrag w-full" id={unitId}>
-              <SelectValue placeholder="Select unit" />
+              <SelectValue placeholder={t("recipe.sampler.datetime.selectUnit")} />
             </SelectTrigger>
             <SelectContent>
               {DATETIME_UNITS.map((unit) => (

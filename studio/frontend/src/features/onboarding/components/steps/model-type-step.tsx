@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { MODEL_TYPES } from "@/config/training";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
@@ -32,16 +33,10 @@ const TYPE_ICONS: Record<ModelType, typeof ImageIcon> = {
   text: TextIcon,
 };
 
-const TYPE_TOOLTIPS: Record<ModelType, string> = {
-  vision: "Fine-tune models that understand images and text together",
-  audio: "Fine-tune text-to-speech and audio models",
-  embeddings: "Fine-tune models for semantic search and similarity",
-  text: "Fine-tune large language models for text generation",
-};
-
 const COMING_SOON: ModelType[] = [];
 
 export function ModelTypeStep(): ReactElement {
+  const { t } = useI18n();
   const { modelType, setModelType } = useTrainingConfigStore(
     useShallow((s) => ({
       modelType: s.modelType,
@@ -53,16 +48,16 @@ export function ModelTypeStep(): ReactElement {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-lg font-semibold">Welcome to Unsloth Studio</h2>
+        <h2 className="text-lg font-semibold">{t("onboarding.modelType.welcome")}</h2>
         <p className="text-sm text-muted-foreground">
-          Choose a path - fine-tune LLMs, vision, embedding, audio models or just chat.{" "}
+          {t("onboarding.modelType.description")}{" "}
           <a
             href="https://unsloth.ai/docs/new/studio/start"
             target="_blank"
             rel="noreferrer"
             className="text-primary underline"
           >
-            Get started with our guide
+            {t("onboarding.modelType.guide")}
           </a>
         </p>
       </div>
@@ -108,7 +103,7 @@ export function ModelTypeStep(): ReactElement {
                     variant="secondary"
                     className="absolute top-2 right-2 text-[10px]"
                   >
-                    Coming Soon
+                    {t("onboarding.modelType.comingSoon")}
                   </Badge>
                 )}
                 <CardContent className="flex items-center gap-4 py-4">
@@ -162,7 +157,13 @@ export function ModelTypeStep(): ReactElement {
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          {TYPE_TOOLTIPS[type.value]}
+                          {type.value === "vision"
+                            ? t("onboarding.modelType.tooltip.vision")
+                            : type.value === "audio"
+                              ? t("onboarding.modelType.tooltip.audio")
+                              : type.value === "embeddings"
+                                ? t("onboarding.modelType.tooltip.embeddings")
+                                : t("onboarding.modelType.tooltip.text")}
                         </TooltipContent>
                       </Tooltip>
                     </div>
@@ -214,7 +215,7 @@ export function ModelTypeStep(): ReactElement {
               </div>
               <div className="flex flex-col gap-0.5 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-medium">Chat</span>
+                  <span className="font-medium">{t("onboarding.modelType.chat")}</span>
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -229,12 +230,12 @@ export function ModelTypeStep(): ReactElement {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Chat with any model. Has tool calling, web search and more.
+                      {t("onboarding.modelType.tooltip.chat")}
                     </TooltipContent>
                   </Tooltip>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  Chat with LLMs & vision models + audio generation.
+                  {t("onboarding.modelType.chatDescription")}
                 </span>
               </div>
             </CardContent>

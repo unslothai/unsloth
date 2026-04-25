@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/features/i18n";
 import { type ReactElement, useLayoutEffect, useRef, useState } from "react";
 
 type InlineCategoryBadgesProps = {
@@ -11,6 +12,7 @@ type InlineCategoryBadgesProps = {
 export function InlineCategoryBadges({
   values,
 }: InlineCategoryBadgesProps): ReactElement {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(values.length);
 
@@ -47,7 +49,11 @@ export function InlineCategoryBadges({
   }, [values]);
 
   if (values.length === 0) {
-    return <p className="text-xs text-muted-foreground">No values</p>;
+    return (
+      <p className="text-xs text-muted-foreground">
+        {t("recipe.inline.category.noValues")}
+      </p>
+    );
   }
 
   const overflow = values.length - visibleCount;

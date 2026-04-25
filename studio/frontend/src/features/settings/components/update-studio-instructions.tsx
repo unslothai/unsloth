@@ -8,6 +8,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "@/features/i18n";
 
 const STUDIO_UPDATE_CMD = "unsloth studio update";
 const STUDIO_UPDATE_FALLBACK_UNIX_CMD =
@@ -17,10 +18,6 @@ const STUDIO_UPDATE_FALLBACK_WINDOWS_CMD =
 
 export type UpdateShell = "windows" | "unix";
 
-function getStudioUpdateInstructionLine(shell: UpdateShell): string {
-  return shell === "windows" ? "Open PowerShell and run:" : "Open Terminal and run:";
-}
-
 function CopyableCommand({
   command,
   copyLabel,
@@ -28,6 +25,7 @@ function CopyableCommand({
   command: string;
   copyLabel: string;
 }): ReactElement {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -64,8 +62,12 @@ function CopyableCommand({
         type="button"
         onClick={handleCopy}
         className="flex shrink-0 items-center justify-center border-l border-border px-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        title={copied ? "Copied" : "Copy command"}
-        aria-label={copied ? `${copyLabel} copied` : `Copy ${copyLabel}`}
+        title={copied ? t("settings.common.copied") : t("settings.common.copyCommand")}
+        aria-label={
+          copied
+            ? `${copyLabel} ${t("settings.common.copied").toLowerCase()}`
+            : `${t("settings.common.copy")} ${copyLabel}`
+        }
       >
         {copied ? (
           <HugeiconsIcon icon={Tick02Icon} className="size-4 text-emerald-600" />
@@ -86,6 +88,7 @@ export function UpdateStudioInstructions({
   defaultShell: UpdateShell;
   showTitle?: boolean;
 }): ReactElement {
+  const { t } = useI18n();
   const [shell, setShell] = useState<UpdateShell>(defaultShell);
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
@@ -110,7 +113,7 @@ export function UpdateStudioInstructions({
       >
         {showTitle ? (
           <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
-            Update Unsloth Studio
+            {t("settings.updateStudio.title")}
           </p>
         ) : null}
         <div className="flex shrink-0 items-center gap-0.5 text-[11px]">
@@ -125,7 +128,7 @@ export function UpdateStudioInstructions({
             )}
             aria-pressed={windows}
           >
-            Windows
+            {t("settings.updateStudio.windows")}
           </button>
           <span className="text-border">/</span>
           <button
@@ -139,7 +142,7 @@ export function UpdateStudioInstructions({
             )}
             aria-pressed={!windows}
           >
-            macOS/Linux
+            {t("settings.updateStudio.macosLinux")}
           </button>
         </div>
       </div>
@@ -152,12 +155,17 @@ export function UpdateStudioInstructions({
           transition={fadeTransition}
           className="text-xs text-muted-foreground leading-relaxed"
         >
-          {getStudioUpdateInstructionLine(shell)}
+          {shell === "windows"
+            ? t("settings.updateStudio.openPowershell")
+            : t("settings.updateStudio.openTerminal")}
         </motion.p>
       </AnimatePresence>
-      <CopyableCommand command={STUDIO_UPDATE_CMD} copyLabel="update command" />
+      <CopyableCommand
+        command={STUDIO_UPDATE_CMD}
+        copyLabel={t("settings.updateStudio.updateCommand")}
+      />
       <p className="text-xs text-muted-foreground leading-relaxed">
-        If that fails or unsloth studio update is unavailable, run:
+        {t("settings.updateStudio.fallbackHint")}
       </p>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
@@ -173,12 +181,12 @@ export function UpdateStudioInstructions({
                 ? STUDIO_UPDATE_FALLBACK_WINDOWS_CMD
                 : STUDIO_UPDATE_FALLBACK_UNIX_CMD
             }
-            copyLabel="fallback command"
+            copyLabel={t("settings.updateStudio.fallbackCommand")}
           />
         </motion.div>
       </AnimatePresence>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Restart Studio after updating for changes to take effect.
+        {t("settings.updateStudio.restartHint")}
       </p>
     </div>
   );

@@ -34,6 +34,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
+import { useI18n } from "@/features/i18n";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -66,6 +67,7 @@ function extractParamLabel(id: string): string | null {
 }
 
 export function ModelSelectionStep() {
+  const { t } = useI18n();
   const gpu = useGpuInfo();
   const {
     modelType,
@@ -147,18 +149,18 @@ export function ModelSelectionStep() {
     <FieldGroup>
       <Field>
         <FieldLabel>
-          Hugging Face Token{" "}
-          <span className="text-muted-foreground font-normal">(Optional)</span>
+          {t("onboarding.modelSelection.hfToken")}{" "}
+          <span className="text-muted-foreground font-normal">({t("onboarding.common.optional")})</span>
         </FieldLabel>
         <FieldDescription>
-          Required for gated or private models.{" "}
+          {t("onboarding.modelSelection.hfTokenHint")}{" "}
           <a
             href="https://huggingface.co/settings/tokens"
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"
           >
-            Get token
+            {t("onboarding.common.getToken")}
           </a>
         </FieldDescription>
         <InputGroup>
@@ -184,18 +186,18 @@ export function ModelSelectionStep() {
               rel="noopener noreferrer"
               className="underline"
             >
-              Get or update token
+              {t("onboarding.common.getOrUpdateToken")}
             </a>
           </p>
         )}
         {isCheckingToken && (
-          <p className="text-xs text-muted-foreground">Checking token…</p>
+          <p className="text-xs text-muted-foreground">{t("onboarding.common.checkingToken")}</p>
         )}
       </Field>
 
       <Field>
         <FieldLabel className="flex items-center gap-1.5">
-          Search models
+          {t("onboarding.modelSelection.searchModels")}
           <Tooltip>
             <TooltipTrigger asChild={true}>
               <button
@@ -209,14 +211,14 @@ export function ModelSelectionStep() {
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              Search Hugging Face models or pick from our recommended list.{" "}
+              {t("onboarding.modelSelection.searchHint")}{" "}
               <a
                 href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary underline"
               >
-                Read more
+                {t("onboarding.common.readMore")}
               </a>
             </TooltipContent>
           </Tooltip>
@@ -241,7 +243,7 @@ export function ModelSelectionStep() {
             itemToStringValue={(id) => id}
             autoHighlight={true}
           >
-            <ComboboxInput placeholder="Search models..." className="w-full">
+            <ComboboxInput placeholder={t("onboarding.modelSelection.searchPlaceholder")} className="w-full">
               <InputGroupAddon>
                 <HugeiconsIcon icon={Search01Icon} className="size-4" />
               </InputGroupAddon>
@@ -249,10 +251,10 @@ export function ModelSelectionStep() {
             <ComboboxContent anchor={comboboxAnchorRef}>
               {isLoading ? (
                 <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                  <Spinner className="size-4" /> Searching…
+                  <Spinner className="size-4" /> {t("onboarding.common.searching")}
                 </div>
               ) : (
-                <ComboboxEmpty>No models found</ComboboxEmpty>
+                <ComboboxEmpty>{t("onboarding.modelSelection.noModelsFound")}</ComboboxEmpty>
               )}
               <div
                 ref={scrollRef}
@@ -293,7 +295,7 @@ export function ModelSelectionStep() {
                           )}
                           {fitStatus === "tight" && (
                             <span className="text-[9px] font-medium !text-amber-400">
-                              TIGHT
+                              {t("onboarding.modelSelection.tight")}
                             </span>
                           )}
                           {sizeLabel ? (
@@ -323,7 +325,7 @@ export function ModelSelectionStep() {
           <div className="flex items-center justify-between">
             <div>
               <FieldLabel className="flex items-center gap-1.5">
-                Training method
+                {t("onboarding.modelSelection.trainingMethod")}
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -337,22 +339,20 @@ export function ModelSelectionStep() {
                     </button>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">
-                    QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
-                    16-bit for better quality. Full fine-tune updates all
-                    weights.{" "}
+                    {t("onboarding.modelSelection.trainingMethodHint")}{" "}
                     <a
                       href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline"
                     >
-                      Read more
+                      {t("onboarding.common.readMore")}
                     </a>
                   </TooltipContent>
                 </Tooltip>
               </FieldLabel>
               <FieldDescription>
-                Choose how to fine-tune {selectedModel}
+                {t("onboarding.modelSelection.chooseMethod").replace("{model}", selectedModel)}
               </FieldDescription>
             </div>
             <Select
@@ -363,9 +363,9 @@ export function ModelSelectionStep() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="qlora">QLoRA (4-bit)</SelectItem>
-                <SelectItem value="lora">LoRA (16-bit)</SelectItem>
-                <SelectItem value="full">Full Fine-tune</SelectItem>
+                <SelectItem value="qlora">{t("onboarding.modelSelection.method.qlora")}</SelectItem>
+                <SelectItem value="lora">{t("onboarding.modelSelection.method.lora")}</SelectItem>
+                <SelectItem value="full">{t("onboarding.modelSelection.fullFinetune")}</SelectItem>
               </SelectContent>
             </Select>
           </div>

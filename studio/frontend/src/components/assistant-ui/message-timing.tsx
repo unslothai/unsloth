@@ -6,6 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import type { FC } from "react";
 
@@ -28,6 +29,7 @@ export const MessageTiming: FC<{
   className?: string;
   side?: "top" | "right" | "bottom" | "left";
 }> = ({ className, side = "right" }) => {
+  const { t } = useI18n();
   const timing = useMessageTiming();
   const message = useMessage();
 
@@ -49,7 +51,7 @@ export const MessageTiming: FC<{
         <button
           type="button"
           data-slot="message-timing-trigger"
-          aria-label="Message timing"
+          aria-label={t("assistant.timing.aria")}
           className={cn(
             "flex items-center rounded-md p-1 font-mono text-muted-foreground text-xs tabular-nums transition-colors hover:bg-accent hover:text-accent-foreground",
             className,
@@ -70,7 +72,7 @@ export const MessageTiming: FC<{
               {/* Server-side metrics (GGUF) */}
               {st?.prompt_ms != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Prompt eval</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.promptEval")}</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(st.prompt_ms)}
                   </span>
@@ -78,7 +80,7 @@ export const MessageTiming: FC<{
               )}
               {(st?.prompt_n ?? 0) > 1 && st?.prompt_per_second != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Prompt speed</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.promptSpeed")}</span>
                   <span className="font-mono tabular-nums">
                     {st.prompt_per_second.toFixed(1)} tok/s
                   </span>
@@ -86,7 +88,7 @@ export const MessageTiming: FC<{
               )}
               {st?.predicted_ms != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Generation</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.generation")}</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(st.predicted_ms)}
                   </span>
@@ -94,7 +96,7 @@ export const MessageTiming: FC<{
               )}
               {st?.predicted_per_second != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Speed</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.speed")}</span>
                   <span className="font-mono tabular-nums">
                     {st.predicted_per_second.toFixed(1)} tok/s
                   </span>
@@ -102,7 +104,7 @@ export const MessageTiming: FC<{
               )}
               {timing.tokenCount !== undefined && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Tokens</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.tokens")}</span>
                   <span className="font-mono tabular-nums">
                     {formatNumber(timing.tokenCount)}
                   </span>
@@ -110,7 +112,7 @@ export const MessageTiming: FC<{
               )}
               {(st?.cache_n ?? 0) > 0 && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Cache hits</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.cacheHits")}</span>
                   <span className="font-mono tabular-nums">
                     {formatNumber(st!.cache_n)}
                   </span>
@@ -118,13 +120,13 @@ export const MessageTiming: FC<{
               )}
               <div className="my-0.5 border-t border-border/40" />
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Total</span>
+                <span className="text-muted-foreground">{t("assistant.timing.total")}</span>
                 <span className="font-mono tabular-nums">
                   {formatTimingMs(timing.totalStreamTime)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Chunks</span>
+                <span className="text-muted-foreground">{t("assistant.timing.chunks")}</span>
                 <span className="font-mono tabular-nums">
                   {timing.totalChunks}
                 </span>
@@ -135,20 +137,20 @@ export const MessageTiming: FC<{
               {/* Client-side metrics (safetensors fallback) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">First token</span>
+                  <span className="text-muted-foreground">{t("assistant.timing.firstToken")}</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(timing.firstTokenTime)}
                   </span>
                 </div>
               )}
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Total</span>
+                <span className="text-muted-foreground">{t("assistant.timing.total")}</span>
                 <span className="font-mono tabular-nums">
                   {formatTimingMs(timing.totalStreamTime)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Chunks</span>
+                <span className="text-muted-foreground">{t("assistant.timing.chunks")}</span>
                 <span className="font-mono tabular-nums">
                   {timing.totalChunks}
                 </span>

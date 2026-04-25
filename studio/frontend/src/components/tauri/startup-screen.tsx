@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ShimmerButton } from "@/components/ui/shimmer-button";
+import { useI18n } from "@/features/i18n";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -22,16 +23,6 @@ interface StartupScreenProps {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const INSTALL_STEPS = [
-  "Detecting your system",
-  "Checking dependencies",
-  "Setting up package manager",
-  "Creating Python environment",
-  "Installing ML framework",
-  "Installing Unsloth",
-  "Finalizing setup",
-] as const;
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -83,6 +74,7 @@ function ActionButton({
 // ---------------------------------------------------------------------------
 
 function CheckingContent() {
+  const { t } = useI18n();
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 items-center">
@@ -90,19 +82,20 @@ function CheckingContent() {
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
-        <p className="text-sm text-muted-foreground">Checking...</p>
+        <p className="text-sm text-muted-foreground">{t("startup.checking")}</p>
       </div>
     </div>
   );
 }
 
 function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
         <Logo />
         <p className="mt-4 text-xs font-bold text-muted-foreground">
-          To install Unsloth, click Get Started.
+          {t("startup.notInstalledHint")}
         </p>
       </div>
       <div className="mb-10">
@@ -112,7 +105,7 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
           background="oklch(0.696 0.17 162.48)"
           className="text-sm font-medium"
         >
-          Get Started
+          {t("startup.getStarted")}
         </ShimmerButton>
       </div>
     </div>
@@ -126,8 +119,18 @@ function InstallingContent({
   currentStepIndex: number;
   progressDetail: string | null;
 }) {
+  const { t } = useI18n();
+  const installSteps = [
+    t("startup.step.detectSystem"),
+    t("startup.step.checkDeps"),
+    t("startup.step.setupPkg"),
+    t("startup.step.createVenv"),
+    t("startup.step.installMl"),
+    t("startup.step.installUnsloth"),
+    t("startup.step.finalize"),
+  ] as const;
   const stepNum = Math.max(0, currentStepIndex) + 1;
-  const stepLabel = INSTALL_STEPS[Math.min(currentStepIndex, INSTALL_STEPS.length - 1)];
+  const stepLabel = installSteps[Math.min(currentStepIndex, installSteps.length - 1)];
 
   return (
     <div className="flex h-full flex-col items-center">
@@ -136,13 +139,13 @@ function InstallingContent({
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
-        <p className="text-sm font-bold text-foreground">Installing...</p>
+        <p className="text-sm font-bold text-foreground">{t("startup.installing")}</p>
         <p className="text-sm font-bold text-muted-foreground">
-          Please wait a few mins, then you can start training.
+          {t("startup.installingHint")}
         </p>
         {currentStepIndex >= 0 && (
           <p className="mt-1 text-xs font-bold text-muted-foreground">
-            Step {stepNum} of {INSTALL_STEPS.length}: {stepLabel}
+            {t("startup.stepOf").replace("{current}", String(stepNum)).replace("{total}", String(installSteps.length)).replace("{label}", stepLabel)}
           </p>
         )}
         {progressDetail && (
@@ -160,6 +163,7 @@ function RepairingContent({
   logs: string[];
   progressDetail: string | null;
 }) {
+  const { t } = useI18n();
   const latest = progressDetail ?? logs.at(-1);
 
   return (
@@ -169,7 +173,7 @@ function RepairingContent({
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
-        <p className="text-sm font-bold text-foreground">Updating existing Studio install...</p>
+        <p className="text-sm font-bold text-foreground">{t("startup.repairing")}</p>
         {latest && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{latest}</p>
         )}
@@ -187,11 +191,12 @@ function InstallErrorContent({
   logs: string[];
   onRetryInstall: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Setup ran into a problem</p>
+        <p className="text-sm font-medium text-destructive">{t("startup.installError")}</p>
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -200,9 +205,9 @@ function InstallErrorContent({
             variant="secondary"
             onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
           >
-            Copy Logs
+            {t("startup.copyLogs")}
           </ActionButton>
-          <ActionButton onClick={onRetryInstall}>Try Again</ActionButton>
+          <ActionButton onClick={onRetryInstall}>{t("common.retry")}</ActionButton>
         </div>
       </div>
     </>
@@ -218,11 +223,12 @@ function RepairErrorContent({
   logs: string[];
   onRetry: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Update failed</p>
+        <p className="text-sm font-medium text-destructive">{t("startup.updateFailed")}</p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -231,9 +237,9 @@ function RepairErrorContent({
             variant="secondary"
             onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
           >
-            Copy Logs
+            {t("startup.copyLogs")}
           </ActionButton>
-          <ActionButton onClick={onRetry}>Retry</ActionButton>
+          <ActionButton onClick={onRetry}>{t("common.retry")}</ActionButton>
         </div>
       </div>
     </>
@@ -249,13 +255,14 @@ function NeedsElevationContent({
   onApproveElevation: () => void;
   onRetryInstall: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-foreground">Permission needed</p>
+        <p className="text-sm font-medium text-foreground">{t("startup.permissionNeeded")}</p>
         <p className="text-xs text-muted-foreground">
-          The following system packages need to be installed:
+          {t("startup.permissionHint")}
         </p>
         <div className="mt-2 w-full max-w-xs rounded-lg bg-muted p-3 font-mono text-xs">
           {elevationPackages.map((pkg) => (
@@ -263,8 +270,8 @@ function NeedsElevationContent({
           ))}
         </div>
         <div className="mt-4 flex gap-3">
-          <ActionButton variant="secondary" onClick={onRetryInstall}>Cancel</ActionButton>
-          <ActionButton onClick={onApproveElevation}>Allow</ActionButton>
+          <ActionButton variant="secondary" onClick={onRetryInstall}>{t("common.cancel")}</ActionButton>
+          <ActionButton onClick={onApproveElevation}>{t("startup.allow")}</ActionButton>
         </div>
       </div>
     </>
@@ -272,6 +279,7 @@ function NeedsElevationContent({
 }
 
 function StartingContent() {
+  const { t } = useI18n();
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 items-center">
@@ -279,20 +287,21 @@ function StartingContent() {
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
-        <p className="text-sm text-muted-foreground">Starting server...</p>
+        <p className="text-sm text-muted-foreground">{t("startup.startingServer")}</p>
       </div>
     </div>
   );
 }
 
 function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
+  const { t } = useI18n();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-foreground">Server stopped</p>
+        <p className="text-sm font-medium text-foreground">{t("startup.serverStopped")}</p>
         <div className="mt-4">
-          <ActionButton onClick={onStartServer}>Start Server</ActionButton>
+          <ActionButton onClick={onStartServer}>{t("startup.startServer")}</ActionButton>
         </div>
       </div>
     </>
@@ -308,11 +317,12 @@ function ErrorContent({
   logs: string[];
   onRetry: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Something went wrong</p>
+        <p className="text-sm font-medium text-destructive">{t("startup.somethingWrong")}</p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -321,9 +331,9 @@ function ErrorContent({
             variant="secondary"
             onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
           >
-            Copy Logs
+            {t("startup.copyLogs")}
           </ActionButton>
-          <ActionButton onClick={onRetry}>Retry</ActionButton>
+          <ActionButton onClick={onRetry}>{t("common.retry")}</ActionButton>
         </div>
       </div>
     </>

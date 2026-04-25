@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
+import { useI18n } from "@/features/i18n";
 import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -60,6 +61,7 @@ function stepLR(value: number, direction: 1 | -1): number {
 }
 
 export function HyperparametersStep() {
+  const { t } = useI18n();
   const {
     trainingMethod,
     maxSteps,
@@ -127,7 +129,7 @@ export function HyperparametersStep() {
   return (
     <FieldGroup>
       <FieldSet>
-        <FieldLegend variant="label">Choose your training parameters</FieldLegend>
+        <FieldLegend variant="label">{t("onboarding.hyper.chooseParams")}</FieldLegend>
         <div className="flex flex-col gap-4">
           <div
             key={useEpochs ? "epochs" : "steps"}
@@ -135,7 +137,7 @@ export function HyperparametersStep() {
           >
             <div className="flex items-center justify-between">
               <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-                {useEpochs ? "Epochs" : "Max Steps"}
+                {useEpochs ? t("onboarding.hyper.epochs") : t("onboarding.hyper.maxSteps")}
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -150,15 +152,15 @@ export function HyperparametersStep() {
                   </TooltipTrigger>
                   <TooltipContent>
                     {useEpochs
-                      ? "Number of full passes over the dataset."
-                      : "Override total optimizer steps."}{" "}
+                      ? t("onboarding.hyper.epochsHint")
+                      : t("onboarding.hyper.maxStepsHint")}{" "}
                     <a
                       href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline"
                     >
-                      Read more
+                      {t("onboarding.common.readMore")}
                     </a>
                   </TooltipContent>
                 </Tooltip>
@@ -169,7 +171,7 @@ export function HyperparametersStep() {
                   onClick={toggleUseEpochs}
                   className="text-xs text-primary underline cursor-pointer"
                 >
-                  {useEpochs ? "Use Max Steps" : "Use Epochs"}
+                  {useEpochs ? t("onboarding.hyper.useMaxSteps") : t("onboarding.hyper.useEpochs")}
                 </button>
                 <Slider
                   value={[
@@ -212,7 +214,7 @@ export function HyperparametersStep() {
 
           <div className="flex items-center justify-between">
             <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-              Context Length
+              {t("onboarding.hyper.contextLength")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -226,14 +228,14 @@ export function HyperparametersStep() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Maximum number of tokens per training sample.{" "}
+                  {t("onboarding.hyper.contextLengthHint")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("onboarding.common.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -257,7 +259,7 @@ export function HyperparametersStep() {
 
           <div className="flex items-center justify-between">
             <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-              Learning Rate
+              {t("onboarding.hyper.learningRate")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -271,14 +273,14 @@ export function HyperparametersStep() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Step size for weight updates. Lower = slower but more stable.{" "}
+                  {t("onboarding.hyper.learningRateHint")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("onboarding.common.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -311,11 +313,11 @@ export function HyperparametersStep() {
         <>
           <Separator />
           <FieldSet>
-            <FieldLegend variant="label">LoRA Parameters</FieldLegend>
+            <FieldLegend variant="label">{t("onboarding.hyper.loraParams")}</FieldLegend>
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-                  Rank
+                  {t("onboarding.hyper.rank")}
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -329,15 +331,14 @@ export function HyperparametersStep() {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Dimension of the low-rank matrices. Higher = more
-                      capacity.{" "}
+                      {t("onboarding.hyper.rankHint")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("onboarding.common.readMore")}
                       </a>
                     </TooltipContent>
                   </Tooltip>
@@ -365,7 +366,7 @@ export function HyperparametersStep() {
 
               <div className="flex items-center justify-between">
                 <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-                  Alpha
+                  {t("onboarding.hyper.alpha")}
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -379,14 +380,14 @@ export function HyperparametersStep() {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Scaling factor. Typically set to 2x the rank value.{" "}
+                      {t("onboarding.hyper.alphaHint")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("onboarding.common.readMore")}
                       </a>
                     </TooltipContent>
                   </Tooltip>
@@ -414,7 +415,7 @@ export function HyperparametersStep() {
 
               <div className="flex items-center justify-between">
                 <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-                  Dropout
+                  {t("onboarding.hyper.dropout")}
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -428,15 +429,14 @@ export function HyperparametersStep() {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Probability of dropping neurons during training for
-                      regularization.{" "}
+                      {t("onboarding.hyper.dropoutHint")}{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary underline"
                       >
-                        Read more
+                        {t("onboarding.common.readMore")}
                       </a>
                     </TooltipContent>
                   </Tooltip>

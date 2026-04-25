@@ -16,6 +16,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import {
   AttachmentPrimitive,
@@ -75,11 +76,12 @@ type AttachmentPreviewProps = {
 };
 
 const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
+  const { t } = useI18n();
   const [isLoaded, setIsLoaded] = useState(false);
   return (
     <img
       src={src}
-      alt="Preview"
+      alt={t("assistant.attachment.previewAlt")}
       className={cn(
         "block h-auto max-h-[80vh] w-auto max-w-full object-contain",
         isLoaded
@@ -92,6 +94,7 @@ const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
 };
 
 const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
+  const { t } = useI18n();
   const src = useAttachmentSrc();
 
   if (!src) {
@@ -108,7 +111,7 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
       </DialogTrigger>
       <DialogContent className="aui-attachment-preview-dialog-content p-2 sm:max-w-3xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive">
         <DialogTitle className="aui-sr-only sr-only">
-          Image Attachment Preview
+          {t("assistant.attachment.imageDialogTitle")}
         </DialogTitle>
         <div className="aui-attachment-preview relative mx-auto flex max-h-[80dvh] w-full items-center justify-center overflow-hidden bg-background">
           <AttachmentPreview src={src} />
@@ -119,13 +122,14 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
 };
 
 const AttachmentThumb: FC = () => {
+  const { t } = useI18n();
   const src = useAttachmentSrc();
 
   if (src) {
     return (
       <img
         src={src}
-        alt="Attachment preview"
+        alt={t("assistant.attachment.thumbAlt")}
         className="h-full w-full object-cover"
       />
     );
@@ -139,6 +143,7 @@ const AttachmentThumb: FC = () => {
 };
 
 const AttachmentUI: FC = () => {
+  const { t } = useI18n();
   const aui = useAui();
   const isComposer = aui.attachment.source === "composer";
 
@@ -147,11 +152,11 @@ const AttachmentUI: FC = () => {
     const type = attachment.type;
     switch (type) {
       case "image":
-        return "Image";
+        return t("assistant.attachment.type.image");
       case "document":
-        return "Document";
+        return t("assistant.attachment.type.document");
       case "file":
-        return "File";
+        return t("assistant.attachment.type.file");
       default:
         throw new Error(`Unknown attachment type: ${type as string}`);
     }
@@ -175,7 +180,7 @@ const AttachmentUI: FC = () => {
                   "aui-attachment-tile-composer border-foreground/20",
               )}
               id="attachment-tile"
-              aria-label={`${typeLabel} attachment`}
+              aria-label={t("assistant.attachment.tileAria").replace("{type}", typeLabel)}
               type="button"
             >
               <AttachmentThumb />
@@ -192,10 +197,11 @@ const AttachmentUI: FC = () => {
 };
 
 const AttachmentRemove: FC = () => {
+  const { t } = useI18n();
   return (
     <AttachmentPrimitive.Remove asChild={true}>
       <TooltipIconButton
-        tooltip="Remove file"
+        tooltip={t("assistant.attachment.removeFile")}
         className="aui-attachment-tile-remove absolute top-1.5 right-1.5 size-3.5 rounded-full bg-white text-muted-foreground opacity-100 shadow-sm hover:bg-white! [&_svg]:text-black hover:[&_svg]:text-destructive"
         side="top"
       >
@@ -224,15 +230,16 @@ export const ComposerAttachments: FC = () => {
 };
 
 export const ComposerAddAttachment: FC = () => {
+  const { t } = useI18n();
   return (
     <ComposerPrimitive.AddAttachment asChild={true}>
       <TooltipIconButton
-        tooltip="Add Attachment"
+        tooltip={t("assistant.attachment.add")}
         side="bottom"
         variant="ghost"
         size="icon"
         className="aui-composer-add-attachment size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
-        aria-label="Add Attachment"
+        aria-label={t("assistant.attachment.add")}
       >
         <PlusIcon className="aui-attachment-add-icon size-5 stroke-[1.5px]" />
       </TooltipIconButton>

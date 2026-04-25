@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/features/i18n";
 import {
   Book03Icon,
   ChefHatIcon,
@@ -53,7 +54,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
+import { Check, ChevronDown, ChevronsUpDown, Languages, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -155,6 +156,7 @@ function NavItem({
 
 export function AppSidebar() {
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
+  const { t, locale, setLocale, locales } = useI18n();
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -237,7 +239,7 @@ export function AppSidebar() {
               });
             }}
             className="flex items-center gap-[6px] select-none"
-            aria-label="Unsloth home"
+            aria-label={t("nav.home")}
           >
             <img
               src="/circle-logo-small.png"
@@ -261,13 +263,13 @@ export function AppSidebar() {
                   type="button"
                   onClick={togglePinned}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2a2c2f] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close sidebar"
+                  aria-label={t("nav.closeSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="bottom" sideOffset={6}>
-                Close sidebar
+                {t("nav.closeSidebar")}
               </TooltipContent>
             </Tooltip>
           )}
@@ -282,13 +284,13 @@ export function AppSidebar() {
                   type="button"
                   onClick={togglePinned}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#f0f0f0] dark:hover:bg-[#2a2c2f] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Open sidebar"
+                  aria-label={t("nav.openSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent side="right" sideOffset={8}>
-                Open sidebar
+                {t("nav.openSidebar")}
               </TooltipContent>
             </Tooltip>
           </div>
@@ -300,7 +302,7 @@ export function AppSidebar() {
           <SidebarMenu>
             <NavItem
               icon={PencilEdit02Icon}
-              label="New Chat"
+              label={t("nav.newChat")}
               active={false}
               disabled={chatDisabled}
               onClick={() => {
@@ -312,7 +314,7 @@ export function AppSidebar() {
             />
             <NavItem
               icon={ColumnInsertIcon}
-              label="Compare"
+              label={t("nav.compare")}
               active={!!search.compare && !chatItems.some((i) => i.id === search.compare)}
               disabled={chatDisabled}
               dataTour="chat-compare"
@@ -325,7 +327,7 @@ export function AppSidebar() {
             />
             <NavItem
               icon={Search01Icon}
-              label="Search"
+              label={t("nav.search")}
               active={false}
               disabled={chatDisabled}
               onClick={() => {
@@ -345,7 +347,7 @@ export function AppSidebar() {
             <SidebarMenu>
               <NavItem
                 icon={GemIcon}
-                label="Train"
+                label={t("nav.train")}
                 active={pathname === "/studio" || pathname.startsWith("/studio/")}
                 disabled={chatOnly}
                 onClick={() => {
@@ -357,7 +359,7 @@ export function AppSidebar() {
 
               <NavItem
                 icon={ChefHatIcon}
-                label="Recipes"
+                label={t("nav.recipes")}
                 active={isRecipesRoute}
                 onClick={() => {
                   navigate({ to: "/data-recipes" });
@@ -367,7 +369,7 @@ export function AppSidebar() {
 
               <NavItem
                 icon={Download03Icon}
-                label="Export"
+                label={t("nav.export")}
                 active={pathname === "/export" || pathname.startsWith("/export/")}
                 disabled={chatOnly}
                 onClick={() => {
@@ -386,7 +388,7 @@ export function AppSidebar() {
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-2 py-0">
             <SidebarGroupLabel className="pt-2 pb-1.5 pl-2.5 pr-2 text-[12.5px]! font-normal normal-case tracking-normal text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none" asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                Recents
+                {t("nav.recents")}
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
@@ -409,7 +411,9 @@ export function AppSidebar() {
                         closeMobileIfOpen();
                       }}
                     >
-                      <span className="truncate">{item.title}</span>
+                      <span className="truncate" data-no-translate>
+                        {item.title}
+                      </span>
                     </SidebarMenuButton>
                     <button
                       type="button"
@@ -417,7 +421,7 @@ export function AppSidebar() {
                         e.stopPropagation();
                         handleDeleteThread(item);
                       }}
-                      title="Delete"
+                      title={t("nav.delete")}
                       className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[10px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/recent-item:scale-100 group-hover/recent-item:opacity-100"
                     >
                       <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
@@ -437,7 +441,7 @@ export function AppSidebar() {
           <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-2 py-0">
             <SidebarGroupLabel className="pt-2 pb-1.5 pl-2.5 pr-2 text-[12.5px]! font-normal normal-case tracking-normal text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none" asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                Recents
+                {t("nav.recents")}
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
@@ -468,14 +472,14 @@ export function AppSidebar() {
                               )}
                               aria-hidden
                             />
-                            <span className="truncate">
+                            <span className="truncate" data-no-translate>
                               {run.model_name}
                             </span>
                             <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
                               {formatRelativeShort(run.started_at)}
                             </span>
                           </div>
-                          <span className="w-full truncate pl-3.5 text-xs text-muted-foreground">
+                          <span className="w-full truncate pl-3.5 text-xs text-muted-foreground" data-no-translate>
                             {run.dataset_name}
                           </span>
                         </SidebarMenuButton>
@@ -493,7 +497,7 @@ export function AppSidebar() {
                               // ignore — next refresh will reconcile
                             }
                           }}
-                          title="Delete"
+                          title={t("nav.delete")}
                           className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[10px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/run-item:scale-100 group-hover/run-item:opacity-100"
                         >
                           <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
@@ -516,7 +520,7 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  aria-label={`${displayTitle} account menu`}
+                  aria-label={`${displayTitle} ${t("nav.accountMenu")}`}
                   className="!h-[50px] gap-[8px] rounded-[10px] text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-[state=open]:bg-[#f0f0f0]! dark:data-[state=open]:bg-[#2a2c2f]! data-[state=open]:text-black! dark:data-[state=open]:text-white!"
                 >
                   <div className="shrink-0">
@@ -529,7 +533,7 @@ export function AppSidebar() {
                   </div>
                   <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
-                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
+                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">{t("account.studio")}</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
@@ -544,7 +548,7 @@ export function AppSidebar() {
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>Settings</span>
+                    <span>{t("account.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -552,7 +556,7 @@ export function AppSidebar() {
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                   >
                     {isDark ? <Sun strokeWidth={1.75} className="size-[18px]" /> : <Moon strokeWidth={1.75} className="size-[18px]" />}
-                    <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
+                    <span>{isDark ? t("account.lightMode") : t("account.darkMode")}</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={!getTourId(pathname)}
@@ -567,8 +571,28 @@ export function AppSidebar() {
                     }}
                   >
                     <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>Guided Tour</span>
+                    <span>{t("account.guidedTour")}</span>
                   </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuGroup>
+                  <DropdownMenuItem disabled>
+                    <Languages strokeWidth={1.75} className="size-[18px]" />
+                    <span>{t("lang.menuLabel")}</span>
+                  </DropdownMenuItem>
+                  {locales.map((option) => (
+                    <DropdownMenuItem
+                      key={option.code}
+                      onSelect={() => setLocale(option.code)}
+                    >
+                      <span>{option.nativeLabel}</span>
+                      {locale === option.code ? (
+                        <DropdownMenuShortcut>
+                          <Check strokeWidth={2} className="size-3.5" />
+                        </DropdownMenuShortcut>
+                      ) : null}
+                    </DropdownMenuItem>
+                  ))}
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuGroup>
@@ -579,7 +603,7 @@ export function AppSidebar() {
                       rel="noopener noreferrer"
                     >
                       <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-[18px]" />
-                      <span>Learn More</span>
+                      <span>{t("account.learnMore")}</span>
                     </a>
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
@@ -593,7 +617,7 @@ export function AppSidebar() {
                         strokeWidth={1.75}
                         className="size-[18px]"
                       />
-                      <span>What's New</span>
+                      <span>{t("account.whatsNew")}</span>
                     </a>
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
@@ -607,14 +631,14 @@ export function AppSidebar() {
                         strokeWidth={1.75}
                         className="size-[18px]"
                       />
-                      <span>Feedback</span>
+                      <span>{t("account.feedback")}</span>
                     </a>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
-                  <span>Shutdown</span>
+                  <span>{t("account.shutdown")}</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

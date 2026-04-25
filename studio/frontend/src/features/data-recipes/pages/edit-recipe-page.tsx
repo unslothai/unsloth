@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
@@ -27,6 +28,7 @@ function RecipeLoadState({
   description: string;
   onBack: () => void;
 }): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="min-h-screen bg-background">
       <main className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center px-6 py-8">
@@ -34,7 +36,7 @@ function RecipeLoadState({
           <h1 className="text-lg font-semibold">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>
           <Button type="button" variant="outline" className="mt-5" onClick={onBack}>
-            Back to Recipes
+            {t("dataRecipes.backToRecipes")}
           </Button>
         </div>
       </main>
@@ -43,6 +45,7 @@ function RecipeLoadState({
 }
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [loadState, setLoadState] = useState<LoadState>(() => {
     const cachedRecipe = getCachedRecipe(recipeId);
@@ -93,8 +96,8 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
   if (loadState.status === "loading") {
     return (
       <RecipeLoadState
-        title="Loading recipe..."
-        description="Please wait while we load your recipe."
+        title={t("dataRecipes.edit.loadingTitle")}
+        description={t("dataRecipes.edit.loadingDescription")}
         onBack={() => void navigate({ to: "/data-recipes" })}
       />
     );
@@ -103,8 +106,8 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
   if (loadState.status === "missing") {
     return (
       <RecipeLoadState
-        title="Recipe not found"
-        description="This recipe may have been deleted."
+        title={t("dataRecipes.edit.notFoundTitle")}
+        description={t("dataRecipes.edit.notFoundDescription")}
         onBack={() => void navigate({ to: "/data-recipes" })}
       />
     );

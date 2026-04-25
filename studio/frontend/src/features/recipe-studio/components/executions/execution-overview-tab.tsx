@@ -10,6 +10,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import {
   Table,
   TableBody,
@@ -60,6 +61,7 @@ export function ExecutionOverviewTab({
   canPublish,
   onOpenPublish,
 }: ExecutionOverviewTabProps): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="mt-3 space-y-3">
       {showSummaryCards && (
@@ -67,20 +69,20 @@ export function ExecutionOverviewTab({
           {canPublish && (
             <div className="flex flex-col gap-3 rounded-xl border border-border/60 bg-card/55 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">Next step</p>
+                <p className="text-sm font-medium text-foreground">{t("recipe.execution.overview.nextStep")}</p>
                 <p className="text-xs text-muted-foreground">
-                  This run is complete. Publish the generated dataset to Hugging Face.
+                  {t("recipe.execution.overview.nextStepHint")}
                 </p>
               </div>
               <Button type="button" variant="outline" size="sm" onClick={onOpenPublish}>
-                Publish to Hugging Face
+                {t("recipe.execution.overview.publish")}
               </Button>
             </div>
           )}
           <div className="grid gap-3 md:grid-cols-2">
             <div className="h-full rounded-xl border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Run summary</p>
+                <p className="text-xs text-muted-foreground">{t("recipe.execution.overview.runSummary")}</p>
                 <HugeiconsIcon
                   icon={Database01Icon}
                   className="size-4 text-muted-foreground"
@@ -88,28 +90,28 @@ export function ExecutionOverviewTab({
               </div>
               <div className="space-y-1.5 text-xs">
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Records</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.records")}</span>
                   <span className="font-semibold">
                     {formatMetricValue(recordsMetric)} / {formatMetricValue(totalMetric)}
                   </span>
                 </p>
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Duration</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.duration")}</span>
                   <span className="font-semibold">{runDuration}</span>
                 </p>
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Columns analyzed</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.columnsAnalyzed")}</span>
                   <span className="font-semibold">{formatMetricValue(columnCount)}</span>
                 </p>
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Final stage</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.finalStage")}</span>
                   <span className="truncate font-semibold">{execution.stage ?? "--"}</span>
                 </p>
               </div>
             </div>
             <div className="h-full rounded-xl border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Insights</p>
+                <p className="text-xs text-muted-foreground">{t("recipe.execution.overview.insights")}</p>
                 <HugeiconsIcon
                   icon={Database02Icon}
                   className="size-4 text-muted-foreground"
@@ -118,16 +120,16 @@ export function ExecutionOverviewTab({
               <div className="space-y-1.5 text-xs">
                 {llmColumnCount > 0 && (
                   <p className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">LLM columns</span>
+                    <span className="text-muted-foreground">{t("recipe.execution.overview.llmColumns")}</span>
                     <span className="font-semibold">{formatMetricValue(llmColumnCount)}</span>
                   </p>
                 )}
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Null rate</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.nullRate")}</span>
                   <span className="font-semibold">{nullRate?.toFixed(1) ?? "--"}%</span>
                 </p>
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Side-effect columns</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.sideEffectColumns")}</span>
                   <span className="font-semibold">{formatMetricValue(sideEffects.length)}</span>
                 </p>
                 {sideEffects.length > 0 && (
@@ -142,7 +144,7 @@ export function ExecutionOverviewTab({
                   </div>
                 )}
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Low uniqueness flags</span>
+                  <span className="text-muted-foreground">{t("recipe.execution.overview.lowUniquenessFlags")}</span>
                   <span className="font-semibold">
                     {formatMetricValue(lowUniquenessColumns.length)}
                   </span>
@@ -157,7 +159,7 @@ export function ExecutionOverviewTab({
                       ))}
                       {lowUniquenessColumns.length > 3 && (
                         <Badge variant="outline">
-                          +{lowUniquenessColumns.length - 3} more
+                          +{lowUniquenessColumns.length - 3} {t("recipe.execution.overview.more")}
                         </Badge>
                       )}
                     </div>
@@ -169,19 +171,19 @@ export function ExecutionOverviewTab({
           {(llmColumnCount > 0 || modelUsageRows.length > 0) && (
             <div className="rounded-xl border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Model usage</p>
+                <p className="text-xs text-muted-foreground">{t("recipe.execution.overview.modelUsage")}</p>
                 <HugeiconsIcon icon={Flag02Icon} className="size-4 text-muted-foreground" />
               </div>
               {modelUsageRows.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No model usage yet.</p>
+                <p className="text-xs text-muted-foreground">{t("recipe.execution.overview.noModelUsage")}</p>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Model</TableHead>
-                        <TableHead className="text-right">Input</TableHead>
-                        <TableHead className="text-right">Output</TableHead>
+                        <TableHead>{t("recipe.execution.overview.model")}</TableHead>
+                        <TableHead className="text-right">{t("recipe.execution.overview.input")}</TableHead>
+                        <TableHead className="text-right">{t("recipe.execution.overview.output")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -206,8 +208,8 @@ export function ExecutionOverviewTab({
       )}
       <div className="overflow-hidden rounded-xl corner-squircle border">
         <div className="flex items-center justify-between border-b px-3 py-2">
-          <p className="text-sm font-semibold">Terminal output</p>
-          <p className="text-xs text-muted-foreground">{terminalLines.length} lines</p>
+          <p className="text-sm font-semibold">{t("recipe.execution.overview.terminalOutput")}</p>
+          <p className="text-xs text-muted-foreground">{terminalLines.length} {t("recipe.execution.overview.lines")}</p>
         </div>
         <div
           ref={terminalRef}
@@ -217,8 +219,8 @@ export function ExecutionOverviewTab({
           {terminalLines.length === 0 ? (
             <p className="text-zinc-400">
               {isExecutionInProgress(execution.status)
-                ? "Waiting for logs..."
-                : "No logs captured."}
+                ? t("recipe.execution.overview.waitingLogs")
+                : t("recipe.execution.overview.noLogs")}
             </p>
           ) : (
             terminalLines.map((line, index) => (

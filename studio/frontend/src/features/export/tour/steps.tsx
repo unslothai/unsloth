@@ -2,51 +2,51 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n/messages";
 
-export const exportTourSteps: TourStep[] = [
+export function getExportTourSteps(
+  t: (key: TranslationKey) => string,
+): TourStep[] {
+  return [
   {
     id: "training-run",
     target: "export-training-run",
-    title: "Pick training run",
+    title: t("export.tour.trainingRun.title"),
     body: (
       <>
-        Start by selecting the training run. Each run groups the checkpoints
-        produced by that specific fine-tuning job.
+        {t("export.tour.trainingRun.body")}
       </>
     ),
   },
   {
     id: "checkpoint",
     target: "export-checkpoint",
-    title: "Pick checkpoint",
+    title: t("export.tour.checkpoint.title"),
     body: (
       <>
-        Pick which checkpoint to export. If you trained multiple checkpoints,
-        it’s worth exporting 1-2 candidates and testing in Chat.
+        {t("export.tour.checkpoint.body")}
       </>
     ),
   },
   {
     id: "method",
     target: "export-method",
-    title: "Export method",
+    title: t("export.tour.method.title"),
     body: (
       <>
-        Choose the packaging. GGUF is for llama.cpp-style runtimes (pick a
-        quant). Safetensors is for HF/Transformers-style usage. If you’re unsure,
-        start with safetensors.
+        {t("export.tour.method.body")}
       </>
     ),
   },
   {
     id: "cta",
     target: "export-cta",
-    title: "Export",
+    title: t("export.tour.cta.title"),
     body: (
       <>
-        Export to local or push to HF Hub. After export, test in Chat and compare
-        against base to confirm behavior is what you expect.
+        {t("export.tour.cta.body")}
       </>
     ),
   },
-];
+  ];
+}

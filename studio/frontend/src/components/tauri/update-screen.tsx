@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
+import { useI18n } from "@/features/i18n";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef } from "react";
 
@@ -34,31 +35,31 @@ function Logo() {
   );
 }
 
-function statusLabel(status: UpdateStatus): string {
+function statusLabel(status: UpdateStatus, t: (key: any) => string): string {
   switch (status) {
     case "updating-backend":
-      return "Updating backend...";
+      return t("update.screen.updatingBackend");
     case "downloading":
-      return "Downloading app update...";
+      return t("update.screen.downloading");
     case "installing":
-      return "Installing update...";
+      return t("update.screen.installing");
     case "error":
-      return "Update failed";
+      return t("update.screen.failed");
     default:
-      return "Updating...";
+      return t("update.screen.updating");
   }
 }
 
-function statusSubtext(status: UpdateStatus, progress: number): string {
+function statusSubtext(status: UpdateStatus, progress: number, t: (key: any) => string): string {
   switch (status) {
     case "updating-backend":
-      return "This may take a few minutes. Do not close the app.";
+      return t("update.screen.backendHint");
     case "downloading":
-      return `${progress}% downloaded`;
+      return t("update.screen.downloadedPercent").replace("{percent}", String(progress));
     case "installing":
-      return "The app will restart shortly.";
+      return t("update.screen.restartSoon");
     case "error":
-      return "Something went wrong during the update.";
+      return t("update.screen.errorHint");
     default:
       return "";
   }
@@ -97,6 +98,7 @@ export function UpdateScreen({
   onRetry,
   onSkipRestart,
 }: UpdateScreenProps) {
+  const { t } = useI18n();
   const isError = status === "error";
 
   return (
@@ -112,10 +114,10 @@ export function UpdateScreen({
         <div className="mt-8 flex flex-col items-center gap-2">
           {!isError && <Spinner />}
           <p className="text-sm font-semibold text-foreground">
-            {statusLabel(status)}
+            {statusLabel(status, t)}
           </p>
           <p className="text-xs text-muted-foreground">
-            {statusSubtext(status, progress)}
+            {statusSubtext(status, progress, t)}
           </p>
         </div>
 
@@ -153,14 +155,14 @@ export function UpdateScreen({
               className="rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
               onClick={onRetry}
             >
-              Retry
+              {t("common.retry")}
             </button>
             <button
               type="button"
               className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
               onClick={onSkipRestart}
             >
-              Skip & Restart
+              {t("update.screen.skipAndRestart")}
             </button>
           </div>
         )}

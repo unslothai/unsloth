@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { VisuallyHidden } from "radix-ui";
 import { type ReactElement, useMemo } from "react";
+import { useI18n } from "@/features/i18n";
 import type { RecipeProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
 import { AvailableVariables } from "./shared/available-variables";
@@ -27,6 +28,7 @@ export function ProcessorsDialog({
   onProcessorsChange,
   container,
 }: ProcessorsDialogProps): ReactElement {
+  const { t } = useI18n();
   const schemaIndex = useMemo(
     () =>
       processors.findIndex(
@@ -74,14 +76,14 @@ export function ProcessorsDialog({
         className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
         <VisuallyHidden.Root>
-          <DialogTitle>Processors</DialogTitle>
+          <DialogTitle>{t("recipe.processors.title")}</DialogTitle>
         </VisuallyHidden.Root>
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3 corner-squircle rounded-2xl border border-border/60 px-3 py-2">
             <div>
-              <p className="text-sm font-semibold">Schema transform</p>
+              <p className="text-sm font-semibold">{t("recipe.processors.schemaTransform")}</p>
               <p className="text-xs text-muted-foreground">
-                Transform final rows to target schema (post-batch).
+                {t("recipe.processors.schemaTransformHint")}
               </p>
             </div>
             <Switch
@@ -95,9 +97,9 @@ export function ProcessorsDialog({
               <AvailableVariables configId="" />
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Name"
+                  label={t("recipe.processors.name")}
                   htmlFor={nameId}
-                  hint="Processor name shown in graph and payload."
+                  hint={t("recipe.processors.nameHint")}
                 />
                 <Input
                   id={nameId}
@@ -108,9 +110,9 @@ export function ProcessorsDialog({
               </div>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Template (JSON)"
+                  label={t("recipe.processors.templateJson")}
                   htmlFor={templateId}
-                  hint="Target output schema template using Jinja references."
+                  hint={t("recipe.processors.templateHint")}
                 />
                 <Textarea
                   id={templateId}
@@ -121,7 +123,7 @@ export function ProcessorsDialog({
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  Use Jinja refs like {"{{ customer_review }}"} in values.
+                  {t("recipe.processors.jinjaHint")} {"{{ customer_review }}"}.
                 </p>
               </div>
             </div>
@@ -133,7 +135,7 @@ export function ProcessorsDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
           >
-            Done
+            {t("settings.apiKeys.done")}
           </Button>
         </DialogFooter>
       </DialogContent>

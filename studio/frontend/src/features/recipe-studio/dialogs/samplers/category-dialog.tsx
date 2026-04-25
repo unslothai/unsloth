@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { type ReactElement, useState } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { ChipInput } from "../../components/chip-input";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
@@ -47,6 +48,7 @@ export function CategoryDialog({
   config,
   onUpdate,
 }: CategoryDialogProps): ReactElement {
+  const { t } = useI18n();
   const [conditionDraft, setConditionDraft] = useState("");
   const advancedOpen = config.advancedOpen === true;
   const conditionInputId = `${config.id}-conditional-rule`;
@@ -91,8 +93,8 @@ export function CategoryDialog({
       <div className="space-y-3">
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Values"
-            hint="Define allowed categorical values for this column."
+            label={t("recipe.sampler.category.values")}
+            hint={t("recipe.sampler.category.valuesHint")}
           />
           <ChipInput
             values={config.values ?? []}
@@ -112,7 +114,7 @@ export function CategoryDialog({
               );
               onUpdate({ values, weights });
             }}
-            placeholder="Type a value and press Enter"
+            placeholder={t("recipe.sampler.category.valuesPlaceholder")}
           />
         </div>
       </div>
@@ -122,19 +124,19 @@ export function CategoryDialog({
       >
         <CollapsibleTrigger asChild={true}>
           <CollapsibleSectionTriggerButton
-            label="Advanced list settings"
+            label={t("recipe.sampler.category.advanced")}
             open={advancedOpen}
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-2 space-y-3">
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Weights (optional)"
-                hint="Set selection probability per value."
+                label={t("recipe.sampler.category.weights")}
+                hint={t("recipe.sampler.category.weightsHint")}
               />
               {(config.values ?? []).length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  Add values first, then set optional weights.
+                  {t("recipe.sampler.category.weightsEmpty")}
                 </p>
               ) : (
                 <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -149,7 +151,7 @@ export function CategoryDialog({
                       <Input
                         type="number"
                         className="nodrag w-full"
-                        placeholder="Weight"
+                        placeholder={t("recipe.sampler.category.weightPlaceholder")}
                         value={config.weights?.[index] ?? ""}
                         onChange={(event) => {
                           const weights = [...(config.weights ?? [])];
@@ -166,18 +168,18 @@ export function CategoryDialog({
             </div>
             <div className="flex items-center justify-between gap-2">
               <FieldLabel
-                label="Conditional params (category)"
-                hint="Override category values/weights when condition matches."
+                label={t("recipe.sampler.category.conditional")}
+                hint={t("recipe.sampler.category.conditionalHint")}
               />
               <span className="text-xs text-muted-foreground">
-                {conditionalCount} rules
+                {conditionalCount} {t("recipe.sampler.category.rules")}
               </span>
             </div>
             <div className="flex gap-2">
               <Input
                 id={conditionInputId}
                 className="nodrag"
-                placeholder="Condition (e.g., {{ region }} == 'US')"
+                placeholder={t("recipe.sampler.category.conditionPlaceholder")}
                 value={conditionDraft}
                 onChange={(event) => setConditionDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -188,7 +190,7 @@ export function CategoryDialog({
                 }}
               />
               <Button type="button" size="sm" onClick={handleAddCondition}>
-                Add rule
+                {t("recipe.sampler.category.addRule")}
               </Button>
             </div>
             {Object.entries(conditional).map(([condition, params]) => (
@@ -204,7 +206,7 @@ export function CategoryDialog({
                     variant="ghost"
                     onClick={() => removeCondition(condition)}
                   >
-                    Remove
+                    {t("recipe.sampler.category.remove")}
                   </Button>
                 </div>
                 <ChipInput
@@ -237,11 +239,11 @@ export function CategoryDialog({
                       },
                     });
                   }}
-                  placeholder="Type a conditional value and press Enter"
+                  placeholder={t("recipe.sampler.category.conditionalValuePlaceholder")}
                 />
                 <div className="grid gap-1.5">
                   <p className="text-xs font-semibold uppercase text-muted-foreground">
-                    Rule weights (optional)
+                    {t("recipe.sampler.category.ruleWeights")}
                   </p>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {(params.values ?? []).map((value, index) => (
@@ -258,7 +260,7 @@ export function CategoryDialog({
                         <Input
                           type="number"
                           className="nodrag"
-                          placeholder="Weight"
+                          placeholder={t("recipe.sampler.category.weightPlaceholder")}
                           value={params.weights?.[index] ?? ""}
                           onChange={(event) => {
                             const weights = [

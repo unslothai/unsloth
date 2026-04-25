@@ -12,6 +12,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
@@ -119,6 +120,7 @@ function ReasoningTrigger({
   active?: boolean;
   duration?: number;
 }) {
+  const { t } = useI18n();
   return (
     <CollapsibleTrigger
       data-slot="reasoning-trigger"
@@ -137,9 +139,9 @@ function ReasoningTrigger({
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
       >
         {active ? (
-          <span className="text-sm">Thinking...</span>
+          <span className="text-sm">{t("assistant.reasoning.thinking")}</span>
         ) : (
-          <span>Thought for {duration ?? 0} seconds</span>
+          <span>{t("assistant.reasoning.thoughtFor").replace("{seconds}", String(duration ?? 0))}</span>
         )}
       </span>
       <ChevronDownIcon
@@ -271,6 +273,7 @@ const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
 const COPY_RESET_MS = 2000;
 
 function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -295,14 +298,14 @@ function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; end
       type="button"
       onClick={handleCopy}
       className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
-      aria-label="Copy reasoning"
+      aria-label={t("assistant.reasoning.copyAria")}
     >
       {copied ? (
         <CheckIcon className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
+      {copied ? t("common.copied") : t("common.copy")}
     </button>
   );
 }

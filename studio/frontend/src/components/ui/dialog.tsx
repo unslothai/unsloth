@@ -8,6 +8,8 @@ import type * as React from "react";
 import { createContext, useContext } from "react";
 
 import { Button } from "@/components/ui/button";
+import { useI18nStore } from "@/features/i18n/store";
+import { translate } from "@/features/i18n/store";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -79,6 +81,8 @@ function DialogContent({
   overlayPosition?: "fixed" | "absolute";
 }) {
   const resolvedContainer = container ?? null;
+  const locale = useI18nStore((s) => s.locale);
+  const tClose = translate(locale, "common.close");
   return (
     <DialogPortalContainerContext.Provider value={resolvedContainer}>
       <DialogPortal container={resolvedContainer ?? undefined}>
@@ -104,7 +108,7 @@ function DialogContent({
                 size="icon-sm"
               >
                 <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
-                <span className="sr-only">Close</span>
+                <span className="sr-only">{tClose}</span>
               </Button>
             </DialogPrimitive.Close>
           )}
@@ -132,6 +136,8 @@ function DialogFooter({
 }: React.ComponentProps<"div"> & {
   showCloseButton?: boolean;
 }) {
+  const locale = useI18nStore((s) => s.locale);
+  const tClose = translate(locale, "common.close");
   return (
     <div
       data-slot="dialog-footer"
@@ -144,7 +150,7 @@ function DialogFooter({
       {children}
       {showCloseButton && (
         <DialogPrimitive.Close asChild>
-          <Button variant="outline">Close</Button>
+          <Button variant="outline">{tClose}</Button>
         </DialogPrimitive.Close>
       )}
     </div>

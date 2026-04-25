@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth/api";
+import { translate, useI18nStore } from "@/features/i18n/store";
 
 export interface ApiKey {
   id: number;
@@ -15,7 +16,10 @@ export interface ApiKey {
 
 export async function fetchApiKeys(): Promise<ApiKey[]> {
   const res = await authFetch("/api/auth/api-keys");
-  if (!res.ok) throw new Error("Failed to load API keys");
+  if (!res.ok) {
+    const locale = useI18nStore.getState().locale;
+    throw new Error(translate(locale, "settings.apiKeys.error.load"));
+  }
   const data = (await res.json()) as { api_keys: ApiKey[] };
   return data.api_keys.filter((k) => k.is_active);
 }
@@ -29,7 +33,10 @@ export async function createApiKey(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, expires_in_days: expiresInDays }),
   });
-  if (!res.ok) throw new Error("Failed to create API key");
+  if (!res.ok) {
+    const locale = useI18nStore.getState().locale;
+    throw new Error(translate(locale, "settings.apiKeys.error.create"));
+  }
   return res.json();
 }
 
@@ -37,5 +44,8 @@ export async function revokeApiKey(keyId: number): Promise<void> {
   const res = await authFetch(`/api/auth/api-keys/${keyId}`, {
     method: "DELETE",
   });
-  if (!res.ok) throw new Error("Failed to revoke API key");
+  if (!res.ok) {
+    const locale = useI18nStore.getState().locale;
+    throw new Error(translate(locale, "settings.apiKeys.error.revoke"));
+  }
 }

@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type ReactElement, useEffect } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
@@ -23,6 +24,7 @@ export function PersonDialog({
   config,
   onUpdate,
 }: PersonDialogProps): ReactElement {
+  const { t } = useI18n();
   const localeId = `${config.id}-person-locale`;
   const sexId = `${config.id}-person-sex`;
   const ageRangeId = `${config.id}-person-age-range`;
@@ -53,16 +55,16 @@ export function PersonDialog({
       <div className="grid gap-3">
         <div className="rounded-2xl border border-border/60 px-3 py-2">
           <p className="text-xs font-semibold uppercase text-muted-foreground">
-            Source
+            {t("recipe.sampler.person.source")}
           </p>
-          <p className="text-sm text-foreground">Faker</p>
+          <p className="text-sm text-foreground">{t("recipe.sampler.person.faker")}</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Locale"
+              label={t("recipe.sampler.person.locale")}
               htmlFor={localeId}
-              hint="Faker locale e.g. en_US."
+              hint={t("recipe.sampler.person.localeHint")}
             />
             <Input
               id={localeId}
@@ -75,9 +77,9 @@ export function PersonDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Sex"
+              label={t("recipe.sampler.person.sex")}
               htmlFor={sexId}
-              hint="Optional demographic filter."
+              hint={t("recipe.sampler.person.sexHint")}
             />
             <Select
               value={config.person_sex?.trim() ? config.person_sex : "any"}
@@ -86,20 +88,20 @@ export function PersonDialog({
               }
             >
               <SelectTrigger className="nodrag w-full" id={sexId}>
-                <SelectValue placeholder="Any" />
+                <SelectValue placeholder={t("recipe.sampler.person.any")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="any">Any</SelectItem>
-                <SelectItem value="Male">Male</SelectItem>
-                <SelectItem value="Female">Female</SelectItem>
+                <SelectItem value="any">{t("recipe.sampler.person.any")}</SelectItem>
+                <SelectItem value="Male">{t("recipe.sampler.person.male")}</SelectItem>
+                <SelectItem value="Female">{t("recipe.sampler.person.female")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Age range"
+              label={t("recipe.sampler.person.ageRange")}
               htmlFor={ageRangeId}
-              hint="Range format: min-max, e.g. 18-70."
+              hint={t("recipe.sampler.person.ageRangeHint")}
             />
             <Input
               id={ageRangeId}
@@ -108,14 +110,14 @@ export function PersonDialog({
               onChange={(event) =>
                 updateField("person_age_range", event.target.value)
               }
-              placeholder="18-70"
+              placeholder={t("recipe.sampler.person.ageRangePlaceholder")}
             />
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="City"
+              label={t("recipe.sampler.person.city")}
               htmlFor={cityId}
-              hint="Optional city bias for faker generation."
+              hint={t("recipe.sampler.person.cityHint")}
             />
             <Input
               id={cityId}

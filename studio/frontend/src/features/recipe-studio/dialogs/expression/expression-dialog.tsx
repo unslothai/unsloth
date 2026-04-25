@@ -18,6 +18,7 @@ import { getAvailableVariables } from "../../utils/variables";
 import { AvailableVariables } from "../shared/available-variables";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
+import { useI18n } from "@/features/i18n";
 
 const DTYPE_OPTIONS: ExpressionDtype[] = ["str", "int", "float", "bool"];
 
@@ -30,6 +31,7 @@ export function ExpressionDialog({
   config,
   onUpdate,
 }: ExpressionDialogProps): ReactElement {
+  const { t } = useI18n();
   const configs = useRecipeStudioStore((state) => state.configs);
   const dtypeId = `${config.id}-dtype`;
   const exprId = `${config.id}-expr`;
@@ -60,9 +62,9 @@ export function ExpressionDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Output type"
+          label={t("recipe.expression.outputType")}
           htmlFor={dtypeId}
-          hint="Choose how this formula should be stored in the final dataset."
+          hint={t("recipe.expression.outputTypeHint")}
         />
         <Select
           value={config.dtype}
@@ -71,7 +73,7 @@ export function ExpressionDialog({
           }
         >
           <SelectTrigger className="nodrag w-full" id={dtypeId}>
-            <SelectValue placeholder="Select type" />
+            <SelectValue placeholder={t("recipe.expression.selectType")} />
           </SelectTrigger>
           <SelectContent>
             {DTYPE_OPTIONS.map((dtype) => (
@@ -84,28 +86,28 @@ export function ExpressionDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Formula"
+          label={t("recipe.expression.formula")}
           htmlFor={exprId}
-          hint="Build this field from other fields."
+          hint={t("recipe.expression.formulaHint")}
         />
         <Textarea
           id={exprId}
           className="corner-squircle nodrag"
           aria-invalid={invalidExprRefs.length > 0}
-          placeholder="{{ category_1 }} - {{ subcategory_1 }}"
+          placeholder={t("recipe.expression.placeholder")}
           value={config.expr}
           onChange={(event) => updateField("expr", event.target.value)}
         />
         {invalidExprRefs.length > 0 && (
           <p className="text-xs text-destructive">
-            Unknown field: {invalidExprText}
+            {t("recipe.expression.unknownField")}: {invalidExprText}
             {invalidExprRefs.length > 3
-              ? ` +${invalidExprRefs.length - 3} more`
+              ? ` +${invalidExprRefs.length - 3} ${t("recipe.expression.more")}`
               : ""}
           </p>
         )}
         <p className="text-xs text-muted-foreground">
-          Insert other fields like {"{{ field_name }}"}.
+          {t("recipe.expression.insertHint")} {"{{ field_name }}"}.
         </p>
       </div>
     </div>

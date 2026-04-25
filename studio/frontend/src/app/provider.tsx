@@ -5,6 +5,7 @@ import { StartupScreen } from "@/components/tauri/startup-screen";
 import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
 import { Toaster } from "@/components/ui/sonner";
+import { I18nEffects } from "@/features/i18n";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
@@ -173,6 +174,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 export function AppProvider({ children }: AppProviderProps) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light">
+      <I18nEffects />
       <TauriWrapper>
         {children}
       </TauriWrapper>

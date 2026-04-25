@@ -4,6 +4,7 @@
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { MarkdownNoteConfig } from "../../types";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -17,6 +18,7 @@ export function MarkdownNoteDialog({
   config,
   onUpdate,
 }: MarkdownNoteDialogProps): ReactElement {
+  const { t } = useI18n();
   const markdownId = `${config.id}-markdown`;
   const colorId = `${config.id}-note-color`;
   const opacity =
@@ -29,9 +31,9 @@ export function MarkdownNoteDialog({
       <NameField value={config.name} onChange={(value) => onUpdate({ name: value })} />
       <div className="grid gap-3">
         <FieldLabel
-          label="Note style"
+          label={t("recipe.markdownNote.style")}
           htmlFor={colorId}
-          hint="Pick a color and opacity for this note block."
+          hint={t("recipe.markdownNote.styleHint")}
         />
         <div className="flex items-center gap-3">
           <input
@@ -43,7 +45,7 @@ export function MarkdownNoteDialog({
           />
           <div className="flex-1 space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Opacity</span>
+              <span className="text-xs text-muted-foreground">{t("recipe.markdownNote.opacity")}</span>
               <span className="text-xs tabular-nums text-muted-foreground">{opacity}%</span>
             </div>
             <Slider
@@ -60,14 +62,14 @@ export function MarkdownNoteDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Markdown"
+          label={t("recipe.markdownNote.markdown")}
           htmlFor={markdownId}
-          hint="UI-only note. Not sent to backend payload recipe."
+          hint={t("recipe.markdownNote.markdownHint")}
         />
         <Textarea
           id={markdownId}
           className="corner-squircle nodrag min-h-[180px]"
-          placeholder="## Note"
+          placeholder={t("recipe.markdownNote.placeholder")}
           value={config.markdown}
           onChange={(event) => onUpdate({ markdown: event.target.value })}
         />

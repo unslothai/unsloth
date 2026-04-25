@@ -4,6 +4,7 @@
 import { Slot } from "radix-ui";
 import type * as React from "react";
 
+import { useI18nStore, translate } from "@/features/i18n/store";
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
@@ -12,9 +13,10 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Breadcrumb({ className, ...props }: React.ComponentProps<"nav">) {
+  const locale = useI18nStore((s) => s.locale);
   return (
     <nav
-      aria-label="breadcrumb"
+      aria-label={translate(locale, "ui.breadcrumb.label")}
       data-slot="breadcrumb"
       className={cn(className)}
       {...props}
@@ -98,6 +100,7 @@ function BreadcrumbEllipsis({
   className,
   ...props
 }: React.ComponentProps<"span">) {
+  const locale = useI18nStore((s) => s.locale);
   return (
     <span
       data-slot="breadcrumb-ellipsis"
@@ -110,7 +113,7 @@ function BreadcrumbEllipsis({
       {...props}
     >
       <HugeiconsIcon icon={MoreHorizontalCircle01Icon} strokeWidth={2} />
-      <span className="sr-only">More</span>
+      <span className="sr-only">{translate(locale, "ui.breadcrumb.more")}</span>
     </span>
   );
 }

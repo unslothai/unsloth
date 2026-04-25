@@ -25,6 +25,8 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { useI18n } from "@/features/i18n";
+import type { TranslationKey } from "@/features/i18n/messages";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
@@ -55,11 +57,11 @@ const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
   "data-recipes:open-learning-recipes";
 
 type TemplateCard = {
-  title: string;
-  description: string;
+  titleKey: TranslationKey;
+  descriptionKey: TranslationKey;
   icon: typeof CookBookIcon;
-  difficulty: "Easy" | "Starter" | "Intermediate" | "Advanced";
-  learningBadges: string[];
+  difficulty: "easy" | "starter" | "intermediate" | "advanced";
+  learningBadges: TranslationKey[];
   surfaceClassName: string;
   shineColor: string[];
   learningRecipeId?: string;
@@ -67,12 +69,15 @@ type TemplateCard = {
 
 const TEMPLATE_CARDS: TemplateCard[] = [
   {
-    title: "Instruction from Answer",
-    description:
-      "Start from seed answer fields and generate matching user instructions for SFT pairs.",
+    titleKey: "dataRecipes.template.instructionFromAnswer.title",
+    descriptionKey: "dataRecipes.template.instructionFromAnswer.description",
     icon: Plant01Icon,
-    difficulty: "Easy",
-    learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
+    difficulty: "easy",
+    learningBadges: [
+      "dataRecipes.badge.seedDataset",
+      "dataRecipes.badge.llmText",
+      "dataRecipes.badge.prompting",
+    ],
     surfaceClassName:
       "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/30 dark:via-green-400/14 dark:to-emerald-950/16",
     shineColor: [
@@ -83,12 +88,11 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "instruction-from-answer",
   },
   {
-    title: "PDF Document QA",
-    description:
-      "Unstructured PDF chunks transformed into grounded question-answer training pairs.",
+    titleKey: "dataRecipes.template.pdfQa.title",
+    descriptionKey: "dataRecipes.template.pdfQa.description",
     icon: DocumentAttachmentIcon,
-    difficulty: "Easy",
-    learningBadges: ["Unstructured", "LLM Text"],
+    difficulty: "easy",
+    learningBadges: ["dataRecipes.badge.unstructured", "dataRecipes.badge.llmText"],
     surfaceClassName:
       "from-violet-500/15 via-fuchsia-500/5 to-transparent dark:from-violet-400/30 dark:via-fuchsia-400/14 dark:to-violet-950/16",
     shineColor: [
@@ -99,12 +103,15 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "pdf-grounded-qa",
   },
   {
-    title: "OCR Document Extraction",
-    description:
-      "Use image context from seed data to generate OCR-style extraction outputs.",
+    titleKey: "dataRecipes.template.ocr.title",
+    descriptionKey: "dataRecipes.template.ocr.description",
     icon: Album02Icon,
-    difficulty: "Starter",
-    learningBadges: ["Vision", "LLM Text", "Image Context"],
+    difficulty: "starter",
+    learningBadges: [
+      "dataRecipes.badge.vision",
+      "dataRecipes.badge.llmText",
+      "dataRecipes.badge.imageContext",
+    ],
     surfaceClassName:
       "from-lime-500/15 via-emerald-500/5 to-transparent dark:from-lime-400/30 dark:via-emerald-400/14 dark:to-lime-950/16",
     shineColor: [
@@ -115,12 +122,16 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "ocr-document-extraction",
   },
   {
-    title: "Text to Python",
-    description:
-      "Instruction-to-code pairs for training models that generate clean Python implementations.",
+    titleKey: "dataRecipes.template.textToPython.title",
+    descriptionKey: "dataRecipes.template.textToPython.description",
     icon: CodeIcon,
-    difficulty: "Intermediate",
-    learningBadges: ["LLM Judge", "LLM Code", "Subcategory", "Category"],
+    difficulty: "intermediate",
+    learningBadges: [
+      "dataRecipes.badge.llmJudge",
+      "dataRecipes.badge.llmCode",
+      "dataRecipes.badge.subcategory",
+      "dataRecipes.badge.category",
+    ],
     surfaceClassName:
       "from-amber-500/15 via-orange-500/5 to-transparent dark:from-amber-400/30 dark:via-orange-400/14 dark:to-amber-950/16",
     shineColor: [
@@ -131,12 +142,15 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "text-to-python",
   },
   {
-    title: "Text to SQL",
-    description:
-      "Natural language to SQL pairs, including schema-aware query construction patterns.",
+    titleKey: "dataRecipes.template.textToSql.title",
+    descriptionKey: "dataRecipes.template.textToSql.description",
     icon: Database02Icon,
-    difficulty: "Intermediate",
-    learningBadges: ["LLM Code", "Prompting", "Drop Columns"],
+    difficulty: "intermediate",
+    learningBadges: [
+      "dataRecipes.badge.llmCode",
+      "dataRecipes.badge.prompting",
+      "dataRecipes.badge.dropColumns",
+    ],
     surfaceClassName:
       "from-blue-500/15 via-indigo-500/5 to-transparent dark:from-blue-400/30 dark:via-indigo-400/14 dark:to-blue-950/16",
     shineColor: [
@@ -147,12 +161,15 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "text-to-sql",
   },
   {
-    title: "Structured Outputs + Jinja Expressions",
-    description:
-      "Support ticket triage dataset with structured JSON outputs and Jinja if/else refs.",
+    titleKey: "dataRecipes.template.structuredJinja.title",
+    descriptionKey: "dataRecipes.template.structuredJinja.description",
     icon: FunctionIcon,
-    difficulty: "Advanced",
-    learningBadges: ["Structured LLM", "Expression", "Jinja"],
+    difficulty: "advanced",
+    learningBadges: [
+      "dataRecipes.badge.structuredLlm",
+      "dataRecipes.badge.expression",
+      "dataRecipes.badge.jinja",
+    ],
     surfaceClassName:
       "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/30 dark:via-sky-400/14 dark:to-cyan-950/16",
     shineColor: [
@@ -168,7 +185,10 @@ const LEARNING_RECIPE_BY_ID = new Map(
   LEARNING_RECIPES.map((recipe) => [recipe.id, recipe]),
 );
 
-function formatRelativeTime(value: number): string {
+function formatRelativeTime(
+  value: number,
+  t: (key: TranslationKey) => string,
+): string {
   const now = Date.now();
   const diffMs = Math.max(0, now - value);
   const minute = 60 * 1000;
@@ -177,22 +197,30 @@ function formatRelativeTime(value: number): string {
   const week = 7 * day;
 
   if (diffMs < minute) {
-    return "just now";
+    return t("dataRecipes.time.justNow");
   }
   if (diffMs < hour) {
     const minutes = Math.floor(diffMs / minute);
-    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+    return t("dataRecipes.time.minutesAgo")
+      .replace("{count}", String(minutes))
+      .replace("{suffix}", minutes === 1 ? "" : "s");
   }
   if (diffMs < day) {
     const hours = Math.floor(diffMs / hour);
-    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    return t("dataRecipes.time.hoursAgo")
+      .replace("{count}", String(hours))
+      .replace("{suffix}", hours === 1 ? "" : "s");
   }
   if (diffMs < week) {
     const days = Math.floor(diffMs / day);
-    return `${days} day${days === 1 ? "" : "s"} ago`;
+    return t("dataRecipes.time.daysAgo")
+      .replace("{count}", String(days))
+      .replace("{suffix}", days === 1 ? "" : "s");
   }
   const weeks = Math.floor(diffMs / week);
-  return `${weeks} week${weeks === 1 ? "" : "s"} ago`;
+  return t("dataRecipes.time.weeksAgo")
+    .replace("{count}", String(weeks))
+    .replace("{suffix}", weeks === 1 ? "" : "s");
 }
 
 function LearningRecipeCards({
@@ -202,6 +230,7 @@ function LearningRecipeCards({
   onSelect: (template: TemplateCard) => void;
   loadingTemplateId: string | null;
 }): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {TEMPLATE_CARDS.map((template) => {
@@ -220,7 +249,7 @@ function LearningRecipeCards({
         );
         return (
           <button
-            key={template.title}
+            key={template.titleKey}
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
@@ -235,10 +264,16 @@ function LearningRecipeCards({
               <Badge
                 className="absolute right-3 top-3"
                 variant={
-                  template.difficulty === "Advanced" ? "secondary" : "outline"
+                  template.difficulty === "advanced" ? "secondary" : "outline"
                 }
               >
-                {template.difficulty}
+                {template.difficulty === "easy"
+                  ? t("dataRecipes.difficulty.easy")
+                  : template.difficulty === "starter"
+                    ? t("dataRecipes.difficulty.starter")
+                    : template.difficulty === "intermediate"
+                      ? t("dataRecipes.difficulty.intermediate")
+                      : t("dataRecipes.difficulty.advanced")}
               </Badge>
               <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
                 <HugeiconsIcon
@@ -248,24 +283,24 @@ function LearningRecipeCards({
               </div>
               <div className="space-y-1">
                 <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
-                  {template.title}
+                  {t(template.titleKey)}
                 </p>
                 <p className="line-clamp-2 text-xs text-muted-foreground">
-                  {template.description}
+                  {t(template.descriptionKey)}
                 </p>
               </div>
               <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap">
                 {isLoading ? (
-                  <Badge variant="outline">Loading...</Badge>
+                  <Badge variant="outline">{t("dataRecipes.loadingShort")}</Badge>
                 ) : (
                   <>
                     {visibleLearningBadges.map((badge) => (
                       <Badge
-                        key={`${template.title}-${badge}`}
+                        key={`${template.titleKey}-${badge}`}
                         variant="outline"
                         className="h-5 shrink-0 px-1.5 text-[10px]"
                       >
-                        {badge}
+                        {t(badge)}
                       </Badge>
                     ))}
                     {extraLearningBadgeCount > 0 ? (
@@ -281,7 +316,7 @@ function LearningRecipeCards({
                         variant="secondary"
                         className="h-5 shrink-0 px-1.5 text-[10px]"
                       >
-                        Soon
+                        {t("dataRecipes.soon")}
                       </Badge>
                     )}
                   </>
@@ -296,6 +331,7 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
@@ -334,12 +370,12 @@ export function DataRecipesPage(): ReactElement {
       return;
     }
     if (!template.learningRecipeId) {
-      toastError("Learning recipe not ready yet.");
+      toastError(t("dataRecipes.toast.learningNotReady"));
       return;
     }
     const recipeTemplate = LEARNING_RECIPE_BY_ID.get(template.learningRecipeId);
     if (!recipeTemplate) {
-      toastError("Learning recipe not found.");
+      toastError(t("dataRecipes.toast.learningNotFound"));
       return;
     }
 
@@ -359,7 +395,7 @@ export function DataRecipesPage(): ReactElement {
       });
     } catch (error) {
       toastError(
-        "Failed to start learning recipe.",
+        t("dataRecipes.toast.startFailed"),
         error instanceof Error ? error.message : undefined,
       );
     } finally {
@@ -387,17 +423,17 @@ export function DataRecipesPage(): ReactElement {
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
-              Data Recipes
+              {t("dataRecipes.title")}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Create and manage local recipe workflows.
+              {t("dataRecipes.subtitle")}
             </p>
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button type="button" disabled={isBusy}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                New Recipe
+                {t("dataRecipes.newRecipe")}
                 <HugeiconsIcon icon={ArrowDown01Icon} className="size-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -408,7 +444,7 @@ export function DataRecipesPage(): ReactElement {
                 }}
               >
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                Start Empty
+                {t("dataRecipes.startEmpty")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {
@@ -416,7 +452,7 @@ export function DataRecipesPage(): ReactElement {
                 }}
               >
                 <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                Start from Learning Recipe
+                {t("dataRecipes.startFromLearning")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -425,10 +461,10 @@ export function DataRecipesPage(): ReactElement {
         {!ready ? (
           <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
             <p className="text-sm font-medium text-foreground">
-              Loading recipes
+              {t("dataRecipes.loading.title")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Fetching your saved recipes and learning templates.
+              {t("dataRecipes.loading.description")}
             </p>
           </div>
         ) : recipes.length === 0 ? (
@@ -437,10 +473,9 @@ export function DataRecipesPage(): ReactElement {
               <EmptyMedia variant="icon">
                 <HugeiconsIcon icon={CookBookIcon} className="size-5" />
               </EmptyMedia>
-              <EmptyTitle>No recipes yet</EmptyTitle>
+              <EmptyTitle>{t("dataRecipes.empty.title")}</EmptyTitle>
               <EmptyDescription>
-                Browse Learning Recipes below to understand how recipe workflows
-                work.
+                {t("dataRecipes.empty.description")}
               </EmptyDescription>
             </EmptyHeader>
             <EmptyContent className="max-w-6xl items-stretch">
@@ -486,12 +521,21 @@ export function DataRecipesPage(): ReactElement {
                         {recipe.name}
                       </p>
                       {recipe.learningRecipeId ? (
-                        <Badge variant="outline">Learning Recipe</Badge>
+                        <Badge variant="outline">
+                          {t("dataRecipes.learningRecipeBadge")}
+                        </Badge>
                       ) : null}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Last updated {formatRelativeTime(recipe.updatedAt)} |
-                      Created {formatRelativeTime(recipe.createdAt)}
+                      {t("dataRecipes.lastUpdated").replace(
+                        "{time}",
+                        formatRelativeTime(recipe.updatedAt, t),
+                      )}{" "}
+                      |{" "}
+                      {t("dataRecipes.created").replace(
+                        "{time}",
+                        formatRelativeTime(recipe.createdAt, t),
+                      )}
                     </p>
                   </div>
                 </button>
@@ -503,7 +547,10 @@ export function DataRecipesPage(): ReactElement {
                   onClick={() => {
                     handleDeleteRecipe(recipe.id).catch(() => undefined);
                   }}
-                  aria-label={`Delete ${recipe.name}`}
+                  aria-label={t("dataRecipes.deleteAria").replace(
+                    "{name}",
+                    recipe.name,
+                  )}
                 >
                   <HugeiconsIcon icon={Delete02Icon} className="size-4" />
                 </Button>
@@ -519,9 +566,9 @@ export function DataRecipesPage(): ReactElement {
           overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <DialogHeader>
-            <DialogTitle>Learning Recipes</DialogTitle>
+            <DialogTitle>{t("dataRecipes.learningDialog.title")}</DialogTitle>
             <DialogDescription>
-              Start from a prebuilt recipe to learn patterns, then edit and run.
+              {t("dataRecipes.learningDialog.description")}
             </DialogDescription>
           </DialogHeader>
           <LearningRecipeCards

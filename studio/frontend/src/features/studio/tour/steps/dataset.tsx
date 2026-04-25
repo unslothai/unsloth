@@ -2,19 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ReadMore, type TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n";
 
-export const studioDatasetStep: TourStep = {
-  id: "dataset",
-  target: "studio-dataset",
-  title: "Dataset",
-  body: (
-    <>
-      Search Hub or paste <span className="font-mono">user/dataset</span>. Preview
-      a few rows: formatting matters more than size. We’ll try to auto-convert
-      your dataset into a supported training format. If we can’t infer it
-      cleanly, we’ll prompt you to map the fields manually. If outputs look off
-      in Chat later, dataset formatting/template is the first thing to check.{" "}
-      <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide" />
-    </>
-  ),
-};
+type Translator = (key: TranslationKey) => string;
+
+export function studioDatasetStep(t: Translator): TourStep {
+  return {
+    id: "dataset",
+    target: "studio-dataset",
+    title: t("studio.tour.dataset.title"),
+    body: (
+      <>
+        {t("studio.tour.dataset.bodyPrefix")} <span className="font-mono">user/dataset</span>
+        {t("studio.tour.dataset.bodySuffix")}{" "}
+        <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide" />
+      </>
+    ),
+  };
+}

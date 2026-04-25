@@ -4,6 +4,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { useI18n } from "@/features/i18n";
 import { useTrainingConfigStore } from "@/features/training";
 import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
@@ -45,6 +46,7 @@ function Row({
 }
 
 export function SummaryStep() {
+  const { t } = useI18n();
   const hw = useHardwareInfo();
   const {
     modelType,
@@ -108,7 +110,7 @@ export function SummaryStep() {
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
-            System
+            {t("onboarding.summary.system")}
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
@@ -135,7 +137,7 @@ export function SummaryStep() {
 
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground">Model</CardTitle>
+          <CardTitle className="text-sm text-muted-foreground">{t("onboarding.summary.model")}</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
           <div className="flex items-start gap-3">
@@ -143,14 +145,14 @@ export function SummaryStep() {
               <HugeiconsIcon icon={ChipIcon} className="size-4 text-emerald-600" />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
-              <span className="text-xs text-muted-foreground">Model</span>
+              <span className="text-xs text-muted-foreground">{t("onboarding.summary.model")}</span>
               <span className="truncate text-sm font-medium">{selectedModel ?? "---"}</span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
-            <Row label="Type" value={modelType} capitalize />
-            <Row label="Method" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"} />
+            <Row label={t("onboarding.summary.type")} value={modelType} capitalize />
+            <Row label={t("onboarding.summary.method")} value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : t("studio.training.method.full")} />
           </div>
         </CardContent>
       </Card>
@@ -158,7 +160,7 @@ export function SummaryStep() {
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
-            Dataset
+            {t("onboarding.summary.dataset")}
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
@@ -167,20 +169,20 @@ export function SummaryStep() {
               <HugeiconsIcon icon={Database02Icon} className="size-4 text-indigo-600" />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
-              <span className="text-xs text-muted-foreground">Dataset</span>
+              <span className="text-xs text-muted-foreground">{t("onboarding.summary.dataset")}</span>
               <span className="truncate text-sm font-medium">{datasetName ?? "---"}</span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
-            <Row label="Source" value={datasetSource} capitalize />
+            <Row label={t("onboarding.summary.source")} value={datasetSource} capitalize />
             {datasetSubset && (
-              <Row label="Subset" value={datasetSubset} mono />
+              <Row label={t("onboarding.summary.subset")} value={datasetSubset} mono />
             )}
             {datasetSplit && (
-              <Row label="Split" value={datasetSplit} mono />
+              <Row label={t("onboarding.summary.split")} value={datasetSplit} mono />
             )}
-            <Row label="Format" value={datasetFormat} capitalize />
+            <Row label={t("onboarding.summary.format")} value={datasetFormat} capitalize />
           </div>
         </CardContent>
       </Card>
@@ -188,7 +190,7 @@ export function SummaryStep() {
       <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
-            Hyperparameters
+            {t("onboarding.summary.hyperparameters")}
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
@@ -197,22 +199,22 @@ export function SummaryStep() {
               <HugeiconsIcon icon={Settings04Icon} className="size-4 text-orange-600" />
             </div>
             <div className="flex flex-1 flex-col">
-              <span className="text-xs text-muted-foreground">Training</span>
+              <span className="text-xs text-muted-foreground">{t("onboarding.summary.training")}</span>
               <span className="text-sm font-medium">
-                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"}
+                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : t("studio.training.method.full")}
               </span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-            <Row label="Epochs" value={epochs} mono />
-            <Row label="Context" value={contextLength.toLocaleString()} mono />
+            <Row label={t("onboarding.hyper.epochs")} value={epochs} mono />
+            <Row label={t("onboarding.summary.context")} value={contextLength.toLocaleString()} mono />
             <Row label="LR" value={learningRate.toExponential()} mono />
             {showLoraParams && (
               <>
-                <Row label="Rank" value={loraRank} mono />
-                <Row label="Alpha" value={loraAlpha} mono />
-                <Row label="Dropout" value={loraDropout} mono />
+                <Row label={t("onboarding.hyper.rank")} value={loraRank} mono />
+                <Row label={t("onboarding.hyper.alpha")} value={loraAlpha} mono />
+                <Row label={t("onboarding.hyper.dropout")} value={loraDropout} mono />
               </>
             )}
           </div>

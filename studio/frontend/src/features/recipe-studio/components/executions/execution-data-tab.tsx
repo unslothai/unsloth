@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
@@ -53,20 +54,21 @@ export function ExecutionDataTab({
   onNextPage,
   onToggleRowExpanded,
 }: ExecutionDataTabProps): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold">Dataset sample</p>
+        <p className="text-sm font-semibold">{t("recipe.execution.data.datasetSample")}</p>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {datasetColumnNames.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button type="button" size="sm" variant="outline">
-                  Columns
+                  {t("recipe.execution.data.columns")}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
+                <DropdownMenuLabel>{t("recipe.execution.data.visibleColumns")}</DropdownMenuLabel>
                 {datasetColumnNames.map((columnName) => (
                   <DropdownMenuCheckboxItem
                     key={columnName}
@@ -92,7 +94,7 @@ export function ExecutionDataTab({
           {canPageDataset && (
             <>
               <span>
-                Page {currentDatasetPage}/{totalPages}
+                {t("recipe.execution.data.page")} {currentDatasetPage}/{totalPages}
               </span>
               <Button
                 type="button"
@@ -103,7 +105,7 @@ export function ExecutionDataTab({
                 }
                 onClick={onPrevPage}
               >
-                Prev
+                {t("recipe.execution.data.prev")}
               </Button>
               <Button
                 type="button"
@@ -115,7 +117,7 @@ export function ExecutionDataTab({
                 }
                 onClick={onNextPage}
               >
-                Next
+                {t("recipe.execution.data.next")}
               </Button>
             </>
           )}
@@ -127,19 +129,19 @@ export function ExecutionDataTab({
             <Spinner className="size-5" />
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
-                Generating data…
+                {t("recipe.execution.data.generating")}
               </p>
               <p className="text-xs text-muted-foreground">
-                Check the Overview tab for live terminal logs.
+                {t("recipe.execution.data.checkOverview")}
               </p>
             </div>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">No rows returned.</p>
+          <p className="text-xs text-muted-foreground">{t("recipe.execution.data.noRows")}</p>
         )
       ) : tableColumns.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          All columns hidden. Use Columns to show at least one.
+          {t("recipe.execution.data.allColumnsHidden")}
         </p>
       ) : (
         <div className="max-h-[55vh] overflow-auto">

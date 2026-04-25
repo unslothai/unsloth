@@ -9,6 +9,7 @@ import {
 import { Thread } from "@/components/assistant-ui/thread";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { useI18n } from "@/features/i18n";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -237,6 +238,7 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  const { t } = useI18n();
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -249,7 +251,7 @@ function CompareShell({
         <div className="shrink-0 bg-background px-5 pb-2 pt-1">
           <div className="mx-auto w-full max-w-[44rem]">{composer}</div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-            LLMs can make mistakes. Double-check all responses.
+            {t("chat.warning.mistakes")}
           </p>
         </div>
       </div>
@@ -261,6 +263,7 @@ function CompareShell({
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
 }: { pairId: string }): ReactElement {
+  const { t } = useI18n();
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -295,7 +298,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           header={
             <div className="shrink-0 px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Base Model
+                {t("chat.compare.baseModel")}
               </span>
             </div>
           }
@@ -309,7 +312,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           header={
             <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Fine-tuned
+                {t("chat.compare.finetuned")}
               </span>
             </div>
           }
@@ -478,6 +481,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 });
 
 export function ChatPage(): ReactElement {
+  const { t } = useI18n();
   const search = useSearch({ from: "/chat" });
   const navigate = useNavigate();
 
@@ -498,8 +502,8 @@ export function ChatPage(): ReactElement {
       .then((thread) => {
         if (canceled || thread) return;
         useChatRuntimeStore.getState().setActiveThreadId(null);
-        toast.info("Chat not found", {
-          description: "That thread no longer exists, so we opened a new chat.",
+        toast.info(t("chat.toast.notFound.title"), {
+          description: t("chat.toast.notFound.description"),
         });
         navigate({
           to: "/chat",
@@ -516,7 +520,7 @@ export function ChatPage(): ReactElement {
     return () => {
       canceled = true;
     };
-  }, [navigate, search.thread]);
+  }, [navigate, search.thread, t]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
@@ -614,9 +618,8 @@ export function ChatPage(): ReactElement {
         }
 
         if (showImageCompatibilityWarning) {
-          toast.warning("Selected model may not handle earlier images", {
-            description:
-              "This chat already includes images. Text-only models can ignore them or fail on follow-up replies.",
+          toast.warning(t("chat.toast.modelImageCompat.title"), {
+            description: t("chat.toast.modelImageCompat.description"),
             duration: 6000,
           });
         }
@@ -629,7 +632,7 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [activeThreadId, modelsFromStore, selectModel, view],
+    [activeThreadId, modelsFromStore, selectModel, t, view],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
@@ -893,10 +896,10 @@ export function ChatPage(): ReactElement {
               <ModelLoadInlineStatus
                 label={
                   loadProgress?.phase === "starting"
-                    ? "Starting model…"
+                    ? t("chat.modelLoad.starting")
                     : loadingModel.isDownloaded || loadingModel.isCachedLora
-                      ? "Loading model…"
-                      : "Downloading model…"
+                      ? t("chat.modelLoad.loading")
+                      : t("chat.modelLoad.downloading")
                 }
                 title={
                   loadingModel.isDownloaded
@@ -934,14 +937,14 @@ export function ChatPage(): ReactElement {
                     type="button"
                     onClick={() => setSettingsOpen(true)}
                     className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Open configuration"
+                    aria-label={t("chat.config.open")}
                     data-tour="chat-settings"
                   >
                     <HugeiconsIcon icon={Settings05Icon} className="size-5" />
                   </button>
                 </TooltipPrimitive.Trigger>
                 <TooltipContent side="bottom" sideOffset={6}>
-                  Open configuration
+                  {t("chat.config.open")}
                 </TooltipContent>
               </Tooltip>
             )}

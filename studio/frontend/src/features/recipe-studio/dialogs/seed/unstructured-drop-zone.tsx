@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { CloudUploadIcon, Cancel01Icon, Loading03Icon, CheckmarkCircle02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useI18n } from "@/features/i18n";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
@@ -40,6 +41,7 @@ export function UnstructuredDropZone({
   onFilesChange,
   disabled,
 }: UnstructuredDropZoneProps) {
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -90,9 +92,9 @@ export function UnstructuredDropZone({
           updatedError = result.error;
         } catch (e) {
           if (e instanceof DOMException && e.name === "AbortError") {
-            updatedError = "Cancelled";
+            updatedError = t("recipe.seed.unstructured.cancelled");
           } else {
-            updatedError = e instanceof Error ? e.message : "Upload failed";
+            updatedError = e instanceof Error ? e.message : t("recipe.seed.unstructured.uploadFailed");
           }
         }
         onFilesChange((prev) =>
@@ -176,10 +178,10 @@ export function UnstructuredDropZone({
       >
         <HugeiconsIcon icon={CloudUploadIcon} className="text-muted-foreground mb-2 size-8" />
         <p className="text-muted-foreground text-sm">
-          Drop files here or click to browse
+          {t("recipe.seed.unstructured.dropOrBrowse")}
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD - up to 50MB each, 100MB total
+          {t("recipe.seed.unstructured.fileRules")}
         </p>
       </div>
 
@@ -228,7 +230,7 @@ export function UnstructuredDropZone({
             </div>
           ))}
           <div className="text-muted-foreground flex justify-between px-1 text-xs">
-            <span>{successFiles.length} file{successFiles.length !== 1 ? "s" : ""} uploaded</span>
+            <span>{successFiles.length} {t("recipe.seed.unstructured.filesUploaded")}</span>
             <span>{formatSize(totalSize)} / 100MB</span>
           </div>
         </div>

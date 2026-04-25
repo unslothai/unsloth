@@ -34,6 +34,7 @@ import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { useI18n } from "@/features/i18n";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
@@ -92,6 +93,7 @@ export const Thread: FC<{
   hideWelcome,
   targetThreadId,
 }) => {
+  const { t } = useI18n();
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
   // back to the bottom while the user is scrolling up (see the hook for
@@ -173,7 +175,7 @@ export const Thread: FC<{
                   <ComposerAnimated disabled={isComposerAttachPending} />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-                  LLMs can make mistakes. Double-check all responses.
+                  {t("chat.warning.mistakes")}
                 </p>
               </div>
             </div>
@@ -185,6 +187,7 @@ export const Thread: FC<{
 };
 
 const ThreadScrollToBottom: FC = () => {
+  const { t } = useI18n();
   // State and action both come from our IntentAwareScrollProvider (scoped
   // per Thread, so compare panes are independent). We deliberately
   // avoid `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to
@@ -195,7 +198,7 @@ const ThreadScrollToBottom: FC = () => {
   const scrollToBottom = useScrollThreadToBottom();
   return (
     <TooltipIconButton
-      tooltip="Scroll to bottom"
+      tooltip={t("thread.tooltip.scrollBottom")}
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
@@ -209,6 +212,7 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+  const { t } = useI18n();
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
@@ -216,14 +220,14 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
           <div className="flex flex-col items-center gap-2 text-center">
             <img
               src="/Sloth emojis/sloth pc square.png"
-              alt="Sloth mascot"
+              alt={t("assistant.thread.mascotAlt")}
               className="size-20"
             />
             <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
-              Chat with your model
+              {t("thread.welcome.title")}
             </h1>
             <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
-              Run GGUFs, safetensors, vision and audio models
+              {t("thread.welcome.subtitle")}
             </p>
           </div>
           <GeneratingSpinner />
@@ -235,6 +239,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
 };
 
 const GeneratingSpinner: FC = () => {
+  const { t } = useI18n();
   const status = useChatRuntimeStore((s) => s.generatingStatus);
   if (!status) {
     return null;
@@ -243,7 +248,7 @@ const GeneratingSpinner: FC = () => {
     <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
+        <span>{t("thread.status.generating")}</span>
       </div>
     </div>
   );
@@ -265,6 +270,7 @@ const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
 };
 
 const PendingAudioChip: FC = () => {
+  const { t } = useI18n();
   const audioName = useChatRuntimeStore((s) => s.pendingAudioName);
   const clearPendingAudio = useChatRuntimeStore((s) => s.clearPendingAudio);
   if (!audioName) {
@@ -279,7 +285,7 @@ const PendingAudioChip: FC = () => {
           type="button"
           onClick={clearPendingAudio}
           className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
-          aria-label="Remove audio"
+          aria-label={t("thread.composer.removeAudio")}
         >
           <XIcon className="size-3" />
         </button>
@@ -289,6 +295,7 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const { t } = useI18n();
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       if (disabled) {
@@ -309,13 +316,13 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <PendingAudioChip />
         <ToolStatusDisplay />
         <ComposerPrimitive.Input
-          placeholder="Send a message..."
+          placeholder={t("thread.composer.placeholder")}
           className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           minRows={1}
           maxRows={6}
           autoFocus={!disabled}
           disabled={disabled}
-          aria-label="Message input"
+          aria-label={t("thread.composer.inputAria")}
         />
         <ComposerAction disabled={disabled} />
       </ComposerPrimitive.AttachmentDropzone>
@@ -324,6 +331,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
 };
 
 const ComposerAudioUpload: FC = () => {
+  const { t } = useI18n();
   const audioInputRef = useRef<HTMLInputElement>(null);
   const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
   const activeModel = useChatRuntimeStore((s) => {
@@ -366,13 +374,13 @@ const ComposerAudioUpload: FC = () => {
         }}
       />
       <TooltipIconButton
-        tooltip="Upload audio"
+        tooltip={t("thread.composer.uploadAudio")}
         side="bottom"
         variant="ghost"
         size="icon"
         className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
         onClick={() => audioInputRef.current?.click()}
-        aria-label="Upload audio"
+        aria-label={t("thread.composer.uploadAudio")}
       >
         <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
       </TooltipIconButton>
@@ -382,6 +390,7 @@ const ComposerAudioUpload: FC = () => {
 
 
 const ReasoningToggle: FC = () => {
+  const { t } = useI18n();
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -406,11 +415,11 @@ const ReasoningToggle: FC = () => {
                 ? "cursor-not-allowed opacity-40"
                 : "bg-primary/10 text-primary hover:bg-primary/20",
             )}
-            aria-label={`Reasoning effort: ${reasoningEffort}`}
+            aria-label={`${t("thread.reasoning.effort")}: ${reasoningEffort}`}
           >
             <LightbulbIcon className="size-3.5" />
             <span>
-              Think:{" "}
+              {t("thread.reasoning.thinkPrefix")}{" "}
               {reasoningEffort.charAt(0).toUpperCase() +
                 reasoningEffort.slice(1)}
             </span>
@@ -448,19 +457,24 @@ const ReasoningToggle: FC = () => {
             ? "bg-primary/10 text-primary hover:bg-primary/20"
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
-      aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+      aria-label={
+        reasoningEnabled
+          ? t("thread.reasoning.disableThinking")
+          : t("thread.reasoning.enableThinking")
+      }
     >
       {reasoningEnabled && !disabled ? (
         <LightbulbIcon className="size-3.5" />
       ) : (
         <LightbulbOffIcon className="size-3.5" />
       )}
-      <span>Think</span>
+      <span>{t("thread.reasoning.thinkLabel")}</span>
     </button>
   );
 };
 
 const PreserveThinkingToggle: FC = () => {
+  const { t } = useI18n();
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -485,7 +499,9 @@ const PreserveThinkingToggle: FC = () => {
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={
-        preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
+        preserveThinking
+          ? t("thread.reasoning.disablePreserve")
+          : t("thread.reasoning.enablePreserve")
       }
     >
       {preserveThinking && !disabled ? (
@@ -493,12 +509,13 @@ const PreserveThinkingToggle: FC = () => {
       ) : (
         <LightbulbOffIcon className="size-3.5" />
       )}
-      <span>Preserve Thinking</span>
+      <span>{t("thread.reasoning.preserveLabel")}</span>
     </button>
   );
 };
 
 const WebSearchToggle: FC = () => {
+  const { t } = useI18n();
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -520,15 +537,16 @@ const WebSearchToggle: FC = () => {
             ? "bg-primary/10 text-primary hover:bg-primary/20"
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
-      aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+      aria-label={toolsEnabled ? t("thread.search.disable") : t("thread.search.enable")}
     >
       <GlobeIcon className="size-3.5" />
-      <span>Search</span>
+      <span>{t("thread.search.label")}</span>
     </button>
   );
 };
 
 const CodeToolsToggle: FC = () => {
+  const { t } = useI18n();
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -551,11 +569,11 @@ const CodeToolsToggle: FC = () => {
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={
-        codeToolsEnabled ? "Disable code execution" : "Enable code execution"
+        codeToolsEnabled ? t("thread.code.disable") : t("thread.code.enable")
       }
     >
       <CodeToggleIcon className="size-3.5" />
-      <span>Code</span>
+      <span>{t("thread.code.label")}</span>
     </button>
   );
 };
@@ -619,6 +637,7 @@ const ToolStatusDisplay: FC = () => {
 };
 
 const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const { t } = useI18n();
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
@@ -633,7 +652,7 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
-              tooltip="Dictate"
+              tooltip={t("thread.dictate.start")}
               variant="ghost"
               className="size-8 rounded-full text-muted-foreground"
             >
@@ -644,7 +663,7 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <ComposerPrimitive.If dictation={true}>
           <ComposerPrimitive.StopDictation asChild={true}>
             <TooltipIconButton
-              tooltip="Stop dictation"
+              tooltip={t("thread.dictate.stop")}
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
@@ -655,14 +674,14 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           <ComposerPrimitive.Send asChild={true}>
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={t("thread.message.send")}
               side="bottom"
               type="submit"
               variant="default"
               size="icon"
               disabled={disabled}
               className="aui-composer-send size-8 rounded-full"
-              aria-label="Send message"
+              aria-label={t("thread.message.send")}
             >
               <ArrowUpIcon className="aui-composer-send-icon size-4" />
             </TooltipIconButton>
@@ -675,7 +694,7 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
               variant="default"
               size="icon"
               className="aui-composer-cancel size-8 rounded-full"
-              aria-label="Stop generating"
+              aria-label={t("thread.message.stop")}
             >
               <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>
@@ -697,6 +716,7 @@ const MessageError: FC = () => {
 };
 
 const GeneratingIndicator: FC = () => {
+  const { t } = useI18n();
   const show = useAuiState(
     ({ message }) =>
       message.content.length === 0 && message.status?.type === "running",
@@ -704,7 +724,7 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return <span className="text-sm text-muted-foreground">{t("thread.status.generatingDots")}</span>;
 };
 
 const AssistantMessage: FC = () => {
@@ -747,6 +767,7 @@ const AssistantMessage: FC = () => {
 const COPY_RESET_MS = 2000;
 
 const DeleteMessageButton: FC = () => {
+  const { t } = useI18n();
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -765,13 +786,13 @@ const DeleteMessageButton: FC = () => {
       });
     } catch (error) {
       console.error("Failed to delete message", error);
-      toast.error("Failed to delete message");
+      toast.error(t("thread.toast.deleteFailed"));
     }
   };
 
   return (
     <TooltipIconButton
-      tooltip="Delete message"
+      tooltip={t("thread.action.deleteMessage")}
       disabled={isRunning}
       onClick={handleDelete}
       className="text-muted-foreground hover:text-destructive"
@@ -782,6 +803,7 @@ const DeleteMessageButton: FC = () => {
 };
 
 const CopyButton: FC = () => {
+  const { t } = useI18n();
   const aui = useAui();
   const [copied, setCopied] = useState(false);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -801,13 +823,14 @@ const CopyButton: FC = () => {
   };
 
   return (
-    <TooltipIconButton tooltip="Copy" onClick={handleCopy}>
+    <TooltipIconButton tooltip={t("thread.action.copy")} onClick={handleCopy}>
       {copied ? <CheckIcon /> : <CopyIcon />}
     </TooltipIconButton>
   );
 };
 
 const AssistantActionBar: FC = () => {
+  const { t } = useI18n();
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
@@ -817,7 +840,7 @@ const AssistantActionBar: FC = () => {
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
-        <TooltipIconButton tooltip="Refresh">
+        <TooltipIconButton tooltip={t("thread.action.refresh")}>
           <RefreshCwIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
@@ -826,7 +849,7 @@ const AssistantActionBar: FC = () => {
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
           <TooltipIconButton
-            tooltip="More"
+            tooltip={t("thread.action.more")}
             className="data-[state=open]:bg-accent"
           >
             <MoreHorizontalIcon />
@@ -840,7 +863,7 @@ const AssistantActionBar: FC = () => {
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
               <DownloadIcon className="size-4" />
-              Export as Markdown
+              {t("thread.action.exportMarkdown")}
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
@@ -890,6 +913,7 @@ const UserMessage: FC = () => {
 };
 
 const UserActionBar: FC = () => {
+  const { t } = useI18n();
   return (
     <ActionBarPrimitive.Root
       autohide="always"
@@ -897,7 +921,7 @@ const UserActionBar: FC = () => {
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+        <TooltipIconButton tooltip={t("thread.action.edit")} className="aui-user-action-edit">
           <PencilIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
@@ -907,6 +931,7 @@ const UserActionBar: FC = () => {
 };
 
 const EditComposer: FC = () => {
+  const { t } = useI18n();
   const aui = useAui();
   const resendAfterCancelRef = useRef(false);
 
@@ -928,7 +953,7 @@ const EditComposer: FC = () => {
         <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
           <ComposerPrimitive.Cancel asChild={true}>
             <Button variant="ghost" size="sm">
-              Cancel
+              {t("thread.action.cancel")}
             </Button>
           </ComposerPrimitive.Cancel>
           <Button
@@ -950,7 +975,7 @@ const EditComposer: FC = () => {
               aui.composer().send();
             }}
           >
-            Update
+            {t("thread.action.update")}
           </Button>
         </div>
       </ComposerPrimitive.Root>
@@ -962,6 +987,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
   className,
   ...rest
 }) => {
+  const { t } = useI18n();
   return (
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch={true}
@@ -972,7 +998,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
       {...rest}
     >
       <BranchPickerPrimitive.Previous asChild={true}>
-        <TooltipIconButton tooltip="Previous">
+        <TooltipIconButton tooltip={t("thread.action.previous")}>
           <ChevronLeftIcon />
         </TooltipIconButton>
       </BranchPickerPrimitive.Previous>
@@ -980,7 +1006,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
-        <TooltipIconButton tooltip="Next">
+        <TooltipIconButton tooltip={t("thread.action.next")}>
           <ChevronRightIcon />
         </TooltipIconButton>
       </BranchPickerPrimitive.Next>

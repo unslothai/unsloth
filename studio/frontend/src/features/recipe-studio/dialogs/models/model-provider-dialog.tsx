@@ -9,6 +9,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useState } from "react";
+import { useI18n } from "@/features/i18n";
 import type { ModelProviderConfig } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
@@ -23,6 +24,7 @@ export function ModelProviderDialog({
   config,
   onUpdate,
 }: ModelProviderDialogProps): ReactElement {
+  const { t } = useI18n();
   const [optionalOpen, setOptionalOpen] = useState(false);
   const isLocal = config.is_local ?? false;
   const endpointId = `${config.id}-endpoint`;
@@ -40,14 +42,16 @@ export function ModelProviderDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Connection name"
+        label={t("recipe.modelProvider.connectionName")}
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
 
       {/* Model source toggle */}
       <div className="grid gap-1.5">
-        <p className="text-sm font-semibold text-foreground">Model source</p>
+        <p className="text-sm font-semibold text-foreground">
+          {t("recipe.modelProvider.modelSource")}
+        </p>
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -68,10 +72,10 @@ export function ModelProviderDialog({
             }
           >
             <p className="text-sm font-semibold text-foreground">
-              Local model
+              {t("recipe.modelProvider.localModel")}
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Use the model loaded in the Chat tab
+              {t("recipe.modelProvider.localModelHint")}
             </p>
           </button>
           <button
@@ -84,10 +88,10 @@ export function ModelProviderDialog({
             onClick={() => onUpdate({ is_local: false })}
           >
             <p className="text-sm font-semibold text-foreground">
-              External endpoint
+              {t("recipe.modelProvider.externalEndpoint")}
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Connect to an API like OpenAI, Together, or a custom server
+              {t("recipe.modelProvider.externalEndpointHint")}
             </p>
           </button>
         </div>
@@ -96,43 +100,41 @@ export function ModelProviderDialog({
       {isLocal ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">
-            Ready to go
+            {t("recipe.modelProvider.readyTitle")}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Recipes will use whatever model is loaded in the Chat tab when you
-            hit run. No endpoint or API key needed.
+            {t("recipe.modelProvider.readyDescription")}
           </p>
         </div>
       ) : (
         <>
           <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
             <p className="text-sm font-semibold text-foreground">
-              Start with the endpoint you want this model to use
+              {t("recipe.modelProvider.startTitle")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Most connections only need an endpoint. Add an API key if that
-              service requires one.
+              {t("recipe.modelProvider.startDescription")}
             </p>
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Endpoint"
+              label={t("recipe.modelProvider.endpoint")}
               htmlFor={endpointId}
-              hint="Base URL for the model service or gateway."
+              hint={t("recipe.modelProvider.endpointHint")}
             />
             <Input
               id={endpointId}
               className="nodrag"
-              placeholder="https://..."
+              placeholder={t("recipe.modelProvider.endpointPlaceholder")}
               value={config.endpoint}
               onChange={(event) => updateField("endpoint", event.target.value)}
             />
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="API key (optional)"
+              label={t("recipe.modelProvider.apiKey")}
               htmlFor={apiKeyId}
-              hint="Paste a key here, or use an environment variable below."
+              hint={t("recipe.modelProvider.apiKeyHint")}
             />
             <Input
               id={apiKeyId}
@@ -144,21 +146,21 @@ export function ModelProviderDialog({
           <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
             <CollapsibleTrigger asChild={true}>
               <CollapsibleSectionTriggerButton
-                label="Advanced request overrides"
+                label={t("recipe.modelProvider.advanced")}
                 open={optionalOpen}
               />
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 space-y-4">
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="API key environment variable"
+                  label={t("recipe.modelProvider.apiKeyEnv")}
                   htmlFor={apiKeyEnvId}
-                  hint="Name of the environment variable that stores the key."
+                  hint={t("recipe.modelProvider.apiKeyEnvHint")}
                 />
                 <Input
                   id={apiKeyEnvId}
                   className="nodrag"
-                  placeholder="OPENAI_API_KEY"
+                  placeholder={t("recipe.modelProvider.apiKeyEnvPlaceholder")}
                   value={config.api_key_env ?? ""}
                   onChange={(event) =>
                     updateField("api_key_env", event.target.value)
@@ -167,9 +169,9 @@ export function ModelProviderDialog({
               </div>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Extra headers (JSON)"
+                  label={t("recipe.modelProvider.extraHeaders")}
                   htmlFor={extraHeadersId}
-                  hint="Optional headers to send with every request."
+                  hint={t("recipe.modelProvider.extraHeadersHint")}
                 />
                 <Textarea
                   id={extraHeadersId}
@@ -183,9 +185,9 @@ export function ModelProviderDialog({
               </div>
               <div className="grid gap-1.5">
                 <FieldLabel
-                  label="Extra body (JSON)"
+                  label={t("recipe.modelProvider.extraBody")}
                   htmlFor={extraBodyId}
-                  hint="Optional request fields to send every time."
+                  hint={t("recipe.modelProvider.extraBodyHint")}
                 />
                 <Textarea
                   id={extraBodyId}

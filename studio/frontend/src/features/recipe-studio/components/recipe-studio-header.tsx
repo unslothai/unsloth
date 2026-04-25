@@ -24,6 +24,7 @@ import {
   RECIPE_STUDIO_WARNING_BADGE_TONE,
   RECIPE_STUDIO_WARNING_ICON_TONE,
 } from "../utils/ui-tones";
+import { useI18n } from "@/features/i18n";
 
 type StatusTone = "success" | "error";
 
@@ -39,11 +40,6 @@ type RecipeStudioHeaderProps = {
   onSaveRecipe: () => void;
 };
 
-const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
-  success: "Saved",
-  error: "Needs saving",
-};
-
 export function RecipeStudioHeader({
   activeView,
   saveLoading,
@@ -55,6 +51,7 @@ export function RecipeStudioHeader({
   onViewChange,
   onSaveRecipe,
 }: RecipeStudioHeaderProps): ReactElement {
+  const { t } = useI18n();
   const [editingWorkflowName, setEditingWorkflowName] = useState(false);
 
   function handleViewValueChange(value: string): void {
@@ -65,7 +62,7 @@ export function RecipeStudioHeader({
 
   function closeWorkflowNameEditor(): void {
     if (workflowName.trim().length === 0) {
-      onWorkflowNameChange("Untitled recipe");
+      onWorkflowNameChange(t("recipe.header.untitled"));
     }
     setEditingWorkflowName(false);
   }
@@ -103,7 +100,7 @@ export function RecipeStudioHeader({
               onKeyDown={handleWorkflowNameKeyDown}
               autoFocus={true}
               className="h-7 w-full max-w-[min(22rem,50vw)]"
-              aria-label="Recipe name"
+              aria-label={t("recipe.header.recipeName")}
             />
           ) : (
             <button
@@ -111,13 +108,15 @@ export function RecipeStudioHeader({
               onClick={() => setEditingWorkflowName(true)}
               className="max-w-[min(22rem,50vw)] truncate text-sm font-semibold text-foreground hover:text-primary"
               title={workflowName}
-              aria-label={`Edit recipe name: ${workflowName}`}
+              aria-label={`${t("recipe.header.editRecipeName")}: ${workflowName}`}
             >
               {workflowName}
             </button>
           )}
           <Badge variant="secondary" className="h-6 shrink-0 text-[10px]">
-            {STATUS_MESSAGE_CLASS[saveTone]}
+            {saveTone === "success"
+              ? t("recipe.header.saved")
+              : t("recipe.header.needsSaving")}
           </Badge>
           <span
             className="hidden max-w-[12rem] truncate text-xs text-muted-foreground sm:inline"
@@ -129,10 +128,10 @@ export function RecipeStudioHeader({
       </div>
       <div className="justify-self-center">
         <Tabs value={activeView} onValueChange={handleViewValueChange}>
-          <TabsList>
-            <TabsTrigger value="editor">Editor</TabsTrigger>
-            <TabsTrigger value="executions">Runs</TabsTrigger>
-          </TabsList>
+            <TabsList>
+            <TabsTrigger value="editor">{t("recipe.header.editor")}</TabsTrigger>
+            <TabsTrigger value="executions">{t("recipe.header.runs")}</TabsTrigger>
+            </TabsList>
         </Tabs>
       </div>
       <div className="flex items-center justify-self-end gap-2">
@@ -150,7 +149,7 @@ export function RecipeStudioHeader({
             <PopoverContent align="end" className="w-80 p-0">
               <div className="border-b px-3 py-2">
                 <p className="text-xs font-semibold text-foreground">
-                  Graph warnings ({warnings.length})
+                  {t("recipe.header.graphWarnings")} ({warnings.length})
                 </p>
               </div>
               <ul className="max-h-60 overflow-y-auto py-1">
@@ -187,7 +186,7 @@ export function RecipeStudioHeader({
           disabled={saveLoading}
         >
           <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-          {saveLoading ? "Saving..." : "Save"}
+          {saveLoading ? t("recipe.header.saving") : t("recipe.header.save")}
         </Button>
       </div>
     </div>

@@ -24,6 +24,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useI18nStore } from "@/features/i18n/store"
+import { translate } from "@/features/i18n/store"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
@@ -203,6 +205,9 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
+  const locale = useI18nStore((s) => s.locale)
+  const tSidebar = translate(locale, "ui.sidebar.title")
+  const tSidebarDescription = translate(locale, "ui.sidebar.description")
   const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
 
   if (collapsible === "none") {
@@ -232,8 +237,8 @@ function Sidebar({
           side={side}
         >
           <SheetHeader className="sr-only">
-            <SheetTitle>Sidebar</SheetTitle>
-            <SheetDescription>Displays the mobile sidebar.</SheetDescription>
+            <SheetTitle>{tSidebar}</SheetTitle>
+            <SheetDescription>{tSidebarDescription}</SheetDescription>
           </SheetHeader>
           <div className="flex h-full w-full flex-col">{children}</div>
         </SheetContent>
@@ -322,6 +327,8 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
+  const locale = useI18nStore((s) => s.locale)
+  const tToggleSidebar = translate(locale, "ui.sidebar.toggle")
   const { toggleSidebar } = useSidebar()
 
   return (
@@ -338,22 +345,24 @@ function SidebarTrigger({
       {...props}
     >
       <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[18px]" />
-      <span className="sr-only">Toggle Sidebar</span>
+      <span className="sr-only">{tToggleSidebar}</span>
     </Button>
   )
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
+  const locale = useI18nStore((s) => s.locale)
+  const tToggleSidebar = translate(locale, "ui.sidebar.toggle")
   const { toggleSidebar } = useSidebar()
 
   return (
     <button
       data-sidebar="rail"
       data-slot="sidebar-rail"
-      aria-label="Toggle Sidebar"
+      aria-label={tToggleSidebar}
       tabIndex={-1}
       onClick={toggleSidebar}
-      title="Toggle Sidebar"
+      title={tToggleSidebar}
       className={cn(
         "hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:start-1/2 after:w-[2px] sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2",
         "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",

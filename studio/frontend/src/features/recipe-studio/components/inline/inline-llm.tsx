@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type ReactElement, useMemo, useRef } from "react";
+import { useI18n } from "@/features/i18n";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
 import { InlineField } from "./inline-field";
@@ -46,6 +47,7 @@ const CODE_LANG_OPTIONS = [
 ] as const;
 
 export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
+  const { t } = useI18n();
   const isCode = config.llm_type === "code";
   const configs = useRecipeStudioStore((state) => state.configs);
   const modelConfigAliases = useMemo(
@@ -73,7 +75,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
 
   return (
     <div className="space-y-3">
-      <InlineField label="Model alias">
+      <InlineField label={t("recipe.inline.llm.modelAlias")}>
         <div ref={anchorRef}>
           <Combobox
             items={modelConfigAliases}
@@ -94,7 +96,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           >
             <ComboboxInput
               className="nodrag h-8 w-full text-xs"
-              placeholder="Model alias"
+              placeholder={t("recipe.inline.llm.modelAliasPlaceholder")}
               onBlur={() => {
                 const next = aliasInputRef.current;
                 if (next !== config.model_alias) {
@@ -106,7 +108,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
               }}
             />
             <ComboboxContent anchor={anchorRef}>
-              <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxEmpty>{t("recipe.inline.llm.noModelConfigs")}</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>
@@ -118,7 +120,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           </Combobox>
         </div>
       </InlineField>
-      <InlineField label="Tool profile">
+      <InlineField label={t("recipe.inline.llm.toolProfile")}>
         <div ref={toolAnchorRef}>
           <Combobox
             items={toolProfileAliases}
@@ -136,7 +138,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           >
             <ComboboxInput
               className="nodrag h-8 w-full text-xs"
-              placeholder="Tool profile"
+              placeholder={t("recipe.inline.llm.toolProfilePlaceholder")}
               onBlur={(event) => {
                 const next = event.target.value;
                 if (next !== (config.tool_alias ?? "")) {
@@ -148,7 +150,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
               }}
             />
             <ComboboxContent anchor={toolAnchorRef}>
-              <ComboboxEmpty>No tool profiles found</ComboboxEmpty>
+              <ComboboxEmpty>{t("recipe.inline.llm.noToolProfiles")}</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>
@@ -161,7 +163,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         </div>
       </InlineField>
       {isCode && (
-        <InlineField label="Code language">
+        <InlineField label={t("recipe.llm.codeLanguage.label")}>
           <Select
             value={config.code_lang?.trim() || "python"}
             onValueChange={(value) =>
@@ -172,7 +174,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
             }
           >
             <SelectTrigger className="nodrag h-8 w-full text-xs">
-              <SelectValue placeholder="Language" />
+              <SelectValue placeholder={t("recipe.llm.codeLanguage.select")} />
             </SelectTrigger>
             <SelectContent>
               {CODE_LANG_OPTIONS.map((lang) => (
@@ -185,7 +187,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         </InlineField>
       )}
       <p className="text-[11px] text-muted-foreground">
-        Prompt/system edited on aux nodes.
+        {t("recipe.inline.llm.promptSystemHint")}
       </p>
     </div>
   );

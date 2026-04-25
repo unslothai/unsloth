@@ -10,6 +10,7 @@ import { renderBlockDialog } from "../blocks/registry";
 import type { NodeConfig, SamplerConfig } from "../types";
 import { DialogShell } from "./shared/dialog-shell";
 import { ValidationBanner } from "./shared/validation-banner";
+import { useI18n } from "@/features/i18n";
 
 type ConfigDialogProps = {
   open: boolean;
@@ -40,6 +41,7 @@ export function ConfigDialog({
   container,
   readOnly = false,
 }: ConfigDialogProps): ReactElement {
+  const { t } = useI18n();
   const blockDefinition = getBlockDefinitionForConfig(config);
   const showDropToggle =
     config?.kind === "sampler" ||
@@ -63,19 +65,19 @@ export function ConfigDialog({
           description={
             blockDefinition
               ? blockDefinition.description
-              : "Choose a step to edit."
+              : t("recipe.config.chooseStep")
           }
         />
         {!config && (
           <div className="text-sm text-muted-foreground">
-            Select a step to edit.
+            {t("recipe.config.selectStep")}
           </div>
         )}
         {config && (
           <div className="min-w-0 space-y-4">
             {readOnly && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                This recipe is locked while a run is in progress.
+                {t("recipe.config.lockedHint")}
               </div>
             )}
             <ValidationBanner config={config} />
@@ -85,9 +87,9 @@ export function ConfigDialog({
               {showDropToggle && (
                 <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold">Keep out of final dataset</p>
+                    <p className="text-sm font-semibold">{t("recipe.config.keepOutTitle")}</p>
                     <p className="break-words text-xs text-muted-foreground">
-                      Use this step while generating, but leave it out of exported rows.
+                      {t("recipe.config.keepOutHint")}
                     </p>
                   </div>
                   <Switch
@@ -117,7 +119,7 @@ export function ConfigDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
           >
-            Done
+            {t("settings.apiKeys.done")}
           </Button>
         </DialogFooter>
       </DialogContent>

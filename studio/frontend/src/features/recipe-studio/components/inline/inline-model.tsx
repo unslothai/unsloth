@@ -3,6 +3,7 @@
 
 import { Input } from "@/components/ui/input";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { ModelConfig, ModelProviderConfig } from "../../types";
 import { InlineField } from "./inline-field";
 
@@ -15,30 +16,31 @@ type InlineModelProps = {
 };
 
 export function InlineModel(props: InlineModelProps): ReactElement {
+  const { t } = useI18n();
   if (props.config.kind === "model_provider") {
     if (props.config.is_local) {
       return (
         <div className="flex items-center gap-2 px-1 py-0.5">
           <span className="text-xs font-medium text-muted-foreground">
-            Local model (Chat)
+            {t("recipe.inline.model.localModelChat")}
           </span>
         </div>
       );
     }
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <InlineField label="Endpoint">
+        <InlineField label={t("recipe.modelProvider.endpoint")}>
           <Input
             className="nodrag h-8 w-full text-xs"
-            placeholder="https://api.example.com/v1"
+            placeholder={t("recipe.inline.model.endpointPlaceholder")}
             value={props.config.endpoint}
             onChange={(event) => props.onUpdate({ endpoint: event.target.value })}
           />
         </InlineField>
-        <InlineField label="API key">
+        <InlineField label={t("recipe.modelProvider.apiKey")}>
           <Input
             className="nodrag h-8 w-full text-xs"
-            placeholder="Optional"
+            placeholder={t("recipe.inline.model.optional")}
             value={props.config.api_key ?? ""}
             onChange={(event) =>
               props.onUpdate({
@@ -73,15 +75,15 @@ export function InlineModel(props: InlineModelProps): ReactElement {
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      <InlineField label="Provider">
+      <InlineField label={t("recipe.modelConfig.providerConnection")}>
         <Input
           className="nodrag h-8 w-full text-xs"
-          placeholder="provider alias"
+          placeholder={t("recipe.inline.model.providerAliasPlaceholder")}
           value={modelConfig.provider}
           onChange={(event) => handleProviderChange(event.target.value)}
         />
       </InlineField>
-      <InlineField label="Model">
+      <InlineField label={t("recipe.modelConfig.modelId")}>
         <Input
           className="nodrag h-8 w-full text-xs"
           placeholder={isLinkedToLocal ? "local" : "gpt-4o-mini"}
@@ -89,7 +91,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
           onChange={(event) => props.onUpdate({ model: event.target.value })}
         />
       </InlineField>
-      <InlineField label="Temperature" className="sm:col-span-2">
+      <InlineField label={t("recipe.modelConfig.temperature")} className="sm:col-span-2">
         <Input
           className="nodrag h-8 w-full text-xs"
           type="number"

@@ -22,6 +22,7 @@ import { AlertCircleIcon, ArrowRight01Icon, CheckmarkCircle02Icon, Key01Icon } f
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "@/features/i18n";
 import { streamExportLogs, type ExportLogEntry } from "../api/export-api";
 import { collapseAnim } from "../anim";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
@@ -272,6 +273,7 @@ export function ExportDialog({
   exportSuccess,
   exportOutputPath,
 }: ExportDialogProps) {
+  const { t } = useI18n();
   // Live log capture is useful for any export path executed by the
   // backend worker, including LoRA adapter-only export.
   const showLogPanel =
@@ -322,16 +324,16 @@ export function ExportDialog({
                 <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-6 text-emerald-500" />
               </div>
               <div className="flex flex-col items-center gap-2 text-center">
-                <h3 className="text-lg font-semibold">Export Complete</h3>
+                <h3 className="text-lg font-semibold">{t("export.dialog.complete.title")}</h3>
                 <p className="text-sm text-muted-foreground">
                   {destination === "hub"
-                    ? "Model successfully pushed to Hugging Face Hub."
-                    : "Model saved locally."}
+                    ? t("export.dialog.complete.pushed")
+                    : t("export.dialog.complete.savedLocal")}
                 </p>
                 {exportOutputPath ? (
                   <div className="mt-1 flex w-full max-w-md flex-col items-stretch gap-1 rounded-lg border border-border/40 bg-muted/40 px-3 py-2 text-left">
                     <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      Saved to
+                      {t("export.dialog.complete.savedTo")}
                     </span>
                     <code
                       className="select-all break-all font-mono text-[12px] text-foreground"
@@ -344,15 +346,15 @@ export function ExportDialog({
               </div>
             </div>
             <DialogFooter>
-              <Button onClick={() => onOpenChange(false)}>Done</Button>
+              <Button onClick={() => onOpenChange(false)}>{t("export.dialog.done")}</Button>
             </DialogFooter>
           </>
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Export Model</DialogTitle>
+              <DialogTitle>{t("export.dialog.title")}</DialogTitle>
               <DialogDescription>
-                Choose where to save your exported model.
+                {t("export.dialog.description")}
               </DialogDescription>
             </DialogHeader>
 
@@ -363,7 +365,7 @@ export function ExportDialog({
                 disabled={exporting}
                 className="flex-1"
               >
-                Save Locally
+                {t("export.dialog.destination.local")}
               </Button>
               <Button
                 variant={destination === "hub" ? "dark" : "outline"}
@@ -371,7 +373,7 @@ export function ExportDialog({
                 disabled={exporting}
                 className="flex-1"
               >
-                Push to Hub
+                {t("export.dialog.destination.hub")}
               </Button>
             </div>
 
@@ -382,10 +384,10 @@ export function ExportDialog({
                     <div className="grid grid-cols-2 gap-3">
                       <div className="flex flex-col gap-1.5">
                         <label className="text-xs font-medium text-muted-foreground">
-                          Username / Org
+                          {t("export.dialog.hub.username")}
                         </label>
                         <Input
-                          placeholder="your-username"
+                          placeholder={t("export.dialog.hub.usernamePlaceholder")}
                           value={hfUsername}
                           onChange={(e) => onHfUsernameChange(e.target.value)}
                           disabled={exporting}
@@ -393,10 +395,10 @@ export function ExportDialog({
                       </div>
                       <div className="flex flex-col gap-1.5">
                         <label className="text-xs font-medium text-muted-foreground">
-                          Model Name
+                          {t("export.dialog.hub.modelName")}
                         </label>
                         <Input
-                          placeholder="my-model-gguf"
+                          placeholder={t("export.dialog.hub.modelNamePlaceholder")}
                           value={modelName}
                           onChange={(e) => onModelNameChange(e.target.value)}
                           disabled={exporting}
@@ -407,7 +409,7 @@ export function ExportDialog({
                     <div className="flex flex-col gap-1.5">
                       <div className="flex items-center justify-between">
                         <label className="text-xs font-medium text-muted-foreground">
-                          HF Write Token
+                          {t("export.dialog.hub.token")}
                         </label>
                         <a
                           href="https://huggingface.co/settings/tokens"
@@ -415,7 +417,7 @@ export function ExportDialog({
                           rel="noopener noreferrer"
                           className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 transition-colors"
                         >
-                          Get token
+                          {t("export.dialog.hub.getToken")}
                           <HugeiconsIcon
                             icon={ArrowRight01Icon}
                             className="size-3"
@@ -437,7 +439,7 @@ export function ExportDialog({
                         />
                       </InputGroup>
                       <p className="text-[11px] text-muted-foreground/70">
-                        Leave empty if already logged in via CLI.
+                        {t("export.dialog.hub.tokenHint")}
                       </p>
                     </div>
 
@@ -453,7 +455,7 @@ export function ExportDialog({
                         htmlFor="private-repo"
                         className="text-xs font-medium cursor-pointer"
                       >
-                        Private Repository
+                        {t("export.dialog.hub.privateRepo")}
                       </label>
                     </div>
                   </div>
@@ -470,8 +472,8 @@ export function ExportDialog({
                 <div className="flex min-w-0 flex-col gap-1">
                   <span>
                     {destination === "hub"
-                      ? "Export finished and pushed to Hugging Face Hub."
-                      : "Export finished successfully."}
+                      ? t("export.dialog.banner.pushed")
+                      : t("export.dialog.banner.success")}
                   </span>
                   {exportOutputPath ? (
                     <code className="select-all break-all font-mono text-[12px] text-foreground/90" title={exportOutputPath}>
@@ -493,22 +495,22 @@ export function ExportDialog({
             {/* Summary */}
             <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
               <div className="flex justify-between">
-                <span>Base Model</span>
+                <span>{t("export.dialog.summary.baseModel")}</span>
                 <span className="font-medium text-foreground">{baseModelName}</span>
               </div>
               <div className="flex justify-between">
-                <span>{isAdapter ? "Checkpoint" : "Model"}</span>
+                <span>{isAdapter ? t("export.dialog.summary.checkpoint") : t("export.dialog.summary.model")}</span>
                 <span className="font-medium text-foreground">{checkpoint}</span>
               </div>
               <div className="flex justify-between">
-                <span>Export Method</span>
+                <span>{t("export.dialog.summary.method")}</span>
                 <span className="font-medium text-foreground">
                   {EXPORT_METHODS.find((m) => m.value === exportMethod)?.title}
                 </span>
               </div>
               {exportMethod === "gguf" && quantLevels.length > 0 && (
                 <div className="flex justify-between">
-                  <span>Quantizations</span>
+                  <span>{t("export.dialog.summary.quantizations")}</span>
                   <span className="font-medium text-foreground">
                     {quantLevels.join(", ")}
                   </span>
@@ -528,7 +530,7 @@ export function ExportDialog({
                   <div className="flex flex-col gap-1.5 pt-1">
                     <div className="flex items-center justify-between">
                       <label className="text-xs font-medium text-muted-foreground">
-                        Export output
+                        {t("export.dialog.log.output")}
                       </label>
                       <div className="flex items-center gap-2 text-[11px] text-muted-foreground/80">
                         <span
@@ -540,10 +542,10 @@ export function ExportDialog({
                         />
                         <span>
                           {logConnected
-                            ? "streaming"
+                            ? t("export.dialog.log.streaming")
                             : exporting
-                              ? "connecting..."
-                              : "idle"}
+                              ? t("export.dialog.log.connecting")
+                              : t("export.dialog.log.idle")}
                         </span>
                         {exporting && elapsedSeconds > 0 ? (
                           <span className="tabular-nums text-muted-foreground/70">
@@ -561,7 +563,7 @@ export function ExportDialog({
                         <div className="flex h-full items-center justify-center text-muted-foreground/70">
                           <span className="flex items-center gap-2">
                             <Spinner className="size-3" />
-                            Waiting for worker output...
+                            {t("export.dialog.log.waiting")}
                           </span>
                         </div>
                       ) : (
@@ -585,7 +587,7 @@ export function ExportDialog({
                     </div>
                     {logError && (
                       <p className="text-[11px] text-destructive/80">
-                        Log stream: {logError}
+                        {t("export.dialog.log.errorPrefix")}: {logError}
                       </p>
                     )}
                   </div>
@@ -599,18 +601,18 @@ export function ExportDialog({
                 onClick={() => onOpenChange(false)}
                 disabled={exporting}
               >
-                {exportSuccess ? "Done" : "Cancel"}
+                {exportSuccess ? t("export.dialog.done") : t("export.dialog.cancel")}
               </Button>
               <Button onClick={onExport} disabled={exporting || exportSuccess}>
                 {exporting ? (
                   <span className="flex items-center gap-2">
                     <Spinner className="size-4" />
-                    Exporting…
+                    {t("export.dialog.exporting")}
                   </span>
                 ) : exportSuccess ? (
-                  "Export Complete"
+                  t("export.dialog.complete.title")
                 ) : (
-                  "Start Export"
+                  t("export.dialog.start")
                 )}
               </Button>
             </DialogFooter>

@@ -11,14 +11,9 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
+import { useI18n } from "@/features/i18n";
 
 type Lang = "curl" | "python" | "tools";
-
-const TABS: { id: Lang; label: string }[] = [
-  { id: "curl", label: "curl" },
-  { id: "python", label: "Python" },
-  { id: "tools", label: "Tools" },
-];
 
 function buildSnippets(base: string) {
   return {
@@ -56,6 +51,7 @@ for chunk in response:
 }
 
 export function UsageExamples() {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [lang, setLang] = useState<Lang>("curl");
   const [copied, setCopied] = useState(false);
@@ -73,6 +69,11 @@ export function UsageExamples() {
       setTimeout(() => setCopied(false), 1800);
     }
   };
+  const tabs: { id: Lang; label: string }[] = [
+    { id: "curl", label: "curl" },
+    { id: "python", label: "Python" },
+    { id: "tools", label: t("settings.usageExamples.toolsTab") },
+  ];
 
   return (
     <section className="flex flex-col">
@@ -86,7 +87,9 @@ export function UsageExamples() {
           icon={ArrowDown01Icon}
           className={cn("size-3.5 transition-transform", open && "rotate-180")}
         />
-        {open ? "Hide usage examples" : "Show usage examples"}
+        {open
+          ? t("settings.usageExamples.hide")
+          : t("settings.usageExamples.show")}
       </button>
 
       <AnimatePresence initial={false}>
@@ -101,13 +104,13 @@ export function UsageExamples() {
             <div className="mt-3 overflow-hidden rounded-lg border border-border bg-muted/20">
               <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
                 <div className="flex items-center gap-0.5">
-                  {TABS.map((t) => {
-                    const active = lang === t.id;
+                  {tabs.map((tab) => {
+                    const active = lang === tab.id;
                     return (
                       <button
-                        key={t.id}
+                        key={tab.id}
                         type="button"
-                        onClick={() => setLang(t.id)}
+                        onClick={() => setLang(tab.id)}
                         aria-pressed={active}
                         className={cn(
                           "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -116,7 +119,7 @@ export function UsageExamples() {
                             : "text-muted-foreground hover:text-foreground",
                         )}
                       >
-                        {t.label}
+                        {tab.label}
                       </button>
                     );
                   })}
@@ -125,13 +128,15 @@ export function UsageExamples() {
                   type="button"
                   onClick={handleCopy}
                   className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Copy snippet"
+                  aria-label={t("settings.usageExamples.copySnippet")}
                 >
                   <HugeiconsIcon
                     icon={copied ? Tick02Icon : Copy01Icon}
                     className={cn("size-3.5", copied && "text-emerald-600")}
                   />
-                  {copied ? "Copied" : "Copy"}
+                  {copied
+                    ? t("settings.usageExamples.copied")
+                    : t("settings.usageExamples.copy")}
                 </button>
               </div>
               <pre className="overflow-x-auto p-3 font-mono text-[11px] leading-relaxed text-foreground">

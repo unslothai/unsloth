@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
 import { findInvalidJinjaReferences } from "../../utils/refs";
@@ -28,6 +29,7 @@ export function InlineExpression({
   config,
   onUpdate,
 }: InlineExpressionProps): ReactElement {
+  const { t } = useI18n();
   const configs = useRecipeStudioStore((state) => state.configs);
   const vars = getAvailableVariableEntries(configs, config.id);
   const invalidRefs = findInvalidJinjaReferences(
@@ -38,7 +40,7 @@ export function InlineExpression({
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-[130px_1fr]">
-        <InlineField label="Output type">
+        <InlineField label={t("recipe.expression.outputType")}>
           <Select
             value={config.dtype}
             onValueChange={(value) =>
@@ -46,7 +48,7 @@ export function InlineExpression({
             }
           >
             <SelectTrigger className="nodrag h-8 w-full text-xs">
-              <SelectValue placeholder="dtype" />
+              <SelectValue placeholder={t("recipe.expression.selectType")} />
             </SelectTrigger>
             <SelectContent>
               {DTYPE_OPTIONS.map((dtype) => (
@@ -57,7 +59,7 @@ export function InlineExpression({
             </SelectContent>
           </Select>
         </InlineField>
-        <InlineField label="Expression">
+        <InlineField label={t("recipe.expression.formula")}>
           <Input
             className="nodrag h-8 w-full text-xs"
             aria-invalid={invalidRefs.length > 0}

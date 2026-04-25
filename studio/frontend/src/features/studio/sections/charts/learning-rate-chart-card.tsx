@@ -21,10 +21,7 @@ import {
   formatStepTick,
   fromLog1p,
 } from "./utils";
-
-const lrConfig = {
-  displayLr: { label: "LR", color: "#8b5cf6" },
-} satisfies ChartConfig;
+import { useI18n } from "@/features/i18n";
 
 interface LearningRatePoint {
   step: number;
@@ -45,12 +42,16 @@ export function LearningRateChartCard({
   xAxisTicks: number[];
   scale: ScaleMode;
 }): ReactElement {
+  const { t } = useI18n();
+  const lrConfig = {
+    displayLr: { label: t("studio.progress.metric.lr"), color: "#8b5cf6" },
+  } satisfies ChartConfig;
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm">Learning Rate</CardTitle>
+        <CardTitle className="text-sm">{t("studio.charts.learningRate")}</CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={lrConfig} className={CHART_CONTAINER_CLASS}>
@@ -99,13 +100,13 @@ export function LearningRateChartCard({
               content={
                 <ChartTooltipContent
                   labelFormatter={(_value, payload) =>
-                    `Step ${payload?.[0]?.payload?.step ?? ""}`
+                    `${t("studio.progress.step")} ${payload?.[0]?.payload?.step ?? ""}`
                   }
                   formatter={(_value, _name, item) => {
                     const raw = Number(item?.payload?.lr);
                     return [
                       Number.isFinite(raw) ? raw.toExponential(3) : "0e+0",
-                      "LR",
+                      t("studio.progress.metric.lr"),
                     ];
                   }}
                 />

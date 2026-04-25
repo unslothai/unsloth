@@ -2,17 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ReadMore, type TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n";
 
-export const studioNavStep: TourStep = {
-  id: "nav",
-  target: "navbar",
-  title: "Quick orientation",
-  body: (
-    <>
-      Studio: pick base model, dataset, hyperparams, then start training. After
-      you start, you’ll see a Training view with live loss/metrics. Chat is for
-      testing base vs LoRA adapters. Export packages checkpoints for deployment.{" "}
-      <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-for-beginners" />
-    </>
-  ),
-};
+type Translator = (key: TranslationKey) => string;
+
+export function studioNavStep(t: Translator): TourStep {
+  return {
+    id: "nav",
+    target: "navbar",
+    title: t("studio.tour.nav.title"),
+    body: (
+      <>
+        {t("studio.tour.nav.body")}{" "}
+        <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-for-beginners" />
+      </>
+    ),
+  };
+}

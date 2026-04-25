@@ -16,6 +16,7 @@ import {
   type BrowseFoldersResponse,
   browseFolders,
 } from "@/features/chat/api/chat-api";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowUp02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -84,6 +85,7 @@ export function FolderBrowser({
   onSelect,
   initialPath,
 }: FolderBrowserProps) {
+  const { t } = useI18n();
   const [data, setData] = useState<BrowseFoldersResponse | null>(null);
   const [path, setPath] = useState<string | undefined>(initialPath);
   const [showHidden, setShowHidden] = useState(false);
@@ -166,14 +168,14 @@ export function FolderBrowser({
       >
         <DialogHeader className="px-4 pt-4 pb-2">
           <DialogTitle className="text-sm font-medium">
-            Browse for folder
+            {t("assistant.folderBrowser.browseTitle")}
           </DialogTitle>
         </DialogHeader>
 
         {/* Breadcrumb */}
         <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-4 py-2 font-mono text-[11px] text-muted-foreground">
           {crumbs.length === 0 ? (
-            <span className="text-muted-foreground/60">(loading…)</span>
+            <span className="text-muted-foreground/60">({t("common.loading")}&hellip;)</span>
           ) : (
             crumbs.map((c, i) => (
               <span key={c.value} className="flex items-center gap-0.5">
@@ -219,7 +221,7 @@ export function FolderBrowser({
           {!error && loading && (
             <div className="flex items-center gap-2 px-4 py-3">
               <Spinner className="size-3 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Loading…</span>
+              <span className="text-xs text-muted-foreground">{t("common.loading")}…</span>
             </div>
           )}
           {!error && !loading && data && (
@@ -240,18 +242,19 @@ export function FolderBrowser({
               )}
               {data.entries.length === 0 && !(data.model_files_here && data.model_files_here > 0) && (
                 <div className="px-4 py-3 text-xs text-muted-foreground/60">
-                  (empty directory)
+                  ({t("assistant.folderBrowser.emptyDirectory")})
                 </div>
               )}
               {data.model_files_here !== undefined && data.model_files_here > 0 && (
                 <div className="border-t border-border/30 px-4 py-1.5 text-[10px] text-foreground/70">
-                  {data.model_files_here} model file{data.model_files_here === 1 ? "" : "s"} in this folder. Click "Use this folder" to scan it.
+                  {t("assistant.folderBrowser.modelFiles")
+                    .replace("{count}", String(data.model_files_here))
+                    .replace("{plural}", data.model_files_here === 1 ? "" : "s")}
                 </div>
               )}
               {data.truncated === true && (
                 <div className="border-t border-border/30 px-4 py-1.5 text-[10px] text-muted-foreground/70">
-                  Showing first {data.entries.length} entries. Narrow the path
-                  to see more.
+                  {t("assistant.folderBrowser.truncated").replace("{count}", String(data.entries.length))}
                 </div>
               )}
               {data.entries.map((e) => (
@@ -279,7 +282,7 @@ export function FolderBrowser({
                   <span className="truncate font-mono">{e.name}</span>
                   {e.has_models && (
                     <span className="ml-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-[9px] uppercase tracking-wider text-muted-foreground">
-                      models
+                      {t("assistant.folderBrowser.modelsTag")}
                     </span>
                   )}
                 </button>
@@ -301,7 +304,7 @@ export function FolderBrowser({
               }}
               className="size-3"
             />
-            Show hidden
+            {t("assistant.folderBrowser.showHidden")}
           </label>
           <div className="flex gap-2">
             <DialogClose asChild={true}>
@@ -309,7 +312,7 @@ export function FolderBrowser({
                 type="button"
                 className="h-7 rounded border border-border/50 px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                Cancel
+                {t("common.cancel")}
               </button>
             </DialogClose>
             <button
@@ -318,7 +321,7 @@ export function FolderBrowser({
               disabled={!path || loading || !!error}
               className="h-7 rounded bg-foreground px-2.5 text-[11px] font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-40"
             >
-              Use this folder
+              {t("assistant.folderBrowser.useFolder")}
             </button>
           </div>
         </DialogFooter>
