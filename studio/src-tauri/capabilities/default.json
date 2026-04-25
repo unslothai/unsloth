@@ -13,6 +13,11 @@
     "core:window:allow-set-size-constraints",
     "core:window:allow-center",
     "core:window:allow-current-monitor",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
     "core:tray:default",
     "process:default",
     {

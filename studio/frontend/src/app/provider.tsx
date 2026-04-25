@@ -4,10 +4,15 @@
 import { StartupScreen } from "@/components/tauri/startup-screen";
 import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
+import {
+  WindowTitlebar,
+  shouldUseCustomWindowTitlebar,
+} from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { useRouterState } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
 import { useEffect, useRef, type ReactNode } from "react";
 
@@ -119,7 +124,15 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
   );
 }
 
+const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
+  "/onboarding",
+  "/login",
+  "/change-password",
+  "/signup",
+]);
+
 function TauriWrapper({ children }: { children: ReactNode }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
     status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
@@ -151,9 +164,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   }, [status]);
 
   if (!isTauri) return <>{children}</>;
-  if (status === "running") return <><TauriUpdateLayer isExternalServer={isExternalServer} />{children}</>;
 
-  return (
+  const content = status === "running" ? (
+    <>
+      <TauriUpdateLayer isExternalServer={isExternalServer} />
+      {children}
+    </>
+  ) : (
     <StartupScreen
       status={status}
       logs={logs}
@@ -167,6 +184,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       onApproveElevation={approveElevation}
       onStartServer={retry}
     />
+  );
+
+  if (!shouldUseCustomWindowTitlebar()) return content;
+
+  const showSidebarSurface =
+    status === "running" && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+
+  return (
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background [--studio-titlebar-height:34px]">
+      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {content}
+      </div>
+    </div>
   );
 }
 

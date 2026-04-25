@@ -381,7 +381,7 @@ export function StartupScreen({
   }
 
   return (
-    <div className="flex h-screen w-full flex-col items-center bg-background">
+    <div className="flex h-full w-full flex-col items-center bg-background">
       <div className="flex flex-1 w-full max-w-md items-center justify-center px-6">
         <AnimatePresence mode="wait">
           <motion.div

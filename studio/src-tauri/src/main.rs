@@ -58,6 +58,15 @@ fn setup_logging() {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    window.set_decorations(false)?;
+    Ok(())
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Studio").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -153,6 +162,8 @@ fn main() {
             desktop_auth::desktop_auth,
         ])
         .setup(|app| {
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            setup_custom_titlebar(app)?;
             setup_tray(app)?;
             Ok(())
         })

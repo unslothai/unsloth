@@ -100,7 +100,7 @@ export function UpdateScreen({
   const isError = status === "error";
 
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-background">
+    <div className="flex h-full w-full items-center justify-center bg-background">
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
