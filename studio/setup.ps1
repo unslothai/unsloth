@@ -1479,12 +1479,12 @@ $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.
-if (Test-Path $VenvDir -PathType Container) {
+if (Test-Path -LiteralPath $VenvDir -PathType Container) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
 
-    if (Test-Path $VenvPyExe) {
+    if (Test-Path -LiteralPath $VenvPyExe) {
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $VenvPyExe
@@ -1528,7 +1528,7 @@ if (Test-Path $VenvDir -PathType Container) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         try {
-            Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
@@ -1537,7 +1537,7 @@ if (Test-Path $VenvDir -PathType Container) {
     }
 }
 
-if (-not (Test-Path $VenvDir)) {
+if (-not (Test-Path -LiteralPath $VenvDir)) {
     Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
     Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
     Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
@@ -1735,12 +1735,12 @@ $VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
 $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 $_NeedT5Install = $false
-if (Test-Path $VenvT5Legacy) {
-    Remove-Item -Recurse -Force $VenvT5Legacy
+if (Test-Path -LiteralPath $VenvT5Legacy) {
+    Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
     $_NeedT5Install = $true
 }
-if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
 # Also reinstall when python deps were updated
 if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
 
@@ -1752,8 +1752,8 @@ $ErrorActionPreference = "Continue"
 
 # --- .venv_t5_530 (transformers 5.3.0) ---
 substep "pre-installing transformers 5.3.0 for newer model support..."
-if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
-New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
+if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
+New-Item -ItemType Directory -LiteralPath $VenvT5_530Dir -Force | Out-Null
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_530Dir --no-deps $pkg
@@ -1785,8 +1785,8 @@ step "transformers" "5.3.0 pre-installed"
 
 # --- .venv_t5_550 (transformers 5.5.0) ---
 substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
-if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
-New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
+if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
+New-Item -ItemType Directory -LiteralPath $VenvT5_550Dir -Force | Out-Null
 foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_550Dir --no-deps $pkg
@@ -1832,7 +1832,7 @@ if ($StudioHome -eq $LegacyStudioHome) {
 } else {
     $UnslothHome = $StudioHome
 }
-if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
+if (-not (Test-Path -LiteralPath $UnslothHome)) { New-Item -ItemType Directory -LiteralPath $UnslothHome -Force | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
@@ -1934,7 +1934,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
 } else {
     Write-Host ""
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
-    if (Test-Path $LlamaCppDir) {
+    if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
     $prebuiltArgs = @(
@@ -1988,7 +1988,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         } elseif ($prebuiltExit -eq 3) {
             step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
-            if (Test-Path $LlamaCppDir) {
+            if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
             substep "Close Studio or other llama.cpp users and retry" "Yellow"
@@ -1996,7 +1996,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
-            if (Test-Path $LlamaCppDir) {
+            if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
@@ -2191,7 +2191,7 @@ if (-not $NeedLlamaSourceBuild) {
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
-    if (Test-Path (Join-Path $LlamaCppDir ".git")) {
+    if (Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   Syncing llama.cpp to $ResolvedSourceRef..." -ForegroundColor Gray
         # Always sync the remote URL so switching between default/fork sources works
         Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$ResolvedSourceUrl.git" } | Out-Null
@@ -2265,8 +2265,8 @@ if (-not $NeedLlamaSourceBuild) {
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
         $buildTmp = "$LlamaCppDir.build.$PID"
-        $null = New-Item -ItemType Directory -Force -Path (Split-Path $LlamaCppDir -Parent)
-        if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+        $null = New-Item -ItemType Directory -Force -LiteralPath (Split-Path -LiteralPath $LlamaCppDir -Parent)
+        if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
         if ($LlamaPr) {
             $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$LlamaSource.git" $buildTmp }
             if ($cloneExit -ne 0) {
@@ -2462,14 +2462,14 @@ if (-not $NeedLlamaSourceBuild) {
 
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
-        if (Test-Path $OriginalLlamaCppDir) { Remove-Item -Recurse -Force $OriginalLlamaCppDir }
-        Move-Item $LlamaCppDir $OriginalLlamaCppDir
+        if (Test-Path -LiteralPath $OriginalLlamaCppDir) { Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force }
+        Move-Item -LiteralPath $LlamaCppDir -Destination $OriginalLlamaCppDir
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
     } elseif (-not $BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         # Build failed -- clean up temp dir, preserve existing install
-        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+        if (Test-Path -LiteralPath $LlamaCppDir) { Remove-Item -LiteralPath $LlamaCppDir -Recurse -Force }
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"

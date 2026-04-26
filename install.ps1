@@ -893,18 +893,18 @@ shell.Run cmd, 0, False
     # Pass the resolved executable path to uv so it does not re-resolve
     # a version string back to a conda interpreter.
     Write-TauriLog "STEP" "Creating virtual environment"
-    if (-not (Test-Path $StudioHome)) {
-        New-Item -ItemType Directory -Path $StudioHome -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $StudioHome)) {
+        New-Item -ItemType Directory -LiteralPath $StudioHome -Force | Out-Null
     }
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
     $_Migrated = $false
 
-    if (Test-Path $VenvPython) {
+    if (Test-Path -LiteralPath $VenvPython) {
         # New layout already exists -- nuke for fresh install
         substep "removing existing environment for fresh install..."
-        Remove-Item -Recurse -Force $VenvDir
-    } elseif (Test-Path (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force
+    } elseif (Test-Path -LiteralPath (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
         # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
@@ -918,16 +918,16 @@ shell.Run cmd, 0, False
         $ErrorActionPreference = $prevEAP2
         if ($torchOk) {
             substep "legacy environment is healthy -- migrating..."
-            Move-Item -Path $OldVenv -Destination $VenvDir -Force
+            Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
         } else {
             substep "legacy environment failed validation -- creating fresh environment" "Yellow"
-            Remove-Item -Recurse -Force $OldVenv -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $OldVenv -Recurse -Force -ErrorAction SilentlyContinue
         }
     } elseif (
         $StudioRedirectMode -ne 'env' `
-        -and (Test-Path (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
+        -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
     ) {
         # CWD-relative venv from old install.ps1 -- migrate to absolute path.
         # Skip in env-override mode: workspace-scoped installs must not
@@ -936,12 +936,12 @@ shell.Run cmd, 0, False
         # and contaminate the workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Studio environment, migrating to $VenvDir..."
-        Move-Item -Path $CwdVenv -Destination $VenvDir -Force
+        Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
     }
 
-    if (-not (Test-Path $VenvPython)) {
+    if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
         $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
@@ -1182,7 +1182,7 @@ shell.Run cmd, 0, False
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
-    if (-not (Test-Path $UnslothExe)) {
+    if (-not (Test-Path -LiteralPath $UnslothExe)) {
         Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
