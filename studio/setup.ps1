@@ -1465,7 +1465,13 @@ if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
         $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
     }
-    $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
+    if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
+        $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
+    } else {
+        Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$_studioOverride does not exist." -ForegroundColor Red
+        Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+        exit 1
+    }
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 }
