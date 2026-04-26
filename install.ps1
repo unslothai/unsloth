@@ -397,14 +397,14 @@ function Install-UnslothStudio {
             [Parameter(Mandatory = $true)][string]$UnslothExePath
         )
 
-        if (-not (Test-Path $UnslothExePath)) {
+        if (-not (Test-Path -LiteralPath $UnslothExePath)) {
             substep "cannot create shortcuts, unsloth.exe not found at $UnslothExePath" "Yellow"
             return
         }
         try {
             # Persist an absolute path in launcher scripts so shortcut working
             # directory changes do not break process startup.
-            $UnslothExePath = (Resolve-Path $UnslothExePath).Path
+            $UnslothExePath = (Resolve-Path -LiteralPath $UnslothExePath).Path
             # Escape for single-quoted embedding in generated launcher script.
             # This prevents runtime variable expansion for paths containing '$'.
             $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
@@ -1042,7 +1042,7 @@ shell.Run cmd, 0, False
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
             return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
         }
-        $installed = Get-ChildItem -Path $VenvDir -Recurse -Filter "no-torch-runtime.txt" -ErrorAction SilentlyContinue |
+        $installed = Get-ChildItem -LiteralPath $VenvDir -Recurse -Filter "no-torch-runtime.txt" -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -like "*studio*backend*requirements*no-torch-runtime.txt" } |
             Select-Object -ExpandProperty FullName -First 1
         return $installed
@@ -1275,20 +1275,20 @@ shell.Run cmd, 0, False
         }
     } catch { }
     $ShimDir = Join-Path $StudioHome "bin"
-    New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
+    [System.IO.Directory]::CreateDirectory($ShimDir) | Out-Null
     $ShimExe = Join-Path $ShimDir "unsloth.exe"
     # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
     $shimUpdated = $false
     try {
-        if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force -ErrorAction Stop }
+        if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
-            Copy-Item -Path $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
+            Copy-Item -LiteralPath $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
         }
         $shimUpdated = $true
     } catch {
-        if (Test-Path $ShimExe) {
+        if (Test-Path -LiteralPath $ShimExe) {
             Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
             Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
             Write-Host "       Close Studio and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
@@ -1304,7 +1304,7 @@ shell.Run cmd, 0, False
     # the workspace path may be deleted, and we should not pollute the user's
     # persistent PATH with it. Caller is expected to add $StudioHome\bin manually.
     $pathAdded = $false
-    if (Test-Path $ShimExe) {
+    if (Test-Path -LiteralPath $ShimExe) {
         if ($StudioRedirectMode -eq 'env') {
             $env:Path = "$ShimDir;$env:Path"
             step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
@@ -1320,7 +1320,7 @@ shell.Run cmd, 0, False
     # Re-prepend the env-override shim AFTER Refresh-SessionPath, otherwise
     # a previously-installed legacy User PATH entry would win precedence
     # (Refresh rebuilds Path as Machine > User > current $env:Path).
-    if ($StudioRedirectMode -eq 'env' -and (Test-Path $ShimExe)) {
+    if ($StudioRedirectMode -eq 'env' -and (Test-Path -LiteralPath $ShimExe)) {
         $env:Path = "$ShimDir;$env:Path"
     }
 

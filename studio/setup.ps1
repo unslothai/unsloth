@@ -2072,7 +2072,7 @@ $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
-if (Test-Path $LlamaServerBin) {
+if (Test-Path -LiteralPath $LlamaServerBin) {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
     if (Test-Path $CmakeCacheFile) {
         $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
@@ -2089,7 +2089,7 @@ if (Test-Path $LlamaServerBin) {
 if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
     # up new model architecture support (e.g. Gemma 4).
@@ -2484,7 +2484,7 @@ if (-not $NeedLlamaSourceBuild) {
     $totalSec = [math]::Round($totalSw.Elapsed.TotalSeconds % 60, 1)
 
     # -- Summary --
-    if ($BuildOk -and (Test-Path $LlamaServerBin)) {
+    if ($BuildOk -and (Test-Path -LiteralPath $LlamaServerBin)) {
         step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
         if (Test-Path $QuantizeBin) {
