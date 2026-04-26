@@ -1462,6 +1462,9 @@ substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 # invoking the studio update.
 $_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
 if ($_studioOverride) {
+    if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
+        $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
+    }
     $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"

@@ -402,6 +402,12 @@ fi
 # UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root, mirroring
 # install.sh. install.sh exports UNSLOTH_STUDIO_HOME when invoking this script.
 _studio_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+# Expand a leading ~ / ~/path because env vars are not subject to tilde
+# expansion when set with quotes around the value.
+case "$_studio_override" in
+    "~") _studio_override="$HOME" ;;
+    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
+esac
 if [ -n "$_studio_override" ]; then
     mkdir -p -- "$_studio_override"
     STUDIO_HOME="$(cd -- "$_studio_override" && pwd)"

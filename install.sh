@@ -173,6 +173,14 @@ PYTHON_VERSION=""  # resolved after platform detection
 # Best-effort HOME-redirect detection: skipped on hosts without getent/dscl.
 _resolve_studio_destinations() {
     _override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+    # Expand leading ~ / ~/path to $HOME because env vars are not subject to
+    # tilde expansion when set with quotes around the value. Quote the
+    # ~/ inside the prefix-removal so the shell does not tilde-expand it
+    # back to $HOME/ before matching.
+    case "$_override" in
+        "~") _override="$HOME" ;;
+        "~/"*) _override="$HOME/${_override#'~/'}" ;;
+    esac
     if [ -n "$_override" ]; then
         mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
         [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
@@ -728,13 +736,20 @@ DESKTOP_EOF
 PLIST_EOF
 
         # Executable stub
-        # The stub embeds the resolved launcher path so env-override installs
-        # produce a .app that points at the right launch-studio.sh, not the
-        # legacy $HOME/.local/share/unsloth one.
-        cat > "$_css_macos_dir/launch-studio" << STUB_EOF
+        # The stub embeds the resolved launcher path. Use a single-quoted
+        # heredoc + post-write sed substitution + single-quoted shell
+        # embedding so any path metacharacters ($, ", `, &, |, \, ') in
+        # $_css_data_dir do not expand at .app launch time. Same pattern
+        # as the launch-studio.sh @@DATA_DIR@@ substitution above.
+        _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
+        _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
+        cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
 #!/bin/sh
-exec "$_css_data_dir/launch-studio.sh" "\$@"
+exec '@@DATA_DIR@@/launch-studio.sh' "$@"
 STUB_EOF
+        sed "s|@@DATA_DIR@@|$_css_sed_dir|g" "$_css_macos_dir/launch-studio" \
+            > "$_css_macos_dir/launch-studio.tmp" \
+            && mv "$_css_macos_dir/launch-studio.tmp" "$_css_macos_dir/launch-studio"
         chmod +x "$_css_macos_dir/launch-studio"
 
         # Build AppIcon.icns from unsloth-gem.png (2240x2240)

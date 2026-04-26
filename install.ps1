@@ -80,6 +80,11 @@ function Install-UnslothStudio {
     } else { $null }
 
     if ($envOverride) {
+        # Expand a leading '~' to $HOME / $env:USERPROFILE because env-var
+        # values are not subject to tilde expansion in any shell.
+        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
+            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
+        }
         try {
             New-Item -ItemType Directory -Path $envOverride -Force -ErrorAction Stop | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
