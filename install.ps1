@@ -460,6 +460,12 @@ function Install-UnslothStudio {
                 # legacy default, llama.cpp still lives at ~/.unsloth/llama.cpp.
                 # Keep the persisted UNSLOTH_LLAMA_CPP_PATH consistent with that.
                 $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+                # Canonicalize the legacy side (when it exists) to match the
+                # resolved $StudioHome from the env-override path. This keeps
+                # the legacy-equality check stable across path normalization.
+                if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+                    $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+                }
                 $_llamaPath = if ($StudioHome -eq $_legacyStudio) {
                     Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
                 } else {

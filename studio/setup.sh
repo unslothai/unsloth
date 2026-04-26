@@ -575,6 +575,13 @@ fi
 # of env-var presence avoids regressing default installs that incidentally
 # inherit UNSLOTH_STUDIO_HOME from a parent process or the CLI.
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+# Canonicalize the legacy side so a symlinked $HOME doesn't make the
+# comparison fail when STUDIO_HOME (already canonicalized) and the
+# legacy path point at the same directory.
+if [ -d "$_LEGACY_STUDIO_HOME" ]; then
+    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
+        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+fi
 if [ "$STUDIO_HOME" = "$_LEGACY_STUDIO_HOME" ]; then
     UNSLOTH_HOME="$HOME/.unsloth"
 else

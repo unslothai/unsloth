@@ -692,7 +692,15 @@ LAUNCHER_EOF
             # happens to point at the legacy default, llama.cpp still lives
             # at ~/.unsloth/llama.cpp (one shared build across legacy
             # installs) -- keep UNSLOTH_LLAMA_CPP_PATH consistent with that.
+            # $STUDIO_HOME is canonicalized (cycle 24) but $HOME/.unsloth/studio
+            # is still logical. Canonicalize the legacy side too so a symlinked
+            # $HOME doesn't make the comparison fail when both point at the
+            # same dir.
             _css_legacy_studio="$HOME/.unsloth/studio"
+            if [ -d "$_css_legacy_studio" ]; then
+                _css_legacy_studio=$(CDPATH= cd -P -- "$_css_legacy_studio" 2>/dev/null && pwd -P) \
+                    || _css_legacy_studio="$HOME/.unsloth/studio"
+            fi
             if [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
                 _css_llama_path="$HOME/.unsloth/llama.cpp"
             else
