@@ -1901,19 +1901,23 @@ if [ -t 1 ]; then
     exit "$_LAUNCH_EXIT"
 else
     step "launch" "manual commands:"
+    # Single-quote-escape paths so values with spaces / apostrophes /
+    # metacharacters round-trip through copy-paste from a non-TTY install log.
+    _li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
+    _li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
         # In env-override mode we deliberately skip the persistent shell
         # rc PATH append, so a fresh shell will not have `unsloth` on PATH
         # unless the caller re-exports UNSLOTH_STUDIO_HOME. Print the
         # absolute shim path and the activate-then-run alternative.
-        substep "${_LOCAL_BIN}/unsloth studio -H 0.0.0.0 -p 8888"
+        substep "$_li_shim_q studio -H 0.0.0.0 -p 8888"
         substep "or activate env first:"
-        substep "source ${VENV_DIR}/bin/activate"
+        substep "source $_li_act_q"
         substep "unsloth studio -H 0.0.0.0 -p 8888"
     else
         substep "unsloth studio -H 0.0.0.0 -p 8888"
         substep "or activate env first:"
-        substep "source ${VENV_DIR}/bin/activate"
+        substep "source $_li_act_q"
         substep "unsloth studio -H 0.0.0.0 -p 8888"
     fi
     echo ""

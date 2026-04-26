@@ -2074,8 +2074,8 @@ $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 $NeedRebuild = $false
 if (Test-Path -LiteralPath $LlamaServerBin) {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path $CmakeCacheFile) {
-        $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+    if (Test-Path -LiteralPath $CmakeCacheFile) {
+        $cachedCuda = Select-String -LiteralPath $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
         if ($HasNvidiaSmi -and -not $cachedCuda) {
             Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
@@ -2272,14 +2272,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch PR #$LlamaPr"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
             if ($BuildOk) {
@@ -2287,7 +2287,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout PR #$LlamaPr"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
         } elseif ($ResolvedSourceRefKind -eq "pull") {
@@ -2295,14 +2295,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch source PR ref"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
             if ($BuildOk) {
@@ -2310,7 +2310,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout source PR ref"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
         } elseif ($ResolvedSourceRefKind -eq "commit") {
@@ -2318,14 +2318,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch source commit"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
             if ($BuildOk) {
@@ -2333,7 +2333,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout source commit"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
         } else {
@@ -2346,7 +2346,7 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
@@ -2487,13 +2487,13 @@ if (-not $NeedLlamaSourceBuild) {
     if ($BuildOk -and (Test-Path -LiteralPath $LlamaServerBin)) {
         step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
-        if (Test-Path $QuantizeBin) {
+        if (Test-Path -LiteralPath $QuantizeBin) {
             step "llama-quantize" "built"
         }
         step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
-        if ($BuildOk -and (Test-Path $altBin)) {
+        if ($BuildOk -and (Test-Path -LiteralPath $altBin)) {
             step "llama.cpp" "built"
             step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
