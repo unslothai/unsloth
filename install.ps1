@@ -422,8 +422,17 @@ function Install-UnslothStudio {
             # the user re-exporting the env var. Default installs get an
             # empty string here so behavior matches today exactly.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
+                # Mirror setup.ps1: when an env override happens to equal the
+                # legacy default, llama.cpp still lives at ~/.unsloth/llama.cpp.
+                # Keep the persisted UNSLOTH_LLAMA_CPP_PATH consistent with that.
+                $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+                $_llamaPath = if ($StudioHome -eq $_legacyStudio) {
+                    Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
+                } else {
+                    Join-Path $StudioHome "llama.cpp"
+                }
                 $_sq = $StudioHome -replace "'", "''"
-                $_llama = (Join-Path $StudioHome "llama.cpp") -replace "'", "''"
+                $_llama = $_llamaPath -replace "'", "''"
                 "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n`$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n"
             } else { "" }
 

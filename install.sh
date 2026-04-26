@@ -611,8 +611,18 @@ LAUNCHER_EOF
         # custom-root build. Default installs do NOT get these lines so the
         # legacy ~/.unsloth/studio + ~/.unsloth/llama.cpp resolution stands.
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+            # Mirror setup.sh's legacy-equality check: when an env override
+            # happens to point at the legacy default, llama.cpp still lives
+            # at ~/.unsloth/llama.cpp (one shared build across legacy
+            # installs) -- keep UNSLOTH_LLAMA_CPP_PATH consistent with that.
+            _css_legacy_studio="$HOME/.unsloth/studio"
+            if [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
+                _css_llama_path="$HOME/.unsloth/llama.cpp"
+            else
+                _css_llama_path="$STUDIO_HOME/llama.cpp"
+            fi
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
-            _css_quoted_llama=$(printf '%s' "$STUDIO_HOME/llama.cpp" | sed "s/'/'\\\\''/g")
+            _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
             printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
             printf '%s\n' "export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
         fi
