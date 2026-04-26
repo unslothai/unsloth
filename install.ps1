@@ -3,6 +3,11 @@
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
 # NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
+#
+# Env vars (priority: USERPROFILE-redirect > UNSLOTH_STUDIO_HOME > STUDIO_HOME > default):
+#   UNSLOTH_STUDIO_HOME / STUDIO_HOME = path -> install under that path
+#   (DataDir nests inside; user PATH not modified persistently).
+# Default ($USERPROFILE\.unsloth\studio) is preserved when no env var is set.
 
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
@@ -61,7 +66,39 @@ function Install-UnslothStudio {
     }
 
     $PythonVersion = "3.13"
-    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+
+    # Resolve install destinations. Priority: USERPROFILE-redirect, then env vars, then default.
+    $defaultProfile = $null
+    try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
+    $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
+
+    if ($defaultProfile -and $env:USERPROFILE -and ($env:USERPROFILE -ne $defaultProfile)) {
+        $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+        $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $StudioRedirectMode = 'profile'
+    } elseif ($envOverride) {
+        try {
+            New-Item -ItemType Directory -Path $envOverride -Force -ErrorAction Stop | Out-Null
+            $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
+        } catch {
+            Write-Host "ERROR: STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
+            exit 1
+        }
+        $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid().Guid)
+        try {
+            New-Item -ItemType File -Path $probe -ErrorAction Stop | Out-Null
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "ERROR: STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
+            exit 1
+        }
+        $StudioDataDir = Join-Path $StudioHome "share"
+        $StudioRedirectMode = 'env'
+    } else {
+        $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+        $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $StudioRedirectMode = 'default'
+    }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
     $Rule = [string]::new([char]0x2500, 52)
@@ -325,12 +362,13 @@ function Install-UnslothStudio {
             # This prevents runtime variable expansion for paths containing '$'.
             $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
 
-            $localAppDataDir = $env:LOCALAPPDATA
-            if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
-                substep "LOCALAPPDATA path unavailable; skipped shortcut creation" "Yellow"
+            # $StudioDataDir was resolved at install start (default = LOCALAPPDATA\Unsloth Studio,
+            # or $StudioHome\share when UNSLOTH_STUDIO_HOME / STUDIO_HOME is set).
+            if (-not $StudioDataDir -or [string]::IsNullOrWhiteSpace($StudioDataDir)) {
+                substep "DataDir path unavailable; skipped shortcut creation" "Yellow"
                 return
             }
-            $appDir = Join-Path $localAppDataDir "Unsloth Studio"
+            $appDir = $StudioDataDir
             $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
             $launcherVbs = Join-Path $appDir "launch-studio.vbs"
             $desktopDir = [Environment]::GetFolderPath("Desktop")
@@ -1160,9 +1198,17 @@ shell.Run cmd, 0, False
         }
     }
     # Only add to PATH when the launcher actually exists on disk.
+    # Skip persistent registry PATH modification when env-override is active:
+    # the workspace path may be deleted, and we should not pollute the user's
+    # persistent PATH with it. Caller is expected to add $StudioHome\bin manually.
     $pathAdded = $false
     if (Test-Path $ShimExe) {
-        $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+        if ($StudioRedirectMode -eq 'env') {
+            $env:Path = "$ShimDir;$env:Path"
+            step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
+        } else {
+            $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+        }
     }
     if ($shimUpdated -and $pathAdded) {
         step "path" "added unsloth launcher to PATH"
