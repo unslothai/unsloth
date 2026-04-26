@@ -92,7 +92,18 @@ if [ "$TAURI_MODE" = true ]; then
         else
             _tauri_override_abs="$_tauri_override"
         fi
-        if [ "$_tauri_override_abs" != "$HOME/.unsloth/studio" ]; then
+        # Strip trailing separators so a legacy override with a trailing
+        # slash (".../studio/") still matches the legacy root (".../studio").
+        while [ "$_tauri_override_abs" != "/" ] \
+            && [ "${_tauri_override_abs%/}" != "$_tauri_override_abs" ]; do
+            _tauri_override_abs=${_tauri_override_abs%/}
+        done
+        _tauri_legacy_root="$HOME/.unsloth/studio"
+        while [ "$_tauri_legacy_root" != "/" ] \
+            && [ "${_tauri_legacy_root%/}" != "$_tauri_legacy_root" ]; do
+            _tauri_legacy_root=${_tauri_legacy_root%/}
+        done
+        if [ "$_tauri_override_abs" != "$_tauri_legacy_root" ]; then
             echo "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." >&2
             echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
             echo "       Run install.sh without --tauri for custom-root shell installs," >&2

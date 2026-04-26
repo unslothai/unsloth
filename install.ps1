@@ -86,6 +86,14 @@ function Install-UnslothStudio {
         try {
             $_legacyTauriRoot = [System.IO.Path]::GetFullPath($_legacyTauriRoot)
         } catch {}
+        # Strip trailing separators so a legacy override with a trailing
+        # backslash or slash still matches the legacy root.
+        $_trimSeps = @(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+        )
+        $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
+        $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
         if ($_tauriOverride -ne $_legacyTauriRoot) {
             Write-Host "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." -ForegroundColor Red
             Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
