@@ -636,9 +636,17 @@ LAUNCHER_EOF
     # GNU-vs-BSD-vs-BusyBox `sed -i` divergence (per Gemini review feedback).
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
         # Two-stage escape so path metacharacters survive sed and shell
-        # single-quoted embedding:
-        #  1) ' -> '\''  for safe single-quote shell embedding
-        #  2) \, &, |   for sed replacement-string + chosen delimiter
+        # single-quoted embedding. Verified end-to-end with apostrophes,
+        # spaces, &, |, $; do not "simplify" to fewer/more backslashes.
+        #  1) ' -> '\''  for safe single-quote shell embedding.
+        #     The shell pattern "s/'/'\\''/g" passes "s/'/'\''/g" to sed
+        #     (\\ -> \). sed's replacement '\'' contains a literal
+        #     backslash-quote-quote, producing the canonical close-quote /
+        #     escaped-quote / open-quote sequence on output. Result:
+        #     `a b's` -> `a b'\''s`.
+        #  2) For the value to land inside a sed s|...|VALUE|g call below,
+        #     escape \, &, and | (the chosen delimiter) so they survive sed
+        #     replacement. Result of stage 2: `a b'\''s` -> `a b'\\''s`.
         _sq_escaped=$(printf '%s' "$DATA_DIR" | sed "s/'/'\\\\''/g")
         _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\&|]/\\&/g')
         sed "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" > "$_css_launcher.tmp" \
@@ -654,8 +662,11 @@ LAUNCHER_EOF
     chmod +x "$_css_launcher"
 
     # Write the exe path to a separate conf file sourced by the launcher.
-    # Using single-quote wrapping with the standard '\'' escape for any
-    # embedded apostrophes. This avoids all sed metacharacter issues.
+    # Single-quote wrapping with the standard `'\''` escape (shell pattern
+    # "s/'/'\\''/g" -> sed "s/'/'\''/g"; replacement `'\''` produces
+    # close-quote, backslash-quote, open-quote on output). No sed templating
+    # is applied to studio.conf, so no second-stage backslash/&/| escaping
+    # is needed here.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
