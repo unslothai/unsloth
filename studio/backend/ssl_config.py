@@ -23,7 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional
 
+from loggers import get_logger
 from utils.paths import ensure_dir, studio_root
+
+logger = get_logger(__name__)
 
 # ── app_secrets keys ───────────────────────────────────────────────────
 SSL_ENABLED_KEY = "ssl_enabled"
@@ -79,6 +82,13 @@ def _read_db_settings() -> dict:
     try:
         from auth.storage import get_app_secret
     except Exception:
+        # Auth storage isn't importable yet (e.g. very early startup or
+        # the package layout shifted). Fall back to "no DB settings" but
+        # leave a debug crumb for anyone investigating later.
+        logger.debug(
+            "Failed to import auth.storage for SSL settings",
+            exc_info = True,
+        )
         return {}
     try:
         return {
@@ -88,6 +98,10 @@ def _read_db_settings() -> dict:
             "self_signed": _truthy(get_app_secret(SSL_SELF_SIGNED_KEY)),
         }
     except Exception:
+        logger.debug(
+            "Failed to read SSL settings from app_secrets",
+            exc_info = True,
+        )
         return {}
 
 

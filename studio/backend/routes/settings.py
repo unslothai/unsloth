@@ -12,9 +12,7 @@ and only take effect after the server restarts.
 from __future__ import annotations
 
 import asyncio
-import os
 import ssl
-import sys
 from pathlib import Path
 from typing import Optional
 

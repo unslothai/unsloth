@@ -457,6 +457,14 @@ export function ServerTab() {
         </div>
       </div>
 
+      <p className="text-xs text-foreground">
+        <span className="font-semibold text-emerald-500">Note:</span>{" "}
+        HTTP and HTTPS are separate browser origins, so your chat history,
+        theme, and login session won't follow you across the switch.
+        Nothing is deleted — switching back makes them reappear — but on
+        the new scheme you'll re-sign in and re-pick preferences.
+      </p>
+
       <p className="text-xs text-muted-foreground">
         Locked out after a misconfigured cert? Run{" "}
         <code>unsloth studio --no-ssl</code> from a terminal to start the server
