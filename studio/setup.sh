@@ -575,14 +575,21 @@ fi
 # of env-var presence avoids regressing default installs that incidentally
 # inherit UNSLOTH_STUDIO_HOME from a parent process or the CLI.
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-# Canonicalize the legacy side so a symlinked $HOME doesn't make the
-# comparison fail when STUDIO_HOME (already canonicalized) and the
-# legacy path point at the same directory.
+# Canonicalize BOTH sides under symlinked $HOME. STUDIO_HOME is logical
+# in default-mode (line 416 sets it from the bare $HOME path) and
+# canonical in env-mode (line 413 uses pwd -P). Canonicalizing on the
+# fly here means default-mode under symlinked $HOME still recognizes
+# the legacy default and keeps llama.cpp at ~/.unsloth/llama.cpp.
+_studio_home_canon="$STUDIO_HOME"
+if [ -d "$_studio_home_canon" ]; then
+    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
+        || _studio_home_canon="$STUDIO_HOME"
+fi
 if [ -d "$_LEGACY_STUDIO_HOME" ]; then
     _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
         || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
 fi
-if [ "$STUDIO_HOME" = "$_LEGACY_STUDIO_HOME" ]; then
+if [ "$_studio_home_canon" = "$_LEGACY_STUDIO_HOME" ]; then
     UNSLOTH_HOME="$HOME/.unsloth"
 else
     UNSLOTH_HOME="$STUDIO_HOME"

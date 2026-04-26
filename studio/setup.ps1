@@ -1827,11 +1827,18 @@ step "transformers" "5.5.0 pre-installed"
 # stale UNSLOTH_STUDIO_HOME pointing at the legacy default does not
 # accidentally relocate llama.cpp.
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-# Canonicalize the legacy side to match $StudioHome's normalized form.
+# Canonicalize BOTH sides. $StudioHome is the resolved env-override path
+# in env-mode (line 1474) but the bare logical path in default mode
+# (line 1480). Canonicalizing on the fly handles a junctioned/symlinked
+# %USERPROFILE% the same in both modes.
+$_studioHomeCanon = $StudioHome
+if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
+    $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path
+}
 if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
-if ($StudioHome -eq $LegacyStudioHome) {
+if ($_studioHomeCanon -eq $LegacyStudioHome) {
     $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
 } else {
     $UnslothHome = $StudioHome
