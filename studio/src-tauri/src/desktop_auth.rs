@@ -57,10 +57,6 @@ fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
         .join(filename)
 }
 
-fn auth_secret_path_in_studio(studio: &Path, filename: &str) -> PathBuf {
-    studio.join("auth").join(filename)
-}
-
 fn auth_url(port: u16, route: &str) -> String {
     format!("http://127.0.0.1:{port}/api/auth/{route}")
 }
@@ -70,12 +66,6 @@ fn home_dir() -> Result<PathBuf, String> {
 }
 
 fn desktop_secret_path() -> Result<PathBuf, String> {
-    // Use the shared studio_root resolver so env vars (with ~ expansion)
-    // and the installer-written marker file are honored before falling
-    // back to ~/.unsloth/studio.
-    if let Some(studio) = crate::studio_root::resolve_studio_root() {
-        return Ok(auth_secret_path_in_studio(&studio, ".desktop_secret"));
-    }
     Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))
 }
 
@@ -315,15 +305,6 @@ mod tests {
         assert_eq!(
             auth_secret_path(&home, ".desktop_secret"),
             PathBuf::from("/home/alex/.unsloth/studio/auth/.desktop_secret")
-        );
-    }
-
-    #[test]
-    fn auth_secret_path_in_studio_joins_under_custom_root() {
-        let studio = PathBuf::from("/srv/ws/studio");
-        assert_eq!(
-            auth_secret_path_in_studio(&studio, ".desktop_secret"),
-            PathBuf::from("/srv/ws/studio/auth/.desktop_secret")
         );
     }
 

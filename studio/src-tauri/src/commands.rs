@@ -184,8 +184,8 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
 /// Open the Unsloth Studio directory in the system file manager.
 #[tauri::command]
 pub fn open_logs_dir() -> Result<(), String> {
-    let dir = crate::studio_root::resolve_studio_root()
-        .ok_or("Could not determine Studio install root")?;
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let dir = home.join(".unsloth").join("studio");
 
     if !dir.exists() {
         return Err(format!("Directory does not exist: {}", dir.display()));

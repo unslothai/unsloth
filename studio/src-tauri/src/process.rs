@@ -111,15 +111,10 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
 }
 
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
-    // Resolve via the shared studio_root helper so env vars (with ~
-    // expansion) and the installer-written marker file are honored. Falls
-    // back to ~/.unsloth/studio when nothing else applies.
-    if let Some(studio) = crate::studio_root::resolve_studio_root() {
-        if let Some(bin) = find_unsloth_binary_in_studio_dir(&studio) {
-            return Some(bin);
-        }
-    }
-    None
+    let home = dirs::home_dir()?;
+    let studio = home.join(".unsloth").join("studio");
+
+    find_unsloth_binary_in_studio_dir(&studio)
 }
 
 #[cfg(test)]

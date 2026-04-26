@@ -1778,41 +1778,6 @@ case ":$PATH:" in
         ;;
 esac
 
-# Persist (env-mode) or clear (default/home-redirect) the marker file in
-# BOTH normal and Tauri-mode installs. Writing it lets the desktop app
-# launched from Finder/Start Menu/Desktop (no shell env inheritance)
-# resolve the custom Studio root; clearing it on a subsequent default
-# install prevents a stale marker from hijacking the legacy default path.
-#
-# Compute both the redirected $HOME and the real password-database home
-# unconditionally so the cleanup branch can scrub markers from EITHER
-# location. (Prior cleanup only removed $HOME's marker, which left a
-# stale real-home marker after a HOME-redirect reinstall.)
-_real_home=""
-if command -v getent >/dev/null 2>&1; then
-    _real_home=$(getent passwd "${USER:-$(whoami)}" 2>/dev/null | cut -d: -f6)
-elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
-    _real_home=$(dscl . -read "/Users/${USER:-$(whoami)}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
-fi
-_marker_home="$HOME"
-# In env mode, prefer the real-home so a later desktop launch from the
-# user's normal session still finds the marker.
-if [ "$_STUDIO_HOME_REDIRECT" = "env" ] && [ -n "$_real_home" ]; then
-    _marker_home="$_real_home"
-fi
-if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-    mkdir -p "$_marker_home/.unsloth" 2>/dev/null || true
-    printf '%s\n' "$STUDIO_HOME" > "$_marker_home/.unsloth/studio-home" 2>/dev/null || true
-else
-    # Default / HOME-redirect installs: scrub markers from BOTH the
-    # current $HOME and the real password-DB home (if different) so a
-    # prior env-mode install can't hijack future default desktop launches.
-    rm -f "$HOME/.unsloth/studio-home" 2>/dev/null || true
-    if [ -n "$_real_home" ] && [ "$_real_home" != "$HOME" ]; then
-        rm -f "$_real_home/.unsloth/studio-home" 2>/dev/null || true
-    fi
-fi
-
 # Non-Tauri installs keep shortcuts even if setup reports failure.
 if [ "$TAURI_MODE" != true ]; then
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
