@@ -491,17 +491,27 @@ class LlamaCppBackend:
                 if win_bin.is_file():
                     return str(win_bin)
 
-        # 2-4. Search both the resolved Studio root (custom installs) AND
-        # the legacy ~/.unsloth/llama.cpp. setup.sh / setup.ps1 install
-        # under $STUDIO_HOME/llama.cpp when env-override is active and
-        # under ~/.unsloth/llama.cpp for default installs.
+        # 2-4. Mirror setup.sh / setup.ps1's install layout:
+        #   - In env-override mode (custom Studio root != legacy default),
+        #     llama.cpp is installed under $STUDIO_HOME/llama.cpp.
+        #   - Otherwise (default install or HOME redirect), llama.cpp is
+        #     installed at ~/.unsloth/llama.cpp (sibling of the Studio dir).
+        # Default-mode searches must NOT look at $STUDIO_HOME/llama.cpp,
+        # to avoid picking a stale partial install from a previous failed
+        # install over the real legacy binary.
+        legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
         try:
             from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
 
-            search_roots = [_sr() / "llama.cpp", Path.home() / ".unsloth" / "llama.cpp"]
-        except ImportError:
-            search_roots = [Path.home() / ".unsloth" / "llama.cpp"]
-        # De-dupe while preserving order (in case studio_root() == legacy).
+            _resolved_sr = _sr()
+            _legacy_studio = Path.home() / ".unsloth" / "studio"
+            if _resolved_sr.resolve() == _legacy_studio.resolve():
+                search_roots = [legacy_llama]
+            else:
+                search_roots = [_resolved_sr / "llama.cpp", legacy_llama]
+        except (ImportError, OSError, ValueError):
+            search_roots = [legacy_llama]
+        # De-dupe while preserving order (defensive in case both resolve equal).
         _seen: set[str] = set()
         for unsloth_home in [
             r for r in search_roots if str(r) not in _seen and not _seen.add(str(r))

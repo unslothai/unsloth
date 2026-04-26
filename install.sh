@@ -101,6 +101,13 @@ if [ "$TAURI_MODE" = true ]; then
             _tauri_override_abs=${_tauri_override_abs%/}
         done
         _tauri_legacy_root="$HOME/.unsloth/studio"
+        # Apply the same physical-path canonicalization to the legacy root
+        # so a symlinked $HOME (e.g. /home/alice -> /u/alice) doesn't make
+        # the comparison fail when both sides point at the same directory.
+        if [ -d "$_tauri_legacy_root" ]; then
+            _tauri_legacy_root=$(CDPATH= cd -P -- "$_tauri_legacy_root" 2>/dev/null && pwd -P) \
+                || _tauri_legacy_root="$HOME/.unsloth/studio"
+        fi
         while [ "$_tauri_legacy_root" != "/" ] \
             && [ "${_tauri_legacy_root%/}" != "$_tauri_legacy_root" ]; do
             _tauri_legacy_root=${_tauri_legacy_root%/}
@@ -228,7 +235,9 @@ _resolve_studio_destinations() {
     if [ -n "$_override" ]; then
         mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
         [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
-        STUDIO_HOME="$(cd -- "$_override" && pwd)" || exit 1
+        # CDPATH= prevents `cd` from echoing a CDPATH-prefixed path on stdout
+        # if the user has CDPATH set; -P / pwd -P canonicalizes symlinks.
+        STUDIO_HOME="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
         DATA_DIR="$STUDIO_HOME/share"
         _LOCAL_BIN="$STUDIO_HOME/bin"
         _STUDIO_HOME_REDIRECT=env
