@@ -5,17 +5,46 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 
 
+def _infer_studio_home_from_venv() -> Path | None:
+    """If running from the unsloth_studio venv, the parent dir is STUDIO_HOME.
+
+    Fallback for fresh shells after a custom install where the installer
+    wrote to a workspace path but the user did not re-export the env var.
+    """
+    try:
+        prefix = Path(sys.prefix).resolve()
+    except (OSError, ValueError):
+        return None
+    if prefix.name == "unsloth_studio":
+        return prefix.parent
+    return None
+
+
 def studio_root() -> Path:
+    """Resolve the Studio install root.
+
+    Priority: UNSLOTH_STUDIO_HOME env, STUDIO_HOME env (alias), sys.prefix
+    inference, legacy ~/.unsloth/studio. Backwards-compatible: identical
+    to the legacy default when no env var is set and we are not running
+    from the venv.
+    """
+    override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    inferred = _infer_studio_home_from_venv()
+    if inferred is not None:
+        return inferred
     return Path.home() / ".unsloth" / "studio"
 
 
 def cache_root() -> Path:
     """Central cache directory for all studio downloads (models, datasets, etc.)."""
-    return Path.home() / ".unsloth" / "studio" / "cache"
+    return studio_root() / "cache"
 
 
 def assets_root() -> Path:

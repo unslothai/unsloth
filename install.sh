@@ -594,7 +594,17 @@ LAUNCHER_EOF
     # Using single-quote wrapping with the standard '\'' escape for any
     # embedded apostrophes. This avoids all sed metacharacter issues.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
-    printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'" > "$_css_data_dir/studio.conf"
+    {
+        printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        # Persist UNSLOTH_STUDIO_HOME for env-override installs so the launcher,
+        # CLI, and backend pick up the same root in fresh shells where the user
+        # did not re-export the env var. Default installs do NOT get this line so
+        # the legacy ~/.unsloth/studio resolution is fully preserved.
+        if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+            _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
+            printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
+        fi
+    } > "$_css_data_dir/studio.conf"
 
     # ── Icon: try bundled, then download ──
     # rounded-512.png used for both Linux and macOS icons

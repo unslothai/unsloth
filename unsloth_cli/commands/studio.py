@@ -22,15 +22,26 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
 # UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root, matching
-# install.sh / install.ps1. Falls back to the legacy ~/.unsloth/studio.
+# install.sh / install.ps1. Falls back to sys.prefix inference (so direct
+# invocations of <STUDIO_HOME>/bin/unsloth still resolve correctly even after
+# the installer's env var has expired), then to the legacy ~/.unsloth/studio.
 def _resolve_studio_home() -> Path:
     override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     if override:
         return Path(override).expanduser().resolve()
+    try:
+        prefix = Path(sys.prefix).resolve()
+        if prefix.name == "unsloth_studio":
+            return prefix.parent
+    except (OSError, ValueError):
+        pass
     return Path.home() / ".unsloth" / "studio"
 
 
 STUDIO_HOME = _resolve_studio_home()
+# Re-export so child processes (setup script, backend run.py) inherit the
+# resolved root even when the installer env var has expired in this shell.
+os.environ.setdefault("UNSLOTH_STUDIO_HOME", str(STUDIO_HOME))
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"

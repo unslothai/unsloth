@@ -1719,9 +1719,11 @@ if ($stackExit -ne 0) {
 # ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
-$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
-$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
-$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+# T5 sidecar venvs live next to the main venv under the resolved $StudioHome
+# so custom-root installs are self-contained.
+$VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
+$VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
+$VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 $_NeedT5Install = $false
 if (Test-Path $VenvT5Legacy) {
@@ -1811,7 +1813,13 @@ step "transformers" "5.5.0 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+# In env-override mode, nest llama.cpp under $StudioHome so custom installs
+# are self-contained. Default installs keep the legacy ~/.unsloth/llama.cpp.
+if ($env:UNSLOTH_STUDIO_HOME -or $env:STUDIO_HOME) {
+    $UnslothHome = $StudioHome
+} else {
+    $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+}
 if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false

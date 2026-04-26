@@ -412,8 +412,17 @@ function Install-UnslothStudio {
                 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
             }
 
+            # Persist UNSLOTH_STUDIO_HOME inside the generated launcher when
+            # in env-override mode. Lets fresh shells launch Studio without
+            # the user re-exporting the env var. Default installs get an
+            # empty string here so behavior matches today exactly.
+            $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
+                $_sq = $StudioHome -replace "'", "''"
+                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n"
+            } else { "" }
+
             $launcherContent = @"
-`$ErrorActionPreference = 'Stop'
+$studioHomeExport`$ErrorActionPreference = 'Stop'
 `$basePort = 8888
 `$maxPortOffset = 20
 `$timeoutSec = 60

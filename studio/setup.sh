@@ -563,7 +563,13 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-UNSLOTH_HOME="$HOME/.unsloth"
+# In env-override mode, nest llama.cpp under $STUDIO_HOME so custom installs
+# are self-contained. Default installs keep the legacy ~/.unsloth/llama.cpp.
+if [ -n "${UNSLOTH_STUDIO_HOME:-}" ] || [ -n "${STUDIO_HOME:-}" ]; then
+    UNSLOTH_HOME="$STUDIO_HOME"
+else
+    UNSLOTH_HOME="$HOME/.unsloth"
+fi
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
