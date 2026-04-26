@@ -2096,9 +2096,7 @@ class LlamaCppBackend:
                 _resolved_sr = _sr()
                 _legacy_studio = Path.home() / ".unsloth" / "studio"
                 try:
-                    _is_custom_root = (
-                        _resolved_sr.resolve() != _legacy_studio.resolve()
-                    )
+                    _is_custom_root = _resolved_sr.resolve() != _legacy_studio.resolve()
                 except (OSError, ValueError):
                     _is_custom_root = _resolved_sr != _legacy_studio
                 if _is_custom_root:
