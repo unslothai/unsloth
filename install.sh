@@ -1693,12 +1693,19 @@ _SKIP_FRONTEND=0
 if [ "$TAURI_MODE" = true ]; then
     _SKIP_FRONTEND=1
 fi
-_STUDIO_ENV_FOR_SETUP=""
-if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-    _STUDIO_ENV_FOR_SETUP="UNSLOTH_STUDIO_HOME=$STUDIO_HOME"
-fi
+# Helper: prepend UNSLOTH_STUDIO_HOME=$STUDIO_HOME to "$@" only for actual
+# env-override installs. Avoids word-splitting on whitespace paths -- a
+# string-form '_STUDIO_ENV_FOR_SETUP="UNSLOTH_STUDIO_HOME=$STUDIO_HOME"'
+# would split '/tmp/space path' into separate argv entries.
+_run_setup_with_studio_home() {
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+        UNSLOTH_STUDIO_HOME="$STUDIO_HOME" "$@"
+    else
+        "$@"
+    fi
+}
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    env $_STUDIO_ENV_FOR_SETUP \
+    _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
@@ -1712,7 +1719,7 @@ else
     # the same session) does not silently flip a normal install onto the
     # local-dev path in setup.sh and install_python_stack.py. Mirrors the
     # reset already done in install.ps1 for PowerShell.
-    env $_STUDIO_ENV_FOR_SETUP \
+    _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
