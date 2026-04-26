@@ -15,3 +15,7 @@ huggingface-hub==0.36.2
 structlog>=24.1.0
 diceware
 ddgs
+# Apple Silicon GPU detection: hardware.py imports mlx.core to flip
+# DeviceType to MLX and report unified-memory stats. Without this dep,
+# Studio reports CPU on M-series Macs even though the MLX code path exists.
+mlx ; sys_platform == 'darwin' and platform_machine == 'arm64'
