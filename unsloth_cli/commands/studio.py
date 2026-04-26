@@ -20,6 +20,7 @@ import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
+
 # UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root, matching
 # install.sh / install.ps1. Falls back to the legacy ~/.unsloth/studio.
 def _resolve_studio_home() -> Path:
@@ -27,6 +28,7 @@ def _resolve_studio_home() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return Path.home() / ".unsloth" / "studio"
+
 
 STUDIO_HOME = _resolve_studio_home()
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
