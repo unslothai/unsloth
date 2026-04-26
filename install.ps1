@@ -433,21 +433,6 @@ function Install-UnslothStudio {
                 }
                 $_sq = $StudioHome -replace "'", "''"
                 $_llama = $_llamaPath -replace "'", "''"
-
-                # Marker file so the Tauri desktop app (launched from
-                # Start Menu / Desktop, where the launching shell env vars
-                # aren't inherited) can still resolve the custom root.
-                try {
-                    $_markerDir = Join-Path $env:USERPROFILE ".unsloth"
-                    if (-not (Test-Path $_markerDir)) {
-                        New-Item -ItemType Directory -Path $_markerDir -Force | Out-Null
-                    }
-                    Set-Content -LiteralPath (Join-Path $_markerDir "studio-home") `
-                        -Value $StudioHome -NoNewline -ErrorAction Stop
-                } catch {
-                    # Non-fatal: env var still works for shells that inherit it.
-                }
-
                 "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n`$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n"
             } else { "" }
 
@@ -1279,6 +1264,22 @@ shell.Run cmd, 0, False
         step "path" "added unsloth launcher to PATH"
     }
     Refresh-SessionPath  # sync current session with registry
+
+    # Persist the env-mode marker file in BOTH normal and Tauri-mode
+    # installs, so the desktop app launched from Start Menu / Desktop
+    # (no shell env inheritance) can still resolve the custom root.
+    if ($StudioRedirectMode -eq 'env') {
+        try {
+            $_markerDir = Join-Path $env:USERPROFILE ".unsloth"
+            if (-not (Test-Path $_markerDir)) {
+                New-Item -ItemType Directory -Path $_markerDir -Force | Out-Null
+            }
+            Set-Content -LiteralPath (Join-Path $_markerDir "studio-home") `
+                -Value $StudioHome -NoNewline -ErrorAction Stop
+        } catch {
+            # Non-fatal: env vars still work for shells that inherit them.
+        }
+    }
 
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {

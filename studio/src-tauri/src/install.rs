@@ -148,8 +148,13 @@ fn spawn_script(
 
     // Scripts create the Studio root themselves, but need a writable cwd.
     // Resolve via the shared helper so a custom-root install does not
-    // create a stray ~/.unsloth on the user's machine.
-    let work_dir = crate::studio_root::resolve_studio_root()
+    // create a stray ~/.unsloth on the user's machine. We also pass the
+    // resolved root to the subprocess via UNSLOTH_STUDIO_HOME below so
+    // repair/update flows reach the same root as the running app even
+    // when the desktop process started without shell env inheritance.
+    let resolved_studio = crate::studio_root::resolve_studio_root();
+    let work_dir = resolved_studio
+        .as_ref()
         .and_then(|studio| studio.parent().map(|p| p.to_path_buf()))
         .or_else(|| dirs::home_dir().map(|h| h.join(".unsloth")))
         .ok_or("Could not determine Studio install root")?;
@@ -185,6 +190,18 @@ fn spawn_script(
     .current_dir(&work_dir)
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
+
+    // Propagate the resolved Studio root to the installer subprocess so
+    // repair / update flows hit the same root the running app uses, even
+    // when the desktop process started without inherited shell env.
+    // Only set when the env var isn't already in scope (don't override).
+    if std::env::var_os("UNSLOTH_STUDIO_HOME").is_none()
+        && std::env::var_os("STUDIO_HOME").is_none()
+    {
+        if let Some(studio) = resolved_studio.as_ref() {
+            cmd.env("UNSLOTH_STUDIO_HOME", studio);
+        }
+    }
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     // spawned by the install script. Only clear inside AppImage — native installs

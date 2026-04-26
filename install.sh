@@ -625,12 +625,6 @@ LAUNCHER_EOF
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
             printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
             printf '%s\n' "export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
-
-            # Marker file so the Tauri desktop app (launched from
-            # Finder/Start Menu/Desktop, where the launching shell's env
-            # vars are not inherited) can still resolve the custom root.
-            mkdir -p "$HOME/.unsloth" 2>/dev/null || true
-            printf '%s\n' "$STUDIO_HOME" > "$HOME/.unsloth/studio-home" 2>/dev/null || true
         fi
     } > "$_css_data_dir/studio.conf"
 
@@ -1783,6 +1777,14 @@ case ":$PATH:" in
         fi
         ;;
 esac
+
+# Persist the env-mode marker file in BOTH normal and Tauri-mode installs,
+# so the desktop app launched from Finder/Start Menu/Desktop (no shell env
+# inheritance) can still resolve the custom Studio root.
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+    mkdir -p "$HOME/.unsloth" 2>/dev/null || true
+    printf '%s\n' "$STUDIO_HOME" > "$HOME/.unsloth/studio-home" 2>/dev/null || true
+fi
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
 if [ "$TAURI_MODE" != true ]; then
