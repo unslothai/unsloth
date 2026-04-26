@@ -7,6 +7,7 @@ Works independently and can be moved to any directory.
 """
 
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -24,9 +25,28 @@ if str(backend_dir) not in sys.path:
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
+from ssl_config import SslCliArgs, SslSettings, resolve_ssl_settings
 from startup_banner import print_studio_access_banner
 
 logger = get_logger(__name__)
+
+
+# Captured at module import so a self-restart can re-exec with the
+# same arguments the operator originally passed.
+#
+# `_ORIGINAL_ARGV[0]` is the *script path* (Python sets it to the entry
+# script, not the interpreter), so to re-launch we must explicitly pass
+# `_ORIGINAL_PYTHON` as the program — running execvp on a .py path
+# directly would fail with ENOEXEC on Unix.
+_ORIGINAL_PYTHON: str = sys.executable
+_ORIGINAL_ARGV: tuple[str, ...] = tuple(sys.argv)
+
+# Per-process instance ID, regenerated on every fresh module import.
+# After `os.execv` the new process re-imports this module and gets a
+# new ID, so the frontend can confirm a restart by watching for the ID
+# to change in /api/health. This sidesteps PID-reuse on Unix (execv
+# preserves PID) and avoids "saw down" timing heuristics.
+INSTANCE_ID: str = secrets.token_hex(8)
 
 
 def _resolve_external_ip() -> str:
@@ -250,6 +270,7 @@ def run_server(
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
+    ssl_cli: SslCliArgs | None = None,
 ):
     """
     Start the FastAPI server.
@@ -261,6 +282,9 @@ def run_server(
         silent: Suppress startup messages
         api_only: Run API server only, no frontend serving (for Tauri desktop app)
         llama_parallel_slots: Number of parallel slots for llama-server
+        ssl_cli: SSL CLI args resolved from argparse / typer; ``None`` is
+            treated as "no CLI overrides" so env vars and saved settings
+            still apply.
 
     Note:
         Signal handlers are NOT registered here so that embedders
@@ -306,9 +330,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(
-                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
-                )
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -316,9 +338,14 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Output port for Tauri to parse when in api-only mode
+    # Resolve SSL early so the api-only handshake to Tauri can include the
+    # scheme — Tauri uses this to build the correct base URL.
+    ssl_settings_preview = resolve_ssl_settings(ssl_cli or SslCliArgs(), bind_host = host)
+
+    # Output port (and scheme) for Tauri to parse when in api-only mode.
     if api_only:
         print(f"TAURI_PORT={port}", flush = True)
+        print(f"TAURI_SCHEME={ssl_settings_preview.scheme}", flush = True)
 
     # Setup frontend if path provided (skip in api-only mode)
     if frontend_path and not api_only:
@@ -329,9 +356,18 @@ def run_server(
             if not silent:
                 print(f"[WARNING] Frontend not found at {frontend_path}")
 
+    # Reuse the preview computed above so the cert is generated exactly once.
+    ssl_settings = ssl_settings_preview
+
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
-        app, host = host, port = port, log_level = "info", access_log = False
+        app,
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        ssl_keyfile = ssl_settings.keyfile,
+        ssl_certfile = ssl_settings.certfile,
     )
     _server = uvicorn.Server(config)
     _shutdown_event = Event()
@@ -343,6 +379,12 @@ def run_server(
     # binds (port==0) leave it unset and let request handlers fall back
     # to the ASGI request scope or request.base_url.
     app.state.server_port = port if port and port > 0 else None
+    app.state.bind_host = host
+    app.state.scheme = ssl_settings.scheme
+    app.state.ssl_source = ssl_settings.source
+    app.state.ssl_settings = ssl_settings
+    app.state.instance_id = INSTANCE_ID
+    app.state.original_argv = list(_ORIGINAL_ARGV)
     app.state.llama_parallel_slots = llama_parallel_slots
 
     # Run server in a daemon thread
@@ -373,9 +415,56 @@ def run_server(
             port = port,
             bind_host = host,
             display_host = display_host,
+            scheme = ssl_settings.scheme,
         )
 
     return app
+
+
+def trigger_self_restart() -> None:
+    """Re-exec the studio process with the same argv it was launched with.
+
+    Called by ``POST /api/settings/server/restart`` so an SSL setting
+    change can take effect without dropping the user back to a terminal.
+
+    On Unix we ``os.execv`` so the running PID is reused (the parent
+    shell sees the process keep running). On Windows ``execvp`` has
+    fragile semantics, so we spawn a detached child and exit the
+    current process.
+
+    Always runs the captured Python interpreter as the program — argv[0]
+    is the script path (Python's convention), so passing it to ``execvp``
+    directly would fail with ENOEXEC.
+    """
+    program = _ORIGINAL_PYTHON or sys.executable
+    args = [program, *_ORIGINAL_ARGV]
+    logger.info("Self-restart: re-exec %s %s", program, _ORIGINAL_ARGV)
+
+    _graceful_shutdown(_server)
+    _remove_pid_file()
+
+    # Best-effort: flush stdio so any pending output is visible.
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    try:
+        if sys.platform == "win32":
+            import subprocess as _sp
+
+            try:
+                _sp.Popen(args, close_fds = True)
+            finally:
+                os._exit(0)
+        else:
+            os.execv(program, args)
+    except OSError:
+        # execv only returns on failure; log so the failure isn't silent
+        # and re-raise so the asyncio task surfaces it in server logs.
+        logger.exception("Self-restart failed; server stays on the old config")
+        raise
 
 
 # For direct execution (also invoked by CLI via os.execvp / subprocess)
@@ -406,11 +495,48 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    parser.add_argument(
+        "--ssl-certfile",
+        default = None,
+        help = "Path to a PEM-encoded SSL certificate (chain). Pair with --ssl-keyfile.",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        default = None,
+        help = "Path to a PEM-encoded SSL private key. Pair with --ssl-certfile.",
+    )
+    parser.add_argument(
+        "--ssl-self-signed",
+        action = "store_true",
+        help = (
+            "Generate (or reuse) a self-signed cert in ~/.unsloth/studio/ssl/. "
+            "Browsers will warn on first visit; click through to proceed."
+        ),
+    )
+    parser.add_argument(
+        "--no-ssl",
+        action = "store_true",
+        help = (
+            "Force HTTP, ignoring any saved SSL settings. Use this to recover "
+            "access if SSL was misconfigured via the UI."
+        ),
+    )
 
     args = parser.parse_args()
 
+    ssl_cli = SslCliArgs(
+        no_ssl = bool(args.no_ssl),
+        ssl_certfile = args.ssl_certfile,
+        ssl_keyfile = args.ssl_keyfile,
+        ssl_self_signed = bool(args.ssl_self_signed),
+    )
+
     kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        ssl_cli = ssl_cli,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

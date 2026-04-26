@@ -19,6 +19,9 @@ pub struct DesktopPreflightResult {
     pub disposition: DesktopPreflightDisposition,
     pub reason: Option<String>,
     pub port: Option<u16>,
+    /// "http" or "https" — the scheme the live backend reported.
+    /// Only populated for `AttachedReady`.
+    pub scheme: Option<String>,
     pub can_auto_repair: bool,
     pub managed_bin: Option<PathBuf>,
 }
@@ -33,7 +36,7 @@ enum ManagedProbe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BackendProbe {
     Missing,
-    Ready { port: u16 },
+    Ready { port: u16, scheme: String },
     Old { port: u16, reason: String },
 }
 
@@ -58,18 +61,22 @@ fn release_auto_repair() -> bool {
 
 fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPreflightResult {
     match (backend, managed) {
-        (BackendProbe::Ready { port }, ManagedProbe::Ready { bin }) => DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::AttachedReady,
-            reason: None,
-            port: Some(port),
-            can_auto_repair: false,
-            managed_bin: Some(bin),
-        },
+        (BackendProbe::Ready { port, scheme }, ManagedProbe::Ready { bin }) => {
+            DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::AttachedReady,
+                reason: None,
+                port: Some(port),
+                scheme: Some(scheme),
+                can_auto_repair: false,
+                managed_bin: Some(bin),
+            }
+        }
         (_, managed) => match managed {
             ManagedProbe::Ready { bin } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedReady,
                 reason: None,
                 port: None,
+                scheme: None,
                 can_auto_repair: false,
                 managed_bin: Some(bin),
             },
@@ -77,6 +84,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
                 disposition: DesktopPreflightDisposition::ManagedStale,
                 reason: Some(reason),
                 port: None,
+                scheme: None,
                 can_auto_repair: release_auto_repair(),
                 managed_bin: Some(bin),
             },
@@ -84,6 +92,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
                 disposition: DesktopPreflightDisposition::NotInstalled,
                 reason: None,
                 port: None,
+                scheme: None,
                 can_auto_repair: false,
                 managed_bin: None,
             },
@@ -215,47 +224,73 @@ pub async fn managed_install_ready() -> bool {
     matches!(probe_managed_install().await, ManagedProbe::Ready { .. })
 }
 
-async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHealth> {
-    let url = format!("http://127.0.0.1:{port}/api/health");
-    let response = client.get(url).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let json = response.json::<serde_json::Value>().await.ok()?;
-    let healthy = json
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "healthy")
-        .unwrap_or(false);
-    let service = json
-        .get("service")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "Unsloth UI Backend")
-        .unwrap_or(false);
-    if !healthy || !service {
-        return None;
-    }
-
-    let desktop_protocol_version = json
-        .get("desktop_protocol_version")
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u16::try_from(v).ok());
-    let supports_desktop_auth = json.get("supports_desktop_auth").and_then(|v| v.as_bool());
-    if desktop_protocol_version.is_none() && supports_desktop_auth.is_none() {
-        return None;
-    }
-    let stale_reason = match supports_desktop_auth {
-        Some(false) => json
-            .get("desktop_auth_stale_reason")
+async fn backend_health(
+    client: &reqwest::Client,
+    port: u16,
+) -> Option<(String, BackendHealth)> {
+    // Try http first (existing behavior), fall back to https for SSL-enabled
+    // backends. The reqwest client must accept invalid certs so self-signed
+    // setups (the common --ssl-self-signed flow) can be detected.
+    for scheme in ["http", "https"] {
+        let url = format!("{scheme}://127.0.0.1:{port}/api/health");
+        let response = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let json = match response.json::<serde_json::Value>().await {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+        let healthy = json
+            .get("status")
             .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned),
-        _ => None,
-    };
-    Some(BackendHealth {
-        desktop_protocol_version,
-        supports_desktop_auth,
-        stale_reason,
-    })
+            .map(|s| s == "healthy")
+            .unwrap_or(false);
+        let service = json
+            .get("service")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "Unsloth UI Backend")
+            .unwrap_or(false);
+        if !healthy || !service {
+            continue;
+        }
+
+        let desktop_protocol_version = json
+            .get("desktop_protocol_version")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u16::try_from(v).ok());
+        let supports_desktop_auth = json.get("supports_desktop_auth").and_then(|v| v.as_bool());
+        if desktop_protocol_version.is_none() && supports_desktop_auth.is_none() {
+            continue;
+        }
+        let stale_reason = match supports_desktop_auth {
+            Some(false) => json
+                .get("desktop_auth_stale_reason")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            _ => None,
+        };
+        // Prefer the scheme reported by /api/health when present; falling
+        // back to the scheme that worked here covers older backends that
+        // do not yet emit the field.
+        let reported_scheme = json
+            .get("scheme")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| scheme.to_string());
+        return Some((
+            reported_scheme,
+            BackendHealth {
+                desktop_protocol_version,
+                supports_desktop_auth,
+                stale_reason,
+            },
+        ));
+    }
+    None
 }
 
 fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
@@ -282,13 +317,14 @@ struct DesktopLoginProbe<'a> {
 async fn backend_desktop_auth_status(
     client: &reqwest::Client,
     port: u16,
+    scheme: &str,
     health: &BackendHealth,
 ) -> BackendProbe {
     if let Some(reason) = backend_capability_stale_reason(health) {
         return BackendProbe::Old { port, reason };
     }
 
-    let url = format!("http://127.0.0.1:{port}/api/auth/desktop-login");
+    let url = format!("{scheme}://127.0.0.1:{port}/api/auth/desktop-login");
     let response = client
         .post(url)
         .json(&DesktopLoginProbe {
@@ -306,7 +342,10 @@ async fn backend_desktop_auth_status(
     };
 
     match response.status() {
-        reqwest::StatusCode::UNAUTHORIZED => BackendProbe::Ready { port },
+        reqwest::StatusCode::UNAUTHORIZED => BackendProbe::Ready {
+            port,
+            scheme: scheme.to_string(),
+        },
         reqwest::StatusCode::NOT_FOUND => BackendProbe::Old {
             port,
             reason: "desktop_login_not_found".to_string(),
@@ -320,7 +359,12 @@ async fn backend_desktop_auth_status(
 }
 
 async fn probe_existing_backends() -> BackendProbe {
+    // Allow self-signed certs so backends running with --ssl-self-signed
+    // are still discoverable. The probe never trusts user data, only
+    // verifies the studio service identity, so disabling cert validation
+    // here is safe and matches user intent.
     let client = match reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(2))
         .build()
     {
@@ -337,20 +381,22 @@ async fn probe_existing_backends() -> BackendProbe {
         // (documented cheap). tokio::spawn needs 'static, so each task owns its own clone.
         let c = client.clone();
         health_futs.push(tokio::spawn(async move {
-            backend_health(&c, port).await.map(|h| (port, h))
+            backend_health(&c, port)
+                .await
+                .map(|(scheme, h)| (port, scheme, h))
         }));
     }
 
-    let mut candidates: Vec<(u16, BackendHealth)> = Vec::new();
+    let mut candidates: Vec<(u16, String, BackendHealth)> = Vec::new();
     for fut in health_futs {
-        if let Ok(Some(pair)) = fut.await {
-            candidates.push(pair);
+        if let Ok(Some(triple)) = fut.await {
+            candidates.push(triple);
         }
     }
 
     let mut first_old = None;
-    for (port, health) in candidates {
-        match backend_desktop_auth_status(&client, port, &health).await {
+    for (port, scheme, health) in candidates {
+        match backend_desktop_auth_status(&client, port, &scheme, &health).await {
             ready @ BackendProbe::Ready { .. } => return ready,
             old @ BackendProbe::Old { .. } if first_old.is_none() => first_old = Some(old),
             _ => {}
@@ -371,6 +417,13 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    fn ready_http(port: u16) -> BackendProbe {
+        BackendProbe::Ready {
+            port,
+            scheme: "http".to_string(),
+        }
+    }
+
     #[test]
     fn compatible_backend_does_not_win_over_stale_managed_install() {
         let result = choose_preflight(
@@ -378,7 +431,7 @@ mod tests {
                 bin: PathBuf::from("/managed/unsloth"),
                 reason: "old cli".to_string(),
             },
-            BackendProbe::Ready { port: 8000 },
+            ready_http(8000),
         );
 
         assert_eq!(
@@ -386,6 +439,7 @@ mod tests {
             DesktopPreflightDisposition::ManagedStale
         );
         assert_eq!(result.port, None);
+        assert_eq!(result.scheme, None);
         assert_eq!(result.reason, Some("old cli".to_string()));
         assert_eq!(result.can_auto_repair, release_auto_repair());
         assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
@@ -397,7 +451,7 @@ mod tests {
             ManagedProbe::Ready {
                 bin: PathBuf::from("/managed/unsloth"),
             },
-            BackendProbe::Ready { port: 8000 },
+            ready_http(8000),
         );
 
         assert_eq!(
@@ -405,13 +459,14 @@ mod tests {
             DesktopPreflightDisposition::AttachedReady
         );
         assert_eq!(result.port, Some(8000));
+        assert_eq!(result.scheme, Some("http".to_string()));
         assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
         assert!(!result.can_auto_repair);
     }
 
     #[test]
     fn compatible_backend_does_not_win_over_missing_managed_install() {
-        let result = choose_preflight(ManagedProbe::Missing, BackendProbe::Ready { port: 8000 });
+        let result = choose_preflight(ManagedProbe::Missing, ready_http(8000));
 
         assert_eq!(
             result.disposition,
@@ -733,8 +788,8 @@ exit 1
     ) -> BackendProbe {
         let port = backend_server(health_body, route_status).await;
         let client = reqwest::Client::new();
-        let health = backend_health(&client, port).await.unwrap();
-        backend_desktop_auth_status(&client, port, &health).await
+        let (scheme, health) = backend_health(&client, port).await.unwrap();
+        backend_desktop_auth_status(&client, port, &scheme, &health).await
     }
 
     #[tokio::test]
@@ -818,10 +873,10 @@ exit 1
         )
         .await;
         let client = reqwest::Client::new();
-        let health = backend_health(&client, port).await.unwrap();
+        let (scheme, health) = backend_health(&client, port).await.unwrap();
 
         assert!(matches!(
-            backend_desktop_auth_status(&client, port, &health).await,
+            backend_desktop_auth_status(&client, port, &scheme, &health).await,
             BackendProbe::Old {
                 reason,
                 ..

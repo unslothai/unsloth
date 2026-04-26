@@ -13,19 +13,24 @@ import {
   Key01Icon,
   Message01Icon,
   PaintBrush02Icon,
+  ServerStack01Icon,
   Settings02Icon,
   SparklesIcon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
-import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
+import {
+  type SettingsTab,
+  useSettingsDialogStore,
+} from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
+import { ServerTab } from "./tabs/server-tab";
 
 interface TabDef {
   id: SettingsTab;
@@ -39,6 +44,7 @@ const TABS: TabDef[] = [
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
   { id: "api-keys", label: "API Keys", icon: Key01Icon },
+  { id: "server", label: "Server", icon: ServerStack01Icon },
   { id: "about", label: "About", icon: SparklesIcon },
 ];
 
@@ -54,6 +60,8 @@ function renderTab(tab: SettingsTab) {
       return <ChatTab />;
     case "api-keys":
       return <ApiKeysTab />;
+    case "server":
+      return <ServerTab />;
     case "about":
       return <AboutTab />;
   }

@@ -9,6 +9,7 @@ export type SettingsTab =
   | "appearance"
   | "chat"
   | "api-keys"
+  | "server"
   | "about";
 
 interface SettingsDialogState {
@@ -22,15 +23,27 @@ interface SettingsDialogState {
 const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
 
 function loadInitialTab(): SettingsTab {
-  if (typeof window === "undefined") return "general";
+  if (typeof window === "undefined") {
+    return "general";
+  }
   let stored: string | null = null;
   try {
     stored = window.localStorage.getItem(ACTIVE_TAB_KEY);
   } catch {
     return "general";
   }
-  const valid: SettingsTab[] = ["general", "profile", "appearance", "chat", "api-keys", "about"];
-  return valid.includes(stored as SettingsTab) ? (stored as SettingsTab) : "general";
+  const valid: SettingsTab[] = [
+    "general",
+    "profile",
+    "appearance",
+    "chat",
+    "api-keys",
+    "server",
+    "about",
+  ];
+  return valid.includes(stored as SettingsTab)
+    ? (stored as SettingsTab)
+    : "general";
 }
 
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({

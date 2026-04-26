@@ -590,6 +590,52 @@ def clear_desktop_secret() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Generic app_secrets read/write helpers
+# ---------------------------------------------------------------------------
+#
+# Used by non-secret server-wide configuration (e.g. SSL paths, feature
+# toggles) that should survive restarts. Values are stored as TEXT;
+# callers serialize/deserialize their own structured types.
+
+
+def get_app_secret(key: str) -> Optional[str]:
+    """Return the value for *key* in ``app_secrets``, or ``None``."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (key,),
+        )
+        row = cur.fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def set_app_secret(key: str, value: str) -> None:
+    """Insert or replace *key* with *value* in ``app_secrets``."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_app_secret(key: str) -> None:
+    """Remove *key* from ``app_secrets`` if present."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM app_secrets WHERE key = ?", (key,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # API key management
 # ---------------------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl, isTauri } from "@/lib/api-base";
+import { awaitRestart, isRestarting } from "@/lib/restart-state";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -99,7 +100,7 @@ export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
+  const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();
   if (accessToken) {
@@ -110,6 +111,14 @@ export async function authFetch(
   try {
     response = await fetch(resolvedInput, { ...init, headers });
   } catch (err) {
+    // During a user-initiated restart, the backend goes down for ~5–15s.
+    // Park the request on the restart gate and replay it once the new
+    // server answers — that keeps the rest of the UI quiet instead of
+    // showering toasts and tripping the auth-redirect path.
+    if (err instanceof TypeError && isRestarting()) {
+      await awaitRestart();
+      return retryWithCurrentToken(resolvedInput, init);
+    }
     if (err instanceof TypeError) {
       throw new Error("Studio isn't running -- please relaunch it.");
     }
@@ -124,6 +133,14 @@ export async function authFetch(
     return response;
   }
   if (response.status !== 401) return response;
+
+  // 401 during a restart almost always means our request raced the new
+  // server's lifespan — wait it out and retry with the same token rather
+  // than tearing down the session and bouncing the user to /login.
+  if (isRestarting()) {
+    await awaitRestart();
+    return retryWithCurrentToken(resolvedInput, init);
+  }
 
   const refreshed = await refreshSession();
   if (!refreshed) {

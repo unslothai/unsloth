@@ -24,8 +24,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchor `lib/` / `lib64/` to the project root so they only catch Python
+# build outputs and don't shadow legitimate frontend `src/**/lib/` dirs.
+/lib/
+/lib64/
 parts/
 sdist/
 var/

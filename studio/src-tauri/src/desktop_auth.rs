@@ -30,9 +30,10 @@ enum PortSource {
     Discovered,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct BackendPort {
     port: u16,
+    scheme: String,
     source: PortSource,
 }
 
@@ -57,8 +58,8 @@ fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
         .join(filename)
 }
 
-fn auth_url(port: u16, route: &str) -> String {
-    format!("http://127.0.0.1:{port}/api/auth/{route}")
+fn auth_url(scheme: &str, port: u16, route: &str) -> String {
+    format!("{scheme}://127.0.0.1:{port}/api/auth/{route}")
 }
 
 fn home_dir() -> Result<PathBuf, String> {
@@ -84,14 +85,18 @@ fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
 async fn current_backend_port(
     state: &tauri::State<'_, BackendState>,
 ) -> Result<BackendPort, String> {
-    if let Some(port) = state.lock().map_err(|e| e.to_string())?.port {
-        return Ok(BackendPort {
-            port,
-            source: PortSource::Cached,
-        });
+    {
+        let proc = state.lock().map_err(|e| e.to_string())?;
+        if let Some(port) = proc.port {
+            return Ok(BackendPort {
+                port,
+                scheme: proc.scheme.clone().unwrap_or_else(|| "http".to_string()),
+                source: PortSource::Cached,
+            });
+        }
     }
 
-    let port = discover_compatible_backend_port()
+    let (port, scheme) = discover_compatible_backend()
         .await
         .ok_or_else(|| "Backend is not ready".to_string())?;
 
@@ -100,29 +105,42 @@ async fn current_backend_port(
         if proc.port.is_none() {
             proc.port = Some(port);
         }
+        if proc.scheme.is_none() {
+            proc.scheme = Some(scheme.clone());
+        }
     }
 
     Ok(BackendPort {
         port,
+        scheme,
         source: PortSource::Discovered,
     })
 }
 
-fn attached_ready_port(preflight: DesktopPreflightResult) -> Option<u16> {
+fn attached_ready_port(preflight: DesktopPreflightResult) -> Option<(u16, String)> {
     if preflight.disposition == DesktopPreflightDisposition::AttachedReady {
-        preflight.port
+        match (preflight.port, preflight.scheme) {
+            (Some(port), Some(scheme)) => Some((port, scheme)),
+            (Some(port), None) => Some((port, "http".to_string())),
+            _ => None,
+        }
     } else {
         None
     }
 }
 
-async fn discover_compatible_backend_port() -> Option<u16> {
+async fn discover_compatible_backend() -> Option<(u16, String)> {
     attached_ready_port(crate::preflight::desktop_preflight_result().await)
 }
 
-fn update_backend_port(state: &tauri::State<'_, BackendState>, port: u16) -> Result<(), String> {
+fn update_backend_port(
+    state: &tauri::State<'_, BackendState>,
+    port: u16,
+    scheme: &str,
+) -> Result<(), String> {
     let mut proc = state.lock().map_err(|e| e.to_string())?;
     proc.port = Some(port);
+    proc.scheme = Some(scheme.to_string());
     Ok(())
 }
 
@@ -144,11 +162,12 @@ fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> b
 
 async fn exchange_desktop_secret(
     client: &Client,
+    scheme: &str,
     port: u16,
     secret: &str,
 ) -> Result<Option<DesktopAuthResponse>, AuthError> {
     let response = client
-        .post(auth_url(port, "desktop-login"))
+        .post(auth_url(scheme, port, "desktop-login"))
         .json(&DesktopAuthRequest {
             secret: secret.to_string(),
         })
@@ -219,18 +238,19 @@ async fn authenticate_with_stale_port_retry(
     backend: BackendPort,
     secret: &str,
 ) -> Result<(Option<DesktopAuthResponse>, BackendPort), String> {
-    match exchange_desktop_secret(client, backend.port, secret).await {
+    match exchange_desktop_secret(client, &backend.scheme, backend.port, secret).await {
         Ok(tokens) => Ok((tokens, backend)),
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
-            let Some(port) = discover_compatible_backend_port().await else {
+            let Some((port, scheme)) = discover_compatible_backend().await else {
                 return Err(error.message());
             };
-            update_backend_port(state, port)?;
+            update_backend_port(state, port, &scheme)?;
             let backend = BackendPort {
                 port,
+                scheme: scheme.clone(),
                 source: PortSource::Discovered,
             };
-            exchange_desktop_secret(client, port, secret)
+            exchange_desktop_secret(client, &scheme, port, secret)
                 .await
                 .map(|tokens| (tokens, backend))
                 .map_err(AuthError::message)
@@ -245,7 +265,11 @@ pub async fn desktop_auth(
 ) -> Result<DesktopAuthResponse, String> {
     let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
     let mut backend = current_backend_port(&state).await?;
+    // Self-signed certs are part of the supported `--ssl-self-signed` flow,
+    // so accept invalid certs here. The desktop secret is the actual proof
+    // of trust between the desktop app and the local backend.
     let client = Client::builder()
+        .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
@@ -311,8 +335,12 @@ mod tests {
     #[test]
     fn auth_url_builds_local_endpoint() {
         assert_eq!(
-            auth_url(8890, "desktop-login"),
+            auth_url("http", 8890, "desktop-login"),
             "http://127.0.0.1:8890/api/auth/desktop-login"
+        );
+        assert_eq!(
+            auth_url("https", 8890, "desktop-login"),
+            "https://127.0.0.1:8890/api/auth/desktop-login"
         );
     }
 
@@ -338,15 +366,33 @@ mod tests {
             disposition: DesktopPreflightDisposition::AttachedReady,
             reason: None,
             port: Some(8890),
+            scheme: Some("https".to_string()),
             can_auto_repair: false,
             managed_bin: None,
         };
-        assert_eq!(attached_ready_port(compatible), Some(8890));
+        assert_eq!(
+            attached_ready_port(compatible),
+            Some((8890, "https".to_string()))
+        );
+
+        let missing_scheme = DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::AttachedReady,
+            reason: None,
+            port: Some(8890),
+            scheme: None,
+            can_auto_repair: false,
+            managed_bin: None,
+        };
+        assert_eq!(
+            attached_ready_port(missing_scheme),
+            Some((8890, "http".to_string()))
+        );
 
         let missing_port = DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::AttachedReady,
             reason: None,
             port: None,
+            scheme: Some("http".to_string()),
             can_auto_repair: false,
             managed_bin: None,
         };
@@ -356,6 +402,7 @@ mod tests {
             disposition: DesktopPreflightDisposition::ManagedReady,
             reason: None,
             port: Some(8890),
+            scheme: Some("http".to_string()),
             can_auto_repair: false,
             managed_bin: None,
         };
@@ -365,7 +412,7 @@ mod tests {
     #[tokio::test]
     async fn exchange_desktop_secret_returns_none_for_unauthorized() {
         let port = login_server("401 Unauthorized").await;
-        let tokens = exchange_desktop_secret(&Client::new(), port, "desktop-stale")
+        let tokens = exchange_desktop_secret(&Client::new(), "http", port, "desktop-stale")
             .await
             .unwrap();
 
@@ -375,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn exchange_desktop_secret_reports_unsupported_backend_on_not_found() {
         let port = login_server("404 Not Found").await;
-        let error = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+        let error = exchange_desktop_secret(&Client::new(), "http", port, "desktop-secret")
             .await
             .unwrap_err()
             .message();

@@ -422,6 +422,32 @@ def studio_default(
         "--api-only",
         help = "Run API server only, no frontend serving (for Tauri desktop app)",
     ),
+    ssl_certfile: Optional[Path] = typer.Option(
+        None,
+        "--ssl-certfile",
+        help = "Path to a PEM-encoded SSL certificate (chain). Pair with --ssl-keyfile.",
+    ),
+    ssl_keyfile: Optional[Path] = typer.Option(
+        None,
+        "--ssl-keyfile",
+        help = "Path to a PEM-encoded SSL private key. Pair with --ssl-certfile.",
+    ),
+    ssl_self_signed: bool = typer.Option(
+        False,
+        "--ssl-self-signed",
+        help = (
+            "Generate (or reuse) a self-signed cert in ~/.unsloth/studio/ssl/. "
+            "Browsers will warn on first visit; click through to proceed."
+        ),
+    ),
+    no_ssl: bool = typer.Option(
+        False,
+        "--no-ssl",
+        help = (
+            "Force HTTP, ignoring any saved SSL settings. Use this to recover "
+            "access if SSL was misconfigured via the UI."
+        ),
+    ),
 ):
     """Launch the Unsloth Studio server."""
     if ctx.invoked_subcommand is not None:
@@ -451,6 +477,14 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
+            if ssl_certfile:
+                args.extend(["--ssl-certfile", str(ssl_certfile)])
+            if ssl_keyfile:
+                args.extend(["--ssl-keyfile", str(ssl_keyfile)])
+            if ssl_self_signed:
+                args.append("--ssl-self-signed")
+            if no_ssl:
+                args.append("--no-ssl")
             # On Windows, os.execvp() spawns a child but the parent lingers,
             # so Ctrl+C only kills the parent leaving the child orphaned.
             # Use subprocess.run() on Windows so the parent waits for the child.
@@ -481,14 +515,33 @@ def studio_default(
             raise typer.Exit(1)
 
     from studio.backend.run import run_server
+    from studio.backend.ssl_config import SslCliArgs
+
+    ssl_cli = SslCliArgs(
+        no_ssl = bool(no_ssl),
+        ssl_certfile = str(ssl_certfile) if ssl_certfile else None,
+        ssl_keyfile = str(ssl_keyfile) if ssl_keyfile else None,
+        ssl_self_signed = bool(ssl_self_signed),
+    )
 
     if not silent:
         from studio.backend.run import _resolve_external_ip
 
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
-        typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
+        # The actual scheme is decided inside run_server; this banner is
+        # just a "starting up" hint.
+        scheme_hint = (
+            "https" if (ssl_certfile or ssl_self_signed) and not no_ssl else "http"
+        )
+        typer.echo(f"Starting Unsloth Studio on {scheme_hint}://{display_host}:{port}")
 
-    run_kwargs = dict(host = host, port = port, silent = silent, api_only = api_only)
+    run_kwargs = dict(
+        host = host,
+        port = port,
+        silent = silent,
+        api_only = api_only,
+        ssl_cli = ssl_cli,
+    )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)

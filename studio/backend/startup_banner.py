@@ -38,6 +38,7 @@ def print_studio_access_banner(
     port: int,
     bind_host: str,
     display_host: str,
+    scheme: str = "http",
 ) -> None:
     """Pretty-print URLs after the server is listening (beginner-friendly)."""
     use_color = stdout_supports_color()
@@ -52,15 +53,15 @@ def print_studio_access_banner(
 
     ipv6_bind = bind_host in ("::", "::1")
     if ipv6_bind:
-        loopback_url = f"http://[::1]:{port}"
-        alt_local = f"http://localhost:{port}"
+        loopback_url = f"{scheme}://[::1]:{port}"
+        alt_local = f"{scheme}://localhost:{port}"
     else:
-        loopback_url = f"http://127.0.0.1:{port}"
-        alt_local = f"http://localhost:{port}"
+        loopback_url = f"{scheme}://127.0.0.1:{port}"
+        alt_local = f"{scheme}://localhost:{port}"
     if ":" in display_host:
-        external_url = f"http://[{display_host}]:{port}"
+        external_url = f"{scheme}://[{display_host}]:{port}"
     else:
-        external_url = f"http://{display_host}:{port}"
+        external_url = f"{scheme}://{display_host}:{port}"
 
     listen_all = bind_host in ("0.0.0.0", "::")
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
@@ -78,6 +79,14 @@ def print_studio_access_banner(
         style("  On this machine -- open this in your browser:", dim),
         style(f"    {primary_url}", local_url_style),
     ]
+
+    if scheme == "https":
+        lines.append(
+            style(
+                "  TLS enabled. Self-signed certs trigger a one-time browser warning.",
+                dim,
+            )
+        )
 
     if (listen_all or loopback_bind) and primary_url != alt_local:
         lines.append(style(f"    (same as {alt_local})", dim))

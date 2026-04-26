@@ -13,6 +13,8 @@ const MAX_LOG_LINES: usize = 1000;
 pub struct BackendProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub port: Option<u16>,
+    /// "http" or "https" for the running backend. None until discovered.
+    pub scheme: Option<String>,
     pub logs: VecDeque<String>,
     pub intentional_stop: bool,
 }
@@ -22,6 +24,7 @@ impl Default for BackendProcess {
         Self {
             child: None,
             port: None,
+            scheme: None,
             logs: VecDeque::with_capacity(MAX_LOG_LINES),
             intentional_stop: false,
         }
@@ -257,6 +260,7 @@ pub fn start_backend(
             return Err("Backend is already running.".to_string());
         }
         proc.port = None;
+        proc.scheme = None;
         proc.logs.clear();
         proc.intentional_stop = false;
     }
@@ -345,6 +349,7 @@ fn read_output_stream<R: std::io::Read>(
 ) {
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
+    let scheme_re = Regex::new(r"TAURI_SCHEME=(https?)").unwrap();
     let mut buf = Vec::new();
 
     loop {
@@ -359,7 +364,7 @@ fn read_output_stream<R: std::io::Read>(
                     text.clone()
                 };
 
-                // Check for TAURI_PORT on stdout only
+                // Check for TAURI_PORT / TAURI_SCHEME on stdout only
                 if !is_stderr {
                     if let Some(caps) = port_re.captures(&text) {
                         if let Some(port_str) = caps.get(1) {
@@ -370,6 +375,16 @@ fn read_output_stream<R: std::io::Read>(
                                 }
                                 let _ = app.emit("server-port", port);
                             }
+                        }
+                    }
+                    if let Some(caps) = scheme_re.captures(&text) {
+                        if let Some(scheme_match) = caps.get(1) {
+                            let scheme = scheme_match.as_str().to_string();
+                            info!("Detected backend scheme: {}", scheme);
+                            if let Ok(mut proc) = state.lock() {
+                                proc.scheme = Some(scheme.clone());
+                            }
+                            let _ = app.emit("server-scheme", scheme);
                         }
                     }
                 }

@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { clearTauriAuthFailure, getTauriAuthFailure } from "@/features/auth";
 import { isTauri, setApiBase } from "@/lib/api-base";
-import {
-  clearTauriAuthFailure,
-  getTauriAuthFailure,
-} from "@/features/auth";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type BackendStatus =
   | "checking"
@@ -31,8 +28,13 @@ interface DesktopPreflightResult {
   disposition: DesktopPreflightDisposition;
   reason: string | null;
   port: number | null;
+  scheme: string | null;
   can_auto_repair: boolean;
   managed_bin: string | null;
+}
+
+function normalizeScheme(value: string | null | undefined): "http" | "https" {
+  return value === "https" ? "https" : "http";
 }
 
 export function useTauriBackend() {
@@ -46,6 +48,8 @@ export function useTauriBackend() {
   const mountedRef = useRef(false);
   // Track the discovered port from server-port event
   const portRef = useRef<number | null>(null);
+  // Track the discovered scheme from server-scheme event (TAURI_SCHEME stdout)
+  const schemeRef = useRef<"http" | "https">("http");
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
@@ -59,7 +63,9 @@ export function useTauriBackend() {
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
 
   function setBackendStatus(nextStatus: BackendStatus) {
-    if (authFailureRef.current) return;
+    if (authFailureRef.current) {
+      return;
+    }
     statusRef.current = nextStatus;
     setStatus(nextStatus);
   }
@@ -68,14 +74,18 @@ export function useTauriBackend() {
     nextError: string,
     nextStatus: BackendStatus = "error",
   ) {
-    if (authFailureRef.current) return;
+    if (authFailureRef.current) {
+      return;
+    }
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     setError(nextError);
   }
 
   function clearBackendError() {
-    if (authFailureRef.current) return;
+    if (authFailureRef.current) {
+      return;
+    }
     setError(null);
   }
 
@@ -108,18 +118,27 @@ export function useTauriBackend() {
     externalPollAbortedRef.current = false;
     let failures = 0;
     externalPollRef.current = setInterval(async () => {
-      if (externalPollAbortedRef.current) return;
+      if (externalPollAbortedRef.current) {
+        return;
+      }
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const healthy = await invoke<boolean>("check_health", { port });
-        if (externalPollAbortedRef.current) return;
+        const healthy = await invoke<boolean>("check_health", {
+          port,
+          scheme: schemeRef.current,
+        });
+        if (externalPollAbortedRef.current) {
+          return;
+        }
         if (healthy) {
           failures = 0;
         } else {
           failures++;
         }
       } catch {
-        if (externalPollAbortedRef.current) return;
+        if (externalPollAbortedRef.current) {
+          return;
+        }
         failures++;
       }
       if (failures >= 3) {
@@ -139,27 +158,33 @@ export function useTauriBackend() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
-      const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
+      const preflight =
+        await invoke<DesktopPreflightResult>("desktop_preflight");
       switch (preflight.disposition) {
         case "attached_ready": {
           if (!preflight.port) {
-            setBackendError("Desktop preflight found a backend without a port.");
+            setBackendError(
+              "Desktop preflight found a backend without a port.",
+            );
             return;
           }
-          setApiBase(preflight.port);
+          const detectedScheme = normalizeScheme(preflight.scheme);
+          schemeRef.current = detectedScheme;
+          setApiBase(preflight.port, detectedScheme);
           portRef.current = preflight.port;
           setIsExternalServer(true);
           setRunningStatus();
           startExternalServerPoll(preflight.port);
           return;
         }
-        case "managed_ready":
+        case "managed_ready": {
           setIsExternalServer(false);
           stopExternalServerPoll();
           setBackendStatus("starting");
           await startManagedServer();
           return;
-        case "managed_stale":
+        }
+        case "managed_stale": {
           setIsExternalServer(false);
           stopExternalServerPoll();
           if (preflight.can_auto_repair) {
@@ -170,9 +195,11 @@ export function useTauriBackend() {
             );
           }
           return;
-        case "not_installed":
+        }
+        case "not_installed": {
           setBackendStatus("not-installed");
           return;
+        }
       }
     } catch (e) {
       setBackendError(String(e));
@@ -181,7 +208,9 @@ export function useTauriBackend() {
 
   async function startManagedServer() {
     // Prevent double-start race condition
-    if (startingRef.current) return;
+    if (startingRef.current) {
+      return;
+    }
     startingRef.current = true;
 
     try {
@@ -196,9 +225,10 @@ export function useTauriBackend() {
         if (portRef.current) {
           const healthy = await invoke<boolean>("check_health", {
             port: portRef.current,
+            scheme: schemeRef.current,
           });
           if (healthy) {
-            setApiBase(portRef.current);
+            setApiBase(portRef.current, schemeRef.current);
             setRunningStatus();
             startingRef.current = false;
             return;
@@ -206,9 +236,9 @@ export function useTauriBackend() {
         }
         await new Promise((r) => setTimeout(r, 500));
       }
-      const message = !portRef.current
-        ? "Managed server started without reporting a port. Check the logs for details."
-        : "Server started but is not responding. Check the logs for details.";
+      const message = portRef.current
+        ? "Server started but is not responding. Check the logs for details."
+        : "Managed server started without reporting a port. Check the logs for details.";
       setBackendError(message);
     } catch (e) {
       const msg = String(e);
@@ -246,7 +276,9 @@ export function useTauriBackend() {
       await startManagedServer();
     } catch (e) {
       const msg = String(e);
-      if (msg.includes("NEEDS_ELEVATION")) return;
+      if (msg.includes("NEEDS_ELEVATION")) {
+        return;
+      }
       setBackendError(msg, "repair-error");
     }
   }
@@ -294,7 +326,9 @@ export function useTauriBackend() {
       // NEEDS_ELEVATION is not a real error — the Rust side also emits
       // install-needs-elevation which sets needs-elevation status.
       // Don't race with it by setting install-error here.
-      if (msg.includes("NEEDS_ELEVATION")) return;
+      if (msg.includes("NEEDS_ELEVATION")) {
+        return;
+      }
       setBackendError(msg, "install-error");
     }
   }
@@ -322,7 +356,10 @@ export function useTauriBackend() {
     setLogs([]);
     setElevationPackages([]);
     if (resume === "repair") {
-      setBackendError("Repair canceled before system packages were installed.", "repair-error");
+      setBackendError(
+        "Repair canceled before system packages were installed.",
+        "repair-error",
+      );
       return;
     }
     setBackendStatus("not-installed");
@@ -343,13 +380,18 @@ export function useTauriBackend() {
         await startInstall();
       }
     } catch (e) {
-      setBackendError(String(e), resume === "repair" ? "repair-error" : "install-error");
+      setBackendError(
+        String(e),
+        resume === "repair" ? "repair-error" : "install-error",
+      );
     }
   }, [elevationPackages]);
 
   // Initial check on mount (guarded against Strict Mode double-mount)
   useEffect(() => {
-    if (mountedRef.current) return;
+    if (mountedRef.current) {
+      return;
+    }
     mountedRef.current = true;
 
     if (!isTauri) {
@@ -361,7 +403,9 @@ export function useTauriBackend() {
 
   // Listen for Tauri events
   useEffect(() => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      return;
+    }
     const cleanup: (() => void)[] = [];
     let disposed = false;
 
@@ -391,7 +435,9 @@ export function useTauriBackend() {
 
       register<string>("install-step", (e) => {
         const stepName = e.payload;
-        if (seenStepsRef.current.has(stepName)) return; // deduplicate
+        if (seenStepsRef.current.has(stepName)) {
+          return; // deduplicate
+        }
         seenStepsRef.current.add(stepName);
         setCurrentStepIndex((prev) => prev + 1);
         setProgressDetail(null);
@@ -422,18 +468,29 @@ export function useTauriBackend() {
       });
 
       register<void>("repair-complete", () => {
-        if (statusRef.current !== "repairing") return;
+        if (statusRef.current !== "repairing") {
+          return;
+        }
         setProgressDetail("Repair complete");
       });
 
       register<string>("repair-failed", (e) => {
-        if (statusRef.current !== "repairing") return;
+        if (statusRef.current !== "repairing") {
+          return;
+        }
         setBackendError(e.payload, "repair-error");
       });
 
       register<number>("server-port", (e) => {
         portRef.current = e.payload;
-        setApiBase(e.payload);
+        setApiBase(e.payload, schemeRef.current);
+      });
+
+      register<string>("server-scheme", (e) => {
+        schemeRef.current = normalizeScheme(e.payload);
+        if (portRef.current) {
+          setApiBase(portRef.current, schemeRef.current);
+        }
       });
 
       register<void>("server-crashed", () => {
@@ -466,7 +523,9 @@ export function useTauriBackend() {
     };
     window.addEventListener("tauri-auth-failed", onAuthFailed);
     const authFailure = getTauriAuthFailure();
-    if (authFailure) setAuthFailure(authFailure);
+    if (authFailure) {
+      setAuthFailure(authFailure);
+    }
     cleanup.push(() =>
       window.removeEventListener("tauri-auth-failed", onAuthFailed),
     );
@@ -479,9 +538,18 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status, logs, error, isExternalServer,
-    currentStepIndex, progressDetail, elevationPackages,
-    startServer, stopServer, startInstall,
-    retry, retryInstall, approveElevation,
+    status,
+    logs,
+    error,
+    isExternalServer,
+    currentStepIndex,
+    progressDetail,
+    elevationPackages,
+    startServer,
+    stopServer,
+    startInstall,
+    retry,
+    retryInstall,
+    approveElevation,
   };
 }

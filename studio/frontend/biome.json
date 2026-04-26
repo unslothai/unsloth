@@ -119,6 +119,17 @@
       }
     },
     {
+      "include": [
+        "src/features/settings/api/server-settings.ts",
+        "src/features/settings/tabs/server-tab.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
       "include": ["src/components/assistant-ui/thread.tsx"],
       "linter": {
         "rules": {

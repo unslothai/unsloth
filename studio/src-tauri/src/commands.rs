@@ -135,9 +135,14 @@ pub fn stop_server(
 
 /// Check if a healthy Unsloth backend is running on the given port.
 /// Expects JSON response with status=="healthy" AND service=="Unsloth UI Backend".
+///
+/// When `scheme` is omitted the probe tries `http://` first and falls back to
+/// `https://` so SSL-enabled backends are detected without the caller having
+/// to know up front. The HTTPS probe accepts self-signed certs to support the
+/// `--ssl-self-signed` flow.
 #[tauri::command]
-pub async fn check_health(port: u16) -> Result<bool, String> {
-    match check_health_inner(port).await {
+pub async fn check_health(port: u16, scheme: Option<String>) -> Result<bool, String> {
+    match check_health_inner(port, scheme.as_deref()).await {
         Ok(healthy) => Ok(healthy),
         Err(e) => {
             // Network errors are not command errors — just means not healthy
@@ -147,26 +152,52 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
     }
 }
 
-async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
-    let url = format!("http://127.0.0.1:{}/api/health", port);
+async fn check_health_inner(
+    port: u16,
+    scheme: Option<&str>,
+) -> Result<bool, reqwest::Error> {
     let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
-    let resp = client.get(&url).send().await?;
-    let json: serde_json::Value = resp.json().await?;
 
-    let healthy = json
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "healthy")
-        .unwrap_or(false);
-    let correct_service = json
-        .get("service")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "Unsloth UI Backend")
-        .unwrap_or(false);
+    let schemes: &[&str] = match scheme {
+        Some("https") => &["https"],
+        Some("http") => &["http"],
+        _ => &["http", "https"],
+    };
 
-    Ok(healthy && correct_service)
+    let mut last_err: Option<reqwest::Error> = None;
+    for s in schemes {
+        let url = format!("{s}://127.0.0.1:{}/api/health", port);
+        match client.get(&url).send().await {
+            Ok(resp) => match resp.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    let healthy = json
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "healthy")
+                        .unwrap_or(false);
+                    let correct_service = json
+                        .get("service")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "Unsloth UI Backend")
+                        .unwrap_or(false);
+                    if healthy && correct_service {
+                        return Ok(true);
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    if let Some(e) = last_err {
+        Err(e)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Return buffered server logs.
@@ -433,12 +464,12 @@ async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: Shutdown
             break;
         }
 
-        let (port, has_child) = {
+        let (port, scheme, has_child) = {
             let proc = match state.lock() {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            (proc.port, proc.child.is_some())
+            (proc.port, proc.scheme.clone(), proc.child.is_some())
         };
 
         // Stop watching if the backend is gone
@@ -451,7 +482,7 @@ async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: Shutdown
             continue; // Port not yet known
         };
 
-        match check_health_inner(port).await {
+        match check_health_inner(port, scheme.as_deref()).await {
             Ok(true) => {
                 consecutive_failures = 0;
             }

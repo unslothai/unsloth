@@ -64,6 +64,7 @@ from routes import (
     inference_router,
     inference_studio_router,
     models_router,
+    settings_router,
     training_history_router,
     training_router,
 )
@@ -222,14 +223,20 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
+app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 
 
 # ============ Health and System Endpoints ============
 
 
 @app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
+async def health_check(request: Request):
+    """Health check endpoint.
+
+    Reports ``scheme`` and ``port`` so the frontend restart-polling flow
+    can race ``http://`` vs ``https://`` after a settings change without
+    needing the answer up front.
+    """
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
 
@@ -242,6 +249,12 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
+        "scheme": getattr(request.app.state, "scheme", "http"),
+        "port": getattr(request.app.state, "server_port", None),
+        # Random per-process token regenerated on every module import.
+        # The frontend uses a change in this value as proof that the
+        # server has actually been replaced (see run.py:INSTANCE_ID).
+        "instance_id": getattr(request.app.state, "instance_id", None),
     }
 
 
