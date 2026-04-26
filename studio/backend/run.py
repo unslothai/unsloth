@@ -161,6 +161,7 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
 
 # Resolved via the shared helper so custom installs land in the right place.
 from utils.paths.storage_roots import studio_root as _studio_root
+
 _PID_FILE = _studio_root() / "studio.pid"
 
 
