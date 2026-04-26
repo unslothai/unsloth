@@ -74,14 +74,32 @@ fi
 # Custom Studio roots are not supported in Tauri-mode installs because the
 # desktop app still resolves the legacy ~/.unsloth/studio path. Producing
 # a custom-root --tauri install would yield a desktop app that cannot
-# locate the freshly installed binary or auth secret. Fail fast with a
-# clear error so the caller can pick the right install path.
-if [ "$TAURI_MODE" = true ] && { [ -n "${UNSLOTH_STUDIO_HOME:-}" ] || [ -n "${STUDIO_HOME:-}" ]; }; then
-    echo "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." >&2
-    echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
-    echo "       Run install.sh without --tauri for custom-root shell installs," >&2
-    echo "       or unset the env var for default desktop installs." >&2
-    exit 1
+# locate the freshly installed binary or auth secret. Fail fast for real
+# custom roots; pass through when the override resolves to the legacy
+# default ($HOME/.unsloth/studio), since that is exactly what the desktop
+# app already uses.
+if [ "$TAURI_MODE" = true ]; then
+    _tauri_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+    if [ -n "$_tauri_override" ]; then
+        case "$_tauri_override" in
+            "~") _tauri_override="$HOME" ;;
+            "~/"*) _tauri_override="$HOME/${_tauri_override#'~/'}" ;;
+        esac
+        # Resolve symlinks/relative paths if the dir exists, else use as-is.
+        if [ -d "$_tauri_override" ]; then
+            _tauri_override_abs=$(cd -- "$_tauri_override" 2>/dev/null && pwd) \
+                || _tauri_override_abs="$_tauri_override"
+        else
+            _tauri_override_abs="$_tauri_override"
+        fi
+        if [ "$_tauri_override_abs" != "$HOME/.unsloth/studio" ]; then
+            echo "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." >&2
+            echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
+            echo "       Run install.sh without --tauri for custom-root shell installs," >&2
+            echo "       or unset the env var for default desktop installs." >&2
+            exit 1
+        fi
+    fi
 fi
 
 _is_verbose() {
@@ -698,6 +716,16 @@ LAUNCHER_EOF
     fi
 
     # ── Platform-specific shortcuts ──
+    # Env-override installs are workspace-scoped: skip persistent
+    # desktop / Start-Menu / dock launchers that would point at a path
+    # the user may later delete. The runtime launcher + studio.conf +
+    # icon written above are still essential for the env-mode shim and
+    # ARE kept regardless of mode.
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+        substep "wrote launcher at $_css_launcher (persistent shortcuts skipped in env-override mode)"
+        return 0
+    fi
+
     _css_created=0
 
     if [ "$_css_os" = "linux" ]; then
@@ -1805,10 +1833,10 @@ case ":$PATH:" in
 esac
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
-# Env-override installs are workspace-scoped, so skip persistent
-# desktop / menu launchers that would point at a path the user may
-# later delete. Default and HOME-redirect installs keep the shortcut.
-if [ "$TAURI_MODE" != true ] && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+# create_studio_shortcuts itself gates the persistent desktop/menu
+# launchers based on $_STUDIO_HOME_REDIRECT; the runtime launcher +
+# studio.conf + icon are always written so env-mode shims still resolve.
+if [ "$TAURI_MODE" != true ]; then
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 

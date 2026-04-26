@@ -72,13 +72,27 @@ function Install-UnslothStudio {
 
     # Custom Studio roots are not supported in Tauri-mode installs because
     # the desktop app still resolves the legacy %USERPROFILE%\.unsloth\studio
-    # path. Fail fast so the caller picks the right install path.
+    # path. Pass through when the override resolves to that legacy default
+    # (the desktop app already uses it); fail fast otherwise.
     if ($TauriMode -and $envOverride) {
-        Write-Host "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." -ForegroundColor Red
-        Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
-        Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
-        Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
-        exit 1
+        $_tauriOverride = $envOverride
+        if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
+            $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
+        }
+        try {
+            $_tauriOverride = [System.IO.Path]::GetFullPath($_tauriOverride)
+        } catch {}
+        $_legacyTauriRoot = Join-Path $env:USERPROFILE ".unsloth\studio"
+        try {
+            $_legacyTauriRoot = [System.IO.Path]::GetFullPath($_legacyTauriRoot)
+        } catch {}
+        if ($_tauriOverride -ne $_legacyTauriRoot) {
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." -ForegroundColor Red
+            Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
+            Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
+            Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
+            exit 1
+        }
     }
 
     $defaultProfile = $null
@@ -668,6 +682,15 @@ shell.Run cmd, 0, False
                     Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                     Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
                 }
+            }
+
+            # Env-override installs are workspace-scoped: skip persistent
+            # Desktop / Start Menu .lnk shortcuts that would point at a
+            # path the user may later delete. The launcher scripts and
+            # icon written above ARE kept regardless of mode.
+            if ($StudioRedirectMode -eq 'env') {
+                substep "wrote launcher at $launcherPs1 (persistent shortcuts skipped in env-override mode)"
+                return
             }
 
             $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
@@ -1290,12 +1313,10 @@ shell.Run cmd, 0, False
         return
     }
 
-    # Env-override installs are workspace-scoped, so skip persistent
-    # Desktop / Start Menu shortcuts that would point at a path the user
-    # may later delete. Default and profile-redirect installs keep them.
-    if ($StudioRedirectMode -ne 'env') {
-        New-StudioShortcuts -UnslothExePath $UnslothExe
-    }
+    # New-StudioShortcuts itself gates the persistent Desktop / Start
+    # Menu .lnk shortcuts based on $StudioRedirectMode; the launcher
+    # script and icon are always written so env-mode shims still resolve.
+    New-StudioShortcuts -UnslothExePath $UnslothExe
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.

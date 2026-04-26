@@ -164,6 +164,23 @@ from utils.paths.storage_roots import studio_root as _studio_root
 
 _PID_FILE = _studio_root() / "studio.pid"
 
+# When the backend is launched directly (bypassing unsloth_cli, which
+# normally re-exports these env vars), make sure unsloth-zoo's import-time
+# LLAMA_CPP_DEFAULT_DIR binding still picks up the custom-root build. Only
+# set when the resolved root is a real custom override -- legacy default
+# installs must NOT export, since the installers treat any non-empty
+# UNSLOTH_STUDIO_HOME as env-override mode.
+_LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+try:
+    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+except (OSError, ValueError):
+    _STUDIO_ROOT_RESOLVED = _studio_root()
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+
 
 def _write_pid_file():
     """Write the current process PID to the studio PID file."""
