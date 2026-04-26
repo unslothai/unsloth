@@ -151,11 +151,15 @@ fn spawn_script(
     // create a stray ~/.unsloth on the user's machine. We also pass the
     // resolved root to the subprocess via UNSLOTH_STUDIO_HOME below so
     // repair/update flows reach the same root as the running app even
-    // when the desktop process started without shell env inheritance.
-    let resolved_studio = crate::studio_root::resolve_studio_root();
-    let work_dir = resolved_studio
+    // when the desktop process started without shell env inheritance --
+    // BUT only when the resolution came from a real custom source (env
+    // var or marker file). Passing the legacy fallback would force the
+    // installers into env-override mode for a default install, regressing
+    // legacy DATA_DIR / _LOCAL_BIN paths.
+    let resolved = crate::studio_root::resolve_studio_root_with_source();
+    let work_dir = resolved
         .as_ref()
-        .and_then(|studio| studio.parent().map(|p| p.to_path_buf()))
+        .and_then(|(studio, _)| studio.parent().map(|p| p.to_path_buf()))
         .or_else(|| dirs::home_dir().map(|h| h.join(".unsloth")))
         .ok_or("Could not determine Studio install root")?;
     if !work_dir.exists() {
@@ -193,13 +197,18 @@ fn spawn_script(
 
     // Propagate the resolved Studio root to the installer subprocess so
     // repair / update flows hit the same root the running app uses, even
-    // when the desktop process started without inherited shell env.
-    // Only set when the env var isn't already in scope (don't override).
+    // when the desktop process started without inherited shell env. Only
+    // forward when the resolution source is Env or Marker -- the legacy
+    // Default fallback must NOT be passed, because the installers treat
+    // any non-empty UNSLOTH_STUDIO_HOME as env-override mode and would
+    // relocate DATA_DIR / _LOCAL_BIN away from their legacy locations.
     if std::env::var_os("UNSLOTH_STUDIO_HOME").is_none()
         && std::env::var_os("STUDIO_HOME").is_none()
     {
-        if let Some(studio) = resolved_studio.as_ref() {
-            cmd.env("UNSLOTH_STUDIO_HOME", studio);
+        if let Some((studio, source)) = resolved.as_ref() {
+            if *source != crate::studio_root::StudioRootSource::Default {
+                cmd.env("UNSLOTH_STUDIO_HOME", studio);
+            }
         }
     }
 

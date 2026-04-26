@@ -88,18 +88,41 @@ fn looks_like_installer_managed_studio_root(path: &std::path::Path) -> bool {
     shim.is_file()
 }
 
-/// Resolve the Studio install root using the priority chain. Returns
-/// `None` only when the home directory cannot be determined and no env
-/// override is set (extremely rare on supported platforms).
-pub fn resolve_studio_root() -> Option<PathBuf> {
+/// Where the resolved Studio root came from. Callers that need to
+/// distinguish a real custom override from the legacy fallback (e.g.,
+/// `install.rs` propagating UNSLOTH_STUDIO_HOME to a subprocess) should
+/// use `resolve_studio_root_with_source()` instead of `resolve_studio_root()`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StudioRootSource {
+    /// Resolved from `UNSLOTH_STUDIO_HOME` / `STUDIO_HOME` env var.
+    Env,
+    /// Resolved from the installer-written `~/.unsloth/studio-home` marker.
+    Marker,
+    /// Legacy fallback: `~/.unsloth/studio`.
+    Default,
+}
+
+/// Resolve the Studio install root and report which source produced it.
+/// Returns `None` only when the home directory cannot be determined and
+/// no env override is set.
+pub fn resolve_studio_root_with_source() -> Option<(PathBuf, StudioRootSource)> {
     if let Some(p) = studio_root_from_env() {
-        return Some(p);
+        return Some((p, StudioRootSource::Env));
     }
     if let Some(p) = studio_root_from_marker() {
-        return Some(p);
+        return Some((p, StudioRootSource::Marker));
     }
     let home = dirs::home_dir()?;
-    Some(home.join(".unsloth").join("studio"))
+    Some((
+        home.join(".unsloth").join("studio"),
+        StudioRootSource::Default,
+    ))
+}
+
+/// Convenience wrapper that drops the source. For callers that don't
+/// need to distinguish the legacy fallback from a real custom root.
+pub fn resolve_studio_root() -> Option<PathBuf> {
+    resolve_studio_root_with_source().map(|(p, _)| p)
 }
 
 #[cfg(test)]
@@ -190,5 +213,17 @@ mod tests {
     fn marker_validation_rejects_missing_path() {
         let p = Path::new("/nonexistent/studio-root-xyz-1234567890");
         assert!(!looks_like_installer_managed_studio_root(p));
+    }
+
+    #[test]
+    fn source_enum_default_when_no_env_or_marker() {
+        // Note: this test only verifies the StudioRootSource type compiles
+        // and the enum variants exist; we cannot reliably test the env/marker
+        // path without mutating process-wide state in a non-thread-safe way.
+        let _e = StudioRootSource::Env;
+        let _m = StudioRootSource::Marker;
+        let _d = StudioRootSource::Default;
+        assert_ne!(StudioRootSource::Default, StudioRootSource::Env);
+        assert_ne!(StudioRootSource::Default, StudioRootSource::Marker);
     }
 }

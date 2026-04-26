@@ -1265,20 +1265,46 @@ shell.Run cmd, 0, False
     }
     Refresh-SessionPath  # sync current session with registry
 
-    # Persist the env-mode marker file in BOTH normal and Tauri-mode
-    # installs, so the desktop app launched from Start Menu / Desktop
-    # (no shell env inheritance) can still resolve the custom root.
+    # Persist (env-mode) or clear (default / profile-redirect) the marker
+    # file in BOTH normal and Tauri-mode installs. Writing it lets the
+    # desktop app launched from Start Menu / Desktop (no shell env
+    # inheritance) resolve the custom root; clearing it on a subsequent
+    # default install prevents a stale marker from hijacking the legacy
+    # default path.
+    #
+    # When the override wins over a redirected USERPROFILE (env mode),
+    # prefer the OS-reported real profile for the marker so a later
+    # desktop launch from the user's normal session still finds it.
+    $_markerProfile = if ($StudioRedirectMode -eq 'env' `
+        -and $defaultProfile `
+        -and -not [string]::IsNullOrWhiteSpace($defaultProfile)) {
+        $defaultProfile
+    } else {
+        $env:USERPROFILE
+    }
+    $_markerDir = Join-Path $_markerProfile ".unsloth"
+    $_markerPath = Join-Path $_markerDir "studio-home"
     if ($StudioRedirectMode -eq 'env') {
         try {
-            $_markerDir = Join-Path $env:USERPROFILE ".unsloth"
             if (-not (Test-Path $_markerDir)) {
                 New-Item -ItemType Directory -Path $_markerDir -Force | Out-Null
             }
-            Set-Content -LiteralPath (Join-Path $_markerDir "studio-home") `
+            Set-Content -LiteralPath $_markerPath `
                 -Value $StudioHome -NoNewline -ErrorAction Stop
         } catch {
             # Non-fatal: env vars still work for shells that inherit them.
         }
+    } else {
+        # Default / profile-redirect installs: clear any stale env-mode
+        # marker from a prior custom-root install. Try both candidate
+        # profiles so a marker in either location is removed.
+        try {
+            Remove-Item -LiteralPath $_markerPath -Force -ErrorAction SilentlyContinue
+            $_altPath = Join-Path (Join-Path $env:USERPROFILE ".unsloth") "studio-home"
+            if ($_altPath -ne $_markerPath) {
+                Remove-Item -LiteralPath $_altPath -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
     }
 
     # ── Tauri mode: done, skip shortcuts and auto-launch ──

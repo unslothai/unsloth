@@ -1778,12 +1778,36 @@ case ":$PATH:" in
         ;;
 esac
 
-# Persist the env-mode marker file in BOTH normal and Tauri-mode installs,
-# so the desktop app launched from Finder/Start Menu/Desktop (no shell env
-# inheritance) can still resolve the custom Studio root.
+# Persist (env-mode) or clear (default/home-redirect) the marker file in
+# BOTH normal and Tauri-mode installs. Writing it lets the desktop app
+# launched from Finder/Start Menu/Desktop (no shell env inheritance)
+# resolve the custom Studio root; clearing it on a subsequent default
+# install prevents a stale marker from hijacking the legacy default path.
+#
+# When the override wins over a redirected $HOME (env mode), prefer the
+# real password-database home for the marker so a later desktop launch
+# from the user's normal session still finds it. Falls back to $HOME.
+_marker_home="$HOME"
 if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-    mkdir -p "$HOME/.unsloth" 2>/dev/null || true
-    printf '%s\n' "$STUDIO_HOME" > "$HOME/.unsloth/studio-home" 2>/dev/null || true
+    if command -v getent >/dev/null 2>&1; then
+        _real_home=$(getent passwd "${USER:-$(whoami)}" 2>/dev/null | cut -d: -f6)
+    elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
+        _real_home=$(dscl . -read "/Users/${USER:-$(whoami)}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    else
+        _real_home=""
+    fi
+    [ -n "$_real_home" ] && _marker_home="$_real_home"
+fi
+_marker_file="$_marker_home/.unsloth/studio-home"
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+    mkdir -p "$_marker_home/.unsloth" 2>/dev/null || true
+    printf '%s\n' "$STUDIO_HOME" > "$_marker_file" 2>/dev/null || true
+else
+    # Default / HOME-redirect installs: clear any stale env-mode marker
+    # from a prior custom-root install so the desktop app rediscovers
+    # the legacy default. Try both candidate homes for safety.
+    rm -f "$HOME/.unsloth/studio-home" 2>/dev/null || true
+    [ "$_marker_home" != "$HOME" ] && rm -f "$_marker_file" 2>/dev/null || true
 fi
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
