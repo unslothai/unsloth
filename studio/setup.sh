@@ -410,7 +410,7 @@ case "$_studio_override" in
 esac
 if [ -n "$_studio_override" ]; then
     mkdir -p -- "$_studio_override"
-    STUDIO_HOME="$(cd -- "$_studio_override" && pwd)"
+    STUDIO_HOME="$(cd -- "$_studio_override" && pwd)" || exit 1
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi

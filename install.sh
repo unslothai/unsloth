@@ -184,7 +184,7 @@ _resolve_studio_destinations() {
     if [ -n "$_override" ]; then
         mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
         [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
-        STUDIO_HOME="$(cd -- "$_override" && pwd)"
+        STUDIO_HOME="$(cd -- "$_override" && pwd)" || exit 1
         DATA_DIR="$STUDIO_HOME/share"
         _LOCAL_BIN="$STUDIO_HOME/bin"
         _STUDIO_HOME_REDIRECT=env
