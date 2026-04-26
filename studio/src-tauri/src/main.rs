@@ -5,6 +5,7 @@ mod desktop_auth;
 mod install;
 mod preflight;
 mod process;
+mod studio_root;
 mod update;
 mod windows_job;
 
@@ -29,9 +30,10 @@ fn setup_logging() {
         simplelog::ColorChoice::Auto,
     ));
 
-    // Try to set up file logging to ~/.unsloth/studio/tauri.log
-    if let Some(home) = dirs::home_dir() {
-        let log_dir = home.join(".unsloth").join("studio");
+    // File logging to <studio_root>/tauri.log. Honors UNSLOTH_STUDIO_HOME /
+    // STUDIO_HOME (with ~ expansion) and the installer-written marker file
+    // before falling back to ~/.unsloth/studio.
+    if let Some(log_dir) = studio_root::resolve_studio_root() {
         if fs::create_dir_all(&log_dir).is_ok() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");

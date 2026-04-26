@@ -433,6 +433,21 @@ function Install-UnslothStudio {
                 }
                 $_sq = $StudioHome -replace "'", "''"
                 $_llama = $_llamaPath -replace "'", "''"
+
+                # Marker file so the Tauri desktop app (launched from
+                # Start Menu / Desktop, where the launching shell env vars
+                # aren't inherited) can still resolve the custom root.
+                try {
+                    $_markerDir = Join-Path $env:USERPROFILE ".unsloth"
+                    if (-not (Test-Path $_markerDir)) {
+                        New-Item -ItemType Directory -Path $_markerDir -Force | Out-Null
+                    }
+                    Set-Content -LiteralPath (Join-Path $_markerDir "studio-home") `
+                        -Value $StudioHome -NoNewline -ErrorAction Stop
+                } catch {
+                    # Non-fatal: env var still works for shells that inherit it.
+                }
+
                 "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n`$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n"
             } else { "" }
 
@@ -1280,8 +1295,19 @@ shell.Run cmd, 0, False
         & $UnslothExe studio -H 0.0.0.0 -p 8888
     } else {
         step "launch" "manual commands:"
-        substep "& `"$VenvDir\Scripts\Activate.ps1`""
-        substep "unsloth studio -H 0.0.0.0 -p 8888"
+        if ($StudioRedirectMode -eq 'env') {
+            # Env-override mode skips persistent registry PATH update, so
+            # `unsloth` may not resolve in a fresh shell. Print the
+            # absolute shim path so callers can launch directly.
+            $_shim = Join-Path $StudioHome "bin\unsloth.exe"
+            substep "& `"$_shim`" studio -H 0.0.0.0 -p 8888"
+            substep "or activate env first:"
+            substep "& `"$VenvDir\Scripts\Activate.ps1`""
+            substep "unsloth studio -H 0.0.0.0 -p 8888"
+        } else {
+            substep "& `"$VenvDir\Scripts\Activate.ps1`""
+            substep "unsloth studio -H 0.0.0.0 -p 8888"
+        }
         Write-Host ""
     }
 }

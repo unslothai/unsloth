@@ -625,6 +625,12 @@ LAUNCHER_EOF
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
             printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
             printf '%s\n' "export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
+
+            # Marker file so the Tauri desktop app (launched from
+            # Finder/Start Menu/Desktop, where the launching shell's env
+            # vars are not inherited) can still resolve the custom root.
+            mkdir -p "$HOME/.unsloth" 2>/dev/null || true
+            printf '%s\n' "$STUDIO_HOME" > "$HOME/.unsloth/studio-home" 2>/dev/null || true
         fi
     } > "$_css_data_dir/studio.conf"
 
@@ -1822,9 +1828,20 @@ if [ -t 1 ]; then
     exit "$_LAUNCH_EXIT"
 else
     step "launch" "manual commands:"
-    substep "unsloth studio -H 0.0.0.0 -p 8888"
-    substep "or activate env first:"
-    substep "source ${VENV_DIR}/bin/activate"
-    substep "unsloth studio -H 0.0.0.0 -p 8888"
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+        # In env-override mode we deliberately skip the persistent shell
+        # rc PATH append, so a fresh shell will not have `unsloth` on PATH
+        # unless the caller re-exports UNSLOTH_STUDIO_HOME. Print the
+        # absolute shim path and the activate-then-run alternative.
+        substep "${_LOCAL_BIN}/unsloth studio -H 0.0.0.0 -p 8888"
+        substep "or activate env first:"
+        substep "source ${VENV_DIR}/bin/activate"
+        substep "unsloth studio -H 0.0.0.0 -p 8888"
+    else
+        substep "unsloth studio -H 0.0.0.0 -p 8888"
+        substep "or activate env first:"
+        substep "source ${VENV_DIR}/bin/activate"
+        substep "unsloth studio -H 0.0.0.0 -p 8888"
+    fi
     echo ""
 fi

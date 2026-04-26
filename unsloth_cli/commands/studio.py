@@ -66,7 +66,10 @@ STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 # unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR binding picks up the
 # correct build dir for GGUF export.
 if _STUDIO_HOME_IS_CUSTOM:
-    os.environ.setdefault("UNSLOTH_STUDIO_HOME", str(STUDIO_HOME))
+    # Use truthy-check rather than setdefault so a blank env var (e.g.
+    # UNSLOTH_STUDIO_HOME=) doesn't suppress the inferred custom root.
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     # Mirror setup.sh / setup.ps1's legacy-equality check: when an env
     # override happens to equal the legacy default, llama.cpp still lives
     # at ~/.unsloth/llama.cpp (one shared build across legacy installs).
@@ -75,7 +78,8 @@ if _STUDIO_HOME_IS_CUSTOM:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    os.environ.setdefault("UNSLOTH_LLAMA_CPP_PATH", str(_llama_dir))
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"

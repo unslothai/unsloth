@@ -69,19 +69,11 @@ fn home_dir() -> Result<PathBuf, String> {
     dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())
 }
 
-fn studio_root_from_env() -> Option<PathBuf> {
-    for var in ["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"] {
-        if let Some(value) = std::env::var_os(var) {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
-    }
-    None
-}
-
 fn desktop_secret_path() -> Result<PathBuf, String> {
-    if let Some(studio) = studio_root_from_env() {
+    // Use the shared studio_root resolver so env vars (with ~ expansion)
+    // and the installer-written marker file are honored before falling
+    // back to ~/.unsloth/studio.
+    if let Some(studio) = crate::studio_root::resolve_studio_root() {
         return Ok(auth_secret_path_in_studio(&studio, ".desktop_secret"));
     }
     Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))

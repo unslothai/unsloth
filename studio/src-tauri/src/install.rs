@@ -146,9 +146,13 @@ fn spawn_script(
     install.intentional_stop = false;
     install.needed_packages.clear();
 
-    // Scripts create ~/.unsloth/studio/ themselves, but need a writable cwd.
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let work_dir = home.join(".unsloth");
+    // Scripts create the Studio root themselves, but need a writable cwd.
+    // Resolve via the shared helper so a custom-root install does not
+    // create a stray ~/.unsloth on the user's machine.
+    let work_dir = crate::studio_root::resolve_studio_root()
+        .and_then(|studio| studio.parent().map(|p| p.to_path_buf()))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".unsloth")))
+        .ok_or("Could not determine Studio install root")?;
     if !work_dir.exists() {
         std::fs::create_dir_all(&work_dir)
             .map_err(|e| format!("Failed to create {}: {}", work_dir.display(), e))?;
