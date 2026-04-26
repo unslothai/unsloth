@@ -925,8 +925,15 @@ shell.Run cmd, 0, False
             substep "legacy environment failed validation -- creating fresh environment" "Yellow"
             Remove-Item -Recurse -Force $OldVenv -ErrorAction SilentlyContinue
         }
-    } elseif (Test-Path (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe")) {
-        # CWD-relative venv from old install.ps1 -- migrate to absolute path
+    } elseif (
+        $StudioRedirectMode -ne 'env' `
+        -and (Test-Path (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
+    ) {
+        # CWD-relative venv from old install.ps1 -- migrate to absolute path.
+        # Skip in env-override mode: workspace-scoped installs must not
+        # move the user's pre-existing default-install venv away from
+        # %USERPROFILE%, which would break their legacy default install
+        # and contaminate the workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Studio environment, migrating to $VenvDir..."
         Move-Item -Path $CwdVenv -Destination $VenvDir -Force
