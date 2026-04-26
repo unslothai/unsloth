@@ -583,7 +583,10 @@ LAUNCHER_EOF
     #  2) \, &, |   for sed replacement-string + chosen delimiter
     _sq_escaped=$(printf '%s' "$DATA_DIR" | sed "s/'/'\\\\''/g")
     _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\&|]/\\&/g')
-    sed -i.bak "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" && rm -f "${_css_launcher}.bak"
+    # Portable in-place edit: redirect to tempfile, then mv. Avoids the
+    # GNU-vs-BSD-vs-BusyBox `sed -i` divergence (per Gemini review feedback).
+    sed "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" > "$_css_launcher.tmp" \
+        && mv "$_css_launcher.tmp" "$_css_launcher"
 
     chmod +x "$_css_launcher"
 
