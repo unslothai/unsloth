@@ -71,6 +71,19 @@ if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
 fi
 
+# Custom Studio roots are not supported in Tauri-mode installs because the
+# desktop app still resolves the legacy ~/.unsloth/studio path. Producing
+# a custom-root --tauri install would yield a desktop app that cannot
+# locate the freshly installed binary or auth secret. Fail fast with a
+# clear error so the caller can pick the right install path.
+if [ "$TAURI_MODE" = true ] && { [ -n "${UNSLOTH_STUDIO_HOME:-}" ] || [ -n "${STUDIO_HOME:-}" ]; }; then
+    echo "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." >&2
+    echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
+    echo "       Run install.sh without --tauri for custom-root shell installs," >&2
+    echo "       or unset the env var for default desktop installs." >&2
+    exit 1
+fi
+
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
@@ -585,16 +598,29 @@ else
 fi
 LAUNCHER_EOF
 
-    # Substitute @@DATA_DIR@@ with the resolved DATA_DIR. Two-stage escape so
-    # path metacharacters survive sed and shell single-quoted embedding:
-    #  1) ' -> '\''  for safe single-quote shell embedding (DATA_DIR='@@@@')
-    #  2) \, &, |   for sed replacement-string + chosen delimiter
-    _sq_escaped=$(printf '%s' "$DATA_DIR" | sed "s/'/'\\\\''/g")
-    _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\&|]/\\&/g')
+    # Substitute @@DATA_DIR@@. Default and HOME-redirect installs keep the
+    # legacy runtime form (DATA_DIR="$HOME/.local/share/unsloth") so a later
+    # shell with a different $HOME still resolves DATA_DIR correctly --
+    # byte-identical to pre-PR. Only env-mode installs bake the resolved
+    # absolute path because their root is fixed at install time.
     # Portable in-place edit: redirect to tempfile, then mv. Avoids the
     # GNU-vs-BSD-vs-BusyBox `sed -i` divergence (per Gemini review feedback).
-    sed "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" > "$_css_launcher.tmp" \
-        && mv "$_css_launcher.tmp" "$_css_launcher"
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+        # Two-stage escape so path metacharacters survive sed and shell
+        # single-quoted embedding:
+        #  1) ' -> '\''  for safe single-quote shell embedding
+        #  2) \, &, |   for sed replacement-string + chosen delimiter
+        _sq_escaped=$(printf '%s' "$DATA_DIR" | sed "s/'/'\\\\''/g")
+        _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\&|]/\\&/g')
+        sed "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" > "$_css_launcher.tmp" \
+            && mv "$_css_launcher.tmp" "$_css_launcher"
+    else
+        # Replace the placeholder line entirely with the legacy literal
+        # so the launcher reads $HOME at runtime, not install time.
+        sed "s|DATA_DIR='@@DATA_DIR@@'|DATA_DIR=\"\$HOME/.local/share/unsloth\"|" \
+            "$_css_launcher" > "$_css_launcher.tmp" \
+            && mv "$_css_launcher.tmp" "$_css_launcher"
+    fi
 
     chmod +x "$_css_launcher"
 
@@ -1779,7 +1805,10 @@ case ":$PATH:" in
 esac
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
-if [ "$TAURI_MODE" != true ]; then
+# Env-override installs are workspace-scoped, so skip persistent
+# desktop / menu launchers that would point at a path the user may
+# later delete. Default and HOME-redirect installs keep the shortcut.
+if [ "$TAURI_MODE" != true ] && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 

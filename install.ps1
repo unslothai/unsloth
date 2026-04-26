@@ -69,6 +69,18 @@ function Install-UnslothStudio {
 
     # Resolve install destinations. Priority: env vars, then USERPROFILE-redirect, then default.
     $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
+
+    # Custom Studio roots are not supported in Tauri-mode installs because
+    # the desktop app still resolves the legacy %USERPROFILE%\.unsloth\studio
+    # path. Fail fast so the caller picks the right install path.
+    if ($TauriMode -and $envOverride) {
+        Write-Host "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." -ForegroundColor Red
+        Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
+        Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
+        Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
+        exit 1
+    }
+
     $defaultProfile = $null
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
 
@@ -1265,13 +1277,25 @@ shell.Run cmd, 0, False
     }
     Refresh-SessionPath  # sync current session with registry
 
+    # Re-prepend the env-override shim AFTER Refresh-SessionPath, otherwise
+    # a previously-installed legacy User PATH entry would win precedence
+    # (Refresh rebuilds Path as Machine > User > current $env:Path).
+    if ($StudioRedirectMode -eq 'env' -and (Test-Path $ShimExe)) {
+        $env:Path = "$ShimDir;$env:Path"
+    }
+
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
         return
     }
 
-    New-StudioShortcuts -UnslothExePath $UnslothExe
+    # Env-override installs are workspace-scoped, so skip persistent
+    # Desktop / Start Menu shortcuts that would point at a path the user
+    # may later delete. Default and profile-redirect installs keep them.
+    if ($StudioRedirectMode -ne 'env') {
+        New-StudioShortcuts -UnslothExePath $UnslothExe
+    }
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.
