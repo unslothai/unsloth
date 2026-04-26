@@ -25,23 +25,31 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 # install.sh / install.ps1. Falls back to sys.prefix inference (so direct
 # invocations of <STUDIO_HOME>/bin/unsloth still resolve correctly even after
 # the installer's env var has expired), then to the legacy ~/.unsloth/studio.
-def _resolve_studio_home() -> Path:
+# Returns (path, is_custom): is_custom=True only when the resolved root is a
+# real override; we use this to decide whether to re-export the env var to
+# child processes.
+def _resolve_studio_home() -> tuple[Path, bool]:
     override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     if override:
-        return Path(override).expanduser().resolve()
+        return Path(override).expanduser().resolve(), True
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
-            return prefix.parent
+            inferred = prefix.parent
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+            return inferred, inferred != legacy
     except (OSError, ValueError):
         pass
-    return Path.home() / ".unsloth" / "studio"
+    return Path.home() / ".unsloth" / "studio", False
 
 
-STUDIO_HOME = _resolve_studio_home()
-# Re-export so child processes (setup script, backend run.py) inherit the
-# resolved root even when the installer env var has expired in this shell.
-os.environ.setdefault("UNSLOTH_STUDIO_HOME", str(STUDIO_HOME))
+STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
+# Re-export only for actual custom roots so child processes (setup script,
+# backend run.py) inherit it. Default installs MUST NOT re-export the env
+# var, because setup.sh / setup.ps1 treat its presence as "env-override
+# mode" and would relocate llama.cpp / DATA_DIR away from legacy paths.
+if _STUDIO_HOME_IS_CUSTOM:
+    os.environ.setdefault("UNSLOTH_STUDIO_HOME", str(STUDIO_HOME))
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"

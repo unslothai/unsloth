@@ -1148,20 +1148,26 @@ shell.Run cmd, 0, False
     # Use 'studio setup' (not 'studio update') because 'update' pops
     # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
     # and bypass the fast-path version check from PR #4667.
-    # Pass the resolved StudioHome through so setup.ps1 / unsloth_cli see
-    # the same install root install.ps1 picked. Restored after the call.
+    # Only propagate UNSLOTH_STUDIO_HOME for actual env-override installs;
+    # otherwise default-install setups would mistakenly take the env path
+    # (placing llama.cpp under $StudioHome\llama.cpp instead of legacy).
     $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
-    $env:UNSLOTH_STUDIO_HOME = $StudioHome
+    $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
+    if ($StudioRedirectMode -eq 'env') {
+        $env:UNSLOTH_STUDIO_HOME = $StudioHome
+    } else {
+        Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+    }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
     } finally {
-        if ($null -eq $previousUnslothStudioHome) {
-            Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
-        } else {
+        if ($hadPreviousUnslothStudioHome) {
             $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
+        } else {
+            Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
     }
     if ($setupExit -ne 0) {

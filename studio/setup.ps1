@@ -1816,12 +1816,15 @@ step "transformers" "5.5.0 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-# In env-override mode, nest llama.cpp under $StudioHome so custom installs
-# are self-contained. Default installs keep the legacy ~/.unsloth/llama.cpp.
-if ($env:UNSLOTH_STUDIO_HOME -or $env:STUDIO_HOME) {
-    $UnslothHome = $StudioHome
-} else {
+# Only nest llama.cpp under $StudioHome when the resolved Studio root is
+# a real override (not the legacy default). Compare resolved paths so a
+# stale UNSLOTH_STUDIO_HOME pointing at the legacy default does not
+# accidentally relocate llama.cpp.
+$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+if ($StudioHome -eq $LegacyStudioHome) {
     $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+} else {
+    $UnslothHome = $StudioHome
 }
 if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"

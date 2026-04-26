@@ -569,12 +569,15 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-# In env-override mode, nest llama.cpp under $STUDIO_HOME so custom installs
-# are self-contained. Default installs keep the legacy ~/.unsloth/llama.cpp.
-if [ -n "${UNSLOTH_STUDIO_HOME:-}" ] || [ -n "${STUDIO_HOME:-}" ]; then
-    UNSLOTH_HOME="$STUDIO_HOME"
-else
+# Only nest llama.cpp under $STUDIO_HOME when the resolved Studio root is a
+# real override (not the legacy default). Comparing resolved paths instead
+# of env-var presence avoids regressing default installs that incidentally
+# inherit UNSLOTH_STUDIO_HOME from a parent process or the CLI.
+_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+if [ "$STUDIO_HOME" = "$_LEGACY_STUDIO_HOME" ]; then
     UNSLOTH_HOME="$HOME/.unsloth"
+else
+    UNSLOTH_HOME="$STUDIO_HOME"
 fi
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"

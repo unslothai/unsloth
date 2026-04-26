@@ -1693,8 +1693,12 @@ _SKIP_FRONTEND=0
 if [ "$TAURI_MODE" = true ]; then
     _SKIP_FRONTEND=1
 fi
+_STUDIO_ENV_FOR_SETUP=""
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+    _STUDIO_ENV_FOR_SETUP="UNSLOTH_STUDIO_HOME=$STUDIO_HOME"
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    UNSLOTH_STUDIO_HOME="$STUDIO_HOME" \
+    env $_STUDIO_ENV_FOR_SETUP \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
@@ -1708,7 +1712,7 @@ else
     # the same session) does not silently flip a normal install onto the
     # local-dev path in setup.sh and install_python_stack.py. Mirrors the
     # reset already done in install.ps1 for PowerShell.
-    UNSLOTH_STUDIO_HOME="$STUDIO_HOME" \
+    env $_STUDIO_ENV_FOR_SETUP \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \

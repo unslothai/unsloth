@@ -491,22 +491,28 @@ class LlamaCppBackend:
                 if win_bin.is_file():
                     return str(win_bin)
 
-        # 2–4. ~/.unsloth/llama.cpp (primary — setup.sh / setup.ps1 build here)
-        unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
-        # Root dir (make builds copy binaries here)
-        home_root = unsloth_home / binary_name
-        if home_root.is_file():
-            return str(home_root)
-        # build/bin/ (cmake builds on Linux)
-        home_linux = unsloth_home / "build" / "bin" / binary_name
-        if home_linux.is_file():
-            return str(home_linux)
-
-        # 3. Windows MSVC build has Release subdir
-        if sys.platform == "win32":
-            home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
-            if home_win.is_file():
-                return str(home_win)
+        # 2-4. Search both the resolved Studio root (custom installs) AND
+        # the legacy ~/.unsloth/llama.cpp. setup.sh / setup.ps1 install
+        # under $STUDIO_HOME/llama.cpp when env-override is active and
+        # under ~/.unsloth/llama.cpp for default installs.
+        try:
+            from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+            search_roots = [_sr() / "llama.cpp", Path.home() / ".unsloth" / "llama.cpp"]
+        except ImportError:
+            search_roots = [Path.home() / ".unsloth" / "llama.cpp"]
+        # De-dupe while preserving order (in case studio_root() == legacy).
+        _seen: set[str] = set()
+        for unsloth_home in [r for r in search_roots if str(r) not in _seen and not _seen.add(str(r))]:
+            home_root = unsloth_home / binary_name
+            if home_root.is_file():
+                return str(home_root)
+            home_linux = unsloth_home / "build" / "bin" / binary_name
+            if home_linux.is_file():
+                return str(home_linux)
+            if sys.platform == "win32":
+                home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
+                if home_win.is_file():
+                    return str(home_win)
 
         # 5–6. Legacy: in-tree build (older setup.sh / setup.ps1 versions)
         project_root = Path(__file__).resolve().parents[4]
@@ -2065,7 +2071,14 @@ class LlamaCppBackend:
             #                      (binary must be *under* one of these)
             install_roots: list[Path] = []
 
-            # Primary install dir (setup.sh / prebuilt installer)
+            # Resolved Studio root (covers env-override custom installs).
+            try:
+                from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+                install_roots.append(_sr() / "llama.cpp")
+            except ImportError:
+                pass
+
+            # Primary install dir (setup.sh / prebuilt installer, default mode)
             install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
             # Legacy in-tree build dirs (older setup.sh versions)
