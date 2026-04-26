@@ -7,7 +7,7 @@
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 # Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 #
-# Env vars (priority: HOME-redirect > UNSLOTH_STUDIO_HOME > STUDIO_HOME > default):
+# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
 #   UNSLOTH_STUDIO_HOME / STUDIO_HOME=/abs/path -> install under that path
 #   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append).
 # Default ($HOME/.unsloth/studio) is preserved when no env var is set.
@@ -169,9 +169,20 @@ tauri_log() {
 
 PYTHON_VERSION=""  # resolved after platform detection
 
-# Resolve install destinations. Priority: HOME-redirect, then env vars, then default.
+# Resolve install destinations. Priority: env vars, then HOME-redirect, then default.
 # Best-effort HOME-redirect detection: skipped on hosts without getent/dscl.
 _resolve_studio_destinations() {
+    _override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+    if [ -n "$_override" ]; then
+        mkdir -p "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
+        [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
+        STUDIO_HOME="$(cd "$_override" && pwd)"
+        DATA_DIR="$STUDIO_HOME/share"
+        _LOCAL_BIN="$STUDIO_HOME/bin"
+        _STUDIO_HOME_REDIRECT=env
+        substep "custom STUDIO_HOME=$STUDIO_HOME"
+        return 0
+    fi
     _default_home=""
     if command -v getent >/dev/null 2>&1; then
         _default_home=$(getent passwd "${USER:-$(whoami)}" 2>/dev/null | cut -d: -f6)
@@ -184,17 +195,6 @@ _resolve_studio_destinations() {
         _LOCAL_BIN="$HOME/.local/bin"
         _STUDIO_HOME_REDIRECT=home
         substep "HOME redirected ($HOME); install follows \$HOME"
-        return 0
-    fi
-    _override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
-    if [ -n "$_override" ]; then
-        mkdir -p "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
-        [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
-        STUDIO_HOME="$(cd "$_override" && pwd)"
-        DATA_DIR="$STUDIO_HOME/share"
-        _LOCAL_BIN="$STUDIO_HOME/bin"
-        _STUDIO_HOME_REDIRECT=env
-        substep "custom STUDIO_HOME=$STUDIO_HOME"
         return 0
     fi
     STUDIO_HOME="$HOME/.unsloth/studio"

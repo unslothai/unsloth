@@ -4,7 +4,7 @@
 # NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
 #
-# Env vars (priority: USERPROFILE-redirect > UNSLOTH_STUDIO_HOME > STUDIO_HOME > default):
+# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > USERPROFILE-redirect > default):
 #   UNSLOTH_STUDIO_HOME / STUDIO_HOME = path -> install under that path
 #   (DataDir nests inside; user PATH not modified persistently).
 # Default ($USERPROFILE\.unsloth\studio) is preserved when no env var is set.
@@ -67,16 +67,12 @@ function Install-UnslothStudio {
 
     $PythonVersion = "3.13"
 
-    # Resolve install destinations. Priority: USERPROFILE-redirect, then env vars, then default.
+    # Resolve install destinations. Priority: env vars, then USERPROFILE-redirect, then default.
+    $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
     $defaultProfile = $null
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
-    $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
 
-    if ($defaultProfile -and $env:USERPROFILE -and ($env:USERPROFILE -ne $defaultProfile)) {
-        $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-        $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
-        $StudioRedirectMode = 'profile'
-    } elseif ($envOverride) {
+    if ($envOverride) {
         try {
             New-Item -ItemType Directory -Path $envOverride -Force -ErrorAction Stop | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
@@ -94,6 +90,10 @@ function Install-UnslothStudio {
         }
         $StudioDataDir = Join-Path $StudioHome "share"
         $StudioRedirectMode = 'env'
+    } elseif ($defaultProfile -and $env:USERPROFILE -and ($env:USERPROFILE -ne $defaultProfile)) {
+        $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+        $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $StudioRedirectMode = 'profile'
     } else {
         $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
         $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
