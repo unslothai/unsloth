@@ -2085,10 +2085,24 @@ class LlamaCppBackend:
             install_roots: list[Path] = []
 
             # Resolved Studio root (covers env-override custom installs).
+            # Mirror _find_llama_server_binary: only treat $STUDIO_HOME/llama.cpp
+            # as Studio-owned when STUDIO_HOME is a real env override, not the
+            # legacy default. In default-mode installs llama.cpp is a sibling
+            # of studio (~/.unsloth/llama.cpp), and ~/.unsloth/studio/llama.cpp
+            # may be owned by a different tool or a stale partial install.
             try:
                 from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
 
-                install_roots.append(_sr() / "llama.cpp")
+                _resolved_sr = _sr()
+                _legacy_studio = Path.home() / ".unsloth" / "studio"
+                try:
+                    _is_custom_root = (
+                        _resolved_sr.resolve() != _legacy_studio.resolve()
+                    )
+                except (OSError, ValueError):
+                    _is_custom_root = _resolved_sr != _legacy_studio
+                if _is_custom_root:
+                    install_roots.append(_resolved_sr / "llama.cpp")
             except ImportError:
                 pass
 
