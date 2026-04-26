@@ -111,9 +111,22 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
 }
 
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
+    // Honor UNSLOTH_STUDIO_HOME / STUDIO_HOME (in that priority order) so
+    // Tauri custom-root installs can locate the venv. Falls back to the
+    // legacy ~/.unsloth/studio when neither is set.
+    for var in ["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"] {
+        if let Some(value) = std::env::var_os(var) {
+            if !value.is_empty() {
+                let studio = std::path::PathBuf::from(value);
+                if let Some(bin) = find_unsloth_binary_in_studio_dir(&studio) {
+                    return Some(bin);
+                }
+            }
+        }
+    }
+
     let home = dirs::home_dir()?;
     let studio = home.join(".unsloth").join("studio");
-
     find_unsloth_binary_in_studio_dir(&studio)
 }
 

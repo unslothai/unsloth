@@ -28,6 +28,18 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 # Returns (path, is_custom): is_custom=True only when the resolved root is a
 # real override; we use this to decide whether to re-export the env var to
 # child processes.
+def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
+    """Heuristic: only treat a directory as an installer-managed Studio root
+    if it carries installer-written sentinels (studio.conf or the bin shim).
+    Avoids over-matching on a dev venv that happens to be named unsloth_studio.
+    """
+    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
+    return (
+        (candidate / "share" / "studio.conf").is_file()
+        or (candidate / "bin" / shim_name).exists()
+    )
+
+
 def _resolve_studio_home() -> tuple[Path, bool]:
     override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     if override:
@@ -37,7 +49,8 @@ def _resolve_studio_home() -> tuple[Path, bool]:
         if prefix.name == "unsloth_studio":
             inferred = prefix.parent
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            return inferred, inferred != legacy
+            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
+                return inferred, True
     except (OSError, ValueError):
         pass
     return Path.home() / ".unsloth" / "studio", False
@@ -48,8 +61,12 @@ STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 # backend run.py) inherit it. Default installs MUST NOT re-export the env
 # var, because setup.sh / setup.ps1 treat its presence as "env-override
 # mode" and would relocate llama.cpp / DATA_DIR away from legacy paths.
+# UNSLOTH_LLAMA_CPP_PATH is also setdefault for custom roots so
+# unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR binding picks up the
+# correct build dir for GGUF export.
 if _STUDIO_HOME_IS_CUSTOM:
     os.environ.setdefault("UNSLOTH_STUDIO_HOME", str(STUDIO_HOME))
+    os.environ.setdefault("UNSLOTH_LLAMA_CPP_PATH", str(STUDIO_HOME / "llama.cpp"))
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"

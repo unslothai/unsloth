@@ -423,7 +423,8 @@ function Install-UnslothStudio {
             # empty string here so behavior matches today exactly.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
                 $_sq = $StudioHome -replace "'", "''"
-                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n"
+                $_llama = (Join-Path $StudioHome "llama.cpp") -replace "'", "''"
+                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n`$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n"
             } else { "" }
 
             $launcherContent = @"

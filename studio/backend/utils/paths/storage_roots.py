@@ -11,17 +11,25 @@ import tempfile
 
 
 def _infer_studio_home_from_venv() -> Path | None:
-    """If running from the unsloth_studio venv, the parent dir is STUDIO_HOME.
+    """If running from an installer-managed unsloth_studio venv, return the
+    parent dir as STUDIO_HOME.
 
     Fallback for fresh shells after a custom install where the installer
     wrote to a workspace path but the user did not re-export the env var.
+    Narrowed via installer-sentinel check (share/studio.conf or bin shim)
+    so a developer venv that happens to be named ``unsloth_studio`` is not
+    misidentified as a custom Studio root.
     """
     try:
         prefix = Path(sys.prefix).resolve()
     except (OSError, ValueError):
         return None
-    if prefix.name == "unsloth_studio":
-        return prefix.parent
+    if prefix.name != "unsloth_studio":
+        return None
+    candidate = prefix.parent
+    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
+    if (candidate / "share" / "studio.conf").is_file() or (candidate / "bin" / shim_name).exists():
+        return candidate
     return None
 
 

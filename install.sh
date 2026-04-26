@@ -606,11 +606,15 @@ LAUNCHER_EOF
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
         # Persist UNSLOTH_STUDIO_HOME for env-override installs so the launcher,
         # CLI, and backend pick up the same root in fresh shells where the user
-        # did not re-export the env var. Default installs do NOT get this line so
-        # the legacy ~/.unsloth/studio resolution is fully preserved.
+        # did not re-export the env var. Also persist UNSLOTH_LLAMA_CPP_PATH so
+        # unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR binding finds the
+        # custom-root build. Default installs do NOT get these lines so the
+        # legacy ~/.unsloth/studio + ~/.unsloth/llama.cpp resolution stands.
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
+            _css_quoted_llama=$(printf '%s' "$STUDIO_HOME/llama.cpp" | sed "s/'/'\\\\''/g")
             printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
+            printf '%s\n' "export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
         fi
     } > "$_css_data_dir/studio.conf"
 
