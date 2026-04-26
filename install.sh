@@ -86,8 +86,10 @@ if [ "$TAURI_MODE" = true ]; then
             "~/"*) _tauri_override="$HOME/${_tauri_override#'~/'}" ;;
         esac
         # Resolve symlinks/relative paths if the dir exists, else use as-is.
+        # CDPATH= prevents `cd` from echoing the resolved path on stdout when
+        # the user has CDPATH set in their environment. -P resolves symlinks.
         if [ -d "$_tauri_override" ]; then
-            _tauri_override_abs=$(cd -- "$_tauri_override" 2>/dev/null && pwd) \
+            _tauri_override_abs=$(CDPATH= cd -P -- "$_tauri_override" 2>/dev/null && pwd -P) \
                 || _tauri_override_abs="$_tauri_override"
         else
             _tauri_override_abs="$_tauri_override"
