@@ -1753,7 +1753,7 @@ $ErrorActionPreference = "Continue"
 # --- .venv_t5_530 (transformers 5.3.0) ---
 substep "pre-installing transformers 5.3.0 for newer model support..."
 if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
-New-Item -ItemType Directory -LiteralPath $VenvT5_530Dir -Force | Out-Null
+[System.IO.Directory]::CreateDirectory($VenvT5_530Dir) | Out-Null
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_530Dir --no-deps $pkg
@@ -1786,7 +1786,7 @@ step "transformers" "5.3.0 pre-installed"
 # --- .venv_t5_550 (transformers 5.5.0) ---
 substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
 if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
-New-Item -ItemType Directory -LiteralPath $VenvT5_550Dir -Force | Out-Null
+[System.IO.Directory]::CreateDirectory($VenvT5_550Dir) | Out-Null
 foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_550Dir --no-deps $pkg
@@ -1832,7 +1832,7 @@ if ($StudioHome -eq $LegacyStudioHome) {
 } else {
     $UnslothHome = $StudioHome
 }
-if (-not (Test-Path -LiteralPath $UnslothHome)) { New-Item -ItemType Directory -LiteralPath $UnslothHome -Force | Out-Null }
+if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
@@ -2265,7 +2265,7 @@ if (-not $NeedLlamaSourceBuild) {
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
         $buildTmp = "$LlamaCppDir.build.$PID"
-        $null = New-Item -ItemType Directory -Force -LiteralPath (Split-Path -LiteralPath $LlamaCppDir -Parent)
+        $null = [System.IO.Directory]::CreateDirectory((Split-Path -LiteralPath $LlamaCppDir))
         if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
         if ($LlamaPr) {
             $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$LlamaSource.git" $buildTmp }

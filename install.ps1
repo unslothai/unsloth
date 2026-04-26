@@ -894,7 +894,9 @@ shell.Run cmd, 0, False
     # a version string back to a conda interpreter.
     Write-TauriLog "STEP" "Creating virtual environment"
     if (-not (Test-Path -LiteralPath $StudioHome)) {
-        New-Item -ItemType Directory -LiteralPath $StudioHome -Force | Out-Null
+        # New-Item has no -LiteralPath parameter; use the .NET API to honor
+        # bracket characters in custom Studio roots.
+        [System.IO.Directory]::CreateDirectory($StudioHome) | Out-Null
     }
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
