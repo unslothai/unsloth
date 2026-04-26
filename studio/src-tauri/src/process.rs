@@ -280,13 +280,14 @@ pub fn start_backend(
         cmd.env_remove("PYTHONPATH");
     }
 
-    // The Tauri desktop app does not honor UNSLOTH_STUDIO_HOME / STUDIO_HOME /
-    // UNSLOTH_LLAMA_CPP_PATH yet; it always uses ~/.unsloth/studio. Scrub these
-    // from the spawned Python backend so it cannot diverge from the Rust paths
-    // when the user's shell happens to have them set.
+    // The Tauri desktop app does not honor UNSLOTH_STUDIO_HOME / STUDIO_HOME yet;
+    // it always uses ~/.unsloth/studio. Scrub these from the spawned Python
+    // backend so it cannot diverge from the Rust-resolved Studio root when the
+    // user's shell happens to have them set. Keep UNSLOTH_LLAMA_CPP_PATH: that
+    // is a pre-existing custom-llama.cpp-directory override the Python backend
+    // and unsloth-zoo intentionally support, independent of the Studio root.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
-    cmd.env_remove("UNSLOTH_LLAMA_CPP_PATH");
 
     // On Windows, launch the backend directly with hidden-window flags.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so

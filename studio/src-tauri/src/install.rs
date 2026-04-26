@@ -195,9 +195,9 @@ fn spawn_script(
     // Tauri only does default-root installs. install.sh / install.ps1 reject
     // UNSLOTH_STUDIO_HOME / STUDIO_HOME under --tauri; scrub them from the
     // spawned installer so an inherited shell-set value cannot trip the guard.
+    // UNSLOTH_LLAMA_CPP_PATH is unrelated to the Studio root and kept as-is.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
-    cmd.env_remove("UNSLOTH_LLAMA_CPP_PATH");
 
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
