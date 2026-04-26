@@ -399,7 +399,15 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-STUDIO_HOME="$HOME/.unsloth/studio"
+# UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root, mirroring
+# install.sh. install.sh exports UNSLOTH_STUDIO_HOME when invoking this script.
+_studio_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+if [ -n "$_studio_override" ]; then
+    mkdir -p -- "$_studio_override"
+    STUDIO_HOME="$(cd -- "$_studio_override" && pwd)"
+else
+    STUDIO_HOME="$HOME/.unsloth/studio"
+fi
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"

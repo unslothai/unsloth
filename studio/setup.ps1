@@ -1457,7 +1457,16 @@ substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
 # The venv must already exist (created by install.ps1).
 # This script (setup.ps1 / "unsloth studio update") only updates packages.
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
+# UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root,
+# mirroring install.ps1. install.ps1 exports UNSLOTH_STUDIO_HOME when
+# invoking the studio update.
+$_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
+if ($_studioOverride) {
+    $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
+} else {
+    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+}
+$VenvDir = Join-Path $StudioHome "unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.

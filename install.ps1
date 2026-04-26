@@ -72,6 +72,13 @@ function Install-UnslothStudio {
     $defaultProfile = $null
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
 
+    # Default DataDir uses LOCALAPPDATA. Guard the lookup: in service / CI
+    # contexts LOCALAPPDATA may be unset, and Join-Path under
+    # $ErrorActionPreference='Stop' would otherwise abort the installer.
+    $defaultDataDir = if ($env:LOCALAPPDATA -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+    } else { $null }
+
     if ($envOverride) {
         try {
             New-Item -ItemType Directory -Path $envOverride -Force -ErrorAction Stop | Out-Null
@@ -80,7 +87,8 @@ function Install-UnslothStudio {
             Write-Host "ERROR: STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
             exit 1
         }
-        $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid().Guid)
+        # Default ToString() form already produces a unique GUID string.
+        $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
         try {
             New-Item -ItemType File -Path $probe -ErrorAction Stop | Out-Null
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
@@ -92,11 +100,11 @@ function Install-UnslothStudio {
         $StudioRedirectMode = 'env'
     } elseif ($defaultProfile -and $env:USERPROFILE -and ($env:USERPROFILE -ne $defaultProfile)) {
         $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-        $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $StudioDataDir = $defaultDataDir
         $StudioRedirectMode = 'profile'
     } else {
         $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-        $StudioDataDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $StudioDataDir = $defaultDataDir
         $StudioRedirectMode = 'default'
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
@@ -1126,10 +1134,22 @@ shell.Run cmd, 0, False
     # Use 'studio setup' (not 'studio update') because 'update' pops
     # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
     # and bypass the fast-path version check from PR #4667.
+    # Pass the resolved StudioHome through so setup.ps1 / unsloth_cli see
+    # the same install root install.ps1 picked. Restored after the call.
+    $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
+    $env:UNSLOTH_STUDIO_HOME = $StudioHome
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
-    & $UnslothExe @studioArgs
-    $setupExit = $LASTEXITCODE
+    try {
+        & $UnslothExe @studioArgs
+        $setupExit = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousUnslothStudioHome) {
+            Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+        } else {
+            $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
+        }
+    }
     if ($setupExit -ne 0) {
         Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
