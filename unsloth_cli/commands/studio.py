@@ -34,10 +34,9 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     Avoids over-matching on a dev venv that happens to be named unsloth_studio.
     """
     shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
-    return (
-        (candidate / "share" / "studio.conf").is_file()
-        or (candidate / "bin" / shim_name).exists()
-    )
+    return (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "bin" / shim_name
+    ).exists()
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
@@ -49,7 +48,9 @@ def _resolve_studio_home() -> tuple[Path, bool]:
         if prefix.name == "unsloth_studio":
             inferred = prefix.parent
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
+            if inferred != legacy and _looks_like_installer_managed_studio_home(
+                inferred
+            ):
                 return inferred, True
     except (OSError, ValueError):
         pass
