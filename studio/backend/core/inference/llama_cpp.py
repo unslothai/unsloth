@@ -497,12 +497,15 @@ class LlamaCppBackend:
         # under ~/.unsloth/llama.cpp for default installs.
         try:
             from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+
             search_roots = [_sr() / "llama.cpp", Path.home() / ".unsloth" / "llama.cpp"]
         except ImportError:
             search_roots = [Path.home() / ".unsloth" / "llama.cpp"]
         # De-dupe while preserving order (in case studio_root() == legacy).
         _seen: set[str] = set()
-        for unsloth_home in [r for r in search_roots if str(r) not in _seen and not _seen.add(str(r))]:
+        for unsloth_home in [
+            r for r in search_roots if str(r) not in _seen and not _seen.add(str(r))
+        ]:
             home_root = unsloth_home / binary_name
             if home_root.is_file():
                 return str(home_root)
@@ -2074,6 +2077,7 @@ class LlamaCppBackend:
             # Resolved Studio root (covers env-override custom installs).
             try:
                 from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+
                 install_roots.append(_sr() / "llama.cpp")
             except ImportError:
                 pass
