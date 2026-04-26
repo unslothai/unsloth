@@ -447,8 +447,8 @@ function Install-UnslothStudio {
             }
             $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
 
-            if (-not (Test-Path $appDir)) {
-                New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+            if (-not (Test-Path -LiteralPath $appDir)) {
+                [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
             }
 
             # Persist UNSLOTH_STUDIO_HOME inside the generated launcher when
@@ -652,19 +652,19 @@ cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "
 shell.Run cmd, 0, False
 "@
             # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
-            Set-Content -Path $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+            Set-Content -LiteralPath $launcherVbs -Value $vbsContent -Encoding Unicode -Force
 
             # Prefer bundled icon from local clone/dev installs.
             # If not available, best-effort download from raw GitHub.
             # We only attach the icon if the resulting file has a valid ICO header.
             $hasValidIcon = $false
-            if ($bundledIcon -and (Test-Path $bundledIcon)) {
+            if ($bundledIcon -and (Test-Path -LiteralPath $bundledIcon)) {
                 try {
-                    Copy-Item -Path $bundledIcon -Destination $iconPath -Force
+                    Copy-Item -LiteralPath $bundledIcon -Destination $iconPath -Force
                 } catch {
                     Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 }
-            } elseif (-not (Test-Path $iconPath)) {
+            } elseif (-not (Test-Path -LiteralPath $iconPath)) {
                 try {
                     Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
                 } catch {
@@ -672,7 +672,7 @@ shell.Run cmd, 0, False
                 }
             }
 
-            if (Test-Path $iconPath) {
+            if (Test-Path -LiteralPath $iconPath) {
                 try {
                     $bytes = [System.IO.File]::ReadAllBytes($iconPath)
                     if (
@@ -684,11 +684,11 @@ shell.Run cmd, 0, False
                     ) {
                         $hasValidIcon = $true
                     } else {
-                        Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                        Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
                     }
                 } catch {
                     Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
-                    Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
                 }
             }
 
