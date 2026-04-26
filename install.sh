@@ -1784,30 +1784,33 @@ esac
 # resolve the custom Studio root; clearing it on a subsequent default
 # install prevents a stale marker from hijacking the legacy default path.
 #
-# When the override wins over a redirected $HOME (env mode), prefer the
-# real password-database home for the marker so a later desktop launch
-# from the user's normal session still finds it. Falls back to $HOME.
-_marker_home="$HOME"
-if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-    if command -v getent >/dev/null 2>&1; then
-        _real_home=$(getent passwd "${USER:-$(whoami)}" 2>/dev/null | cut -d: -f6)
-    elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
-        _real_home=$(dscl . -read "/Users/${USER:-$(whoami)}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
-    else
-        _real_home=""
-    fi
-    [ -n "$_real_home" ] && _marker_home="$_real_home"
+# Compute both the redirected $HOME and the real password-database home
+# unconditionally so the cleanup branch can scrub markers from EITHER
+# location. (Prior cleanup only removed $HOME's marker, which left a
+# stale real-home marker after a HOME-redirect reinstall.)
+_real_home=""
+if command -v getent >/dev/null 2>&1; then
+    _real_home=$(getent passwd "${USER:-$(whoami)}" 2>/dev/null | cut -d: -f6)
+elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
+    _real_home=$(dscl . -read "/Users/${USER:-$(whoami)}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
 fi
-_marker_file="$_marker_home/.unsloth/studio-home"
+_marker_home="$HOME"
+# In env mode, prefer the real-home so a later desktop launch from the
+# user's normal session still finds the marker.
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ] && [ -n "$_real_home" ]; then
+    _marker_home="$_real_home"
+fi
 if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
     mkdir -p "$_marker_home/.unsloth" 2>/dev/null || true
-    printf '%s\n' "$STUDIO_HOME" > "$_marker_file" 2>/dev/null || true
+    printf '%s\n' "$STUDIO_HOME" > "$_marker_home/.unsloth/studio-home" 2>/dev/null || true
 else
-    # Default / HOME-redirect installs: clear any stale env-mode marker
-    # from a prior custom-root install so the desktop app rediscovers
-    # the legacy default. Try both candidate homes for safety.
+    # Default / HOME-redirect installs: scrub markers from BOTH the
+    # current $HOME and the real password-DB home (if different) so a
+    # prior env-mode install can't hijack future default desktop launches.
     rm -f "$HOME/.unsloth/studio-home" 2>/dev/null || true
-    [ "$_marker_home" != "$HOME" ] && rm -f "$_marker_file" 2>/dev/null || true
+    if [ -n "$_real_home" ] && [ "$_real_home" != "$HOME" ]; then
+        rm -f "$_real_home/.unsloth/studio-home" 2>/dev/null || true
+    fi
 fi
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.

@@ -1272,9 +1272,19 @@ shell.Run cmd, 0, False
     # default install prevents a stale marker from hijacking the legacy
     # default path.
     #
-    # When the override wins over a redirected USERPROFILE (env mode),
-    # prefer the OS-reported real profile for the marker so a later
-    # desktop launch from the user's normal session still finds it.
+    # Build a profile-candidate list (current USERPROFILE + OS-reported
+    # real profile) so the cleanup branch can scrub markers from EITHER
+    # location after a prior env-mode install with redirected USERPROFILE.
+    $_profileCandidates = @()
+    if ($env:USERPROFILE -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $_profileCandidates += $env:USERPROFILE
+    }
+    if ($defaultProfile -and -not [string]::IsNullOrWhiteSpace($defaultProfile) `
+        -and ($_profileCandidates -notcontains $defaultProfile)) {
+        $_profileCandidates += $defaultProfile
+    }
+    # In env mode, prefer the real profile so a later desktop launch from
+    # the user's normal session still finds the marker.
     $_markerProfile = if ($StudioRedirectMode -eq 'env' `
         -and $defaultProfile `
         -and -not [string]::IsNullOrWhiteSpace($defaultProfile)) {
@@ -1282,29 +1292,28 @@ shell.Run cmd, 0, False
     } else {
         $env:USERPROFILE
     }
-    $_markerDir = Join-Path $_markerProfile ".unsloth"
-    $_markerPath = Join-Path $_markerDir "studio-home"
     if ($StudioRedirectMode -eq 'env') {
         try {
+            $_markerDir = Join-Path $_markerProfile ".unsloth"
             if (-not (Test-Path $_markerDir)) {
                 New-Item -ItemType Directory -Path $_markerDir -Force | Out-Null
             }
-            Set-Content -LiteralPath $_markerPath `
+            Set-Content -LiteralPath (Join-Path $_markerDir "studio-home") `
                 -Value $StudioHome -NoNewline -ErrorAction Stop
         } catch {
             # Non-fatal: env vars still work for shells that inherit them.
         }
     } else {
-        # Default / profile-redirect installs: clear any stale env-mode
-        # marker from a prior custom-root install. Try both candidate
-        # profiles so a marker in either location is removed.
-        try {
-            Remove-Item -LiteralPath $_markerPath -Force -ErrorAction SilentlyContinue
-            $_altPath = Join-Path (Join-Path $env:USERPROFILE ".unsloth") "studio-home"
-            if ($_altPath -ne $_markerPath) {
-                Remove-Item -LiteralPath $_altPath -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
+        # Default / profile-redirect installs: scrub markers from EVERY
+        # candidate profile so a prior env-mode install can't hijack
+        # future default desktop launches.
+        foreach ($_profile in $_profileCandidates) {
+            try {
+                Remove-Item -LiteralPath `
+                    (Join-Path (Join-Path $_profile ".unsloth") "studio-home") `
+                    -Force -ErrorAction SilentlyContinue
+            } catch { }
+        }
     }
 
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
