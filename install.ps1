@@ -467,7 +467,10 @@ function Install-UnslothStudio {
                 }
                 $_sq = $StudioHome -replace "'", "''"
                 $_llama = $_llamaPath -replace "'", "''"
-                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`n`$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n"
+                # UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled
+                # llama.cpp directory override. Only default it when the
+                # caller has not already set one in their environment.
+                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`nif (-not `$env:UNSLOTH_LLAMA_CPP_PATH) {`n    `$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n}`n"
             } else { "" }
 
             $launcherContent = @"

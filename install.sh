@@ -690,7 +690,12 @@ LAUNCHER_EOF
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
             printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
-            printf '%s\n' "export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
+            # UNSLOTH_LLAMA_CPP_PATH is a pre-existing custom-llama.cpp-dir
+            # override the Python backend / unsloth-zoo respect. Only default
+            # it when the caller has not already set one in their shell.
+            printf '%s\n' 'if [ -z "${UNSLOTH_LLAMA_CPP_PATH:-}" ]; then'
+            printf '%s\n' "    export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
+            printf '%s\n' 'fi'
         fi
     } > "$_css_data_dir/studio.conf"
 
