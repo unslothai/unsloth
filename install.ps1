@@ -120,7 +120,10 @@ function Install-UnslothStudio {
             $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
         }
         try {
-            New-Item -ItemType Directory -Path $envOverride -Force -ErrorAction Stop | Out-Null
+            # New-Item has no -LiteralPath in PowerShell 5.1 and -Path treats
+            # square brackets as wildcards. Use the .NET API so a custom root
+            # like C:\workspaces\studio[abc] is handled literally.
+            [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
             Write-Host "ERROR: STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
@@ -129,7 +132,10 @@ function Install-UnslothStudio {
         # Default ToString() form already produces a unique GUID string.
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
         try {
-            New-Item -ItemType File -Path $probe -ErrorAction Stop | Out-Null
+            # WriteAllText is literal-path safe and closes the file handle
+            # before the Remove-Item below; New-Item -Path would fail on
+            # bracketed roots (wildcard expansion) just like the dir case.
+            [System.IO.File]::WriteAllText($probe, "")
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
             Write-Host "ERROR: STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
