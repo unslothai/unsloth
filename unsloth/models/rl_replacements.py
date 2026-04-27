@@ -745,6 +745,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            num_images = kwargs.get("num_images", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
             token_type_ids = kwargs.get("token_type_ids", None)
             mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
@@ -795,13 +796,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
+            def slice_sample_axis(value, start, end):
+                if value is None:
+                    return None
+                return value[start:end]
 
-            def chunk_optional(tensor, chunks):
-                if tensor is None:
-                    return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+            def to_num_images_list(value):
+                if value is None:
+                    return None
+                if isinstance(value, torch.Tensor):
+                    value = value.detach().cpu().reshape(-1).tolist()
+                return [int(x) for x in value]
 
             import math
 
@@ -813,17 +818,34 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            image_sizes_chunks = []
+            token_type_ids_chunks = []
+            mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
+            current_image_idx = 0
+            num_images_list = to_num_images_list(num_images)
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
-                end = start + batch_size
+                end = min(start + batch_size, total_samples)
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
+                image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
+                token_type_ids_chunks.append(slice_sample_axis(token_type_ids, start, end))
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    grid_slice = image_grid_thw[start:end]
+                    if num_images_list is None:
+                        grid_slice = image_grid_thw[start:end]
+                    else:
+                        image_count = sum(num_images_list[start:end])
+                        image_start = current_image_idx
+                        image_end = current_image_idx + image_count
+                        grid_slice = image_grid_thw[image_start:image_end]
+                        current_image_idx = image_end
                     image_grid_thw_chunks.append(grid_slice)
 
                     batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
@@ -836,9 +858,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
 
                     if pixel_attention_mask is not None:
-                        pixel_attention_mask_chunks.append(
-                            pixel_attention_mask[start_pixel_idx:end_pixel_idx]
-                        )
+                        if pixel_attention_mask.shape[0] == pixel_values.shape[0]:
+                            pixel_attention_mask_chunks.append(
+                                pixel_attention_mask[start_pixel_idx:end_pixel_idx]
+                            )
+                        else:
+                            pixel_attention_mask_chunks.append(
+                                slice_sample_axis(pixel_attention_mask, start, end)
+                            )
                     else:
                         pixel_attention_mask_chunks.append(None)
 
@@ -849,11 +876,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
 
-            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
-            else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
-
             temperature = self.temperature
             logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
@@ -862,10 +884,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             logit_scale_divide = getattr(model.config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
-
-            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
-            token_type_ids_chunks = chunk_optional(token_type_ids, B)
-            mm_token_type_ids_chunks = chunk_optional(mm_token_type_ids, B)
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -1069,6 +1087,7 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        num_images = inputs.get("num_images", None)
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
         token_type_ids = inputs.get("token_type_ids", None)
         mm_token_type_ids = inputs.get("mm_token_type_ids", None)
@@ -1191,6 +1210,9 @@ def grpo_trainer_compute_loss(function_name, function):
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -1222,6 +1244,11 @@ def grpo_trainer_compute_loss(function_name, function):
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
