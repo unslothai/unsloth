@@ -1339,7 +1339,7 @@ class LlamaCppBackend:
             # Prefer F16 variant
             target = None
             for f in mmproj_files:
-                if "f16" in f.lower():
+                if f.lower().endswith("-f16.gguf"):
                     target = f
                     break
             if target is None:
