@@ -71,13 +71,8 @@ if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
 fi
 
-# Custom Studio roots are not supported in Tauri-mode installs because the
-# desktop app still resolves the legacy ~/.unsloth/studio path. Producing
-# a custom-root --tauri install would yield a desktop app that cannot
-# locate the freshly installed binary or auth secret. Fail fast for real
-# custom roots; pass through when the override resolves to the legacy
-# default ($HOME/.unsloth/studio), since that is exactly what the desktop
-# app already uses.
+# Custom Studio roots are not supported with --tauri (desktop app still
+# resolves ~/.unsloth/studio). Pass through if the override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
     _tauri_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
     if [ -n "$_tauri_override" ]; then
@@ -85,25 +80,20 @@ if [ "$TAURI_MODE" = true ]; then
             "~") _tauri_override="$HOME" ;;
             "~/"*) _tauri_override="$HOME/${_tauri_override#'~/'}" ;;
         esac
-        # Resolve symlinks/relative paths if the dir exists, else use as-is.
-        # CDPATH= prevents `cd` from echoing the resolved path on stdout when
-        # the user has CDPATH set in their environment. -P resolves symlinks.
+        # Canonicalize both sides (CDPATH=, -P) so a CDPATH-set env or
+        # symlinked $HOME doesn't break the legacy-equality comparison.
         if [ -d "$_tauri_override" ]; then
             _tauri_override_abs=$(CDPATH= cd -P -- "$_tauri_override" 2>/dev/null && pwd -P) \
                 || _tauri_override_abs="$_tauri_override"
         else
             _tauri_override_abs="$_tauri_override"
         fi
-        # Strip trailing separators so a legacy override with a trailing
-        # slash (".../studio/") still matches the legacy root (".../studio").
+        # Strip trailing separators so ".../studio/" matches ".../studio".
         while [ "$_tauri_override_abs" != "/" ] \
             && [ "${_tauri_override_abs%/}" != "$_tauri_override_abs" ]; do
             _tauri_override_abs=${_tauri_override_abs%/}
         done
         _tauri_legacy_root="$HOME/.unsloth/studio"
-        # Apply the same physical-path canonicalization to the legacy root
-        # so a symlinked $HOME (e.g. /home/alice -> /u/alice) doesn't make
-        # the comparison fail when both sides point at the same directory.
         if [ -d "$_tauri_legacy_root" ]; then
             _tauri_legacy_root=$(CDPATH= cd -P -- "$_tauri_legacy_root" 2>/dev/null && pwd -P) \
                 || _tauri_legacy_root="$HOME/.unsloth/studio"
@@ -220,14 +210,11 @@ tauri_log() {
 
 PYTHON_VERSION=""  # resolved after platform detection
 
-# Resolve install destinations. Priority: env vars, then HOME-redirect, then default.
-# Best-effort HOME-redirect detection: skipped on hosts without getent/dscl.
+# Resolve install destinations: env override, HOME-redirect (best-effort
+# via getent/dscl), or default.
 _resolve_studio_destinations() {
     _override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
-    # Expand leading ~ / ~/path to $HOME because env vars are not subject to
-    # tilde expansion when set with quotes around the value. Quote the
-    # ~/ inside the prefix-removal so the shell does not tilde-expand it
-    # back to $HOME/ before matching.
+    # Tilde expansion: env vars are not subject to it when quoted on assignment.
     case "$_override" in
         "~") _override="$HOME" ;;
         "~/"*) _override="$HOME/${_override#'~/'}" ;;
@@ -235,8 +222,6 @@ _resolve_studio_destinations() {
     if [ -n "$_override" ]; then
         mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
         [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
-        # CDPATH= prevents `cd` from echoing a CDPATH-prefixed path on stdout
-        # if the user has CDPATH set; -P / pwd -P canonicalizes symlinks.
         STUDIO_HOME="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
         DATA_DIR="$STUDIO_HOME/share"
         _LOCAL_BIN="$STUDIO_HOME/bin"
@@ -381,10 +366,8 @@ create_studio_shortcuts() {
     mkdir -p "$_css_data_dir"
 
     # ── Write launcher script ──
-    # Heredoc is single-quoted (no $-expansion at write time). The
-    # @@DATA_DIR@@ placeholder below is substituted via sed after the
-    # heredoc is written so the runtime launcher reads studio.conf
-    # from the same DATA_DIR install.sh resolved.
+    # Single-quoted heredoc; @@DATA_DIR@@ is substituted via sed below so
+    # the runtime launcher reads studio.conf from the resolved DATA_DIR.
     cat > "$_css_launcher" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
 # Unsloth Studio Launcher
@@ -638,33 +621,20 @@ else
 fi
 LAUNCHER_EOF
 
-    # Substitute @@DATA_DIR@@. Default and HOME-redirect installs keep the
-    # legacy runtime form (DATA_DIR="$HOME/.local/share/unsloth") so a later
-    # shell with a different $HOME still resolves DATA_DIR correctly --
-    # byte-identical to pre-PR. Only env-mode installs bake the resolved
-    # absolute path because their root is fixed at install time.
-    # Portable in-place edit: redirect to tempfile, then mv. Avoids the
-    # GNU-vs-BSD-vs-BusyBox `sed -i` divergence (per Gemini review feedback).
+    # Default / HOME-redirect installs replace the placeholder line with the
+    # legacy literal (DATA_DIR="$HOME/.local/share/unsloth") so a later shell
+    # with a different $HOME still resolves correctly -- byte-identical to
+    # pre-PR. Env-mode installs bake the resolved absolute path because their
+    # root is fixed at install time.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        # Two-stage escape so path metacharacters survive sed and shell
-        # single-quoted embedding. Verified end-to-end with apostrophes,
-        # spaces, &, |, $; do not "simplify" to fewer/more backslashes.
-        #  1) ' -> '\''  for safe single-quote shell embedding.
-        #     The shell pattern "s/'/'\\''/g" passes "s/'/'\''/g" to sed
-        #     (\\ -> \). sed's replacement '\'' contains a literal
-        #     backslash-quote-quote, producing the canonical close-quote /
-        #     escaped-quote / open-quote sequence on output. Result:
-        #     `a b's` -> `a b'\''s`.
-        #  2) For the value to land inside a sed s|...|VALUE|g call below,
-        #     escape \, &, and | (the chosen delimiter) so they survive sed
-        #     replacement. Result of stage 2: `a b'\''s` -> `a b'\\''s`.
+        # Two-stage escape: (1) `'` -> `'\''` for shell single-quote embedding,
+        # (2) backslash/&/| escape so the value survives the s|...|VALUE| sed
+        # below. Verified end-to-end with apostrophes, spaces, &, |, $.
         _sq_escaped=$(printf '%s' "$DATA_DIR" | sed "s/'/'\\\\''/g")
         _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\&|]/\\&/g')
         sed "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" > "$_css_launcher.tmp" \
             && mv "$_css_launcher.tmp" "$_css_launcher"
     else
-        # Replace the placeholder line entirely with the legacy literal
-        # so the launcher reads $HOME at runtime, not install time.
         sed "s|DATA_DIR='@@DATA_DIR@@'|DATA_DIR=\"\$HOME/.local/share/unsloth\"|" \
             "$_css_launcher" > "$_css_launcher.tmp" \
             && mv "$_css_launcher.tmp" "$_css_launcher"
@@ -672,30 +642,16 @@ LAUNCHER_EOF
 
     chmod +x "$_css_launcher"
 
-    # Write the exe path to a separate conf file sourced by the launcher.
-    # Single-quote wrapping with the standard `'\''` escape (shell pattern
-    # "s/'/'\\''/g" -> sed "s/'/'\''/g"; replacement `'\''` produces
-    # close-quote, backslash-quote, open-quote on output). No sed templating
-    # is applied to studio.conf, so no second-stage backslash/&/| escaping
-    # is needed here.
+    # studio.conf: exe path + (env-mode only) persisted env vars so fresh
+    # shells launch the right install without re-exporting.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
-        # Persist UNSLOTH_STUDIO_HOME for env-override installs so the launcher,
-        # CLI, and backend pick up the same root in fresh shells where the user
-        # did not re-export the env var. Also persist UNSLOTH_LLAMA_CPP_PATH so
-        # unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR binding finds the
-        # custom-root build. Default installs do NOT get these lines so the
-        # legacy ~/.unsloth/studio + ~/.unsloth/llama.cpp resolution stands.
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-            # Mirror setup.sh's legacy-equality check: when an env override
-            # happens to point at the legacy default, llama.cpp still lives
-            # at ~/.unsloth/llama.cpp (one shared build across legacy
-            # installs) -- keep UNSLOTH_LLAMA_CPP_PATH consistent with that.
-            # $STUDIO_HOME is canonicalized (cycle 24) but $HOME/.unsloth/studio
-            # is still logical. Canonicalize the legacy side too so a symlinked
-            # $HOME doesn't make the comparison fail when both point at the
-            # same dir.
+            # When an override resolves to the legacy default, llama.cpp
+            # still lives at ~/.unsloth/llama.cpp (one shared build).
+            # Canonicalize the legacy side so a symlinked $HOME doesn't
+            # break the comparison.
             _css_legacy_studio="$HOME/.unsloth/studio"
             if [ -d "$_css_legacy_studio" ]; then
                 _css_legacy_studio=$(CDPATH= cd -P -- "$_css_legacy_studio" 2>/dev/null && pwd -P) \
@@ -709,9 +665,8 @@ LAUNCHER_EOF
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
             printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
-            # UNSLOTH_LLAMA_CPP_PATH is a pre-existing custom-llama.cpp-dir
-            # override the Python backend / unsloth-zoo respect. Only default
-            # it when the caller has not already set one in their shell.
+            # UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled
+            # llama.cpp dir override; only default it if unset.
             printf '%s\n' 'if [ -z "${UNSLOTH_LLAMA_CPP_PATH:-}" ]; then'
             printf '%s\n' "    export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
             printf '%s\n' 'fi'
@@ -762,11 +717,9 @@ LAUNCHER_EOF
     fi
 
     # ── Platform-specific shortcuts ──
-    # Env-override installs are workspace-scoped: skip persistent
-    # desktop / Start-Menu / dock launchers that would point at a path
-    # the user may later delete. The runtime launcher + studio.conf +
-    # icon written above are still essential for the env-mode shim and
-    # ARE kept regardless of mode.
+    # Env-mode installs are workspace-scoped: skip persistent desktop /
+    # Start-Menu / dock launchers that may point at a deleted workspace.
+    # Runtime launcher + studio.conf + icon are still written above.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
         substep "wrote launcher at $_css_launcher (persistent shortcuts skipped in env-override mode)"
         return 0
@@ -849,12 +802,9 @@ DESKTOP_EOF
 </plist>
 PLIST_EOF
 
-        # Executable stub
-        # The stub embeds the resolved launcher path. Use a single-quoted
-        # heredoc + post-write sed substitution + single-quoted shell
-        # embedding so any path metacharacters ($, ", `, &, |, \, ') in
-        # $_css_data_dir do not expand at .app launch time. Same pattern
-        # as the launch-studio.sh @@DATA_DIR@@ substitution above.
+        # Executable stub: same single-quoted-heredoc + sed-substitute
+        # pattern as launch-studio.sh so $-vars in $_css_data_dir don't
+        # expand at .app launch time.
         _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
         _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
         cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
@@ -1807,10 +1757,8 @@ _SKIP_FRONTEND=0
 if [ "$TAURI_MODE" = true ]; then
     _SKIP_FRONTEND=1
 fi
-# Helper: prepend UNSLOTH_STUDIO_HOME=$STUDIO_HOME to "$@" only for actual
-# env-override installs. Avoids word-splitting on whitespace paths -- a
-# string-form '_STUDIO_ENV_FOR_SETUP="UNSLOTH_STUDIO_HOME=$STUDIO_HOME"'
-# would split '/tmp/space path' into separate argv entries.
+# Prepend UNSLOTH_STUDIO_HOME=$STUDIO_HOME to "$@" for env-override installs
+# without word-splitting on whitespace paths.
 _run_setup_with_studio_home() {
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
         UNSLOTH_STUDIO_HOME="$STUDIO_HOME" "$@"
@@ -1844,9 +1792,8 @@ else
 fi
 
 # ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
-# When STUDIO_HOME / UNSLOTH_STUDIO_HOME is used, $_LOCAL_BIN is workspace-scoped
-# ($STUDIO_HOME/bin) and we skip the shell-rc PATH append so we do not pollute
-# the user's profile with a path that may be deleted with the workspace.
+# Env-mode: $_LOCAL_BIN is $STUDIO_HOME/bin; skip shell-rc PATH append so we
+# don't pollute the user's profile with a workspace-scoped path.
 mkdir -p "$_LOCAL_BIN"
 ln -sf "$VENV_DIR/bin/unsloth" "$_LOCAL_BIN/unsloth"
 
@@ -1879,9 +1826,8 @@ case ":$PATH:" in
 esac
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
-# create_studio_shortcuts itself gates the persistent desktop/menu
-# launchers based on $_STUDIO_HOME_REDIRECT; the runtime launcher +
-# studio.conf + icon are always written so env-mode shims still resolve.
+# create_studio_shortcuts gates persistent menu shortcuts on env-mode;
+# launcher + studio.conf + icon are always written.
 if [ "$TAURI_MODE" != true ]; then
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
@@ -1925,15 +1871,11 @@ if [ -t 1 ]; then
     exit "$_LAUNCH_EXIT"
 else
     step "launch" "manual commands:"
-    # Single-quote-escape paths so values with spaces / apostrophes /
-    # metacharacters round-trip through copy-paste from a non-TTY install log.
+    # Single-quote-escape so paths with spaces / apostrophes copy-paste cleanly.
     _li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
     _li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        # In env-override mode we deliberately skip the persistent shell
-        # rc PATH append, so a fresh shell will not have `unsloth` on PATH
-        # unless the caller re-exports UNSLOTH_STUDIO_HOME. Print the
-        # absolute shim path and the activate-then-run alternative.
+        # Env-mode skips the rc PATH append, so print the absolute shim path.
         substep "$_li_shim_q studio -H 0.0.0.0 -p 8888"
         substep "or activate env first:"
         substep "source $_li_act_q"

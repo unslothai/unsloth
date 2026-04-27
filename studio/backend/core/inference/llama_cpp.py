@@ -491,14 +491,10 @@ class LlamaCppBackend:
                 if win_bin.is_file():
                     return str(win_bin)
 
-        # 2-4. Mirror setup.sh / setup.ps1's install layout:
-        #   - In env-override mode (custom Studio root != legacy default),
-        #     llama.cpp is installed under $STUDIO_HOME/llama.cpp.
-        #   - Otherwise (default install or HOME redirect), llama.cpp is
-        #     installed at ~/.unsloth/llama.cpp (sibling of the Studio dir).
-        # Default-mode searches must NOT look at $STUDIO_HOME/llama.cpp,
-        # to avoid picking a stale partial install from a previous failed
-        # install over the real legacy binary.
+        # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
+        # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
+        # Default mode skips $STUDIO_HOME/llama.cpp so a stale partial install
+        # there cannot shadow the real legacy binary.
         legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
         try:
             from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
@@ -511,7 +507,6 @@ class LlamaCppBackend:
                 search_roots = [_resolved_sr / "llama.cpp", legacy_llama]
         except (ImportError, OSError, ValueError):
             search_roots = [legacy_llama]
-        # De-dupe while preserving order (defensive in case both resolve equal).
         _seen: set[str] = set()
         for unsloth_home in [
             r for r in search_roots if str(r) not in _seen and not _seen.add(str(r))
@@ -2084,12 +2079,9 @@ class LlamaCppBackend:
             #                      (binary must be *under* one of these)
             install_roots: list[Path] = []
 
-            # Resolved Studio root (covers env-override custom installs).
-            # Mirror _find_llama_server_binary: only treat $STUDIO_HOME/llama.cpp
-            # as Studio-owned when STUDIO_HOME is a real env override, not the
-            # legacy default. In default-mode installs llama.cpp is a sibling
-            # of studio (~/.unsloth/llama.cpp), and ~/.unsloth/studio/llama.cpp
-            # may be owned by a different tool or a stale partial install.
+            # Env-mode custom root (mirrors _find_llama_server_binary). Default
+            # mode excluded so we don't kill llama-server from another tool
+            # running under ~/.unsloth/studio/llama.cpp.
             try:
                 from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
 

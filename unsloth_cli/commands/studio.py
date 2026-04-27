@@ -21,17 +21,12 @@ import typer
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
-# UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root, matching
-# install.sh / install.ps1. Falls back to sys.prefix inference (so direct
-# invocations of <STUDIO_HOME>/bin/unsloth still resolve correctly even after
-# the installer's env var has expired), then to the legacy ~/.unsloth/studio.
-# Returns (path, is_custom): is_custom=True only when the resolved root is a
-# real override; we use this to decide whether to re-export the env var to
-# child processes.
+# Resolve install root: UNSLOTH_STUDIO_HOME / STUDIO_HOME, then sys.prefix
+# inference (so a direct call to <root>/bin/unsloth resolves after the
+# installer's env var has expired), then legacy ~/.unsloth/studio.
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
-    """Heuristic: only treat a directory as an installer-managed Studio root
-    if it carries installer-written sentinels (studio.conf or the bin shim).
-    Avoids over-matching on a dev venv that happens to be named unsloth_studio.
+    """Sentinel check (studio.conf or bin shim) so a dev venv named
+    unsloth_studio is not misidentified as a custom Studio root.
     """
     shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
     return (candidate / "share" / "studio.conf").is_file() or (
@@ -58,21 +53,16 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
-# Re-export only for actual custom roots so child processes (setup script,
-# backend run.py) inherit it. Default installs MUST NOT re-export the env
-# var, because setup.sh / setup.ps1 treat its presence as "env-override
-# mode" and would relocate llama.cpp / DATA_DIR away from legacy paths.
-# UNSLOTH_LLAMA_CPP_PATH is also setdefault for custom roots so
-# unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR binding picks up the
-# correct build dir for GGUF export.
+# Re-export only for real custom roots; default installs must NOT export
+# (setup.sh/setup.ps1 treat any non-empty UNSLOTH_STUDIO_HOME as env-mode).
+# UNSLOTH_LLAMA_CPP_PATH is set so unsloth-zoo's import-time
+# LLAMA_CPP_DEFAULT_DIR binding finds the custom build for GGUF export.
 if _STUDIO_HOME_IS_CUSTOM:
-    # Use truthy-check rather than setdefault so a blank env var (e.g.
-    # UNSLOTH_STUDIO_HOME=) doesn't suppress the inferred custom root.
+    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= doesn't
+    # suppress the inferred custom root.
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
-    # Mirror setup.sh / setup.ps1's legacy-equality check: when an env
-    # override happens to equal the legacy default, llama.cpp still lives
-    # at ~/.unsloth/llama.cpp (one shared build across legacy installs).
+    # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
     _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
     if STUDIO_HOME.resolve() == _legacy_studio:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"

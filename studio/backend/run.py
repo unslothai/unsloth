@@ -159,17 +159,14 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
-# Resolved via the shared helper so custom installs land in the right place.
 from utils.paths.storage_roots import studio_root as _studio_root
 
 _PID_FILE = _studio_root() / "studio.pid"
 
-# When the backend is launched directly (bypassing unsloth_cli, which
-# normally re-exports these env vars), make sure unsloth-zoo's import-time
-# LLAMA_CPP_DEFAULT_DIR binding still picks up the custom-root build. Only
-# set when the resolved root is a real custom override -- legacy default
-# installs must NOT export, since the installers treat any non-empty
-# UNSLOTH_STUDIO_HOME as env-override mode.
+# Direct backend launches bypass the CLI's env re-export; do it here for
+# real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
+# picks up the custom build. Skip for legacy-default to avoid flipping
+# default-mode installs into env-override.
 _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
 try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()

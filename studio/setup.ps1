@@ -1455,11 +1455,8 @@ if (-not $PythonCmd) {
 
 substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
-# The venv must already exist (created by install.ps1).
-# This script (setup.ps1 / "unsloth studio update") only updates packages.
-# UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root,
-# mirroring install.ps1. install.ps1 exports UNSLOTH_STUDIO_HOME when
-# invoking the studio update.
+# The venv must already exist (created by install.ps1); this script only
+# updates packages. UNSLOTH_STUDIO_HOME / STUDIO_HOME override the root.
 $_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
@@ -1728,8 +1725,7 @@ if ($stackExit -ne 0) {
 # ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
-# T5 sidecar venvs live next to the main venv under the resolved $StudioHome
-# so custom-root installs are self-contained.
+# T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
 $VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
 $VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
 $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
@@ -1822,15 +1818,12 @@ step "transformers" "5.5.0 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-# Only nest llama.cpp under $StudioHome when the resolved Studio root is
-# a real override (not the legacy default). Compare resolved paths so a
-# stale UNSLOTH_STUDIO_HOME pointing at the legacy default does not
+# Nest llama.cpp under $StudioHome only for real env-overrides, never the
+# legacy default. Stale UNSLOTH_STUDIO_HOME pointing at legacy must not
 # accidentally relocate llama.cpp.
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-# Canonicalize BOTH sides. $StudioHome is the resolved env-override path
-# in env-mode (line 1474) but the bare logical path in default mode
-# (line 1480). Canonicalizing on the fly handles a junctioned/symlinked
-# %USERPROFILE% the same in both modes.
+# Canonicalize both sides so a junctioned/symlinked %USERPROFILE% behaves
+# the same in env-mode (resolved) and default mode (logical $StudioHome).
 $_studioHomeCanon = $StudioHome
 if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
     $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path

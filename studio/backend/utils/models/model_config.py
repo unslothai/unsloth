@@ -499,7 +499,6 @@ _VLM_MODEL_TYPES = {
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses 5.5.0 (newest, recognizes all architectures).
-# Use the shared resolver so custom-root installs find their own venv.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_DIR = str(_studio_root() / ".venv_t5_550")

@@ -194,10 +194,8 @@ async fn provision_desktop_auth() -> Result<(), String> {
         cmd.env_remove("PYTHONPATH");
     }
 
-    // Tauri does not honor UNSLOTH_STUDIO_HOME / STUDIO_HOME yet; scrub so the
-    // provisioning subprocess writes to the legacy ~/.unsloth/studio root that
-    // matches what the Rust auth code reads. UNSLOTH_LLAMA_CPP_PATH is a
-    // pre-existing backend-only llama.cpp directory override and is kept.
+    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
+    // Scrub so provisioning writes match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     #[cfg(windows)]

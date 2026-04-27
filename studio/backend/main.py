@@ -23,12 +23,9 @@ if _backend_dir not in sys.path:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
-# Custom-root env propagation BEFORE any unsloth/unsloth-zoo import: when
-# main.py is launched directly via `uvicorn main:app` from a custom-root
-# venv, neither unsloth_cli nor run.py runs, so UNSLOTH_LLAMA_CPP_PATH
-# stays unset and unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR binding
-# falls back to the legacy ~/.unsloth/llama.cpp. Mirror run.py's logic:
-# only export when the resolved root is a real custom override.
+# Direct `uvicorn main:app` launches bypass run.py, so re-export here too
+# (mirrors run.py). Required BEFORE the unsloth-zoo import below, since
+# its LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
 _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()

@@ -399,18 +399,14 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-# UNSLOTH_STUDIO_HOME / STUDIO_HOME (alias) override the install root, mirroring
-# install.sh. install.sh exports UNSLOTH_STUDIO_HOME when invoking this script.
+# UNSLOTH_STUDIO_HOME / STUDIO_HOME override the install root (mirrors install.sh).
 _studio_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
-# Expand a leading ~ / ~/path because env vars are not subject to tilde
-# expansion when set with quotes around the value.
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
 esac
 if [ -n "$_studio_override" ]; then
     mkdir -p -- "$_studio_override"
-    # CDPATH= prevents CDPATH-prefixed echo; -P canonicalizes symlinks.
     STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
@@ -570,16 +566,11 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-# Only nest llama.cpp under $STUDIO_HOME when the resolved Studio root is a
-# real override (not the legacy default). Comparing resolved paths instead
-# of env-var presence avoids regressing default installs that incidentally
-# inherit UNSLOTH_STUDIO_HOME from a parent process or the CLI.
+# Nest llama.cpp under $STUDIO_HOME only for real env-overrides, never the
+# legacy default. Compare canonicalized paths so STUDIO_HOME (logical in
+# default mode, canonical in env mode) and the legacy side line up under
+# symlinked $HOME.
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-# Canonicalize BOTH sides under symlinked $HOME. STUDIO_HOME is logical
-# in default-mode (line 416 sets it from the bare $HOME path) and
-# canonical in env-mode (line 413 uses pwd -P). Canonicalizing on the
-# fly here means default-mode under symlinked $HOME still recognizes
-# the legacy default and keeps llama.cpp at ~/.unsloth/llama.cpp.
 _studio_home_canon="$STUDIO_HOME"
 if [ -d "$_studio_home_canon" ]; then
     _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \

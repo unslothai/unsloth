@@ -11,14 +11,9 @@ import tempfile
 
 
 def _infer_studio_home_from_venv() -> Path | None:
-    """If running from an installer-managed unsloth_studio venv, return the
-    parent dir as STUDIO_HOME.
-
-    Fallback for fresh shells after a custom install where the installer
-    wrote to a workspace path but the user did not re-export the env var.
-    Narrowed via installer-sentinel check (share/studio.conf or bin shim)
-    so a developer venv that happens to be named ``unsloth_studio`` is not
-    misidentified as a custom Studio root.
+    """Return parent dir of sys.prefix as STUDIO_HOME if running from an
+    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
+    or bin shim) so a developer venv named unsloth_studio is not misidentified.
     """
     try:
         prefix = Path(sys.prefix).resolve()
@@ -36,12 +31,10 @@ def _infer_studio_home_from_venv() -> Path | None:
 
 
 def studio_root() -> Path:
-    """Resolve the Studio install root.
+    """Studio install root.
 
-    Priority: UNSLOTH_STUDIO_HOME env, STUDIO_HOME env (alias), sys.prefix
-    inference, legacy ~/.unsloth/studio. Backwards-compatible: identical
-    to the legacy default when no env var is set and we are not running
-    from the venv.
+    Priority: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix inference,
+    legacy ~/.unsloth/studio.
     """
     override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     if override:

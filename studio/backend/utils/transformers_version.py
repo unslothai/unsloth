@@ -94,7 +94,6 @@ TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
 
 # Pre-installed directories — created by setup.sh / setup.ps1.
-# Use the shared resolver so custom-root installs find their own venvs.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")

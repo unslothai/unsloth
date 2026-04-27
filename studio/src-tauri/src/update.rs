@@ -58,9 +58,8 @@ fn spawn_update(
         cmd.env_remove("PYTHONPATH");
     }
 
-    // Tauri still manages the legacy ~/.unsloth/studio root; scrub the custom-
-    // root env vars so 'unsloth studio update' updates the same install the
-    // desktop app uses, not an unrelated custom root inherited from the shell.
+    // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
+    // the same install the desktop app uses, not an inherited custom root.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
 
