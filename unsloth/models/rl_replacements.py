@@ -174,8 +174,12 @@ def dpo_trainer_vision_process_row(
 
     prompt_input_ids = processed_features["input_ids"][0]
     pixel_values = processed_features["pixel_values"][0]
-    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)["input_ids"]
-    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)["input_ids"]
+    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)[
+        "input_ids"
+    ]
+    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)[
+        "input_ids"
+    ]
 
     if add_special_tokens:
         if tokenizer.bos_token_id is not None:
@@ -226,12 +230,9 @@ def dpo_trainer_vision_signature_columns(function_name, function):
     if all(_k in function for _k in _DPO_VISION_KEYS):
         return function
 
-    _extra_columns = "".join(
-        f'                "{_k}",\n' for _k in _DPO_VISION_KEYS
-    )
+    _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
     return function.replace(
-        '                "image_sizes",\n'
-        '                "token_type_ids",\n',
+        '                "image_sizes",\n' '                "token_type_ids",\n',
         f'                "image_sizes",\n'
         f"{_extra_columns}"
         f'                "token_type_ids",\n',
@@ -257,7 +258,7 @@ def dpo_trainer_concatenated_inputs(function_name, function):
         '        if "token_type_ids" in batch:\n',
         '        if "image_sizes" in batch:\n'
         '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
-        f'{_extra_inputs}'
+        f"{_extra_inputs}"
         '        if "token_type_ids" in batch:\n',
     )
 
@@ -272,7 +273,12 @@ def dpo_trainer_concatenated_forward(function_name, function):
     _extra_forward = "".join(
         f'        if "{_k}" in concatenated_batch:\n'
         f'            model_kwargs["{_k}"] = concatenated_batch["{_k}"]\n'
-        for _k in ("pixel_values", "pixel_attention_mask", "image_sizes", *_DPO_VISION_KEYS)
+        for _k in (
+            "pixel_values",
+            "pixel_attention_mask",
+            "image_sizes",
+            *_DPO_VISION_KEYS,
+        )
     )
 
     return function.replace(
@@ -282,7 +288,7 @@ def dpo_trainer_concatenated_forward(function_name, function):
         '            model_kwargs["pixel_attention_mask"] = concatenated_batch["pixel_attention_mask"]\n'
         '        if "image_sizes" in concatenated_batch:\n'
         '            model_kwargs["image_sizes"] = concatenated_batch["image_sizes"]\n',
-        f"{_extra_forward}"
+        f"{_extra_forward}",
     )
 
 
@@ -326,7 +332,7 @@ def dpo_trainer_prepare_dataset(function_name, function):
 
     legacy_tokenize_block = (
         "            # Tokenize the dataset\n"
-        '            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n'
+        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
         '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
         "\n"
         "            dataset = dataset.map(\n"
@@ -334,11 +340,11 @@ def dpo_trainer_prepare_dataset(function_name, function):
     )
     patched_tokenize_block = (
         "            # Tokenize the dataset\n"
-        '            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n'
+        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
         '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
         "            if self.is_vision_model:\n"
-        "                map_kwargs.pop(\"num_proc\", None)\n"
-        "                map_kwargs.pop(\"writer_batch_size\", None)\n"
+        '                map_kwargs.pop("num_proc", None)\n'
+        '                map_kwargs.pop("writer_batch_size", None)\n'
         "\n"
         "            dataset = dataset.map(\n"
         "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
