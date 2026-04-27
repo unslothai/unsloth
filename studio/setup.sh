@@ -242,7 +242,11 @@ if [ "$NEED_NODE" = true ]; then
         curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
     fi
 
-    export NVM_DIR="$HOME/.nvm"
+    # Respect a user-specified NVM_DIR (e.g. $HOME/.config/nvm on non-default
+    # installations such as Distrobox or some system-managed nvm setups).
+    # The nvm install script above already honours the existing NVM_DIR, so
+    # unconditionally overriding it here would break sourcing on those systems.
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
