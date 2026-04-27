@@ -1414,9 +1414,13 @@ def patch_peft_weight_converter_compatibility():
             ):
                 unsupported = {}
                 if not __supports_distributed and "distributed_operation" in kwargs:
-                    unsupported["distributed_operation"] = kwargs.pop("distributed_operation")
+                    unsupported["distributed_operation"] = kwargs.pop(
+                        "distributed_operation"
+                    )
                 if not __supports_quantization and "quantization_operation" in kwargs:
-                    unsupported["quantization_operation"] = kwargs.pop("quantization_operation")
+                    unsupported["quantization_operation"] = kwargs.pop(
+                        "quantization_operation"
+                    )
                 result = __original_init(self, *args, **kwargs)
                 for name, value in unsupported.items():
                     if hasattr(self, name):
