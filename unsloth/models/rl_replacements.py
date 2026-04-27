@@ -807,7 +807,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             batch_size = math.ceil(total_samples / B)
             if isinstance(num_images, torch.Tensor):
                 num_images = num_images.detach().cpu().reshape(-1).tolist()
-            if image_grid_thw is not None and pixel_values is not None and num_images is not None:
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
                 rows_per_image = image_grid_thw.prod(dim = -1)
                 rows_per_sample = torch.split(rows_per_image, num_images)
                 rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
@@ -839,7 +843,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
                 image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
-                token_type_ids_chunks.append(slice_sample_axis(token_type_ids, start, end))
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
                 mm_token_type_ids_chunks.append(
                     slice_sample_axis(mm_token_type_ids, start, end)
                 )
