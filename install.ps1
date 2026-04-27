@@ -1066,7 +1066,10 @@ shell.Run cmd, 0, False
     if ($setupExit -ne 0) {
         Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
-        exit $setupExit
+        if ($TauriMode) {
+            exit $setupExit
+        }
+        return
     }
 
     # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──
