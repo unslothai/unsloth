@@ -96,7 +96,7 @@ function Install-UnslothStudio {
             Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
             Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
-            return
+            throw "UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri."
         }
     }
 
@@ -121,7 +121,7 @@ function Install-UnslothStudio {
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
             Write-Host "ERROR: STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
-            return
+            throw "STUDIO_HOME=$envOverride cannot be created or accessed."
         }
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
         try {
@@ -130,7 +130,7 @@ function Install-UnslothStudio {
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
             Write-Host "ERROR: STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
-            return
+            throw "STUDIO_HOME=$StudioHome is not writable."
         }
         $StudioDataDir = Join-Path $StudioHome "share"
         $StudioRedirectMode = 'env'
