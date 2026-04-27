@@ -684,9 +684,8 @@ class LLMWikiEngine:
             effective_preferred_context_only = True
 
         ranked = self._rank_pages(question)
-        exclude_analysis_pages = (
-            not self.cfg.include_analysis_pages_in_query
-            or (source_first_query and effective_preferred_context_page is not None)
+        exclude_analysis_pages = not self.cfg.include_analysis_pages_in_query or (
+            source_first_query and effective_preferred_context_page is not None
         )
         if exclude_analysis_pages:
             ranked = [item for item in ranked if not item[0].startswith("analysis/")]
@@ -1635,9 +1634,8 @@ class LLMWikiEngine:
             )
 
         if (
-            (updated_pages > 0 or int(link_repair_report.get("repaired_pages", 0)) > 0)
-            and not dry_run
-        ):
+            updated_pages > 0 or int(link_repair_report.get("repaired_pages", 0)) > 0
+        ) and not dry_run:
             repaired_scope = (
                 "maintained sections + Answer"
                 if repair_answer_links_enabled
@@ -1831,8 +1829,8 @@ class LLMWikiEngine:
                 )
                 continue
 
-            preferred_source_page, _source_chars = self._analysis_primary_source_context(
-                original_text
+            preferred_source_page, _source_chars = (
+                self._analysis_primary_source_context(original_text)
             )
 
             try:
@@ -2131,7 +2129,7 @@ class LLMWikiEngine:
         }
 
         if parsed is None:
-            failure_reason  = "llm_json_parse_failed"
+            failure_reason = "llm_json_parse_failed"
             if not raw_text:
                 failure_reason = "llm_empty_output"
             elif raw_text == prompt.strip() or raw_text.startswith(
@@ -2975,7 +2973,9 @@ class LLMWikiEngine:
             return True
         return bool(self._extract_primary_source_link_from_question(raw))
 
-    def _extract_primary_source_link_from_question(self, question: str) -> Optional[str]:
+    def _extract_primary_source_link_from_question(
+        self, question: str
+    ) -> Optional[str]:
         raw = str(question or "").strip()
         if not raw:
             return None
@@ -3011,15 +3011,15 @@ class LLMWikiEngine:
             return source_link, None
 
         try:
-            source_chars = len(
-                source_path.read_text(encoding = "utf-8", errors = "ignore")
-            )
+            source_chars = len(source_path.read_text(encoding = "utf-8", errors = "ignore"))
         except OSError:
             return source_link, None
 
         return source_link, source_chars
 
-    def _retry_initial_context_override(self, source_chars: Optional[int]) -> Optional[int]:
+    def _retry_initial_context_override(
+        self, source_chars: Optional[int]
+    ) -> Optional[int]:
         if self.cfg.query_context_max_chars > 0:
             return self.cfg.query_context_max_chars
 

@@ -1089,7 +1089,9 @@ def test_enrich_repairs_broken_links_only_in_maintenance_sections(tmp_path: Path
     # Safe mode: answer prose is not rewritten by link-repair maintenance.
     assert "[[concepts/ghost-answer-link]]" in updated
 
-    broken_targets = {item.get("target") for item in engine.lint().get("broken_links", [])}
+    broken_targets = {
+        item.get("target") for item in engine.lint().get("broken_links", [])
+    }
     assert "concepts/ghost-answer-link.md" in broken_targets
     assert "concepts/missing-context.md" not in broken_targets
     assert "entities/missing-enrichment.md" not in broken_targets
@@ -1138,7 +1140,9 @@ def test_enrich_can_repair_broken_links_in_answer_when_enabled(tmp_path: Path):
     assert "[[concepts/missing-context]]" not in updated
     assert "[[entities/missing-enrichment]]" not in updated
 
-    broken_targets = {item.get("target") for item in engine.lint().get("broken_links", [])}
+    broken_targets = {
+        item.get("target") for item in engine.lint().get("broken_links", [])
+    }
     assert "concepts/ghost-answer-link.md" not in broken_targets
     assert "concepts/missing-context.md" not in broken_targets
     assert "entities/missing-enrichment.md" not in broken_targets
@@ -1511,7 +1515,10 @@ def test_retry_fallback_analysis_pages_reduces_context_before_regeneration(
                 "preferred_context_only": preferred_context_only,
             }
         )
-        if query_context_max_chars_override is None or query_context_max_chars_override > 6000:
+        if (
+            query_context_max_chars_override is None
+            or query_context_max_chars_override > 6000
+        ):
             return {
                 "used_extractive_fallback": True,
                 "fallback_reason": "repetition",
