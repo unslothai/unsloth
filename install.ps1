@@ -1285,7 +1285,7 @@ shell.Run cmd, 0, False
     try {
         if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
-            New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+            New-Item -ItemType HardLink -LiteralPath $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
             Copy-Item -LiteralPath $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
         }

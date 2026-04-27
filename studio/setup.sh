@@ -406,7 +406,14 @@ case "$_studio_override" in
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
 esac
 if [ -n "$_studio_override" ]; then
-    mkdir -p -- "$_studio_override"
+    # setup.sh runs against an existing install (via 'unsloth studio update');
+    # a typo in UNSLOTH_STUDIO_HOME must fail fast instead of materializing
+    # an empty workspace dir. Mirrors setup.ps1 behavior.
+    if [ ! -d "$_studio_override" ]; then
+        echo "ERROR: UNSLOTH_STUDIO_HOME=$_studio_override does not exist." >&2
+        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
+        exit 1
+    fi
     [ -w "$_studio_override" ] || { echo "ERROR: UNSLOTH_STUDIO_HOME=$_studio_override is not writable." >&2; exit 1; }
     STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
 else
