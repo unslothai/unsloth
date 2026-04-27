@@ -436,6 +436,30 @@ class TestSourcePatternsSh:
                     f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}"
                 )
 
+    def _rocm_build_block(self) -> str:
+        start = self.content.index('elif [ "$GPU_BACKEND" = "rocm" ]; then')
+        end = self.content.index(
+            'elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then',
+            start,
+        )
+        return self.content[start:end]
+
+    def test_rocm_block_does_not_force_rocm_or_hip_path_exports(self):
+        """Regression for #5093: avoid forcing ROCM/HIP path exports in source build."""
+        rocm_block = self._rocm_build_block()
+        assert 'export ROCM_PATH="$ROCM_ROOT"' not in rocm_block
+        assert 'export HIP_PATH="$ROCM_ROOT"' not in rocm_block
+
+    def test_rocm_block_keeps_hip_backend_enablement(self):
+        """The #5093 fix should not change HIP backend activation behavior."""
+        rocm_block = self._rocm_build_block()
+        assert 'CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"' in rocm_block
+
+    def test_rocm_block_keeps_hipcxx_export(self):
+        """The #5093 fix should keep upstream-aligned HIPCXX compiler selection."""
+        rocm_block = self._rocm_build_block()
+        assert 'export HIPCXX="$_HIP_CLANG_DIR/clang"' in rocm_block
+
 
 # =========================================================================
 # TEST GROUP E: Static source patterns -- setup.ps1
