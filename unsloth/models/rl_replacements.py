@@ -120,6 +120,98 @@ def dpo_trainer_fix_columns(call_args, extra_args):
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 
+def dpo_trainer_vision_process_row(
+    features,
+    processing_class,
+    max_prompt_length = None,
+    max_completion_length = None,
+    add_special_tokens = True,
+    is_chat = False,
+):
+    processor, tokenizer = processing_class, processing_class.tokenizer
+    processed_features = processor(
+        images = features["images"],
+        text = features["prompt"],
+        add_special_tokens = False,
+    )
+
+    prompt_input_ids = processed_features["input_ids"][0]
+    pixel_values = processed_features["pixel_values"][0]
+    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)["input_ids"]
+    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)["input_ids"]
+
+    if add_special_tokens:
+        if tokenizer.bos_token_id is not None:
+            prompt_input_ids = [tokenizer.bos_token_id] + prompt_input_ids
+        if tokenizer.eos_token_id is not None:
+            prompt_input_ids = prompt_input_ids + [tokenizer.eos_token_id]
+    if not is_chat:
+        chosen_input_ids = chosen_input_ids + [tokenizer.eos_token_id]
+        rejected_input_ids = rejected_input_ids + [tokenizer.eos_token_id]
+
+    if max_prompt_length is not None:
+        prompt_input_ids = prompt_input_ids[-max_prompt_length:]
+    if max_completion_length is not None:
+        chosen_input_ids = chosen_input_ids[:max_completion_length]
+        rejected_input_ids = rejected_input_ids[:max_completion_length]
+
+    output = {
+        "prompt_input_ids": prompt_input_ids,
+        "pixel_values": pixel_values,
+        "chosen_input_ids": chosen_input_ids,
+        "rejected_input_ids": rejected_input_ids,
+    }
+    if "pixel_attention_mask" in processed_features:
+        output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
+    if "image_sizes" in processed_features:
+        output["image_sizes"] = processed_features["image_sizes"][0]
+    if "token_type_ids" in processed_features:
+        output["token_type_ids"] = processed_features["token_type_ids"][0]
+
+    return output
+
+
+def dpo_trainer_prepare_dataset(function_name, function):
+    if function_name != "_prepare_dataset":
+        return function
+
+    legacy_call = "self.tokenize_row if not self.is_vision_model else self.process_row"
+    if legacy_call not in function:
+        return function
+
+    function = function.replace(
+        legacy_call,
+        "self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row",
+    )
+
+    legacy_tokenize_block = (
+        "            # Tokenize the dataset\n"
+        '            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n'
+        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
+        "\n"
+        "            dataset = dataset.map(\n"
+        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
+    )
+    patched_tokenize_block = (
+        "            # Tokenize the dataset\n"
+        '            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n'
+        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
+        "            if self.is_vision_model:\n"
+        "                map_kwargs.pop(\"num_proc\", None)\n"
+        "                map_kwargs.pop(\"writer_batch_size\", None)\n"
+        "\n"
+        "            dataset = dataset.map(\n"
+        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
+    )
+    if legacy_tokenize_block in function:
+        function = function.replace(legacy_tokenize_block, patched_tokenize_block, 1)
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
+
+
 # Fix tokenizer double BOS
 def sft_trainer_prepare_dataset(function_name, function):
     if (
