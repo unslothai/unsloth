@@ -56,6 +56,7 @@ RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
 
 _DPO_VISION_KEYS = (
+    "pixel_position_ids",
     "image_position_ids",
     "mm_token_type_ids",
 )
@@ -155,7 +156,6 @@ def dpo_trainer_vision_process_row(
     add_special_tokens = True,
     is_chat = False,
 ):
-    _vision_keys = ("image_position_ids", "mm_token_type_ids")
     vision_token = getattr(processing_class, "image_token", None)
     text = features["prompt"]
     if (
@@ -204,7 +204,15 @@ def dpo_trainer_vision_process_row(
         output["image_sizes"] = processed_features["image_sizes"][0]
     if "token_type_ids" in processed_features:
         output["token_type_ids"] = processed_features["token_type_ids"][0]
-    for _k in _vision_keys:
+
+    pixel_position_ids = processed_features.get("pixel_position_ids")
+    if pixel_position_ids is None:
+        pixel_position_ids = processed_features.get("image_position_ids")
+
+    if torch.is_tensor(pixel_position_ids):
+        output["pixel_position_ids"] = pixel_position_ids[0]
+
+    for _k in ("image_position_ids", "mm_token_type_ids"):
         if _k in processed_features:
             output[_k] = processed_features[_k][0]
 
