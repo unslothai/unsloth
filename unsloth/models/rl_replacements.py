@@ -120,6 +120,28 @@ def dpo_trainer_fix_columns(call_args, extra_args):
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 
+def dpo_trainer_fix_data_collator(call_args, extra_args):
+    if (
+        "data_collator" in call_args
+        and "train_dataset" in call_args
+        and "processing_class" in call_args
+    ):
+        fix_collator = (
+            "if hasattr(train_dataset, 'column_names'):\n"
+            "    column_names = set(train_dataset.column_names)\n"
+            "    is_dpo_dataset = ({'chosen', 'rejected'}.issubset(column_names) or\n"
+            "                      {'prompt_input_ids', 'chosen_input_ids', 'rejected_input_ids'}.issubset(column_names))\n"
+            "    if is_dpo_dataset and isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
+            "        data_collator = None\n"
+            "    del is_dpo_dataset, column_names\n"
+        )
+        return fix_collator
+    return ""
+
+
+RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_data_collator)
+
+
 def dpo_trainer_vision_process_row(
     features,
     processing_class,
