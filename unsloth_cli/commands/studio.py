@@ -36,7 +36,7 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
-    override = os.environ.get("UNSLOTH_STUDIO_HOME")
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if override:
         try:
             return Path(override).expanduser().resolve(), True

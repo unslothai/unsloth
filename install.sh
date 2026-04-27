@@ -1113,8 +1113,10 @@ _MIGRATED=false
 if [ -x "$VENV_DIR/bin/python" ]; then
     # New layout already exists — nuke for fresh install
     rm -rf "$VENV_DIR"
-elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
-    # Old layout exists — validate before migrating
+elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
+    # Old layout exists — validate before migrating.
+    # Skip in env-mode so we don't rm -rf an unrelated .venv at the
+    # workspace root (e.g. user's existing project Python venv).
     substep "found legacy Studio environment, validating..."
     if "$STUDIO_HOME/.venv/bin/python" -c "
 import torch

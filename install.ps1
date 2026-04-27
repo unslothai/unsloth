@@ -904,8 +904,13 @@ shell.Run cmd, 0, False
         # New layout already exists -- nuke for fresh install
         substep "removing existing environment for fresh install..."
         Remove-Item -LiteralPath $VenvDir -Recurse -Force
-    } elseif (Test-Path -LiteralPath (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
-        # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating
+    } elseif (
+        $StudioRedirectMode -ne 'env' `
+        -and (Test-Path -LiteralPath (Join-Path $StudioHome ".venv\Scripts\python.exe"))
+    ) {
+        # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating.
+        # Skip in env-mode so we don't blow away an unrelated .venv at the
+        # workspace root (e.g. user's existing project Python venv).
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
         substep "found legacy Studio environment, validating..."
@@ -1285,7 +1290,10 @@ shell.Run cmd, 0, False
     try {
         if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
-            New-Item -ItemType HardLink -LiteralPath $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
+            # New-Item -ItemType HardLink does NOT accept -LiteralPath in any
+            # PowerShell version, so use -Path. Bracket characters in $ShimExe
+            # are guarded by the directory-collision preflight earlier.
+            New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
             Copy-Item -LiteralPath $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
         }

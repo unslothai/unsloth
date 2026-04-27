@@ -37,7 +37,7 @@ def studio_root() -> Path:
     ~/.unsloth/studio. STUDIO_HOME is intentionally NOT honored -- the name
     is too generic and could be set in the user shell by unrelated tooling.
     """
-    override = os.environ.get("UNSLOTH_STUDIO_HOME")
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if override:
         try:
             return Path(override).expanduser().resolve()
