@@ -1480,9 +1480,10 @@ class LLMWikiEngine:
                     if self._analysis_page_uses_fallback(updated_text):
                         fallback_still += 1
                         status_value = "fallback_still"
-                        fallback_reason = self._extract_analysis_fallback_reason(
-                            updated_text
-                        ) or fallback_reason
+                        fallback_reason = (
+                            self._extract_analysis_fallback_reason(updated_text)
+                            or fallback_reason
+                        )
                     else:
                         page_path.write_text(updated_text, encoding = "utf-8")
                         regenerated_pages += 1
