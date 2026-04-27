@@ -1025,6 +1025,81 @@ class TestMinGpuVram(unittest.TestCase):
 
 
 class TestPerGpuFitGuardAllCounts(unittest.TestCase):
+    def test_training_estimate_resolves_attention_without_raising(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (8 * (1024**3), "config"),
+            ),
+            patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                return_value = "unsloth/test",
+            ),
+            patch(
+                "utils.hardware.hardware._load_config_for_gpu_estimate",
+                return_value = SimpleNamespace(
+                    hidden_size = 4096,
+                    num_hidden_layers = 32,
+                    num_attention_heads = 32,
+                    num_key_value_heads = 8,
+                    intermediate_size = 14336,
+                    vocab_size = 128256,
+                    tie_word_embeddings = False,
+                ),
+            ),
+            patch("utils.hardware.hardware.get_visible_gpu_count", return_value = 1),
+        ):
+            _, metadata = estimate_required_model_memory_gb(
+                "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                load_in_4bit = True,
+            )
+
+        self.assertEqual(metadata.get("estimation_mode"), "detailed")
+        self.assertEqual(metadata.get("attention_implementation"), "eager")
+
+    def test_training_estimate_falls_back_when_attention_resolution_fails(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (8 * (1024**3), "config"),
+            ),
+            patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                return_value = "unsloth/test",
+            ),
+            patch(
+                "utils.hardware.hardware._load_config_for_gpu_estimate",
+                return_value = SimpleNamespace(
+                    hidden_size = 4096,
+                    num_hidden_layers = 32,
+                    num_attention_heads = 32,
+                    num_key_value_heads = 8,
+                    intermediate_size = 14336,
+                    vocab_size = 128256,
+                    tie_word_embeddings = False,
+                ),
+            ),
+            patch(
+                "utils.hardware.hardware._determine_attention_impl_for_gpu_estimate",
+                side_effect = RuntimeError("attention unavailable"),
+            ),
+            patch("utils.hardware.hardware.get_visible_gpu_count", return_value = 1),
+        ):
+            _, metadata = estimate_required_model_memory_gb(
+                "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                load_in_4bit = True,
+            )
+
+        self.assertEqual(metadata.get("estimation_mode"), "detailed")
+        self.assertEqual(
+            metadata.get("attention_implementation"),
+            "flash_attention_2",
+        )
+
     def test_min_per_gpu_generated_for_all_visible_counts(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),

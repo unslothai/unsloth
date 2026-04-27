@@ -99,12 +99,12 @@ When the resolved attention implementation is not `flash_attention_2`,
 activation memory also includes a quadratic attention-score/workspace estimate:
 
 ```
-Non_flash_attention = B * num_attention_heads * S^2 * 2 * 12.0
+Non_flash_attention = B * num_attention_heads * S^2 * 2 * 12.0 * effective_layers
 Activations = max(Per_layer_with_gc, Non_flash_attention)
 ```
 
 Studio resolves the attention implementation with Unsloth's
-`determine_attention_implementation` helper and uses that result directly. The
+`resolve_attention_implementation` helper and uses that result directly. The
 estimator does not duplicate model-family attention policy.
 
 | GC Mode | Full FT | LoRA/QLoRA |

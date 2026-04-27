@@ -414,8 +414,16 @@ def _build_text_module_elements(
             layer_modules[f"self_attn.{name}"] = in_dim * out_dim
 
         if arch.num_experts and arch.num_experts > 1:
-            mlp_total = _compute_moe_mlp_elements(arch)
-            layer_modules["mlp"] = mlp_total
+            if layer_idx < arch.num_dense_layers:
+                layer_modules.update(
+                    {
+                        f"mlp.{name}": in_dim * out_dim
+                        for name, (in_dim, out_dim) in mlp_dims.items()
+                    }
+                )
+            else:
+                mlp_total = _compute_moe_mlp_elements(arch)
+                layer_modules["mlp"] = mlp_total
         else:
             layer_modules.update(
                 {
@@ -528,7 +536,6 @@ def _compute_layer_elements(arch: ModelArchConfig):
 
     if _uses_structured_layer_shapes(arch):
         attn_total = 0
-        mlp_total = 0
         for layer_idx in range(n_layers):
             for name, (in_dim, out_dim) in _text_linear_dims(
                 arch,
@@ -537,8 +544,22 @@ def _compute_layer_elements(arch: ModelArchConfig):
                 elements = in_dim * out_dim
                 if name in ATTENTION_TARGET_MODULES:
                     attn_total += elements
-                elif name in MLP_TARGET_MODULES:
-                    mlp_total += elements
+        if n_experts > 1:
+            n_dense = arch.num_dense_layers
+            n_moe = n_layers - n_dense
+            mlp_total = (
+                _compute_moe_mlp_elements(arch) * n_moe
+                + _compute_dense_mlp_elements(arch) * n_dense
+            )
+        else:
+            mlp_total = 0
+            for layer_idx in range(n_layers):
+                for name, (in_dim, out_dim) in _text_linear_dims(
+                    arch,
+                    layer_idx,
+                ).items():
+                    if name in MLP_TARGET_MODULES:
+                        mlp_total += in_dim * out_dim
     elif n_experts > 1:
         attn_total = _compute_attn_elements(arch) * n_layers
         n_dense = arch.num_dense_layers
@@ -656,15 +677,39 @@ def compute_lora_params(
 
     use_structured_shapes = _uses_structured_layer_shapes(arch)
     if use_structured_shapes:
-        total = 0
+        attn_total = 0
+        mlp_total = 0
         for layer_idx in range(n_layers):
             for name, (in_dim, out_dim) in _text_linear_dims(
                 arch,
                 layer_idx,
             ).items():
-                if name in selected_modules:
-                    total += in_dim * r + r * out_dim
-        return total
+                if name not in selected_modules:
+                    continue
+                if name in ATTENTION_TARGET_MODULES:
+                    attn_total += in_dim * r + r * out_dim
+                elif name in MLP_TARGET_MODULES and n_experts <= 1:
+                    mlp_total += in_dim * r + r * out_dim
+        if n_experts > 1:
+            n_dense = arch.num_dense_layers
+            n_moe = n_layers - n_dense
+            moe_expert_mult = n_experts + arch.n_shared_experts
+            moe_mlp = _lora_mlp_elements(
+                hd,
+                _get_mlp_size(arch),
+                r,
+                selected_modules,
+                moe_expert_mult,
+            )
+            dense_mlp = _lora_mlp_elements(
+                hd,
+                arch.intermediate_size,
+                r,
+                selected_modules,
+                1,
+            )
+            mlp_total = moe_mlp * n_moe + dense_mlp * n_dense
+        return attn_total + mlp_total
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
@@ -724,9 +769,10 @@ def _compute_non_flash_attention_bytes(
     arch: ModelArchConfig,
     batch_size: int,
     seq_len: int,
+    effective_layers: float,
 ) -> int:
     score_elements = batch_size * arch.num_attention_heads * seq_len * seq_len
-    return int(score_elements * 2 * NON_FLASH_ATTENTION_FACTOR)
+    return int(score_elements * 2 * NON_FLASH_ATTENTION_FACTOR * effective_layers)
 
 
 def compute_activation_bytes(
@@ -764,7 +810,12 @@ def compute_activation_bytes(
     if not _is_flash_attention(attention_implementation):
         return max(
             linear_bytes,
-            _compute_non_flash_attention_bytes(arch, batch_size, seq_len),
+            _compute_non_flash_attention_bytes(
+                arch,
+                batch_size,
+                seq_len,
+                effective_layers,
+            ),
         )
     return linear_bytes
 

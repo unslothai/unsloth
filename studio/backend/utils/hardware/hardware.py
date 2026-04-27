@@ -775,7 +775,7 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
 
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
-    from unsloth.models._utils import determine_attention_implementation
+    from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
 
     model_class = None
@@ -784,7 +784,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
             model_class = auto_model._model_mapping[config.__class__]
             break
 
-    return determine_attention_implementation(model_class, config)
+    return resolve_attention_implementation(model_class, config)
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
@@ -940,9 +940,16 @@ def estimate_required_model_memory_gb(
     )
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     if config is not None:
-        vram_config.attention_implementation = (
-            _determine_attention_impl_for_gpu_estimate(config)
-        )
+        try:
+            vram_config.attention_implementation = (
+                _determine_attention_impl_for_gpu_estimate(config)
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not resolve attention implementation for '%s': %s",
+                estimate_model,
+                e,
+            )
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:

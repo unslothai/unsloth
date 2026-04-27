@@ -325,6 +325,18 @@ class TestLoraParams(unittest.TestCase):
         ratio = moe_lora / dense_lora
         self.assertAlmostEqual(ratio, 8.0, delta = 0.5)
 
+    def test_structured_moe_mlp_modules_scale_with_experts(self):
+        structured_moe = replace(QWEN3_MOE_30B, head_dim = 128)
+        dense_like = replace(
+            structured_moe,
+            num_experts = None,
+            moe_intermediate_size = None,
+        )
+        target_modules = ["gate_proj", "up_proj", "down_proj"]
+        dense_lora = compute_lora_params(dense_like, 16, target_modules)
+        moe_lora = compute_lora_params(structured_moe, 16, target_modules)
+        self.assertGreater(moe_lora, dense_lora * 20)
+
     def test_attention_modules_same_for_moe(self):
         dense_attn = compute_lora_params(
             LLAMA_8B, 16, ["q_proj", "k_proj", "v_proj", "o_proj"]
@@ -450,6 +462,22 @@ class TestActivationBytes(unittest.TestCase):
                 )
                 self.assertEqual(non_flash, int(expected_quadratic))
 
+    def test_non_flash_attention_without_gc_scales_quadratic_path_by_layers(self):
+        seq_len = 4096
+        one_layer = (
+            1 * STRUCTURED_MIXED.num_attention_heads * seq_len * seq_len * 2 * 12.0
+        )
+        non_flash = compute_activation_bytes(
+            STRUCTURED_MIXED,
+            1,
+            seq_len,
+            "none",
+            is_lora = True,
+            attention_implementation = "eager",
+        )
+        self.assertEqual(non_flash, int(one_layer * STRUCTURED_MIXED.num_hidden_layers))
+        self.assertGreater(non_flash, int(one_layer))
+
 
 class TestQuantizationSkips(unittest.TestCase):
     def test_skipped_language_layers_stay_fp16(self):
@@ -475,6 +503,24 @@ class TestQuantizationSkips(unittest.TestCase):
         self.assertLess(
             compute_model_weights_bytes(double_quant, "qlora", True),
             compute_model_weights_bytes(default_quant, "qlora", True),
+        )
+
+    def test_prefixed_parent_and_child_skips_do_not_double_count(self):
+        parent_only = replace(
+            QUANT_SKIP_STRUCTURED,
+            quantization_skip_modules = ["language_model.model.layers.1.mlp"],
+        )
+        parent_and_child = replace(
+            QUANT_SKIP_STRUCTURED,
+            quantization_skip_modules = [
+                "language_model.model.layers.1.mlp",
+                "language_model.model.layers.1.mlp.gate_proj",
+                "model.layers.1.mlp.up_proj",
+            ],
+        )
+        self.assertEqual(
+            compute_model_weights_bytes(parent_and_child, "qlora", True),
+            compute_model_weights_bytes(parent_only, "qlora", True),
         )
 
 
@@ -723,11 +769,16 @@ class TestExtractArchConfigMoE(unittest.TestCase):
             moe_intermediate_size = 768,
             decoder_sparse_step = 1,
             mlp_only_layers = [],
+            head_dim = 128,
         )
         arch = extract_arch_config(hf_config)
         self.assertEqual(arch.num_experts, 128)
         self.assertEqual(arch.num_dense_layers, 0)
+        self.assertEqual(arch.head_dim, 128)
         self.assertIsNone(arch.q_lora_rank)
+        total_b = compute_total_params(arch) / 1e9
+        self.assertGreater(total_b, 20)
+        self.assertLess(total_b, 50)
 
     def test_qwen3_moe_with_mlp_only_layers(self):
         hf_config = SimpleNamespace(
