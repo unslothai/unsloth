@@ -75,6 +75,7 @@ class LoggingMiddleware:
                 "request_failed",
                 path = path,
                 method = scope["method"],
+                status_code = status_code,
                 error = str(exc),
                 exc_info = True,
             )
