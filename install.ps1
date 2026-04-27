@@ -1272,14 +1272,17 @@ shell.Run cmd, 0, False
     $ShimDir = Join-Path $StudioHome "bin"
     [System.IO.Directory]::CreateDirectory($ShimDir) | Out-Null
     $ShimExe = Join-Path $ShimDir "unsloth.exe"
+    # Fatal preflight outside the lock-handling try/catch -- a directory at
+    # the shim path must not be downgraded to "Continuing with the existing
+    # launcher", or the install finishes with no usable shim.
+    if (Test-Path -LiteralPath $ShimExe -PathType Container) {
+        Write-Host "[ERROR] Cannot create unsloth launcher: $ShimExe is a directory." -ForegroundColor Red
+        Write-Host "        Move or remove it manually, then re-run the installer." -ForegroundColor Yellow
+        throw "Cannot create unsloth launcher: $ShimExe is a directory."
+    }
     # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
     $shimUpdated = $false
     try {
-        # Refuse to recursively delete a directory at the shim path -- that
-        # would destroy unrelated user data on env-override roots.
-        if (Test-Path -LiteralPath $ShimExe -PathType Container) {
-            throw "Cannot create unsloth launcher: $ShimExe is a directory. Move or remove it, then re-run the installer."
-        }
         if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null

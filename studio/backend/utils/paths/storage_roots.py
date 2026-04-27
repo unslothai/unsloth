@@ -25,7 +25,7 @@ def _infer_studio_home_from_venv() -> Path | None:
     shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
     if (candidate / "share" / "studio.conf").is_file() or (
         candidate / "bin" / shim_name
-    ).exists():
+    ).is_file():
         return candidate
     return None
 
@@ -39,7 +39,10 @@ def studio_root() -> Path:
     """
     override = os.environ.get("UNSLOTH_STUDIO_HOME")
     if override:
-        return Path(override).expanduser().resolve()
+        try:
+            return Path(override).expanduser().resolve()
+        except (OSError, ValueError):
+            return Path(override).expanduser()
     inferred = _infer_studio_home_from_venv()
     if inferred is not None:
         return inferred

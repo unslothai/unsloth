@@ -32,13 +32,16 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
     return (candidate / "share" / "studio.conf").is_file() or (
         candidate / "bin" / shim_name
-    ).exists()
+    ).is_file()
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
     override = os.environ.get("UNSLOTH_STUDIO_HOME")
     if override:
-        return Path(override).expanduser().resolve(), True
+        try:
+            return Path(override).expanduser().resolve(), True
+        except (OSError, ValueError):
+            return Path(override).expanduser(), True
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
