@@ -801,17 +801,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     return None
                 return value[start:end]
 
-            def to_num_images_list(value):
-                if value is None:
-                    return None
-                if isinstance(value, torch.Tensor):
-                    value = value.detach().cpu().reshape(-1).tolist()
-                return [int(x) for x in value]
-
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
+            if isinstance(num_images, torch.Tensor):
+                num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if image_grid_thw is not None and pixel_values is not None and num_images is not None:
+                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_sample = torch.split(rows_per_image, num_images)
+                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                cum_rows = torch.cat(
+                    [
+                        torch.tensor([0], device = rows_per_sample.device),
+                        rows_per_sample.cumsum(0),
+                    ]
+                )
+                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+            else:
+                cum_rows = None
+                cum_imgs = None
 
             input_ids_chunks = []
             attention_mask_chunks = []
@@ -823,8 +832,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
-            current_image_idx = 0
-            num_images_list = to_num_images_list(num_images)
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
                 end = min(start + batch_size, total_samples)
@@ -838,38 +845,29 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    if num_images_list is None:
+                    if num_images is None:
                         grid_slice = image_grid_thw[start:end]
+                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        start_pixel_idx = current_pixel_idx
+                        end_pixel_idx = current_pixel_idx + batch_pixel_count
+                        current_pixel_idx = end_pixel_idx
                     else:
-                        image_count = sum(num_images_list[start:end])
-                        image_start = current_image_idx
-                        image_end = current_image_idx + image_count
-                        grid_slice = image_grid_thw[image_start:image_end]
-                        current_image_idx = image_end
+                        start_pixel_idx = cum_rows[start].item()
+                        end_pixel_idx = cum_rows[end].item()
+                        img_start, img_end = cum_imgs[start], cum_imgs[end]
+                        grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
-
-                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-
-                    start_pixel_idx = current_pixel_idx
-                    end_pixel_idx = current_pixel_idx + batch_pixel_count
 
                     pixel_values_chunks.append(
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
                     if pixel_attention_mask is not None:
-                        if pixel_attention_mask.shape[0] == pixel_values.shape[0]:
-                            pixel_attention_mask_chunks.append(
-                                pixel_attention_mask[start_pixel_idx:end_pixel_idx]
-                            )
-                        else:
-                            pixel_attention_mask_chunks.append(
-                                slice_sample_axis(pixel_attention_mask, start, end)
-                            )
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
                     else:
                         pixel_attention_mask_chunks.append(None)
-
-                    current_pixel_idx = end_pixel_idx
 
                 else:
                     pixel_values_chunks.append(None)
