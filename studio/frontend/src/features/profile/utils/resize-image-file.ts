@@ -3,6 +3,10 @@
 
 const MAX_EDGE = 256;
 const MAX_BYTES = 380_000;
+const JPEG_QUALITY_START = 0.88;
+const WEBP_QUALITY_START = 0.9;
+const MIN_QUALITY = 0.45;
+const QUALITY_STEP = 0.08;
 
 function loadImage(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -20,8 +24,32 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
+function canvasHasTransparency(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
+  const { data } = ctx.getImageData(0, 0, width, height);
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) return true;
+  }
+  return false;
+}
+
+function encodeCanvasWithinLimit(
+  canvas: HTMLCanvasElement,
+  mimeType: string,
+  startQuality: number,
+): string | null {
+  let quality = startQuality;
+  let dataUrl = canvas.toDataURL(mimeType, quality);
+
+  while (dataUrl.length > MAX_BYTES * 1.35 && quality > MIN_QUALITY) {
+    quality -= QUALITY_STEP;
+    dataUrl = canvas.toDataURL(mimeType, quality);
+  }
+
+  return dataUrl.length <= MAX_BYTES * 1.35 ? dataUrl : null;
+}
+
 /**
- * Downscale and re-encode as JPEG so localStorage stays within reasonable size.
+ * Downscale the image and keep transparency when present while staying localStorage-friendly.
  */
 export async function resizeImageFileToDataUrl(file: File): Promise<string> {
   const img = await loadImage(file);
@@ -40,14 +68,14 @@ export async function resizeImageFileToDataUrl(file: File): Promise<string> {
   if (!ctx) throw new Error("Canvas not available");
   ctx.drawImage(img, 0, 0, cw, ch);
 
-  let quality = 0.88;
-  let dataUrl = canvas.toDataURL("image/jpeg", quality);
-  while (dataUrl.length > MAX_BYTES * 1.35 && quality > 0.45) {
-    quality -= 0.08;
-    dataUrl = canvas.toDataURL("image/jpeg", quality);
+  const hasTransparency = canvasHasTransparency(ctx, cw, ch);
+  if (hasTransparency) {
+    const webpDataUrl = encodeCanvasWithinLimit(canvas, "image/webp", WEBP_QUALITY_START);
+    if (webpDataUrl) return webpDataUrl;
   }
-  if (dataUrl.length > MAX_BYTES * 1.35) {
-    throw new Error("Image is still too large after compression. Try a smaller file.");
-  }
-  return dataUrl;
+
+  const jpegDataUrl = encodeCanvasWithinLimit(canvas, "image/jpeg", JPEG_QUALITY_START);
+  if (jpegDataUrl) return jpegDataUrl;
+
+  throw new Error("Image is still too large after compression. Try a smaller file.");
 }
