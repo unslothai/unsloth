@@ -582,7 +582,9 @@ def _model_supports_unsloth_return_hidden_states(model):
             continue
         if getattr(candidate, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
             return True
-        if getattr(type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
+        if getattr(
+            type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False
+        ):
             return True
         forward = getattr(candidate, "forward", None)
         if _source_supports_unsloth_return_hidden_states(forward):
