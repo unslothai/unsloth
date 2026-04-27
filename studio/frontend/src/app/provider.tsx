@@ -9,12 +9,13 @@ import {
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { useRouterState } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 interface AppProviderProps {
   children: ReactNode;
@@ -141,6 +142,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
   const hasResized = useRef(false);
   const abortRef = useRef(false);
+  const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
+  const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
 
   // Show the window once the frontend mounts (for pre-running states)
   useEffect(() => {
@@ -163,20 +166,56 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => { abortRef.current = true; };
   }, [status]);
 
+  useEffect(() => {
+    if (!isTauri) {
+      setDesktopAuthReady(true);
+      return;
+    }
+    if (status !== "running") {
+      setDesktopAuthReady(false);
+      setDesktopAuthRetry(0);
+      return;
+    }
+
+    let disposed = false;
+    setDesktopAuthReady(false);
+    tauriAutoAuth({ force: true }).then((authenticated) => {
+      if (disposed) return;
+      if (authenticated) {
+        setDesktopAuthReady(true);
+        return;
+      }
+      if (!getTauriAuthFailure()) {
+        window.setTimeout(() => {
+          if (!disposed) setDesktopAuthRetry((value) => value + 1);
+        }, 500);
+      }
+    });
+
+    return () => { disposed = true; };
+  }, [status, desktopAuthRetry]);
+
   if (!isTauri) return <>{children}</>;
 
-  const content = status === "running" ? (
+  const showApp = status === "running" && desktopAuthReady;
+  const startupStatus = status === "running" ? "starting" : status;
+  const startupProgressDetail =
+    status === "running" && !desktopAuthReady
+      ? "Signing in to desktop session..."
+      : progressDetail;
+
+  const content = showApp ? (
     <>
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       {children}
     </>
   ) : (
     <StartupScreen
-      status={status}
+      status={startupStatus}
       logs={logs}
       error={error}
       currentStepIndex={currentStepIndex}
-      progressDetail={progressDetail}
+      progressDetail={startupProgressDetail}
       elevationPackages={elevationPackages}
       onInstall={startInstall}
       onRetry={retry}
@@ -189,7 +228,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   if (!shouldUseCustomWindowTitlebar()) return content;
 
   const showSidebarSurface =
-    status === "running" && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+    showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background [--studio-titlebar-height:34px]">
