@@ -447,9 +447,18 @@ export function ChatSettingsPanel({
       if (activePresetDefinition == null) {
         return false;
       }
+      if (BUILTIN_PRESET_NAMES.has(activePresetDefinition.name)) {
+        if (activePresetDefinition.name === "Default") {
+          return activePresetSource === "modified";
+        }
+        return (
+          activePresetSource === "modified" ||
+          !isSamePresetConfig(activePresetDefinition.params, params)
+        );
+      }
       return !isSamePresetConfig(activePresetDefinition.params, params);
     },
-    [activePresetDefinition, params],
+    [activePresetDefinition, activePresetSource, params],
   );
   const presetSaveState = useMemo(
     () =>
@@ -579,11 +588,20 @@ export function ChatSettingsPanel({
     if (presets.some((preset) => preset.name === activePreset)) {
       const expectedSource = getPresetSource(activePreset);
       if (activePresetDefinition != null) {
-        const matchesActivePreset = isSamePresetConfig(
-          activePresetDefinition.params,
-          params,
-        );
         if (BUILTIN_PRESET_NAMES.has(activePresetDefinition.name)) {
+          if (activePresetDefinition.name === "Default") {
+            if (
+              activePresetSource !== "modified" &&
+              activePresetSource !== expectedSource
+            ) {
+              setActivePresetSource(expectedSource);
+            }
+            return;
+          }
+          const matchesActivePreset = isSamePresetConfig(
+            activePresetDefinition.params,
+            params,
+          );
           const nextSource = matchesActivePreset ? expectedSource : "modified";
           if (activePresetSource !== nextSource) {
             setActivePresetSource(nextSource);
