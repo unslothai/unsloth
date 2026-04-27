@@ -1456,8 +1456,8 @@ if (-not $PythonCmd) {
 substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
 # The venv must already exist (created by install.ps1); this script only
-# updates packages. UNSLOTH_STUDIO_HOME / STUDIO_HOME override the root.
-$_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
+# updates packages. UNSLOTH_STUDIO_HOME overrides the root.
+$_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $null }
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
         $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))

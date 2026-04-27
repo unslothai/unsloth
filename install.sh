@@ -7,8 +7,8 @@
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 # Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
-#   UNSLOTH_STUDIO_HOME / STUDIO_HOME=/abs/path -> install under that path
+# Env vars (priority: UNSLOTH_STUDIO_HOME > HOME-redirect > default):
+#   UNSLOTH_STUDIO_HOME=/abs/path -> install under that path
 #   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append).
 # Default ($HOME/.unsloth/studio) is preserved when no env var is set.
 set -e
@@ -74,7 +74,7 @@ fi
 # Custom Studio roots are not supported with --tauri (desktop app still
 # resolves ~/.unsloth/studio). Pass through if the override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
-    _tauri_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+    _tauri_override="${UNSLOTH_STUDIO_HOME:-}"
     if [ -n "$_tauri_override" ]; then
         case "$_tauri_override" in
             "~") _tauri_override="$HOME" ;;
@@ -103,7 +103,7 @@ if [ "$TAURI_MODE" = true ]; then
             _tauri_legacy_root=${_tauri_legacy_root%/}
         done
         if [ "$_tauri_override_abs" != "$_tauri_legacy_root" ]; then
-            echo "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." >&2
+            echo "ERROR: UNSLOTH_STUDIO_HOME is not supported with --tauri." >&2
             echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
             echo "       Run install.sh without --tauri for custom-root shell installs," >&2
             echo "       or unset the env var for default desktop installs." >&2
@@ -213,20 +213,20 @@ PYTHON_VERSION=""  # resolved after platform detection
 # Resolve install destinations: env override, HOME-redirect (best-effort
 # via getent/dscl), or default.
 _resolve_studio_destinations() {
-    _override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+    _override="${UNSLOTH_STUDIO_HOME:-}"
     # Tilde expansion: env vars are not subject to it when quoted on assignment.
     case "$_override" in
         "~") _override="$HOME" ;;
         "~/"*) _override="$HOME/${_override#'~/'}" ;;
     esac
     if [ -n "$_override" ]; then
-        mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
-        [ -w "$_override" ] || { echo "ERROR: STUDIO_HOME=$_override is not writable." >&2; exit 1; }
+        mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: UNSLOTH_STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
+        [ -w "$_override" ] || { echo "ERROR: UNSLOTH_STUDIO_HOME=$_override is not writable." >&2; exit 1; }
         STUDIO_HOME="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
         DATA_DIR="$STUDIO_HOME/share"
         _LOCAL_BIN="$STUDIO_HOME/bin"
         _STUDIO_HOME_REDIRECT=env
-        substep "custom STUDIO_HOME=$STUDIO_HOME"
+        substep "custom UNSLOTH_STUDIO_HOME=$STUDIO_HOME"
         return 0
     fi
     _default_home=""
@@ -1805,9 +1805,16 @@ fi
 # Env-mode: $_LOCAL_BIN is $STUDIO_HOME/bin; skip shell-rc PATH append so we
 # don't pollute the user's profile with a workspace-scoped path.
 mkdir -p "$_LOCAL_BIN"
-# ln -sf into an existing dir creates link inside it; nuke any directory first.
-[ -d "$_LOCAL_BIN/unsloth" ] && [ ! -L "$_LOCAL_BIN/unsloth" ] && rm -rf -- "$_LOCAL_BIN/unsloth"
-ln -sf "$VENV_DIR/bin/unsloth" "$_LOCAL_BIN/unsloth"
+# ln -sf into an existing dir creates link inside it. Refuse to delete a
+# real directory at the shim path -- that could destroy unrelated user data.
+_shim_path="$_LOCAL_BIN/unsloth"
+if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
+    echo "ERROR: $_shim_path is a directory; refusing to delete it." >&2
+    echo "       Move or remove it manually, then re-run the installer." >&2
+    exit 1
+fi
+rm -f -- "$_shim_path"
+ln -s "$VENV_DIR/bin/unsloth" "$_shim_path"
 
 case ":$PATH:" in
     *":$_LOCAL_BIN:"*) ;;  # already on PATH

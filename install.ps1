@@ -4,8 +4,8 @@
 # NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > USERPROFILE-redirect > default):
-#   UNSLOTH_STUDIO_HOME / STUDIO_HOME = path -> install under that path
+# Env vars (priority: UNSLOTH_STUDIO_HOME > USERPROFILE-redirect > default):
+#   UNSLOTH_STUDIO_HOME = path -> install under that path
 #   (DataDir nests inside; user PATH not modified persistently).
 # Default ($USERPROFILE\.unsloth\studio) is preserved when no env var is set.
 
@@ -67,8 +67,8 @@ function Install-UnslothStudio {
 
     $PythonVersion = "3.13"
 
-    # Resolve install destinations. Priority: env vars, then USERPROFILE-redirect, then default.
-    $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } elseif ($env:STUDIO_HOME) { $env:STUDIO_HOME } else { $null }
+    # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then USERPROFILE-redirect, then default.
+    $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $null }
 
     # Custom Studio roots are not supported with --tauri (desktop app still
     # resolves %USERPROFILE%\.unsloth\studio). Pass through if override == legacy.
@@ -92,11 +92,11 @@ function Install-UnslothStudio {
         $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
         if ($_tauriOverride -ne $_legacyTauriRoot) {
-            Write-Host "ERROR: UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri." -ForegroundColor Red
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME is not supported with --tauri." -ForegroundColor Red
             Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
             Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
-            throw "UNSLOTH_STUDIO_HOME / STUDIO_HOME are not supported with --tauri."
+            throw "UNSLOTH_STUDIO_HOME is not supported with --tauri."
         }
     }
 
@@ -120,8 +120,8 @@ function Install-UnslothStudio {
             [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
-            Write-Host "ERROR: STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
-            throw "STUDIO_HOME=$envOverride cannot be created or accessed."
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
+            throw "UNSLOTH_STUDIO_HOME=$envOverride cannot be created or accessed."
         }
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
         try {
@@ -129,8 +129,8 @@ function Install-UnslothStudio {
             [System.IO.File]::WriteAllText($probe, "")
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
-            Write-Host "ERROR: STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
-            throw "STUDIO_HOME=$StudioHome is not writable."
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
+            throw "UNSLOTH_STUDIO_HOME=$StudioHome is not writable."
         }
         $StudioDataDir = Join-Path $StudioHome "share"
         $StudioRedirectMode = 'env'
@@ -1275,7 +1275,12 @@ shell.Run cmd, 0, False
     # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
     $shimUpdated = $false
     try {
-        if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -Recurse -ErrorAction Stop }
+        # Refuse to recursively delete a directory at the shim path -- that
+        # would destroy unrelated user data on env-override roots.
+        if (Test-Path -LiteralPath $ShimExe -PathType Container) {
+            throw "Cannot create unsloth launcher: $ShimExe is a directory. Move or remove it, then re-run the installer."
+        }
+        if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
@@ -1298,10 +1303,7 @@ shell.Run cmd, 0, False
     # no registry change (workspace path may be deleted later).
     $pathAdded = $false
     if (Test-Path -LiteralPath $ShimExe) {
-        if ($StudioRedirectMode -eq 'env') {
-            $env:Path = "$ShimDir;$env:Path"
-            step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
-        } else {
+        if ($StudioRedirectMode -ne 'env') {
             $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
         }
     }
@@ -1310,10 +1312,11 @@ shell.Run cmd, 0, False
     }
     Refresh-SessionPath  # sync current session with registry
 
-    # Re-prepend env-mode shim AFTER Refresh-SessionPath; otherwise a legacy
+    # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy
     # User PATH entry (Machine > User > current $env:Path) would win.
     if ($StudioRedirectMode -eq 'env' -and (Test-Path -LiteralPath $ShimExe)) {
         $env:Path = "$ShimDir;$env:Path"
+        step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
     }
 
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
@@ -1332,15 +1335,19 @@ shell.Run cmd, 0, False
         & $UnslothExe studio -H 0.0.0.0 -p 8888
     } else {
         step "launch" "manual commands:"
+        # Single-quote the printed paths so $-vars / backticks in custom roots
+        # do not reparse when the user pastes the command.
+        $_actLiteral = "'" + ((Join-Path $VenvDir "Scripts\Activate.ps1") -replace "'", "''") + "'"
         if ($StudioRedirectMode -eq 'env') {
             # Env-mode skips registry PATH; print the absolute shim path.
             $_shim = Join-Path $StudioHome "bin\unsloth.exe"
-            substep "& `"$_shim`" studio -H 0.0.0.0 -p 8888"
+            $_shimLiteral = "'" + ($_shim -replace "'", "''") + "'"
+            substep "& $_shimLiteral studio -H 0.0.0.0 -p 8888"
             substep "or activate env first:"
-            substep "& `"$VenvDir\Scripts\Activate.ps1`""
+            substep "& $_actLiteral"
             substep "unsloth studio -H 0.0.0.0 -p 8888"
         } else {
-            substep "& `"$VenvDir\Scripts\Activate.ps1`""
+            substep "& $_actLiteral"
             substep "unsloth studio -H 0.0.0.0 -p 8888"
         }
         Write-Host ""

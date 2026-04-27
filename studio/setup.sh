@@ -399,14 +399,15 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-# UNSLOTH_STUDIO_HOME / STUDIO_HOME override the install root (mirrors install.sh).
-_studio_override="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+# UNSLOTH_STUDIO_HOME overrides the install root (mirrors install.sh).
+_studio_override="${UNSLOTH_STUDIO_HOME:-}"
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
 esac
 if [ -n "$_studio_override" ]; then
     mkdir -p -- "$_studio_override"
+    [ -w "$_studio_override" ] || { echo "ERROR: UNSLOTH_STUDIO_HOME=$_studio_override is not writable." >&2; exit 1; }
     STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
 else
     STUDIO_HOME="$HOME/.unsloth/studio"

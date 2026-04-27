@@ -507,10 +507,14 @@ class LlamaCppBackend:
                 search_roots = [_resolved_sr / "llama.cpp", legacy_llama]
         except (ImportError, OSError, ValueError):
             search_roots = [legacy_llama]
-        _seen: set[str] = set()
-        for unsloth_home in [
-            r for r in search_roots if str(r) not in _seen and not _seen.add(str(r))
-        ]:
+        _seen_roots: set[str] = set()
+        _unique_roots: list[Path] = []
+        for r in search_roots:
+            k = str(r)
+            if k not in _seen_roots:
+                _seen_roots.add(k)
+                _unique_roots.append(r)
+        for unsloth_home in _unique_roots:
             home_root = unsloth_home / binary_name
             if home_root.is_file():
                 return str(home_root)

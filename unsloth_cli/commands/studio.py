@@ -21,9 +21,10 @@ import typer
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
-# Resolve install root: UNSLOTH_STUDIO_HOME / STUDIO_HOME, then sys.prefix
-# inference (so a direct call to <root>/bin/unsloth resolves after the
-# installer's env var has expired), then legacy ~/.unsloth/studio.
+# Resolve install root: UNSLOTH_STUDIO_HOME, then sys.prefix inference
+# (so a direct call to <root>/bin/unsloth resolves after the installer's env
+# var has expired), then legacy ~/.unsloth/studio. STUDIO_HOME is NOT honored:
+# the name is too generic and may already be set by unrelated tooling.
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Studio root.
@@ -35,7 +36,7 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
-    override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    override = os.environ.get("UNSLOTH_STUDIO_HOME")
     if override:
         return Path(override).expanduser().resolve(), True
     try:
@@ -53,12 +54,17 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
-# Re-export only for real custom roots; default installs must NOT export
-# (setup.sh/setup.ps1 treat any non-empty UNSLOTH_STUDIO_HOME as env-mode).
-# UNSLOTH_LLAMA_CPP_PATH is set so unsloth-zoo's import-time
-# LLAMA_CPP_DEFAULT_DIR binding finds the custom build for GGUF export.
-if _STUDIO_HOME_IS_CUSTOM:
-    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= doesn't
+
+
+def _ensure_studio_env_exported() -> None:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH only for real
+    custom roots so subprocesses inherit the right install. Called from each
+    studio subcommand entry rather than at import time, to avoid leaking env
+    state into unrelated importers (tests, --help, CLI introspection).
+    """
+    if not _STUDIO_HOME_IS_CUSTOM:
+        return
+    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
     # suppress the inferred custom root.
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
@@ -473,6 +479,8 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # Runs before any subcommand; covers run/setup/update/etc in one place.
+    _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
         return
 

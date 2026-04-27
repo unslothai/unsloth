@@ -33,10 +33,11 @@ def _infer_studio_home_from_venv() -> Path | None:
 def studio_root() -> Path:
     """Studio install root.
 
-    Priority: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix inference,
-    legacy ~/.unsloth/studio.
+    Priority: UNSLOTH_STUDIO_HOME, sys.prefix inference, legacy
+    ~/.unsloth/studio. STUDIO_HOME is intentionally NOT honored -- the name
+    is too generic and could be set in the user shell by unrelated tooling.
     """
-    override = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    override = os.environ.get("UNSLOTH_STUDIO_HOME")
     if override:
         return Path(override).expanduser().resolve()
     inferred = _infer_studio_home_from_venv()
