@@ -1027,35 +1027,6 @@ shell.Run cmd, 0, False
         }
     }
 
-    # Hotfix: patch install_python_stack.py for Windows GUI stdout
-    # The PyPI version crashes with OSError when stdout is piped from a GUI app.
-    # Copy our fixed version (bundled by Tauri) over the installed one.
-    # Remove this block once PyPI ships the fix from commit 18c5aae7.
-    if ($TauriMode) {
-        $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
-        $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
-        $fixedPy = Join-Path $scriptDir "install_python_stack.py"
-        $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
-        $sentinel = "# UNSLOTH_DESKTOP_HOTFIX_APPLIED_v1"
-        $sentinelPattern = [regex]::Escape($sentinel)
-        if ((Test-Path $fixedPy) -and (Test-Path $target)) {
-            $installed = Get-Content $target -Raw
-            if ($installed -notmatch $sentinelPattern) {
-                Copy-Item $fixedPy $target -Force
-                Add-Content -Path $target -Value "`n$sentinel"
-                substep "patched install_python_stack.py (stdout fix)"
-            } else {
-                substep "install_python_stack.py already has stdout fix"
-            }
-        } elseif ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
-            Copy-Item $fixedPy $target -Force
-            Add-Content -Path $target -Value "`n$sentinel"
-            substep "patched install_python_stack.py (stdout fix)"
-        } else {
-            Write-Host "[WARN] Could not patch install_python_stack.py (bundled file or target dir missing)" -ForegroundColor Yellow
-        }
-    }
-
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
@@ -1095,7 +1066,7 @@ shell.Run cmd, 0, False
     if ($setupExit -ne 0) {
         Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
-        return
+        exit $setupExit
     }
 
     # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──

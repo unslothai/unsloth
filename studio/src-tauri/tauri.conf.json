@@ -44,8 +44,7 @@
     "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "resources": {
       "../../install.sh": "install.sh",
-      "../../install.ps1": "install.ps1",
-      "../install_python_stack.py": "install_python_stack.py"
+      "../../install.ps1": "install.ps1"
     },
     "icon": [
       "icons/32x32.png",
