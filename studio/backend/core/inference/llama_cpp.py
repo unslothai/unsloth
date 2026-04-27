@@ -2086,6 +2086,7 @@ class LlamaCppBackend:
             # Env-mode custom root (mirrors _find_llama_server_binary). Default
             # mode excluded so we don't kill llama-server from another tool
             # running under ~/.unsloth/studio/llama.cpp.
+            _is_custom_root = False
             try:
                 from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
 
@@ -2100,8 +2101,12 @@ class LlamaCppBackend:
             except ImportError:
                 pass
 
-            # Primary install dir (setup.sh / prebuilt installer, default mode)
-            install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
+            # Primary install dir (default mode only). In env-mode we skip the
+            # legacy llama.cpp tree so a custom-root Studio does not kill a
+            # concurrent default-install Studio's llama-server (same OS user,
+            # different install -- the workspace-isolation use case).
+            if not _is_custom_root:
+                install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
             # Legacy in-tree build dirs (older setup.sh versions)
             project_root = Path(__file__).resolve().parents[4]
