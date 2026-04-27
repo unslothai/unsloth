@@ -79,6 +79,8 @@ def _ensure_studio_env_exported() -> None:
         _llama_dir = STUDIO_HOME / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
+
+
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"
