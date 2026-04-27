@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,9 +18,10 @@ from .constants import (
     STAGE_PREVIEW,
     STAGE_PROFILING,
     STAGE_SAMPLING,
+    STAGE_SOURCE,
     USAGE_RESET_STAGES,
 )
-from .types import Job, ModelUsage, Progress
+from .types import Job, ModelUsage, Progress, SourceProgress
 
 
 @dataclass(frozen = True)
@@ -41,6 +43,7 @@ class ParsedUpdate:
     usage_requests_total: int | None = None
     usage_rpm: float | None = None
     usage_section_start: bool | None = None
+    source_progress: SourceProgress | None = None
 
 
 # kinda of a bummber but currently only option, Best effort parser from data-designer logs -> structured status for UI.
@@ -61,9 +64,165 @@ _RE_USAGE_TOKENS = re.compile(
 _RE_USAGE_REQUESTS = re.compile(
     r"requests:\s*success=(?P<success>\d+),\s*failed=(?P<failed>\d+),\s*total=(?P<total>\d+),\s*rpm=(?P<rpm>[0-9.]+)"
 )
+_RE_GITHUB_PAGE = re.compile(
+    r"^\[(?P<repo>[^\]\s]+/[^\]\s]+)\]\s+"
+    r"(?P<resource>issues|PRs|commits)\s+page\s+(?P<page>\d+)\s+"
+    r"\(\+(?P<items>\d+)\).*?\bremaining=(?P<remaining>\d+)",
+    re.IGNORECASE,
+)
+_RE_GITHUB_RATE_LIMIT = re.compile(
+    r"Rate limit hit\. Sleeping (?P<seconds>\d+)s until reset\.",
+    re.IGNORECASE,
+)
+_RE_GITHUB_SECONDARY_RATE_LIMIT = re.compile(
+    r"Secondary rate limit(?: on REST)?\. Sleep (?P<seconds>\d+)s\.",
+    re.IGNORECASE,
+)
+_RE_GITHUB_REST_RATE_LIMIT = re.compile(
+    r"REST 403/429, sleep (?P<seconds>\d+)",
+    re.IGNORECASE,
+)
+_RE_GITHUB_TRANSIENT = re.compile(
+    r"^(?P<api>GraphQL|REST) (?P<code>\d{3}) transient, retrying",
+    re.IGNORECASE,
+)
+_RE_GITHUB_NETWORK_RETRY = re.compile(
+    r"^(?P<api>GraphQL|REST) network error: .* Retry\.",
+    re.IGNORECASE,
+)
+_RE_GITHUB_TRIAL_LIMIT = re.compile(
+    r"Trial limit reached for (?P<resource>issues|PRs|commits) \((?P<items>\d+)\)",
+    re.IGNORECASE,
+)
+_RE_GITHUB_COMPLETE = re.compile(
+    r"Scraper complete\. GraphQL calls=\d+ REST calls=\d+",
+    re.IGNORECASE,
+)
 
 
 def parse_log_message(msg: str) -> ParsedUpdate | None:
+    m = _RE_GITHUB_PAGE.search(msg)
+    if m:
+        resource_raw = m.group("resource")
+        resource = "pulls" if resource_raw.lower() == "prs" else resource_raw.lower()
+        repo = m.group("repo")
+        page = int(m.group("page"))
+        page_items = int(m.group("items"))
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "fetching",
+                repo = repo,
+                resource = resource,
+                page = page,
+                page_items = page_items,
+                rate_remaining = int(m.group("remaining")),
+                message = (
+                    f"Scraping GitHub source: {repo} "
+                    f"{resource} page {page} (+{page_items})"
+                ),
+            ),
+        )
+
+    m = _RE_GITHUB_RATE_LIMIT.search(msg)
+    if m:
+        seconds = int(m.group("seconds"))
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "rate_limited",
+                retry_after_sec = seconds,
+                message = (
+                    "Waiting for GitHub rate limit. "
+                    "Studio will resume automatically."
+                ),
+            ),
+        )
+
+    m = _RE_GITHUB_SECONDARY_RATE_LIMIT.search(msg)
+    if m:
+        seconds = int(m.group("seconds"))
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "rate_limited",
+                retry_after_sec = seconds,
+                message = (
+                    "Waiting for GitHub secondary rate limit. "
+                    "Studio will resume automatically."
+                ),
+            ),
+        )
+
+    m = _RE_GITHUB_REST_RATE_LIMIT.search(msg)
+    if m:
+        seconds = int(m.group("seconds"))
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "rate_limited",
+                retry_after_sec = seconds,
+                message = (
+                    "Waiting for GitHub rate limit. "
+                    "Studio will resume automatically."
+                ),
+            ),
+        )
+
+    m = _RE_GITHUB_TRIAL_LIMIT.search(msg)
+    if m:
+        resource_raw = m.group("resource")
+        resource = "pulls" if resource_raw.lower() == "prs" else resource_raw.lower()
+        items = int(m.group("items"))
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "fetching",
+                resource = resource,
+                message = f"GitHub {resource} trial limit reached ({items}).",
+            ),
+        )
+
+    m = _RE_GITHUB_TRANSIENT.search(msg)
+    if m:
+        api = m.group("api")
+        code = m.group("code")
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "retrying",
+                message = f"GitHub {api} returned {code}; retrying automatically.",
+            ),
+        )
+
+    m = _RE_GITHUB_NETWORK_RETRY.search(msg)
+    if m:
+        api = m.group("api")
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "retrying",
+                message = f"GitHub {api} request failed; retrying automatically.",
+            ),
+        )
+
+    if _RE_GITHUB_COMPLETE.search(msg):
+        return ParsedUpdate(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "completed",
+                message = "GitHub source scrape complete.",
+            ),
+        )
+
     m = _RE_SAMPLERS.search(msg)
     if m:
         return ParsedUpdate(
@@ -172,6 +331,8 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         job.batch.idx = update.batch_idx
     if update.batch_total is not None:
         job.batch.total = update.batch_total
+    if update.source_progress is not None:
+        _apply_source_progress(job, update.source_progress)
 
     if update.stage in USAGE_RESET_STAGES:
         # usage summary is a short block so we reset once we move into the next stage.
@@ -214,6 +375,67 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         usage.requests_total = update.usage_requests_total
     if update.usage_rpm is not None:
         usage.rpm = update.usage_rpm
+
+
+def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
+    previous = job.source_progress
+    now = time.time()
+
+    page_items = progress.page_items
+    if progress.repo and progress.resource and progress.page is not None:
+        page_key = f"{progress.repo}:{progress.resource}:{progress.page}"
+        count_key = f"{progress.repo}:{progress.resource}"
+        if page_key not in job._source_seen_pages:
+            job._source_seen_pages.add(page_key)
+            job._source_counts[count_key] = int(
+                job._source_counts.get(count_key, 0)
+            ) + int(page_items or 0)
+
+    fetched_items = sum(job._source_counts.values())
+    if fetched_items <= 0:
+        fetched_items = progress.fetched_items or (
+            previous.fetched_items if previous else None
+        )
+
+    estimated_total = (
+        progress.estimated_total
+        or job.source_progress_estimated_total
+        or (previous.estimated_total if previous else None)
+    )
+    percent: float | None = progress.percent
+    if percent is None and estimated_total and fetched_items is not None:
+        raw_percent = (float(fetched_items) / float(max(1, estimated_total))) * 100.0
+        percent = 100.0 if progress.status == "completed" else min(99.0, raw_percent)
+    if percent is None and previous is not None:
+        percent = previous.percent
+
+    job.source_progress = SourceProgress(
+        source = "github",
+        status = progress.status or (previous.status if previous else None),
+        repo = progress.repo or (previous.repo if previous else None),
+        resource = progress.resource or (previous.resource if previous else None),
+        page = (
+            progress.page
+            if progress.page is not None
+            else (previous.page if previous else None)
+        ),
+        page_items = (
+            page_items
+            if page_items is not None
+            else (previous.page_items if previous else None)
+        ),
+        fetched_items = fetched_items,
+        estimated_total = estimated_total,
+        percent = percent,
+        rate_remaining = (
+            progress.rate_remaining
+            if progress.rate_remaining is not None
+            else (previous.rate_remaining if previous else None)
+        ),
+        retry_after_sec = progress.retry_after_sec,
+        message = progress.message or (previous.message if previous else None),
+        updated_at = now,
+    )
 
 
 def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:

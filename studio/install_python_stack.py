@@ -418,6 +418,9 @@ CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
+LOCAL_DD_GITHUB_PLUGIN = (
+    SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
+)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the default console encoding can be a legacy code page
@@ -1135,22 +1138,28 @@ def install_python_stack() -> int:
         req = SINGLE_ENV / "data-designer.txt",
     )
 
-    # 11. Local Data Designer seed plugin
-    if not LOCAL_DD_UNSTRUCTURED_PLUGIN.is_dir():
-        _safe_print(
-            _red(
-                f"❌ Missing local plugin directory: {LOCAL_DD_UNSTRUCTURED_PLUGIN}",
-            ),
-        )
-        return 1
+    # 11. Local Data Designer seed plugins
+    local_dd_plugins = [
+        ("unstructured", LOCAL_DD_UNSTRUCTURED_PLUGIN),
+        ("github", LOCAL_DD_GITHUB_PLUGIN),
+    ]
+    for _plugin_name, plugin_dir in local_dd_plugins:
+        if not plugin_dir.is_dir():
+            _safe_print(
+                _red(
+                    f"❌ Missing local plugin directory: {plugin_dir}",
+                ),
+            )
+            return 1
     _progress("local plugin")
-    pip_install(
-        "Installing local data-designer unstructured plugin",
-        "--no-cache-dir",
-        "--no-deps",
-        str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
-        constrain = False,
-    )
+    for plugin_name, plugin_dir in local_dd_plugins:
+        pip_install(
+            f"Installing local data-designer {plugin_name} plugin",
+            "--no-cache-dir",
+            "--no-deps",
+            str(plugin_dir),
+            constrain = False,
+        )
 
     # 12. Patch metadata for single-env compatibility
     _progress("finalizing")

@@ -18,6 +18,57 @@ from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 
 router = APIRouter()
 
+_GITHUB_VALIDATE_NOTE = "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+_GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
+
+
+def _github_seed_source(recipe: dict[str, Any]) -> dict[str, Any] | None:
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return None
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "github_repo":
+        return None
+    return source
+
+
+def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
+    errors: list[ValidateError] = []
+
+    repos = source.get("repos")
+    if not isinstance(repos, list) or not repos:
+        errors.append(ValidateError(message = "GitHub seed requires at least one repo."))
+    else:
+        for repo in repos:
+            if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
+                errors.append(
+                    ValidateError(message = "GitHub repos must be owner/name strings.")
+                )
+                break
+
+    item_types = source.get("item_types")
+    if not isinstance(item_types, list) or not item_types:
+        errors.append(
+            ValidateError(message = "GitHub seed requires at least one item type.")
+        )
+    else:
+        invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
+        if invalid_items:
+            errors.append(
+                ValidateError(
+                    message = "GitHub item types must be issues, pulls, or commits."
+                )
+            )
+
+    try:
+        limit = int(source.get("limit"))
+    except (TypeError, ValueError):
+        limit = 0
+    if limit < 1 or limit > 5000:
+        errors.append(ValidateError(message = "GitHub limit must be from 1 to 5000."))
+
+    return errors
+
 
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
     try:
@@ -92,6 +143,22 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         )
 
     _patch_local_providers(recipe)
+
+    github_source = _github_seed_source(recipe)
+    if github_source is not None:
+        static_errors = _validate_github_seed_static(github_source)
+        if static_errors:
+            return ValidateResponse(valid = False, errors = static_errors)
+        try:
+            build_config_builder(recipe)
+        except Exception as exc:
+            detail = str(exc).strip() or "Validation failed."
+            return ValidateResponse(
+                valid = False,
+                errors = [ValidateError(message = detail)],
+                raw_detail = detail,
+            )
+        return ValidateResponse(valid = True, raw_detail = _GITHUB_VALIDATE_NOTE)
 
     try:
         validate_recipe(recipe)

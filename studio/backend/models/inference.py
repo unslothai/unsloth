@@ -531,6 +531,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
+    cancel_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
+    )
 
 
 # ── Streaming response chunks ────────────────────────────────────
@@ -992,6 +996,7 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    cancel_id: Optional[str] = None
     model_config = {"extra": "allow"}
 
 
