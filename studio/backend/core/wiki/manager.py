@@ -150,6 +150,8 @@ class WikiManager:
         max_analysis_pages: int = 64,
         fill_gaps_from_web: Optional[bool] = None,
         max_web_gap_queries: Optional[int] = None,
+        refresh_non_fallback_oldest_pages: Optional[int] = None,
+        repair_answer_links: Optional[bool] = None,
         compact_knowledge_pages: bool = False,
         max_incremental_updates: Optional[int] = None,
     ) -> Dict:
@@ -159,6 +161,8 @@ class WikiManager:
             max_analysis_pages = max_analysis_pages,
             fill_gaps_from_web = fill_gaps_from_web,
             max_web_gap_queries = max_web_gap_queries,
+            refresh_non_fallback_oldest_pages = refresh_non_fallback_oldest_pages,
+            repair_answer_links = repair_answer_links,
             compact_knowledge_pages = compact_knowledge_pages,
             max_incremental_updates = max_incremental_updates,
         )

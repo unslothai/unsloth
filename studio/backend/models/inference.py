@@ -703,6 +703,10 @@ class WikiArchiveRequest(BaseModel):
         le = 10,
         description = "How many newest pages to keep per source_ref bucket",
     )
+    move_raw_files: bool = Field(
+        False,
+        description = "If true, also move referenced raw files into raw/.archive. Disabled by default to keep raw immutable.",
+    )
 
 
 class WikiArchiveResponse(BaseModel):
@@ -752,15 +756,25 @@ class WikiEnrichRequest(BaseModel):
         le = 1000,
         description = "Maximum number of analysis pages to scan",
     )
-    fill_gaps_from_web: bool = Field(
-        False,
-        description = "If true, use lint missing-concept gaps and web search to draft concept pages before enrichment",
+    fill_gaps_from_web: Optional[bool] = Field(
+        None,
+        description = "Optional override for lint-driven web gap filling (null inherits env/runtime default)",
     )
-    max_web_gap_queries: int = Field(
-        4,
+    max_web_gap_queries: Optional[int] = Field(
+        None,
         ge = 1,
         le = 100,
-        description = "Maximum number of lint gaps to search on the web during one enrich run",
+        description = "Optional override for max lint gaps searched during one enrich run (null inherits env/runtime default)",
+    )
+    refresh_non_fallback_oldest_pages: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 1000,
+        description = "Optional override for how many oldest non-fallback analysis pages to refresh before enrichment (0 disables)",
+    )
+    repair_answer_links: Optional[bool] = Field(
+        None,
+        description = "Optional override for repairing unresolved wiki links in analysis Answer sections (null inherits env/runtime default)",
     )
     compact_knowledge_pages: bool = Field(
         False,
@@ -783,6 +797,8 @@ class WikiEnrichResponse(BaseModel):
     updated_pages: int
     changes: list[Dict[str, Any]]
     web_gap_fill: Dict[str, Any]
+    non_fallback_refresh: Dict[str, Any]
+    analysis_link_repair: Dict[str, Any]
     knowledge_compaction: Dict[str, Any]
 
 
@@ -912,6 +928,55 @@ class WikiLintResponse(BaseModel):
     )
     total_pages: int
     graphify_insights: Dict[str, Any]
+
+
+class WikiEnvVariable(BaseModel):
+    """One editable wiki environment variable in runtime config responses."""
+
+    name: str
+    kind: Literal["bool", "int", "float", "string"]
+    description: str
+    default_value: str
+    current_value: str
+    source: Literal["environment", "default"]
+    has_override: bool
+    override_value: Optional[str] = None
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+
+
+class WikiEnvConfigResponse(BaseModel):
+    """Runtime wiki environment metadata and current values."""
+
+    status: str
+    variables: list[WikiEnvVariable]
+    overrides_file: str
+    restart_supported: bool
+
+
+class WikiEnvSetRequest(BaseModel):
+    """Patch wiki environment values, optionally triggering restart."""
+
+    values: Dict[str, Optional[str]] = Field(
+        default_factory = dict,
+        description = "Map of wiki env variable names to values; null/empty clears a persisted override",
+    )
+    restart_backend: bool = Field(
+        True,
+        description = "If true, schedule backend restart after applying changes",
+    )
+
+
+class WikiEnvSetResponse(BaseModel):
+    """Result of applying wiki environment updates."""
+
+    status: str
+    updated: list[str]
+    cleared: list[str]
+    invalid: Dict[str, str]
+    overrides_file: str
+    restart_supported: bool
+    restart_scheduled: bool
 
 
 class WikiGraphifyExportRequest(BaseModel):

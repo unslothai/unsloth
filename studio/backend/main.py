@@ -56,6 +56,16 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from pathlib import Path
 from datetime import datetime
 
+try:
+    from core.wiki.runtime_env import apply_stored_wiki_env_overrides
+
+    # Apply persisted wiki runtime overrides unless a parent process
+    # already provided explicit environment variables.
+    apply_stored_wiki_env_overrides(override_existing = False)
+except Exception:
+    # Keep startup resilient if wiki runtime helpers are unavailable.
+    pass
+
 # Import routers
 from routes import (
     auth_router,

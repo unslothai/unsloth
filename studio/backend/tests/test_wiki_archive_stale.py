@@ -60,3 +60,63 @@ def test_archive_stale_keeps_distinct_sources_with_same_basename(
     # they share a basename like README.md.
     assert report["moved_count"] == 0
     assert report["errors"] == []
+
+
+def test_archive_stale_does_not_move_raw_by_default(tmp_path: Path, monkeypatch):
+    raw_root = tmp_path / "raw"
+    raw_file = raw_root / "paper.txt"
+    raw_file.parent.mkdir(parents = True, exist_ok = True)
+    raw_file.write_text("payload", encoding = "utf-8")
+
+    sources_dir = tmp_path / "wiki" / "sources"
+    older = sources_dir / "paper-v1.md"
+    newer = sources_dir / "paper-v2.md"
+    _write_source_page(older, "paper v1", str(raw_file.resolve()))
+    _write_source_page(newer, "paper v2", str(raw_file.resolve()))
+
+    older_mtime = newer.stat().st_mtime - 60
+    os.utime(older, (older_mtime, older_mtime))
+
+    monkeypatch.setattr(inference_routes, "_WIKI_VAULT_ROOT", tmp_path)
+
+    report = inference_routes._archive_stale_wiki_pages(
+        dry_run = False,
+        keep_recent_chat = 0,
+        keep_recent_per_source = 1,
+    )
+
+    assert report["moved_count"] == 1
+    assert len(report["moved_sources"]) == 1
+    assert report["moved_raw"] == []
+    assert raw_file.exists()
+
+
+def test_archive_stale_moves_raw_only_when_enabled(tmp_path: Path, monkeypatch):
+    raw_root = tmp_path / "raw"
+    raw_file = raw_root / "paper.txt"
+    raw_file.parent.mkdir(parents = True, exist_ok = True)
+    raw_file.write_text("payload", encoding = "utf-8")
+
+    sources_dir = tmp_path / "wiki" / "sources"
+    older = sources_dir / "paper-v1.md"
+    newer = sources_dir / "paper-v2.md"
+    _write_source_page(older, "paper v1", str(raw_file.resolve()))
+    _write_source_page(newer, "paper v2", str(raw_file.resolve()))
+
+    older_mtime = newer.stat().st_mtime - 60
+    os.utime(older, (older_mtime, older_mtime))
+
+    monkeypatch.setattr(inference_routes, "_WIKI_VAULT_ROOT", tmp_path)
+
+    report = inference_routes._archive_stale_wiki_pages(
+        dry_run = False,
+        keep_recent_chat = 0,
+        keep_recent_per_source = 1,
+        move_raw_files = True,
+    )
+
+    assert report["moved_count"] == 1
+    assert len(report["moved_raw"]) == 1
+    assert not raw_file.exists()
+    moved_raw_target = Path(report["moved_raw"][0])
+    assert moved_raw_target.exists()

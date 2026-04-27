@@ -492,6 +492,39 @@ class WikiConfig:
             "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_THRESHOLD", 0.25, minimum = 0.01, maximum = 1.0
         )
     )
+    analysis_retry_on_fallback: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_RETRY_ON_FALLBACK", True
+        )
+    )
+    analysis_max_retries: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_MAX_RETRIES", 3, minimum = 0
+        )
+    )
+    analysis_retry_reduction: float = field(
+        default_factory = lambda: _env_float(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_RETRY_REDUCTION",
+            0.5,
+            minimum = 0.1,
+            maximum = 0.95,
+        )
+    )
+    analysis_min_context_chars: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_MIN_CONTEXT_CHARS", 8000, minimum = 500
+        )
+    )
+    analysis_source_only: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY", False
+        )
+    )
+    analysis_source_only_final_retry: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY_FINAL_RETRY", True
+        )
+    )
     knowledge_max_incremental_updates: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES",
@@ -518,6 +551,18 @@ class WikiConfig:
     enrichment_web_gap_max_snippet_chars: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_SNIPPET_CHARS", 280, minimum = 80
+        )
+    )
+    enrichment_refresh_oldest_non_fallback_pages: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_REFRESH_OLDEST_NON_FALLBACK_PAGES",
+            0,
+            minimum = 0,
+        )
+    )
+    enrichment_repair_answer_links: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_REPAIR_ANSWER_LINKS", False
         )
     )
     stale_days: int = 30
@@ -623,12 +668,31 @@ class LLMWikiEngine:
         keep_preferred_context_full: bool = False,
         preferred_context_only: bool = False,
     ) -> Dict:
+        inferred_primary_source = self._extract_primary_source_link_from_question(
+            question
+        )
+        effective_preferred_context_page = (
+            preferred_context_page or inferred_primary_source
+        )
+        source_first_query = self._question_is_source_first_summary(question)
+        effective_keep_preferred_context_full = bool(keep_preferred_context_full)
+        effective_preferred_context_only = bool(preferred_context_only)
+        if source_first_query and effective_preferred_context_page:
+            # Source-first prompts should ground primarily on the declared source page
+            # to avoid recursive analysis-page retrieval loops.
+            effective_keep_preferred_context_full = True
+            effective_preferred_context_only = True
+
         ranked = self._rank_pages(question)
-        if not self.cfg.include_analysis_pages_in_query:
+        exclude_analysis_pages = (
+            not self.cfg.include_analysis_pages_in_query
+            or (source_first_query and effective_preferred_context_page is not None)
+        )
+        if exclude_analysis_pages:
             ranked = [item for item in ranked if not item[0].startswith("analysis/")]
         if not ranked:
             ranked = self._rank_pages(question)
-            if not self.cfg.include_analysis_pages_in_query:
+            if exclude_analysis_pages:
                 ranked = [
                     item for item in ranked if not item[0].startswith("analysis/")
                 ]
@@ -638,18 +702,18 @@ class LLMWikiEngine:
             if self.cfg.max_context_pages <= 0
             else ranked[: self.cfg.max_context_pages]
         )
-        if preferred_context_page:
+        if effective_preferred_context_page:
             preferred_rel = (
-                preferred_context_page[:-3]
-                if preferred_context_page.endswith(".md")
-                else preferred_context_page
+                effective_preferred_context_page[:-3]
+                if effective_preferred_context_page.endswith(".md")
+                else effective_preferred_context_page
             )
             preferred_md = f"{preferred_rel}.md"
             preferred_entry = next(
                 (item for item in ranked if item[0] == preferred_md), None
             )
             if preferred_entry is not None:
-                if preferred_context_only:
+                if effective_preferred_context_only:
                     top_pages = [preferred_entry]
                 else:
                     top_pages = [item for item in top_pages if item[0] != preferred_md]
@@ -684,16 +748,16 @@ class LLMWikiEngine:
                 continue
 
             preferred_match = False
-            if preferred_context_page:
+            if effective_preferred_context_page:
                 preferred_rel = (
-                    preferred_context_page[:-3]
-                    if preferred_context_page.endswith(".md")
-                    else preferred_context_page
+                    effective_preferred_context_page[:-3]
+                    if effective_preferred_context_page.endswith(".md")
+                    else effective_preferred_context_page
                 )
                 preferred_md = f"{preferred_rel}.md"
                 preferred_match = rel_path == preferred_md
 
-            if preferred_match and keep_preferred_context_full:
+            if preferred_match and effective_keep_preferred_context_full:
                 max_page_chars = len(text)
             else:
                 max_page_chars = (
@@ -1248,8 +1312,84 @@ class LLMWikiEngine:
                 )
                 continue
 
+            preferred_source_page, source_chars = self._analysis_primary_source_context(
+                text
+            )
+            attempt_override = self._retry_initial_context_override(source_chars)
+            source_only_mode = self.cfg.analysis_source_only
+            if source_only_mode and source_chars is not None:
+                attempt_override = (
+                    source_chars
+                    if attempt_override is None
+                    else max(attempt_override, source_chars)
+                )
+
+            reductions_done = 0
+
             try:
-                probe_result = self.query(question, save_answer = False)
+                probe_result = None
+                while True:
+                    probe_result = self.query(
+                        question,
+                        save_answer = False,
+                        query_context_max_chars_override = attempt_override,
+                        preferred_context_page = preferred_source_page,
+                        keep_preferred_context_full = True,
+                        preferred_context_only = source_only_mode,
+                    )
+
+                    if not probe_result.get("used_extractive_fallback"):
+                        break
+
+                    can_reduce = (
+                        self.cfg.analysis_retry_on_fallback
+                        and not source_only_mode
+                        and reductions_done < self.cfg.analysis_max_retries
+                    )
+                    if can_reduce:
+                        next_override = self._reduced_retry_context_override(
+                            attempt_override
+                        )
+                        if source_chars is not None and next_override is not None:
+                            next_override = max(next_override, source_chars)
+                        if next_override is not None:
+                            logger.info(
+                                "Fallback retry for %s still low quality (reason=%s). "
+                                "Retrying with smaller context (%s -> %s chars).",
+                                rel_page,
+                                probe_result.get("fallback_reason"),
+                                attempt_override,
+                                next_override,
+                            )
+                            attempt_override = next_override
+                            reductions_done += 1
+                            continue
+
+                    if (
+                        self.cfg.analysis_source_only_final_retry
+                        and source_chars is not None
+                        and not self.cfg.analysis_source_only
+                        and not source_only_mode
+                    ):
+                        source_only_mode = True
+                        attempt_override = (
+                            source_chars
+                            if attempt_override is None
+                            else max(attempt_override, source_chars)
+                        )
+                        logger.info(
+                            "Fallback retry for %s still low quality (reason=%s). "
+                            "Final retry with source-only context.",
+                            rel_page,
+                            probe_result.get("fallback_reason"),
+                        )
+                        continue
+
+                    break
+
+                if probe_result is None:
+                    raise RuntimeError("Probe query did not return a result")
+
                 if probe_result.get("used_extractive_fallback"):
                     fallback_still += 1
                     retried.append(
@@ -1258,6 +1398,9 @@ class LLMWikiEngine:
                             "status": "fallback_still",
                             "question": question,
                             "fallback_reason": probe_result.get("fallback_reason"),
+                            "context_chars_override": attempt_override,
+                            "source_only": source_only_mode,
+                            "retries_attempted": reductions_done,
                             "new_answer_page": None,
                         }
                     )
@@ -1265,7 +1408,14 @@ class LLMWikiEngine:
 
                 new_answer_page = None
                 if not dry_run:
-                    saved_result = self.query(question, save_answer = True)
+                    saved_result = self.query(
+                        question,
+                        save_answer = True,
+                        query_context_max_chars_override = attempt_override,
+                        preferred_context_page = preferred_source_page,
+                        keep_preferred_context_full = True,
+                        preferred_context_only = source_only_mode,
+                    )
                     if saved_result.get("used_extractive_fallback"):
                         fallback_still += 1
                     else:
@@ -1288,6 +1438,9 @@ class LLMWikiEngine:
                         else "fallback_still",
                         "question": question,
                         "fallback_reason": probe_result.get("fallback_reason"),
+                        "context_chars_override": attempt_override,
+                        "source_only": source_only_mode,
+                        "retries_attempted": reductions_done,
                         "new_answer_page": new_answer_page,
                     }
                 )
@@ -1298,6 +1451,9 @@ class LLMWikiEngine:
                         "source_page": rel_page,
                         "status": "error",
                         "question": question,
+                        "context_chars_override": attempt_override,
+                        "source_only": source_only_mode,
+                        "retries_attempted": reductions_done,
                         "error": str(exc),
                     }
                 )
@@ -1334,6 +1490,8 @@ class LLMWikiEngine:
         max_analysis_pages: int = 64,
         fill_gaps_from_web: Optional[bool] = None,
         max_web_gap_queries: Optional[int] = None,
+        refresh_non_fallback_oldest_pages: Optional[int] = None,
+        repair_answer_links: Optional[bool] = None,
         compact_knowledge_pages: bool = False,
         max_incremental_updates: Optional[int] = None,
     ) -> Dict[str, Any]:
@@ -1365,6 +1523,21 @@ class LLMWikiEngine:
                 # New concept pages should be visible to enrichment candidate selection.
                 self._rebuild_index()
 
+        refresh_oldest_count = (
+            int(self.cfg.enrichment_refresh_oldest_non_fallback_pages)
+            if refresh_non_fallback_oldest_pages is None
+            else max(0, int(refresh_non_fallback_oldest_pages))
+        )
+        non_fallback_refresh_report = self.refresh_oldest_non_fallback_analysis_pages(
+            dry_run = dry_run,
+            max_analysis_pages = refresh_oldest_count,
+        )
+        repair_answer_links_enabled = (
+            bool(self.cfg.enrichment_repair_answer_links)
+            if repair_answer_links is None
+            else bool(repair_answer_links)
+        )
+
         index_links = self._index_links_by_section()
         candidate_groups = {
             "sources": index_links.get("Sources", []),
@@ -1374,20 +1547,54 @@ class LLMWikiEngine:
 
         max_pages = max(1, int(max_analysis_pages))
         analysis_pages = sorted(self.analysis_dir.glob("*.md"))[:max_pages]
+        valid_targets = {
+            rel[:-3] for rel in self._all_wiki_pages() if rel.endswith(".md")
+        }
 
         changes: List[Dict[str, Any]] = []
         updated_pages = 0
+        link_repair_report: Dict[str, Any] = {
+            "enabled": True,
+            "dry_run": bool(dry_run),
+            "scanned_pages": len(analysis_pages),
+            "repair_answer_links_enabled": repair_answer_links_enabled,
+            "repaired_pages": 0,
+            "removed_links": 0,
+            "changes": [],
+        }
 
         for page_path in analysis_pages:
             rel_page = f"analysis/{page_path.name}"
             original_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
-            existing_links = self._extract_link_targets(original_text)
+            repaired_text, repair_change = self._repair_analysis_maintenance_links(
+                text = original_text,
+                valid_targets = valid_targets,
+                repair_answer_links = repair_answer_links_enabled,
+            )
+            working_text = repaired_text
+
+            if int(repair_change.get("removed_links", 0)) > 0:
+                link_repair_report["repaired_pages"] += 1
+                link_repair_report["removed_links"] += int(
+                    repair_change.get("removed_links", 0)
+                )
+                link_repair_report["changes"].append(
+                    {
+                        "page": rel_page,
+                        "removed_links": list(repair_change.get("links", [])),
+                        "removed_by_section": dict(
+                            repair_change.get("removed_by_section", {})
+                        ),
+                    }
+                )
+
+            existing_links = self._extract_link_targets(working_text)
 
             selected_by_group: Dict[str, List[str]] = {}
             for group_name, links in candidate_groups.items():
                 limit = 4 if group_name == "sources" else 6
                 selected_links = self._select_enrichment_links(
-                    analysis_text = original_text,
+                    analysis_text = working_text,
                     candidates = links,
                     existing_links = existing_links,
                     limit = limit,
@@ -1401,11 +1608,13 @@ class LLMWikiEngine:
                 for link in selected_by_group.get(group_name, [])
             ]
             if not added_links:
+                if not dry_run and working_text != original_text:
+                    page_path.write_text(working_text, encoding = "utf-8")
                 continue
 
             enrichment_body = self._render_enrichment_body(selected_by_group)
             updated_text = self._upsert_top_section(
-                text = original_text,
+                text = working_text,
                 section_title = "Enrichment",
                 section_body = enrichment_body,
             )
@@ -1425,11 +1634,21 @@ class LLMWikiEngine:
                 }
             )
 
-        if updated_pages > 0 and not dry_run:
+        if (
+            (updated_pages > 0 or int(link_repair_report.get("repaired_pages", 0)) > 0)
+            and not dry_run
+        ):
+            repaired_scope = (
+                "maintained sections + Answer"
+                if repair_answer_links_enabled
+                else "maintained sections"
+            )
             self._rebuild_index()
             self._append_log(
                 f"## [{self._today()}] enrich | analysis pages\n"
                 f"- Updated analysis pages: {updated_pages}\n"
+                f"- Analysis pages with repaired links: {int(link_repair_report.get('repaired_pages', 0))}\n"
+                f"- Broken links removed from {repaired_scope}: {int(link_repair_report.get('removed_links', 0))}\n"
             )
 
         knowledge_compaction: Dict[str, Any] = {
@@ -1460,8 +1679,279 @@ class LLMWikiEngine:
             "updated_pages": updated_pages,
             "changes": changes,
             "web_gap_fill": web_gap_fill_report,
+            "non_fallback_refresh": non_fallback_refresh_report,
+            "analysis_link_repair": link_repair_report,
             "knowledge_compaction": knowledge_compaction,
         }
+
+    def _repair_analysis_maintenance_links(
+        self,
+        text: str,
+        valid_targets: Set[str],
+        repair_answer_links: bool = False,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Repair unresolved links in maintenance-owned sections and optional Answer prose."""
+        repaired_text = text
+        removed_links: List[str] = []
+        removed_by_section: Dict[str, int] = {}
+
+        section_titles: List[str] = ["Context Pages", "Enrichment"]
+        if repair_answer_links:
+            section_titles.append("Answer")
+
+        for section_title in section_titles:
+            section_body = self._extract_markdown_section(repaired_text, section_title)
+            if not section_body.strip():
+                continue
+
+            updated_body, removed = self._remove_broken_links_from_section(
+                section_body,
+                valid_targets = valid_targets,
+            )
+            if not removed:
+                continue
+
+            removed_links.extend(removed)
+            removed_by_section[section_title] = len(removed)
+            replacement = updated_body.strip() or "- (none)"
+            repaired_text = self._replace_markdown_section(
+                repaired_text,
+                section_title,
+                replacement,
+            )
+
+        return repaired_text, {
+            "removed_links": len(removed_links),
+            "links": removed_links,
+            "removed_by_section": removed_by_section,
+        }
+
+    def _remove_broken_links_from_section(
+        self,
+        section_body: str,
+        valid_targets: Set[str],
+    ) -> Tuple[str, List[str]]:
+        removed_links: List[str] = []
+        output_lines: List[str] = []
+
+        for raw_line in section_body.splitlines():
+            line = raw_line.rstrip()
+            links = re.findall(r"\[\[([^\]]+)\]\]", line)
+            if not links:
+                output_lines.append(line)
+                continue
+
+            broken_in_line: List[str] = []
+            for link in links:
+                normalized = self._normalize_wikilink(link)
+                if normalized not in valid_targets:
+                    broken_in_line.append(normalized)
+
+            if not broken_in_line:
+                output_lines.append(line)
+                continue
+
+            removed_links.extend(broken_in_line)
+
+            updated_line = line
+            for link in links:
+                normalized = self._normalize_wikilink(link)
+                if normalized in valid_targets:
+                    continue
+                updated_line = updated_line.replace(f"[[{link}]]", "")
+
+            compact = re.sub(r"\s{2,}", " ", updated_line).strip()
+            compact = re.sub(r"^\-\s*\-\s*", "- ", compact)
+            compact = re.sub(r"\s+\(\s*\)$", "", compact)
+
+            if compact in {"", "-", "--"}:
+                continue
+
+            output_lines.append(compact)
+
+        cleaned_lines: List[str] = []
+        prev_blank = False
+        for line in output_lines:
+            is_blank = not line.strip()
+            if is_blank and prev_blank:
+                continue
+            cleaned_lines.append(line)
+            prev_blank = is_blank
+
+        if not cleaned_lines:
+            return "", removed_links
+        return "\n".join(cleaned_lines).rstrip() + "\n", removed_links
+
+    def refresh_oldest_non_fallback_analysis_pages(
+        self,
+        dry_run: bool = False,
+        max_analysis_pages: int = 0,
+    ) -> Dict[str, Any]:
+        refresh_limit = max(0, int(max_analysis_pages))
+        report: Dict[str, Any] = {
+            "status": "ok",
+            "enabled": refresh_limit > 0,
+            "dry_run": bool(dry_run),
+            "requested_pages": refresh_limit,
+            "candidate_pages": 0,
+            "refreshed_pages": 0,
+            "skipped_no_question": 0,
+            "skipped_refresh_fallback": 0,
+            "errors": [],
+            "results": [],
+        }
+        if refresh_limit <= 0:
+            return report
+
+        selected_pages: List[Tuple[Path, str]] = []
+        for page_path in sorted(
+            self.analysis_dir.glob("*.md"),
+            key = lambda path: path.stat().st_mtime,
+        ):
+            text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+            if self._analysis_page_uses_fallback(text):
+                continue
+            selected_pages.append((page_path, text))
+            if len(selected_pages) >= refresh_limit:
+                break
+
+        report["candidate_pages"] = len(selected_pages)
+
+        for page_path, original_text in selected_pages:
+            rel_page = f"analysis/{page_path.name}"
+            question = self._extract_analysis_question(original_text)
+            if not question:
+                report["skipped_no_question"] += 1
+                report["results"].append(
+                    {
+                        "page": rel_page,
+                        "status": "skipped",
+                        "reason": "missing_question",
+                    }
+                )
+                continue
+
+            preferred_source_page, _source_chars = self._analysis_primary_source_context(
+                original_text
+            )
+
+            try:
+                refreshed = self.query(
+                    question,
+                    save_answer = False,
+                    preferred_context_page = preferred_source_page,
+                    keep_preferred_context_full = bool(preferred_source_page),
+                )
+            except Exception as exc:
+                report["errors"].append(f"{rel_page}: {exc}")
+                report["results"].append(
+                    {
+                        "page": rel_page,
+                        "status": "error",
+                        "question": question,
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            if refreshed.get("used_extractive_fallback"):
+                report["skipped_refresh_fallback"] += 1
+                report["results"].append(
+                    {
+                        "page": rel_page,
+                        "status": "skipped",
+                        "question": question,
+                        "reason": "refresh_used_fallback",
+                        "fallback_reason": refreshed.get("fallback_reason"),
+                    }
+                )
+                continue
+
+            answer_text = str(refreshed.get("answer", "")).strip()
+            context_pages = [str(page) for page in refreshed.get("context_pages", [])]
+            refreshed_at = self._now_iso()
+
+            if not dry_run:
+                context_lines = [
+                    f"- [[{page[:-3] if page.endswith('.md') else page}]]"
+                    for page in context_pages
+                ]
+                if not context_lines:
+                    context_lines = ["- (none)"]
+
+                diagnostics_lines = [
+                    "- refresh_strategy: oldest_non_fallback",
+                    f"- refreshed_at: {refreshed_at}",
+                    f"- max_context_pages: {self.cfg.max_context_pages}",
+                    f"- max_chars_per_page: {self.cfg.max_chars_per_page}",
+                    f"- query_context_max_chars: {refreshed.get('query_context_max_chars')}",
+                    f"- pages_used: {len(context_pages)}",
+                ]
+
+                updated_text = original_text
+                updated_text = self._remove_markdown_section(
+                    updated_text, "Fallback Reason"
+                )
+                updated_text = self._remove_markdown_section(
+                    updated_text, "LLM Raw Answer Preview"
+                )
+                updated_text = self._replace_markdown_section(
+                    updated_text,
+                    "Answer Mode",
+                    "llm",
+                )
+                updated_text = self._replace_markdown_section(
+                    updated_text,
+                    "Answer",
+                    answer_text,
+                )
+                updated_text = self._replace_markdown_section(
+                    updated_text,
+                    "Retrieval Diagnostics",
+                    "\n".join(diagnostics_lines),
+                )
+                updated_text = self._replace_markdown_section(
+                    updated_text,
+                    "Context Pages",
+                    "\n".join(context_lines),
+                )
+                updated_text = self._upsert_top_section(
+                    updated_text,
+                    "Refresh Status",
+                    (
+                        f"- refreshed_at: {refreshed_at}\n"
+                        "- strategy: oldest non-fallback analysis refresh\n"
+                        f"- context_pages_used: {len(context_pages)}"
+                    ),
+                )
+                page_path.write_text(updated_text, encoding = "utf-8")
+
+            report["refreshed_pages"] += 1
+            report["results"].append(
+                {
+                    "page": rel_page,
+                    "status": "refreshed",
+                    "question": question,
+                    "context_pages": [
+                        page[:-3] if page.endswith(".md") else page
+                        for page in context_pages
+                    ],
+                    "refreshed_at": refreshed_at,
+                }
+            )
+
+        if report["refreshed_pages"] > 0 and not dry_run:
+            self._rebuild_index()
+            self._append_log(
+                f"## [{self._today()}] refresh-oldest-non-fallback | maintenance\n"
+                f"- Requested oldest pages: {refresh_limit}\n"
+                f"- Candidate pages: {report['candidate_pages']}\n"
+                f"- Refreshed pages: {report['refreshed_pages']}\n"
+                f"- Skipped (missing question): {report['skipped_no_question']}\n"
+                f"- Skipped (refresh fallback): {report['skipped_refresh_fallback']}\n"
+            )
+
+        return report
 
     def _normalize_web_text(self, text: str, max_chars: int) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -1641,7 +2131,7 @@ class LLMWikiEngine:
         }
 
         if parsed is None:
-            failure_reason = "llm_json_parse_failed"
+            failure_reason  = "llm_json_parse_failed"
             if not raw_text:
                 failure_reason = "llm_empty_output"
             elif raw_text == prompt.strip() or raw_text.startswith(
@@ -2400,10 +2890,35 @@ class LLMWikiEngine:
 
     def _analysis_page_uses_fallback(self, text: str) -> bool:
         lowered = text.lower()
-        return (
+        explicit_fallback = (
             "## answer mode\nextractive-fallback" in lowered
             or "## fallback reason" in lowered
         )
+        if explicit_fallback:
+            return True
+
+        return self._analysis_missing_watcher_sections_reason(text) is not None
+
+    def _analysis_missing_watcher_sections_reason(self, text: str) -> Optional[str]:
+        question = self._extract_analysis_question(text) or ""
+        if not self._question_is_source_first_summary(question):
+            return None
+
+        answer = self._extract_analysis_answer(text) or ""
+        if not answer.strip():
+            return "missing_watcher_sections:answer_empty"
+
+        missing_sections: List[str] = []
+        for label in ("A", "B", "C", "D", "E", "F", "G", "H", "I"):
+            if not re.search(
+                rf"(?im)^\s*(?:[-*#+]\s*)?section\s+{label}\b",
+                answer,
+            ):
+                missing_sections.append(label)
+
+        if not missing_sections:
+            return None
+        return f"missing_watcher_sections:{','.join(missing_sections)}"
 
     def _extract_analysis_resolved_by(self, text: str) -> Optional[str]:
         m = re.search(r"(?mi)^-\s*resolved_by:\s*\[\[([^\]]+)\]\]\s*$", text)
@@ -2450,6 +2965,89 @@ class LLMWikiEngine:
 
         return None
 
+    def _question_is_source_first_summary(self, question: str) -> bool:
+        raw = str(question or "").strip()
+        if not raw:
+            return False
+        if re.search(r"(?i)\bsource-first\s+lens\b", raw):
+            return True
+        if re.search(r"(?i)\bsummarize\s+source\s+['\"]", raw):
+            return True
+        return bool(self._extract_primary_source_link_from_question(raw))
+
+    def _extract_primary_source_link_from_question(self, question: str) -> Optional[str]:
+        raw = str(question or "").strip()
+        if not raw:
+            return None
+
+        explicit = re.search(
+            r"(?i)primary\s+page(?:\s+to\s+ground\s+on)?\s*:\s*\[\[(sources/[^\]]+)\]\]",
+            raw,
+        )
+        if explicit:
+            normalized = self._normalize_wikilink(explicit.group(1))
+            return normalized if normalized.startswith("sources/") else None
+
+        for link in re.findall(r"\[\[([^\]]+)\]\]", raw):
+            normalized = self._normalize_wikilink(link)
+            if normalized.startswith("sources/"):
+                return normalized
+
+        return None
+
+    def _analysis_primary_source_context(
+        self,
+        text: str,
+    ) -> Tuple[Optional[str], Optional[int]]:
+        question = self._extract_analysis_question(text) or ""
+        source_link = self._extract_primary_source_link_from_question(question)
+        if not source_link:
+            source_link = self._extract_analysis_primary_source_link(text)
+        if not source_link:
+            return None, None
+
+        source_path = self.wiki_dir / f"{source_link}.md"
+        if not source_path.exists():
+            return source_link, None
+
+        try:
+            source_chars = len(
+                source_path.read_text(encoding = "utf-8", errors = "ignore")
+            )
+        except OSError:
+            return source_link, None
+
+        return source_link, source_chars
+
+    def _retry_initial_context_override(self, source_chars: Optional[int]) -> Optional[int]:
+        if self.cfg.query_context_max_chars > 0:
+            return self.cfg.query_context_max_chars
+
+        candidates: List[int] = [max(self.cfg.analysis_min_context_chars, 12000)]
+        if self.cfg.ranking_max_chars > 0:
+            candidates.append(self.cfg.ranking_max_chars)
+        if self.cfg.max_context_pages > 0 and self.cfg.max_chars_per_page > 0:
+            candidates.append(self.cfg.max_context_pages * self.cfg.max_chars_per_page)
+        if source_chars is not None and source_chars > 0:
+            candidates.append(source_chars)
+
+        return max(candidates) if candidates else None
+
+    def _reduced_retry_context_override(
+        self,
+        current_chars: Optional[int],
+    ) -> Optional[int]:
+        if current_chars is None:
+            return None
+        if current_chars <= self.cfg.analysis_min_context_chars:
+            return None
+
+        reduced = max(
+            self.cfg.analysis_min_context_chars,
+            int(current_chars * self.cfg.analysis_retry_reduction),
+        )
+        return reduced if reduced < current_chars else None
+
     def _analysis_index_summary(self, text: str) -> str:
         answer = self._extract_analysis_answer(text) or ""
         title = self._analysis_title_from_answer(answer)
@@ -2476,10 +3074,12 @@ class LLMWikiEngine:
 
     def _extract_analysis_fallback_reason(self, text: str) -> Optional[str]:
         m = re.search(r"(?ms)^## Fallback Reason\n(.+?)(?=\n## |\Z)", text)
-        if not m:
-            return None
-        reason = m.group(1).strip().splitlines()[0].strip()
-        return reason or None
+        if m:
+            reason = m.group(1).strip().splitlines()[0].strip()
+            if reason:
+                return reason
+
+        return self._analysis_missing_watcher_sections_reason(text)
 
     def _analysis_index_fallback_tag(self, text: str) -> str:
         if not self._analysis_page_uses_fallback(text):
@@ -2871,6 +3471,24 @@ class LLMWikiEngine:
         leading_pattern = re.compile(rf"^## {escaped}\n[\s\S]*?(?=\n## |\Z)")
         cleaned = leading_pattern.sub("", cleaned)
         return cleaned
+
+    def _replace_markdown_section(
+        self,
+        text: str,
+        section_title: str,
+        section_body: str,
+    ) -> str:
+        escaped = re.escape(section_title)
+        section_block = f"## {section_title}\n{section_body.rstrip()}\n"
+        pattern = re.compile(rf"(?ms)^## {escaped}\n.*?(?=^## |\Z)")
+        if pattern.search(text):
+            replaced = pattern.sub(section_block + "\n", text, count = 1)
+            return replaced.rstrip() + "\n"
+
+        cleaned = text.rstrip()
+        if not cleaned:
+            return section_block + "\n"
+        return f"{cleaned}\n\n{section_block}\n"
 
     def _split_frontmatter_block(self, text: str) -> Tuple[str, str]:
         if not text.startswith("---\n"):

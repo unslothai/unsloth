@@ -799,3 +799,125 @@ Suggested tests when implemented:
 - Integration: ingested web page is retrievable through wiki query context.
 
 No API/runtime changes were made for this deferred item.
+
+### 6) Environment variable reference (consolidated)
+
+The tables below list all `UNSLOTH_*` environment variables currently referenced in this document, with a brief description and a practical recommended value.
+
+Runtime UI note:
+- The `Edit Wiki Behaviour` dialog (`/wiki/env`) shows the runtime-editable wiki subset from `WIKI_ENV_SPECS`.
+- Two variables documented below are currently not part of that runtime-editable wiki subset:
+  - `UNSLOTH_LLAMA_CPP_PREFILL_READ_TIMEOUT_SECONDS`
+  - `UNSLOTH_WIKI_INGEST_WEB_SEARCH` (deferred/not implemented)
+
+#### 6.1 Core wiki path, watcher, and ingest cadence
+
+| Env var | What it controls | Recommended value | Notes |
+|---|---|---|---|
+| `UNSLOTH_WIKI_VAULT` | Root wiki vault path (`raw/`, `wiki/`, etc.) | `./.unsloth_wiki` (project-local persistent path) | Avoid `/tmp` for long-lived knowledge unless intentionally ephemeral. |
+| `UNSLOTH_WIKI_WATCHER` | Enables background raw-folder watcher | `true` | Set `false` only for manual/route-only ingest workflows. |
+| `UNSLOTH_WIKI_PENDING_INGEST_INTERVAL_SECONDS` | Minimum delay between route-triggered pending ingest sweeps | `45` | Lower only if you need near-real-time ingest via chat path. |
+| `UNSLOTH_WIKI_PENDING_INGEST_MAX_FILES_PER_CHAT` | Max pending raw files ingested per chat request | `1` | Increase cautiously to avoid latency spikes in chat completions. |
+| `UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST` | Auto-run wiki analysis query after ingest | `true` | Disable if ingest throughput is more important than immediate analysis pages. |
+| `UNSLOTH_WIKI_AUTO_QUERY_CHAT_HISTORY` | Include `chat_history_*` files in auto-analysis | `false` | Keep off by default to reduce noisy analysis pages. |
+| `UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS` | Chat-history batch flush interval | `600` | `0` forces immediate flush per request (higher IO churn). |
+| `UNSLOTH_WIKI_AUTO_LINT_EVERY` | Shared cadence for lint, fallback-retry scan, enrichment | `10` | Use `5` for more aggressive maintenance, higher for lower overhead. |
+| `UNSLOTH_WIKI_AUTO_RETRY_FALLBACK_ANALYSES_MAX_PAGES` | Max recent fallback analysis pages scanned per maintenance run | `24` | Set `0` to disable fallback-retry scanning. |
+
+#### 6.2 Route-level chat RAG controls
+
+| Env var | What it controls | Recommended value | Notes |
+|---|---|---|---|
+| `UNSLOTH_WIKI_RAG_MAX_PAGES` | Max pages injected by route-level RAG | `8` | Lower to `4-6` if responses start repeating or drifting. |
+| `UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE` | Per-page snippet cap in route-level RAG | `1800` | Lower to `1000-1400` for small-context GGUF models. |
+| `UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS` | Total route-level injected context cap | `12000` | First knob to reduce when you see context pressure or garbling. |
+| `UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES` | Include `wiki/sources/*` in route-level retrieval | `true` | Keep enabled unless source pages are very noisy. |
+| `UNSLOTH_WIKI_INDEX_INCLUDE_SOURCE_PAGES` | Include sources in index-level retrieval helpers | `true` | Keep aligned with `UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES`. |
+| `UNSLOTH_WIKI_LLM_MAX_TOKENS` | Token budget for wiki-generated responses | `1200` | Lower for faster/shorter answers, raise carefully for depth if model/context allows. |
+| `UNSLOTH_WIKI_LOG_INJECTED_CONTEXT` | Logs injected RAG context to backend logs | `true` during tuning, `false` for quiet prod logs | Useful for diagnosing context quality and truncation behavior. |
+| `UNSLOTH_WIKI_LOG_INJECTED_CONTEXT_MAX_CHARS` | Max logged chars for injected context | `12000` | Set `0` for no log truncation (can produce very large logs). |
+
+#### 6.3 Wiki engine retrieval, extraction, and ranking
+
+| Env var | What it controls | Recommended value | Notes |
+|---|---|---|---|
+| `UNSLOTH_WIKI_ENGINE_EXTRACT_SOURCE_MAX_CHARS` | Max source text fed into extraction | `20000` | Raise for long papers only if extraction misses key sections. |
+| `UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS` | Max excerpt persisted on source pages | `8000` | Larger excerpts improve traceability but increase page size. |
+| `UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS` | Max chars read per page for ranking | `24000` | Do not set to `0` while debugging quality; unlimited can destabilize ranking. |
+| `UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES` | Max pages used by engine query context | `16` | `0` means unlimited; prefer finite caps for stable analysis quality. |
+| `UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE` | Per-page cap for engine query context | `3500` | `0` means unlimited; risky for repetition/degeneration. |
+| `UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS` | Total engine query context cap | `24000` | `0` means unlimited; avoid during fallback-quality tuning. |
+| `UNSLOTH_WIKI_ENGINE_INCLUDE_ANALYSIS_IN_QUERY` | Include prior `analysis/*` pages in retrieval | `true` | Set `false` if old analyses bias current answers too much. |
+| `UNSLOTH_WIKI_ENGINE_RANKING_LINK_DEPTH` | Graph/link expansion depth in ranking | `2` | Larger values can increase recall but also add noise/latency. |
+| `UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT` | Link fanout per hop during expansion | `8` | Keep moderate to prevent combinatorial candidate growth. |
+| `UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED` | LLM rerank on ranking candidates | `true` | Keep enabled for better relevance when latency budget permits. |
+| `UNSLOTH_WIKI_ENGINE_LLM_RERANK_CANDIDATES` | Candidate pool size before LLM rerank | `32` | Lower for speed, raise for recall on broad corpora. |
+| `UNSLOTH_WIKI_ENGINE_LLM_RERANK_TOP_N` | Number of reranked candidates kept | `12` | Keep below candidates; tune with context caps together. |
+| `UNSLOTH_WIKI_ENGINE_LLM_RERANK_PREVIEW_CHARS` | Per-candidate preview chars for rerank prompt | `420` | Raise only if reranker lacks enough local context. |
+| `UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_OUTPUT` | Enable reranker output logging for diagnostics | `true` during tuning, `false` for quieter logs | Keep on while validating retrieval quality; disable in noisy/production runs. |
+| `UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_MAX_CHARS` | Max chars logged per reranker output entry | `4000` | Lower if logs are too verbose; raise only when deeper rerank debugging is needed. |
+
+#### 6.4 Background auto-analysis and fallback controls
+
+| Env var | What it controls | Recommended value | Notes |
+|---|---|---|---|
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_CONTEXT_FRACTION` | Fraction of model context budget allocated to auto-analysis context | `0.70` | Lower (`0.50-0.60`) if auto analyses are repetitive/garbled. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_CHARS_PER_TOKEN` | Token->char conversion heuristic | `4` | Keep at `4` unless tokenizer/domain strongly differs. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_RETRY_ON_FALLBACK` | Retry auto-analysis when fallback quality gates trigger | `true` | Disable only to minimize compute. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_MAX_RETRIES` | Max retry attempts after fallback | `3` | `2-3` is usually enough; more can amplify cost without benefit. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_RETRY_REDUCTION` | Context reduction factor per retry | `0.5` | Smaller factor reduces context faster and often improves stability. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_MIN_CONTEXT_CHARS` | Floor for retry-reduced context | `8000` | Lower to `4000-6000` for very small models if still garbled. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY` | Force source-only analysis context | `false` (normal), `true` (stability mode) | Strongly helps when analysis pages become self-referential/noisy. |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY_FINAL_RETRY` | Force source-only context on final retry | `true` | Good guardrail to recover from repeated fallback loops. |
+| `UNSLOTH_LLAMA_CPP_PREFILL_READ_TIMEOUT_SECONDS` | Prefill read timeout for llama.cpp generation path | `300` for typical local runs, increase up to `18000` for very large prompts/models | Raise if long-prefill requests fail with timeout. |
+| `UNSLOTH_WIKI_LOW_UNIQUE_RATIO_MIN_TOKENS` | Minimum token count before low-unique-ratio gate applies | `40` | Keep default unless gate triggers too aggressively on short outputs. |
+| `UNSLOTH_WIKI_LOW_UNIQUE_RATIO_THRESHOLD` | Repetition gate threshold for low unique-token ratio | `0.25` | Raise slightly (`0.28-0.32`) for stricter anti-repetition gating. |
+
+#### 6.5 Enrichment, compaction, and deferred knobs
+
+| Env var | What it controls | Recommended value | Notes |
+|---|---|---|---|
+| `UNSLOTH_WIKI_ENGINE_ENRICH_FILL_GAPS_FROM_WEB` | Enable lint-driven web gap fill during enrichment | `false` by default | Turn on for targeted enrichment passes, not continuously. |
+| `UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_QUERIES` | Max missing-concept web queries per run | `4` | Increase gradually if concept coverage remains poor. |
+| `UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_RESULTS` | Max search results considered per query | `3` | Higher values can pull in noise quickly. |
+| `UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_SNIPPET_CHARS` | Snippet length cap used for drafted concept pages | `280` | Keep concise to avoid verbose low-confidence drafts. |
+| `UNSLOTH_WIKI_ENGINE_ENRICH_REFRESH_OLDEST_NON_FALLBACK_PAGES` | Refresh oldest non-fallback analysis pages before link enrichment | `0` (off by default), try `3-12` for periodic freshness sweeps | Useful for stale-summary refresh without touching fallback-only retry behavior. |
+| `UNSLOTH_WIKI_ENGINE_ENRICH_REPAIR_ANSWER_LINKS` | Repair unresolved wiki links inside analysis Answer sections during enrichment | `false` (safe default), set `true` for aggressive cleanup | Enabled mode can remove unresolved citations from prose; keep off when preserving original answer wording is preferred. |
+| `UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES` | Max concept/entity merge operations per maintenance run | `512` | Lower if maintenance spikes CPU/latency; raise only for very stale corpora. |
+| `UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES` | Max retained incremental update blocks per entity/concept page | `48` | Lower for compact pages, raise for deeper change history retention. |
+| `UNSLOTH_WIKI_INGEST_WEB_SEARCH` | Deferred future flag for chat web-search ingestion to wiki | `false` | Not implemented in current runtime; documented as future add-on. |
+
+#### 6.6 Caveats and recommended profile for garbled analyses
+
+If you observe repetitive, incoherent, or obviously degenerate `analysis/*` output:
+
+1. Avoid unlimited context settings during diagnosis:
+  - Do **not** use `0` for:
+    - `UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES`
+    - `UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE`
+    - `UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS`
+    - `UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS`
+
+2. Apply this stability profile first (known-good starting point):
+
+| Env var | Recommended value for garbled-analysis mitigation |
+|---|---|
+| `UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS` | `6000` |
+| `UNSLOTH_WIKI_RAG_MAX_PAGES` | `4` |
+| `UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE` | `1200` |
+| `UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS` | `8000` |
+| `UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES` | `6` |
+| `UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE` | `1400` |
+| `UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS` | `12000` |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_CONTEXT_FRACTION` | `0.55` |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY` | `true` |
+| `UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY_FINAL_RETRY` | `true` |
+
+3. Tuning order (to preserve answer quality while reducing degeneration):
+  - Lower `UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS` first.
+  - Then lower `UNSLOTH_WIKI_RAG_MAX_PAGES`.
+  - Then lower `UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE`.
+  - Only after that, tighten engine-level caps.
+
+4. Caveat:
+  - Over-tightening can improve fluency but hurt factual recall. Balance with your model size and domain complexity.

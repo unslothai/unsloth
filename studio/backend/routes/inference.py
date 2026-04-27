@@ -187,6 +187,9 @@ from models.inference import (
     WikiQueryRequest,
     WikiQueryResponse,
     WikiLintResponse,
+    WikiEnvConfigResponse,
+    WikiEnvSetRequest,
+    WikiEnvSetResponse,
     WikiGraphifyExportRequest,
     WikiGraphifyExportResponse,
     TextContentPart,
@@ -230,6 +233,11 @@ import datetime as _datetime
 
 from core.wiki.manager import WikiManager
 from core.wiki.ingestor import WikiIngestor
+from core.wiki.runtime_env import (
+    collect_wiki_env_state,
+    update_wiki_env_values,
+    wiki_env_overrides_file,
+)
 
 router = APIRouter()
 
@@ -316,6 +324,26 @@ def _loggable_rag_context(context: str) -> str:
         context[:_RAG_LOG_INJECTED_CONTEXT_MAX_CHARS].rstrip()
         + "\n...[truncated by UNSLOTH_WIKI_LOG_INJECTED_CONTEXT_MAX_CHARS]"
     )
+
+
+def _restart_supported(request: Request) -> bool:
+    return callable(getattr(request.app.state, "trigger_restart", None))
+
+
+def _schedule_backend_restart(request: Request) -> bool:
+    trigger_restart = getattr(request.app.state, "trigger_restart", None)
+    if not callable(trigger_restart):
+        return False
+
+    async def _delayed_restart() -> None:
+        await asyncio.sleep(0.2)
+        try:
+            trigger_restart()
+        except Exception as exc:
+            logger.warning("Failed to trigger backend restart: %s", exc)
+
+    request.app.state._restart_task = asyncio.create_task(_delayed_restart())
+    return True
 
 
 def _wiki_llm_available() -> bool:
@@ -507,6 +535,7 @@ def _archive_stale_wiki_pages(
     dry_run: bool,
     keep_recent_chat: int,
     keep_recent_per_source: int,
+    move_raw_files: bool = False,
 ) -> dict[str, Any]:
     sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
     archive_sources_dir = _WIKI_VAULT_ROOT / "wiki" / ".archive" / "sources"
@@ -567,7 +596,7 @@ def _archive_stale_wiki_pages(
 
             report["moved_sources"].append(str(target))
 
-            if source_ref:
+            if move_raw_files and source_ref:
                 raw_path = Path(source_ref)
                 if raw_path.exists() and raw_dir in raw_path.parents:
                     raw_target = archive_raw_dir / raw_path.name
@@ -1018,6 +1047,7 @@ async def archive_stale_wiki_sources(
         dry_run = payload.dry_run,
         keep_recent_chat = payload.keep_recent_chat,
         keep_recent_per_source = payload.keep_recent_per_source,
+        move_raw_files = payload.move_raw_files,
     )
 
     if report["moved_count"] and not payload.dry_run:
@@ -1104,6 +1134,8 @@ async def wiki_enrich(
             max_analysis_pages = payload.max_analysis_pages,
             fill_gaps_from_web = payload.fill_gaps_from_web,
             max_web_gap_queries = payload.max_web_gap_queries,
+            refresh_non_fallback_oldest_pages = payload.refresh_non_fallback_oldest_pages,
+            repair_answer_links = payload.repair_answer_links,
             compact_knowledge_pages = payload.compact_knowledge_pages,
             max_incremental_updates = payload.max_incremental_updates,
         )
@@ -1120,6 +1152,8 @@ async def wiki_enrich(
         updated_pages = int(report.get("updated_pages", 0)),
         changes = [dict(item) for item in report.get("changes", [])],
         web_gap_fill = dict(report.get("web_gap_fill", {})),
+        non_fallback_refresh = dict(report.get("non_fallback_refresh", {})),
+        analysis_link_repair = dict(report.get("analysis_link_repair", {})),
         knowledge_compaction = dict(report.get("knowledge_compaction", {})),
     )
 
@@ -1327,6 +1361,47 @@ async def wiki_lint(
         ],
         total_pages = int(report.get("total_pages", 0)),
         graphify_insights = dict(report.get("graphify_insights", {})),
+    )
+
+
+@router.get("/wiki/env", response_model = WikiEnvConfigResponse)
+async def wiki_env_config(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return editable wiki runtime environment settings."""
+    return WikiEnvConfigResponse(
+        status = "ok",
+        variables = collect_wiki_env_state(),
+        overrides_file = str(wiki_env_overrides_file()),
+        restart_supported = _restart_supported(request),
+    )
+
+
+@router.post("/wiki/env", response_model = WikiEnvSetResponse)
+async def wiki_env_set(
+    payload: WikiEnvSetRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Apply wiki runtime environment edits and optionally restart the backend."""
+    result = update_wiki_env_values(payload.values)
+
+    changed = bool(result.get("updated") or result.get("cleared"))
+    restart_supported = _restart_supported(request)
+    restart_scheduled = False
+    if payload.restart_backend and changed:
+        restart_scheduled = _schedule_backend_restart(request)
+
+    status_value = "partial" if result.get("invalid") else "ok"
+    return WikiEnvSetResponse(
+        status = status_value,
+        updated = [str(item) for item in result.get("updated", [])],
+        cleared = [str(item) for item in result.get("cleared", [])],
+        invalid = dict(result.get("invalid", {})),
+        overrides_file = str(result.get("overrides_file", wiki_env_overrides_file())),
+        restart_supported = restart_supported,
+        restart_scheduled = restart_scheduled,
     )
 
 

@@ -1048,6 +1048,127 @@ def test_enrich_analysis_pages_dry_run_does_not_edit_file(tmp_path: Path):
     assert analysis_path.read_text(encoding = "utf-8") == original
 
 
+def test_enrich_repairs_broken_links_only_in_maintenance_sections(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "valid-entity.md").write_text(
+        "# Valid Entity\n\nEntity page.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "sample.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Answer\n"
+        "Answer body keeps unresolved references unchanged: [[concepts/ghost-answer-link]].\n\n"
+        "## Context Pages\n"
+        "- [[entities/valid-entity]]\n"
+        "- [[concepts/missing-context]]\n\n"
+        "## Enrichment\n"
+        "- generated_at: 2026-04-26T00:00:00+00:00\n"
+        "- strategy: index-driven enrichment from index.md link inventory\n"
+        "### Related Entities\n"
+        "- [[entities/missing-enrichment]]\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.enrich_analysis_pages(dry_run = False, max_analysis_pages = 10)
+
+    repair = report.get("analysis_link_repair", {})
+    assert repair.get("repair_answer_links_enabled") is False
+    assert repair.get("repaired_pages") == 1
+    assert repair.get("removed_links") == 2
+
+    updated = analysis_path.read_text(encoding = "utf-8")
+    assert "[[entities/valid-entity]]" in updated
+    assert "[[concepts/missing-context]]" not in updated
+    assert "[[entities/missing-enrichment]]" not in updated
+    # Safe mode: answer prose is not rewritten by link-repair maintenance.
+    assert "[[concepts/ghost-answer-link]]" in updated
+
+    broken_targets = {item.get("target") for item in engine.lint().get("broken_links", [])}
+    assert "concepts/ghost-answer-link.md" in broken_targets
+    assert "concepts/missing-context.md" not in broken_targets
+    assert "entities/missing-enrichment.md" not in broken_targets
+
+
+def test_enrich_can_repair_broken_links_in_answer_when_enabled(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "valid-entity.md").write_text(
+        "# Valid Entity\n\nEntity page.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "sample.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Answer\n"
+        "Aggressive mode can repair unresolved references in prose: [[concepts/ghost-answer-link]].\n"
+        "A valid link should remain: [[entities/valid-entity]].\n\n"
+        "## Context Pages\n"
+        "- [[entities/valid-entity]]\n"
+        "- [[concepts/missing-context]]\n\n"
+        "## Enrichment\n"
+        "### Related Entities\n"
+        "- [[entities/missing-enrichment]]\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.enrich_analysis_pages(
+        dry_run = False,
+        max_analysis_pages = 10,
+        repair_answer_links = True,
+    )
+
+    repair = report.get("analysis_link_repair", {})
+    assert repair.get("repair_answer_links_enabled") is True
+    assert repair.get("repaired_pages") == 1
+    assert repair.get("removed_links") == 3
+
+    updated = analysis_path.read_text(encoding = "utf-8")
+    assert "[[entities/valid-entity]]" in updated
+    assert "[[concepts/ghost-answer-link]]" not in updated
+    assert "[[concepts/missing-context]]" not in updated
+    assert "[[entities/missing-enrichment]]" not in updated
+
+    broken_targets = {item.get("target") for item in engine.lint().get("broken_links", [])}
+    assert "concepts/ghost-answer-link.md" not in broken_targets
+    assert "concepts/missing-context.md" not in broken_targets
+    assert "entities/missing-enrichment.md" not in broken_targets
+
+
+def test_enrich_link_repair_dry_run_reports_without_writing(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "sample.md"
+    original = (
+        "# Query Result\n\n"
+        "## Context Pages\n"
+        "- [[concepts/missing-context]]\n\n"
+        "## Enrichment\n"
+        "### Related Concepts\n"
+        "- [[concepts/missing-enrichment]]\n"
+    )
+    analysis_path.write_text(original, encoding = "utf-8")
+
+    report = engine.enrich_analysis_pages(dry_run = True, max_analysis_pages = 10)
+
+    repair = report.get("analysis_link_repair", {})
+    assert repair.get("repaired_pages") == 1
+    assert repair.get("removed_links") == 2
+    assert analysis_path.read_text(encoding = "utf-8") == original
+
+
 def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1168,6 +1289,132 @@ def test_enrich_analysis_pages_can_compact_knowledge_updates(tmp_path: Path):
     assert "### Update 1" not in updates
 
 
+def test_refresh_oldest_non_fallback_analysis_pages_skips_fallback_and_refreshes_oldest(
+    tmp_path: Path,
+):
+    refreshed_answer = (
+        "Refreshed analysis from current wiki context with grounded evidence, "
+        "trend synthesis, and updated implications tied to sources. [[sources/alpha]]"
+    )
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: refreshed_answer,
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nAlpha source context used for refresh decisions.\n",
+        encoding = "utf-8",
+    )
+
+    fallback_page = tmp_path / "wiki" / "analysis" / "fallback.md"
+    fallback_page.write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat was fallback output?\n\n"
+        "## Answer Mode\nextractive-fallback\n\n"
+        "## Answer\nFallback answer text.\n\n"
+        "## Fallback Reason\ntoo_short\n",
+        encoding = "utf-8",
+    )
+
+    oldest_non_fallback = tmp_path / "wiki" / "analysis" / "oldest-non-fallback.md"
+    oldest_non_fallback.write_text(
+        "# Query Result\n\n"
+        "## Question\nSummarize the latest alpha source implications.\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\nStale answer that should be refreshed.\n\n"
+        "## Context Pages\n- [[sources/alpha]]\n",
+        encoding = "utf-8",
+    )
+
+    newer_non_fallback = tmp_path / "wiki" / "analysis" / "newer-non-fallback.md"
+    newer_non_fallback.write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat changed recently in alpha?\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\nRecent answer text.\n\n"
+        "## Context Pages\n- [[sources/alpha]]\n",
+        encoding = "utf-8",
+    )
+
+    # fallback is oldest overall, but non-fallback refresh must ignore it.
+    os.utime(fallback_page, (100.0, 100.0))
+    os.utime(oldest_non_fallback, (200.0, 200.0))
+    os.utime(newer_non_fallback, (300.0, 300.0))
+
+    report = engine.refresh_oldest_non_fallback_analysis_pages(
+        dry_run = False,
+        max_analysis_pages = 1,
+    )
+
+    assert report["status"] == "ok"
+    assert report["enabled"] is True
+    assert report["requested_pages"] == 1
+    assert report["candidate_pages"] == 1
+    assert report["refreshed_pages"] == 1
+    assert report["skipped_refresh_fallback"] == 0
+    assert report["results"][0]["page"] == "analysis/oldest-non-fallback.md"
+
+    refreshed_text = oldest_non_fallback.read_text(encoding = "utf-8")
+    assert "## Refresh Status" in refreshed_text
+    assert "oldest non-fallback analysis refresh" in refreshed_text
+    assert refreshed_answer in refreshed_text
+
+    fallback_text = fallback_page.read_text(encoding = "utf-8")
+    assert "extractive-fallback" in fallback_text
+
+
+def test_enrich_analysis_pages_reports_non_fallback_refresh(tmp_path: Path):
+    refreshed_answer = (
+        "Detailed refreshed synthesis with concrete evidence, timeline framing, "
+        "and source-grounded implications for downstream planning. [[sources/alpha]]"
+    )
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: refreshed_answer,
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nAlpha source context with evidence details.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "alpha-team.md").write_text(
+        "# Alpha Team\n\nEntity page.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "concepts" / "alpha-planning.md").write_text(
+        "# Alpha Planning\n\nConcept page.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "index.md").write_text(
+        "# Index\n\n"
+        "## Sources\n- [[sources/alpha]]\n\n"
+        "## Entities\n- [[entities/alpha-team]]\n\n"
+        "## Concepts\n- [[concepts/alpha-planning]]\n\n"
+        "## Analysis\n- [[analysis/sample]]\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "sample.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Question\nHow should alpha planning adapt to recent source evidence?\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\nInitial answer.\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.enrich_analysis_pages(
+        dry_run = False,
+        max_analysis_pages = 10,
+        refresh_non_fallback_oldest_pages = 1,
+    )
+
+    refresh_report = report.get("non_fallback_refresh", {})
+    assert refresh_report.get("enabled") is True
+    assert refresh_report.get("requested_pages") == 1
+    assert refresh_report.get("refreshed_pages") == 1
+
+
 def test_retry_fallback_analysis_pages_retries_only_fallback_pages(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1211,6 +1458,182 @@ def test_retry_fallback_analysis_pages_retries_only_fallback_pages(tmp_path: Pat
     )
 
 
+def test_retry_fallback_analysis_pages_reduces_context_before_regeneration(
+    tmp_path: Path,
+    monkeypatch,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            query_context_max_chars = 20000,
+            analysis_max_retries = 3,
+            analysis_retry_reduction = 0.5,
+            analysis_min_context_chars = 4000,
+            analysis_source_only = False,
+            analysis_source_only_final_retry = False,
+        ),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nalpha context details for retry\n",
+        encoding = "utf-8",
+    )
+
+    fallback_page = tmp_path / "wiki" / "analysis" / "fallback-adaptive.md"
+    fallback_page.write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat is alpha?\n\n"
+        "## Answer Mode\nextractive-fallback\n\n"
+        "## Answer\nFallback answer\n\n"
+        "## Fallback Reason\nrepetition\n\n"
+        "## Context Pages\n- [[sources/alpha]]\n",
+        encoding = "utf-8",
+    )
+
+    call_history = []
+
+    def _fake_query(
+        question: str,
+        save_answer: bool = True,
+        query_context_max_chars_override = None,
+        preferred_context_page = None,
+        keep_preferred_context_full: bool = False,
+        preferred_context_only: bool = False,
+    ):
+        call_history.append(
+            {
+                "question": question,
+                "save_answer": save_answer,
+                "chars": query_context_max_chars_override,
+                "preferred_context_page": preferred_context_page,
+                "keep_preferred_context_full": keep_preferred_context_full,
+                "preferred_context_only": preferred_context_only,
+            }
+        )
+        if query_context_max_chars_override is None or query_context_max_chars_override > 6000:
+            return {
+                "used_extractive_fallback": True,
+                "fallback_reason": "repetition",
+            }
+        if save_answer:
+            return {
+                "used_extractive_fallback": False,
+                "answer_page": "analysis/regenerated-alpha",
+            }
+        return {"used_extractive_fallback": False}
+
+    monkeypatch.setattr(engine, "query", _fake_query)
+
+    report = engine.retry_fallback_analysis_pages(dry_run = False, max_analysis_pages = 20)
+
+    assert report["fallback_pages_found"] == 1
+    assert report["regenerated_pages"] == 1
+    assert report["fallback_still"] == 0
+
+    result = report["results"][0]
+    assert result["status"] == "regenerated"
+    assert result["retries_attempted"] == 2
+    assert result["context_chars_override"] == 5000
+    assert result["source_only"] is False
+
+    assert [entry["chars"] for entry in call_history] == [20000, 10000, 5000, 5000]
+    assert all(entry["question"] == "What is alpha?" for entry in call_history)
+    assert all(
+        entry["preferred_context_page"] == "sources/alpha" for entry in call_history
+    )
+    assert all(entry["keep_preferred_context_full"] is True for entry in call_history)
+    assert all(entry["preferred_context_only"] is False for entry in call_history)
+
+
+def test_query_source_first_uses_primary_source_only_context(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            max_context_pages = 0,
+            max_chars_per_page = 0,
+            query_context_max_chars = 12000,
+        ),
+        llm_fn = lambda _: "Grounded source summary. [[sources/alpha]]",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nAlpha source details for source-first summary.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "analysis" / "alpha-noise.md").write_text(
+        "# Query Result\n\n## Question\nSummarize source 'Alpha'\n\n## Answer\nNoise.\n",
+        encoding = "utf-8",
+    )
+
+    result = engine.query(
+        "Summarize source 'Alpha' with a source-first lens. Primary page: [[sources/alpha]].",
+        save_answer = False,
+    )
+
+    assert result["context_pages"] == ["sources/alpha.md"]
+
+
+def test_retry_fallback_prefers_primary_source_link_from_question(
+    tmp_path: Path,
+    monkeypatch,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nalpha source body\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "sources" / "beta.md").write_text(
+        "# Beta\n\nbeta source body\n",
+        encoding = "utf-8",
+    )
+
+    fallback_page = tmp_path / "wiki" / "analysis" / "fallback-source-link.md"
+    fallback_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Alpha' with a source-first lens. Primary page: [[sources/alpha]].\n\n"
+        "## Answer Mode\nextractive-fallback\n\n"
+        "## Answer\nFallback answer with unrelated source [[sources/beta]].\n\n"
+        "## Fallback Reason\nrepetition\n\n"
+        "## Context Pages\n- [[sources/beta]]\n",
+        encoding = "utf-8",
+    )
+
+    call_history = []
+
+    def _fake_query(
+        question: str,
+        save_answer: bool = True,
+        query_context_max_chars_override = None,
+        preferred_context_page = None,
+        keep_preferred_context_full: bool = False,
+        preferred_context_only: bool = False,
+    ):
+        call_history.append(
+            {
+                "question": question,
+                "preferred_context_page": preferred_context_page,
+                "keep_preferred_context_full": keep_preferred_context_full,
+                "preferred_context_only": preferred_context_only,
+            }
+        )
+        return {"used_extractive_fallback": False}
+
+    monkeypatch.setattr(engine, "query", _fake_query)
+
+    report = engine.retry_fallback_analysis_pages(dry_run = True, max_analysis_pages = 20)
+
+    assert report["fallback_pages_found"] == 1
+    assert report["regenerated_pages"] == 1
+    assert call_history
+    assert call_history[0]["preferred_context_page"] == "sources/alpha"
+
+
 def test_index_flags_fallback_analysis_pages(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1248,6 +1671,74 @@ def test_index_flags_fallback_analysis_pages(tmp_path: Path):
 
     assert "[fallback: repetition]" in fallback_line
     assert "[fallback" not in normal_line
+
+
+def test_index_flags_source_first_llm_with_missing_sections_as_fallback(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_slug = "alpha-source"
+    (tmp_path / "wiki" / "sources" / f"{source_slug}.md").write_text(
+        "# Alpha Source\n\nDetails.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "source-first-llm.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Alpha Source' with a source-first lens. "
+        "Primary page: [[sources/alpha-source]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: Alpha Source Summary\n"
+        "Section A: A brief summary tied to [[sources/alpha-source]].\n"
+        "Section B: - Takeaway one.\n\n"
+        "## Context Pages\n"
+        "- [[sources/alpha-source]]\n",
+        encoding = "utf-8",
+    )
+
+    page_text = analysis_path.read_text(encoding = "utf-8")
+    assert engine._analysis_page_uses_fallback(page_text) is True
+
+    engine._rebuild_index()
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    flagged_line = next(
+        line
+        for line in index_text.splitlines()
+        if "[[analysis/source-first-llm]]" in line
+    )
+    assert "[fallback: missing_watcher_sections:" in flagged_line
+
+    report = engine.retry_fallback_analysis_pages(dry_run = True, max_analysis_pages = 10)
+    assert report["fallback_pages_found"] == 1
+
+
+def test_non_source_first_llm_page_without_sections_is_not_fallback(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "normal-llm.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat is beta?\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\nNormal free-form answer without section labels.\n",
+        encoding = "utf-8",
+    )
+
+    page_text = analysis_path.read_text(encoding = "utf-8")
+    assert engine._analysis_page_uses_fallback(page_text) is False
+
+    report = engine.retry_fallback_analysis_pages(dry_run = True, max_analysis_pages = 10)
+    assert report["fallback_pages_found"] == 0
 
 
 def test_retry_fallback_updates_index_when_resolved(tmp_path: Path):
