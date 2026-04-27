@@ -863,9 +863,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
 
                     if pixel_attention_mask is not None:
-                        pixel_attention_mask_chunks.append(
-                            pixel_attention_mask[start:end]
-                        )
+                        if pixel_attention_mask.shape[0] == pixel_values.shape[0]:
+                            pixel_attention_mask_chunks.append(
+                                pixel_attention_mask[start_pixel_idx:end_pixel_idx]
+                            )
+                        else:
+                            pixel_attention_mask_chunks.append(
+                                pixel_attention_mask[start:end]
+                            )
                     else:
                         pixel_attention_mask_chunks.append(None)
 
