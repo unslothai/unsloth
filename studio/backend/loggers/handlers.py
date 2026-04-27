@@ -16,59 +16,77 @@ Key Components:
 """
 
 import time
-from typing import Callable
 
 import structlog
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = structlog.get_logger(__name__)
 
 
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+_EXCLUDED_PATHS = {
+    "/api/train/status",
+    "/api/train/metrics",
+    "/api/train/hardware",
+    "/api/system",
+}
+_EXCLUDED_SUFFIXES = (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
+
+
+class LoggingMiddleware:
+    """Pure ASGI request/response logger.
+
+    Implemented as a raw ASGI middleware rather than ``BaseHTTPMiddleware``
+    because the latter buffers the response body and cancels the response
+    task group on client disconnect — which corrupts streaming responses
+    (notably ``StaticFiles`` + ``FileResponse``) and surfaces in browsers
+    as ``net::ERR_TOO_MANY_RETRIES`` on asset fetches.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
+        if (
+            path in _EXCLUDED_PATHS
+            or path.startswith("/assets/")
+            or path.endswith(_EXCLUDED_SUFFIXES)
+        ):
+            await self.app(scope, receive, send)
+            return
+
         start_time = time.time()
+        status_code = 500
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
 
         try:
-            response = await call_next(request)
-
-            # Log response
-            process_time = (time.time() - start_time) * 1000
-
-            EXCLUDED_PATHS = {
-                "/api/train/status",
-                "/api/train/metrics",
-                "/api/train/hardware",
-                "/api/system",
-            }
-            is_excluded = (
-                request.url.path in EXCLUDED_PATHS
-                or request.url.path.startswith("/assets/")
-                or request.url.path.endswith(
-                    (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
-                )
-            )
-
-            if not is_excluded:
-                logger.info(
-                    "request_completed",
-                    method = request.method,
-                    path = request.url.path,
-                    status_code = response.status_code,
-                    process_time_ms = round(process_time, 2),
-                )
-
-            return response
-
-        except Exception as e:
+            await self.app(scope, receive, send_wrapper)
+        except Exception as exc:
             logger.error(
                 "request_failed",
-                path = request.url.path,
-                method = request.method,
-                error = str(e),
+                path = path,
+                method = scope.get("method"),
+                error = str(exc),
                 exc_info = True,
             )
             raise
+        else:
+            logger.info(
+                "request_completed",
+                method = scope.get("method"),
+                path = path,
+                status_code = status_code,
+                process_time_ms = round((time.time() - start_time) * 1000, 2),
+            )
 
 
 def filter_sensitive_data(logger, method_name, event_dict):
