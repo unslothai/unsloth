@@ -1412,11 +1412,16 @@ def patch_peft_weight_converter_compatibility():
                 __supports_quantization = supports_quantization,
                 **kwargs,
             ):
-                if not __supports_distributed:
-                    kwargs.pop("distributed_operation", None)
-                if not __supports_quantization:
-                    kwargs.pop("quantization_operation", None)
-                return __original_init(self, *args, **kwargs)
+                unsupported = {}
+                if not __supports_distributed and "distributed_operation" in kwargs:
+                    unsupported["distributed_operation"] = kwargs.pop("distributed_operation")
+                if not __supports_quantization and "quantization_operation" in kwargs:
+                    unsupported["quantization_operation"] = kwargs.pop("quantization_operation")
+                result = __original_init(self, *args, **kwargs)
+                for name, value in unsupported.items():
+                    if hasattr(self, name):
+                        setattr(self, name, value)
+                return result
 
             conversion_cls.__init__ = _compat_init
             patched.append((conversion_cls, original_init))
@@ -1425,6 +1430,9 @@ def patch_peft_weight_converter_compatibility():
     def _build_peft_weight_mapping_compat(
         weight_conversions, adapter_name, peft_config
     ):
+        if not weight_conversions:
+            return original_build(weight_conversions, adapter_name, peft_config)
+
         patched_classes = _patch_weight_converter_ctors(weight_conversions)
         try:
             return original_build(weight_conversions, adapter_name, peft_config)
