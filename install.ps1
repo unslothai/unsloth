@@ -1027,32 +1027,54 @@ shell.Run cmd, 0, False
         }
     }
 
-    # Hotfix: patch install_python_stack.py for Windows GUI stdout
-    # The PyPI version crashes with OSError when stdout is piped from a GUI app.
-    # Copy our fixed version (bundled by Tauri) over the installed one.
-    # Remove this block once PyPI ships the fix from commit 18c5aae7.
+    # Overlay Tauri-bundled studio fixes that may be ahead of PyPI. Skipped
+    # for --local: the editable install above already makes _PACKAGE_ROOT in
+    # unsloth_cli/commands/studio.py resolve to the repo (PEP 660 __file__).
     if ($TauriMode) {
         $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
-        $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
-        $fixedPy = Join-Path $scriptDir "install_python_stack.py"
-        $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
-        $sentinel = "# UNSLOTH_DESKTOP_HOTFIX_APPLIED_v1"
-        $sentinelPattern = [regex]::Escape($sentinel)
-        if ((Test-Path $fixedPy) -and (Test-Path $target)) {
-            $installed = Get-Content $target -Raw
-            if ($installed -notmatch $sentinelPattern) {
-                Copy-Item $fixedPy $target -Force
-                Add-Content -Path $target -Value "`n$sentinel"
-                substep "patched install_python_stack.py (stdout fix)"
-            } else {
-                substep "install_python_stack.py already has stdout fix"
+        if ($rawPath) {
+            # Strip leading \\?\ extended-length prefix if the launcher passed one.
+            $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
+            $overlayMap = [ordered]@{
+                "studio\install_python_stack.py" = "Lib\site-packages\studio\install_python_stack.py"
+                "studio\setup.ps1"               = "Lib\site-packages\studio\setup.ps1"
             }
-        } elseif ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
-            Copy-Item $fixedPy $target -Force
-            Add-Content -Path $target -Value "`n$sentinel"
-            substep "patched install_python_stack.py (stdout fix)"
-        } else {
-            Write-Host "[WARN] Could not patch install_python_stack.py (bundled file or target dir missing)" -ForegroundColor Yellow
+            foreach ($rel in $overlayMap.Keys) {
+                $src = Join-Path $scriptDir $rel
+                $dst = Join-Path $VenvDir $overlayMap[$rel]
+                if (-not (Test-Path $src)) { continue }
+                if (-not (Test-Path $dst)) {
+                    Write-Host "[WARN] Overlay target missing: $($overlayMap[$rel]); studio setup may use stale bundled file" -ForegroundColor Yellow
+                    continue
+                }
+                try {
+                    # Hash-compare so re-runs are no-ops when files already match.
+                    $srcHash = (Get-FileHash $src -Algorithm SHA256).Hash
+                    $dstHash = (Get-FileHash $dst -Algorithm SHA256).Hash
+                    if ($srcHash -ne $dstHash) {
+                        Copy-Item $src $dst -Force
+                        substep ("applied bundled " + (Split-Path -Leaf $rel))
+                    }
+                } catch {
+                    Write-Host "[WARN] Could not overlay $($rel): $($_.Exception.Message); studio setup may use stale bundled file" -ForegroundColor Yellow
+                }
+            }
+            # Plugins: missing-only — never clobber a dir the user may have modified.
+            $localPlugins  = Join-Path $scriptDir "studio\backend\plugins"
+            $targetPlugins = Join-Path $VenvDir   "Lib\site-packages\studio\backend\plugins"
+            if ((Test-Path $localPlugins) -and (Test-Path $targetPlugins)) {
+                try {
+                    Get-ChildItem -Path $localPlugins -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                        $pdst = Join-Path $targetPlugins $_.Name
+                        if (-not (Test-Path $pdst)) {
+                            Copy-Item -Path $_.FullName -Destination $pdst -Recurse -Force
+                            substep ("backfilled missing plugin: " + $_.Name)
+                        }
+                    }
+                } catch {
+                    Write-Host "[WARN] Could not overlay plugin dirs: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+            }
         }
     }
 
