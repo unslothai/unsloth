@@ -1273,7 +1273,7 @@ shell.Run cmd, 0, False
     # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
     $shimUpdated = $false
     try {
-        if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
+        if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -Recurse -ErrorAction Stop }
         try {
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {

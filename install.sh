@@ -235,7 +235,17 @@ _resolve_studio_destinations() {
     elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
         _default_home=$(dscl . -read "/Users/${USER:-$(whoami)}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
     fi
-    if [ -n "$_default_home" ] && [ "$HOME" != "$_default_home" ]; then
+    # Canonicalize both sides so a trailing slash on $HOME (or symlink mismatch
+    # with passwd-DB output) doesn't misfire the redirection branch.
+    _home_canon="$HOME"
+    if [ -d "$_home_canon" ]; then
+        _home_canon=$(CDPATH= cd -P -- "$_home_canon" 2>/dev/null && pwd -P) || _home_canon="$HOME"
+    fi
+    _default_home_canon="$_default_home"
+    if [ -n "$_default_home_canon" ] && [ -d "$_default_home_canon" ]; then
+        _default_home_canon=$(CDPATH= cd -P -- "$_default_home_canon" 2>/dev/null && pwd -P) || _default_home_canon="$_default_home"
+    fi
+    if [ -n "$_default_home_canon" ] && [ "$_home_canon" != "$_default_home_canon" ]; then
         STUDIO_HOME="$HOME/.unsloth/studio"
         DATA_DIR="$HOME/.local/share/unsloth"
         _LOCAL_BIN="$HOME/.local/bin"
@@ -1795,6 +1805,8 @@ fi
 # Env-mode: $_LOCAL_BIN is $STUDIO_HOME/bin; skip shell-rc PATH append so we
 # don't pollute the user's profile with a workspace-scoped path.
 mkdir -p "$_LOCAL_BIN"
+# ln -sf into an existing dir creates link inside it; nuke any directory first.
+[ -d "$_LOCAL_BIN/unsloth" ] && [ ! -L "$_LOCAL_BIN/unsloth" ] && rm -rf -- "$_LOCAL_BIN/unsloth"
 ln -sf "$VENV_DIR/bin/unsloth" "$_LOCAL_BIN/unsloth"
 
 case ":$PATH:" in
