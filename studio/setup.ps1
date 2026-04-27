@@ -1148,42 +1148,83 @@ if ($IsPipInstall) {
 # ============================================
 # 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
 # ============================================
+# This is an early presence check only -- Phase 3 below performs the
+# authoritative Python selection (using the py.exe Launcher to find a
+# valid 3.11-3.13 even when `python` on PATH is a newer/unsupported
+# release). So here we accept either:
+#   - `python` on PATH that is 3.11-3.13, OR
+#   - `py.exe` with at least one registered 3.11-3.13 interpreter.
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PythonOk = $false
+$PyVerStr = $null
+# Resolved interpreter that passed the early check (used downstream for the
+# user-site Scripts dir lookup, so it doesn't fall back to a 3.14 `python`
+# on PATH when only `py -3.12` was actually validated).
+$EarlyPythonExe = $null
 
 if ($HasPython) {
-    $PyVer = python --version 2>&1
-    if ($PyVer -match "(\d+)\.(\d+)") {
+    $PyVerStr = (python --version 2>&1 | Out-String).Trim()
+    if ($PyVerStr -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            substep "Python $PyVer"
+            substep "Python $PyVerStr"
             $PythonOk = $true
-        } else {
-            Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
-            Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-            exit 1
+            $EarlyPythonExe = (Get-Command python).Source
         }
     }
-} else {
-    # No Python at all -- install 3.12
-    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
-        Refresh-Environment
+}
+
+if (-not $PythonOk) {
+    # `python` on PATH is missing or unsupported -- look for a usable
+    # interpreter via the py.exe Launcher (matches Phase 3 logic).
+    $pyLauncherCmd = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+    if ($pyLauncherCmd) {
+        foreach ($minor in @("3.13", "3.12", "3.11")) {
+            try {
+                $launcherVer = (& $pyLauncherCmd.Source "-$minor" --version 2>&1 | Out-String).Trim()
+                if ($launcherVer -match 'Python 3\.(\d+)') {
+                    substep "Python $launcherVer (via py -$minor)"
+                    $PythonOk = $true
+                    # Resolve the actual exe so callers below don't have to
+                    # re-run the launcher every time.
+                    $resolved = (& $pyLauncherCmd.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                    if ($resolved -and (Test-Path $resolved)) { $EarlyPythonExe = $resolved }
+                    break
+                }
+            } catch { }
+        }
     }
-    $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-    if (-not $HasPython) {
-        Write-Host "[ERROR] Python could not be installed automatically." -ForegroundColor Red
+}
+
+if (-not $PythonOk) {
+    if ($HasPython -and $PyVerStr) {
+        Write-Host "[ERROR] Python $PyVerStr is outside supported range (need >= 3.11 and < 3.14) and no py.exe Launcher fallback found." -ForegroundColor Red
+    } else {
+        Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        if ($HasWinget) {
+            winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+            Refresh-Environment
+            $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+            if ($HasPython) {
+                step "python" "$(python --version 2>&1)"
+                $PythonOk = $true
+                $EarlyPythonExe = (Get-Command python).Source
+            }
+        }
+    }
+    if (-not $PythonOk) {
         Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
         exit 1
     }
-    step "python" "$(python --version 2>&1)"
-    $PythonOk = $true
 }
 
 # Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
-$ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
+# Use the interpreter that passed the early check above ($EarlyPythonExe) rather
+# than bare `python`, so this resolves to the supported Python's user-site even
+# when an unsupported `python` (e.g., 3.14) is first on PATH.
+$EarlyPyForScripts = if ($EarlyPythonExe) { $EarlyPythonExe } else { "python" }
+$ScriptsDir = & $EarlyPyForScripts -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
     # Append (not Prepend) -- this dir has other pip scripts; shim handles unsloth.
     if (Add-ToUserPath -Directory $ScriptsDir) {
