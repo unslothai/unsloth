@@ -756,7 +756,7 @@ export function ChatSettingsPanel({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="ngram-mod">On</SelectItem>
+                      <SelectItem value="default">On</SelectItem>
                       <SelectItem value="off">Off</SelectItem>
                     </SelectContent>
                   </Select>
