@@ -59,7 +59,7 @@ class LoggingMiddleware:
             await self.app(scope, receive, send)
             return
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         status_code = 500
 
         async def send_wrapper(message: Message) -> None:
@@ -74,7 +74,7 @@ class LoggingMiddleware:
             logger.error(
                 "request_failed",
                 path = path,
-                method = scope.get("method"),
+                method = scope["method"],
                 error = str(exc),
                 exc_info = True,
             )
@@ -82,10 +82,10 @@ class LoggingMiddleware:
         else:
             logger.info(
                 "request_completed",
-                method = scope.get("method"),
+                method = scope["method"],
                 path = path,
                 status_code = status_code,
-                process_time_ms = round((time.time() - start_time) * 1000, 2),
+                process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
             )
 
 
