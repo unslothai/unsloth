@@ -325,8 +325,12 @@ def grpo_trainer__generate_single_turn(function_name, function):
     ]:
         function = re.sub(pattern, "", function)
 
-    string_to_find = "            generate_inputs = super()._prepare_inputs(generate_inputs)"
-    replacement_string = string_to_find + """
+    string_to_find = (
+        "            generate_inputs = super()._prepare_inputs(generate_inputs)"
+    )
+    replacement_string = (
+        string_to_find
+        + """
             if "mm_token_type_ids" in generate_inputs or "image_grid_thw" in generate_inputs:
                 mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
                     self.processing_class,
@@ -335,6 +339,7 @@ def grpo_trainer__generate_single_turn(function_name, function):
                 )
                 if mm_token_type_ids is not None:
                     generate_inputs["mm_token_type_ids"] = mm_token_type_ids"""
+    )
     function = function.replace(string_to_find, replacement_string)
 
     return function
@@ -569,7 +574,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 """
     _tool_image_marker = "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
     if _tool_image_marker in function:
-        function = function.replace(_tool_image_marker, _mm_alignment + "\n" + _tool_image_marker)
+        function = function.replace(
+            _tool_image_marker, _mm_alignment + "\n" + _tool_image_marker
+        )
     else:
         _tt_search = (
             'if "token_type_ids" in forward_kwargs:\n'
@@ -578,7 +585,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
             "            )"
         )
-        function = function.replace(_tt_search, _tt_search + "\n" + _mm_alignment.rstrip())
+        function = function.replace(
+            _tt_search, _tt_search + "\n" + _mm_alignment.rstrip()
+        )
 
     _save_search = (
         'if "token_type_ids" in forward_kwargs:\n'
