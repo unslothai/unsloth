@@ -1457,9 +1457,18 @@ def test_retry_fallback_analysis_pages_retries_only_fallback_pages(tmp_path: Pat
     assert report["regenerated_pages"] == 1
     assert report["fallback_still"] == 0
     assert report["retried_pages"] == 1
+    assert report["results"][0]["new_answer_page"] == "analysis/fallback"
     assert any(
         item.get("source_page") == "analysis/fallback.md" for item in report["results"]
     )
+
+    fallback_text = fallback_page.read_text(encoding = "utf-8")
+    assert "## Answer Mode\nllm" in fallback_text
+    assert "## Fallback Reason" not in fallback_text
+    assert "## Retry Status" in fallback_text
+    assert "- status: resolved_in_place" in fallback_text
+    assert "- resolved_by: [[analysis/fallback]]" in fallback_text
+    assert not (tmp_path / "wiki" / "analysis" / "fallback-2.md").exists()
 
 
 def test_retry_fallback_analysis_pages_reduces_context_before_regeneration(
@@ -1523,12 +1532,12 @@ def test_retry_fallback_analysis_pages_reduces_context_before_regeneration(
                 "used_extractive_fallback": True,
                 "fallback_reason": "repetition",
             }
-        if save_answer:
-            return {
-                "used_extractive_fallback": False,
-                "answer_page": "analysis/regenerated-alpha",
-            }
-        return {"used_extractive_fallback": False}
+        return {
+            "used_extractive_fallback": False,
+            "answer": "Detailed regenerated answer with grounded evidence. [[sources/alpha]]",
+            "context_pages": ["sources/alpha.md"],
+            "query_context_max_chars": query_context_max_chars_override,
+        }
 
     monkeypatch.setattr(engine, "query", _fake_query)
 
@@ -1543,8 +1552,9 @@ def test_retry_fallback_analysis_pages_reduces_context_before_regeneration(
     assert result["retries_attempted"] == 2
     assert result["context_chars_override"] == 5000
     assert result["source_only"] is False
+    assert result["new_answer_page"] == "analysis/fallback-adaptive"
 
-    assert [entry["chars"] for entry in call_history] == [20000, 10000, 5000, 5000]
+    assert [entry["chars"] for entry in call_history] == [20000, 10000, 5000]
     assert all(entry["question"] == "What is alpha?" for entry in call_history)
     assert all(
         entry["preferred_context_page"] == "sources/alpha" for entry in call_history
@@ -1678,6 +1688,32 @@ def test_index_flags_fallback_analysis_pages(tmp_path: Path):
 
     assert "[fallback: repetition]" in fallback_line
     assert "[fallback" not in normal_line
+
+
+def test_retry_fallback_skips_pages_marked_resolved_by(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    resolved_page = tmp_path / "wiki" / "analysis" / "resolved-fallback.md"
+    resolved_page.write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat is alpha?\n\n"
+        "## Answer Mode\nextractive-fallback\n\n"
+        "## Answer\nFallback answer\n\n"
+        "## Fallback Reason\nrepetition\n\n"
+        "## Retry Status\n"
+        "- status: superseded\n"
+        "- resolved_by: [[analysis/alpha-v2]]\n"
+        "- resolved_at: 2026-04-27T00:00:00+00:00\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.retry_fallback_analysis_pages(dry_run = True, max_analysis_pages = 10)
+
+    assert report["fallback_pages_found"] == 0
+    assert report["retried_pages"] == 0
 
 
 def test_index_flags_source_first_llm_with_missing_sections_as_fallback(

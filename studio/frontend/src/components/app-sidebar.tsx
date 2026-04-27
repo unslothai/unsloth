@@ -345,7 +345,11 @@ export function AppSidebar() {
       const enrichResponse = await authFetch("/api/inference/wiki/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dry_run: false, max_analysis_pages: 256 }),
+        body: JSON.stringify({
+          dry_run: false,
+          max_analysis_pages: 256,
+          run_fallback_retry_first: false,
+        }),
       });
       if (!enrichResponse.ok) {
         throw new Error(

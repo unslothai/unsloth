@@ -1405,38 +1405,95 @@ class LLMWikiEngine:
                     )
                     continue
 
+                resolved_page = rel_page[:-3] if rel_page.endswith(".md") else rel_page
                 new_answer_page = None
-                if not dry_run:
-                    saved_result = self.query(
-                        question,
-                        save_answer = True,
-                        query_context_max_chars_override = attempt_override,
-                        preferred_context_page = preferred_source_page,
-                        keep_preferred_context_full = True,
-                        preferred_context_only = source_only_mode,
-                    )
-                    if saved_result.get("used_extractive_fallback"):
-                        fallback_still += 1
-                    else:
-                        new_answer_page = saved_result.get("answer_page")
-                        regenerated_pages += 1
-                        if new_answer_page and new_answer_page != rel_page:
-                            updated_source = self._upsert_retry_status_section(
-                                text = text,
-                                resolved_by = new_answer_page,
-                            )
-                            page_path.write_text(updated_source, encoding = "utf-8")
-                else:
+                status_value = "regenerated"
+                fallback_reason = probe_result.get("fallback_reason")
+
+                if dry_run:
                     regenerated_pages += 1
+                    new_answer_page = resolved_page
+                else:
+                    answer_text = str(probe_result.get("answer", "")).strip()
+                    context_pages = [
+                        str(page) for page in probe_result.get("context_pages", [])
+                    ]
+                    refreshed_at = self._now_iso()
+
+                    context_lines = [
+                        f"- [[{page[:-3] if page.endswith('.md') else page}]]"
+                        for page in context_pages
+                    ]
+                    if not context_lines:
+                        context_lines = ["- (none)"]
+
+                    diagnostics_lines = [
+                        "- retry_strategy: fallback_retry",
+                        f"- refreshed_at: {refreshed_at}",
+                        f"- max_context_pages: {self.cfg.max_context_pages}",
+                        f"- max_chars_per_page: {self.cfg.max_chars_per_page}",
+                        f"- query_context_max_chars: {probe_result.get('query_context_max_chars')}",
+                        f"- pages_used: {len(context_pages)}",
+                        f"- retries_attempted: {reductions_done}",
+                        f"- source_only: {source_only_mode}",
+                    ]
+
+                    updated_text = text
+                    updated_text = self._remove_markdown_section(
+                        updated_text, "Fallback Reason"
+                    )
+                    updated_text = self._remove_markdown_section(
+                        updated_text, "LLM Raw Answer Preview"
+                    )
+                    updated_text = self._replace_markdown_section(
+                        updated_text,
+                        "Answer Mode",
+                        "llm",
+                    )
+                    updated_text = self._replace_markdown_section(
+                        updated_text,
+                        "Answer",
+                        answer_text,
+                    )
+                    updated_text = self._replace_markdown_section(
+                        updated_text,
+                        "Retrieval Diagnostics",
+                        "\n".join(diagnostics_lines),
+                    )
+                    updated_text = self._replace_markdown_section(
+                        updated_text,
+                        "Context Pages",
+                        "\n".join(context_lines),
+                    )
+                    updated_text = self._remove_markdown_section(
+                        updated_text,
+                        "Retry Status",
+                    )
+
+                    # Keep resolved marker so already-handled pages are not retried again.
+                    updated_text = self._upsert_retry_status_section(
+                        text = updated_text,
+                        resolved_by = resolved_page,
+                        status = "resolved_in_place",
+                    )
+
+                    if self._analysis_page_uses_fallback(updated_text):
+                        fallback_still += 1
+                        status_value = "fallback_still"
+                        fallback_reason = self._extract_analysis_fallback_reason(
+                            updated_text
+                        ) or fallback_reason
+                    else:
+                        page_path.write_text(updated_text, encoding = "utf-8")
+                        regenerated_pages += 1
+                        new_answer_page = resolved_page
 
                 retried.append(
                     {
                         "source_page": rel_page,
-                        "status": "regenerated"
-                        if new_answer_page or dry_run
-                        else "fallback_still",
+                        "status": status_value,
                         "question": question,
-                        "fallback_reason": probe_result.get("fallback_reason"),
+                        "fallback_reason": fallback_reason,
                         "context_chars_override": attempt_override,
                         "source_only": source_only_mode,
                         "retries_attempted": reductions_done,
@@ -2887,6 +2944,9 @@ class LLMWikiEngine:
             f.write("\n" + entry.strip() + "\n")
 
     def _analysis_page_uses_fallback(self, text: str) -> bool:
+        if self._extract_analysis_resolved_by(text):
+            return False
+
         lowered = text.lower()
         explicit_fallback = (
             "## answer mode\nextractive-fallback" in lowered
@@ -3082,21 +3142,26 @@ class LLMWikiEngine:
         return self._analysis_missing_watcher_sections_reason(text)
 
     def _analysis_index_fallback_tag(self, text: str) -> str:
-        if not self._analysis_page_uses_fallback(text):
-            return ""
         resolved_by = self._extract_analysis_resolved_by(text)
         if resolved_by:
             return f"[fallback-resolved: {resolved_by}]"
+        if not self._analysis_page_uses_fallback(text):
+            return ""
         reason = self._extract_analysis_fallback_reason(text)
         if reason:
             return f"[fallback: {reason}]"
         return "[fallback]"
 
-    def _upsert_retry_status_section(self, text: str, resolved_by: str) -> str:
+    def _upsert_retry_status_section(
+        self,
+        text: str,
+        resolved_by: str,
+        status: str = "superseded",
+    ) -> str:
         cleaned = self._remove_markdown_section(text, "Retry Status").rstrip()
         status_block = (
             "## Retry Status\n"
-            "- status: superseded\n"
+            f"- status: {status}\n"
             f"- resolved_by: [[{resolved_by}]]\n"
             f"- resolved_at: {self._now_iso()}\n"
         )

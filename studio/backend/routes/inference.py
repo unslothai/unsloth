@@ -1110,9 +1110,15 @@ async def wiki_enrich(
     """Enrich wiki analysis pages by prepending an index-driven Enrichment section."""
     manager, _ = _get_route_wiki_components()
 
-    # Keep manual enrichment behavior aligned with scheduled maintenance:
-    # retry fallback pages first, then run enrichment.
-    if _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES > 0:
+    run_fallback_retry_first = (
+        _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES > 0
+        if payload.run_fallback_retry_first is None
+        else bool(payload.run_fallback_retry_first)
+    )
+
+    # Keep manual enrichment behavior aligned with scheduled maintenance by
+    # optionally retrying fallback pages first.
+    if run_fallback_retry_first:
         try:
             retry_report = manager.retry_fallback_analysis_pages(
                 dry_run = payload.dry_run,

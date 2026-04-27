@@ -756,6 +756,10 @@ class WikiEnrichRequest(BaseModel):
         le = 1000,
         description = "Maximum number of analysis pages to scan",
     )
+    run_fallback_retry_first: Optional[bool] = Field(
+        None,
+        description = "Optional override for running fallback retry before enrichment (null inherits env/runtime default)",
+    )
     fill_gaps_from_web: Optional[bool] = Field(
         None,
         description = "Optional override for lint-driven web gap filling (null inherits env/runtime default)",
