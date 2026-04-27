@@ -55,6 +55,11 @@ RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
 
+_DPO_VISION_KEYS = (
+    "image_position_ids",
+    "mm_token_type_ids",
+)
+
 torch_compile_options = {
     "epilogue_fusion": True,
     "max_autotune": False,  # I saw speedups, but not sure if this has issues in collab
@@ -150,10 +155,20 @@ def dpo_trainer_vision_process_row(
     add_special_tokens = True,
     is_chat = False,
 ):
+    _vision_keys = ("image_position_ids", "mm_token_type_ids")
+    vision_token = getattr(processing_class, "image_token", None)
+    text = features["prompt"]
+    if (
+        vision_token is not None
+        and isinstance(text, str)
+        and len(features.get("images", [])) > 0
+        and vision_token not in text
+    ):
+        text = f"{vision_token} " + text
     processor, tokenizer = processing_class, processing_class.tokenizer
     processed_features = processor(
         images = features["images"],
-        text = features["prompt"],
+        text = text,
         add_special_tokens = False,
     )
 
@@ -189,8 +204,103 @@ def dpo_trainer_vision_process_row(
         output["image_sizes"] = processed_features["image_sizes"][0]
     if "token_type_ids" in processed_features:
         output["token_type_ids"] = processed_features["token_type_ids"][0]
+    for _k in _vision_keys:
+        if _k in processed_features:
+            output[_k] = processed_features[_k][0]
 
     return output
+
+
+def dpo_trainer_vision_signature_columns(function_name, function):
+    if function_name != "_set_signature_columns_if_needed":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_columns = "".join(
+        f'                "{_k}",\n' for _k in _DPO_VISION_KEYS
+    )
+    return function.replace(
+        '                "image_sizes",\n'
+        '                "token_type_ids",\n',
+        f'                "image_sizes",\n'
+        f"{_extra_columns}"
+        f'                "token_type_ids",\n',
+    )
+
+
+def dpo_trainer_concatenated_inputs(function_name, function):
+    if function_name != "concatenated_inputs":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_inputs = "".join(
+        f'        if "{_k}" in batch:\n'
+        f'            output["{_k}"] = torch.cat((batch["{_k}"], batch["{_k}"]), dim=0)\n'
+        for _k in _DPO_VISION_KEYS
+    )
+
+    return function.replace(
+        '        if "image_sizes" in batch:\n'
+        '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
+        '        if "token_type_ids" in batch:\n',
+        '        if "image_sizes" in batch:\n'
+        '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
+        f'{_extra_inputs}'
+        '        if "token_type_ids" in batch:\n',
+    )
+
+
+def dpo_trainer_concatenated_forward(function_name, function):
+    if function_name != "concatenated_forward":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_forward = "".join(
+        f'        if "{_k}" in concatenated_batch:\n'
+        f'            model_kwargs["{_k}"] = concatenated_batch["{_k}"]\n'
+        for _k in ("pixel_values", "pixel_attention_mask", "image_sizes", *_DPO_VISION_KEYS)
+    )
+
+    return function.replace(
+        '        if "pixel_values" in concatenated_batch:\n'
+        '            model_kwargs["pixel_values"] = concatenated_batch["pixel_values"]\n'
+        '        if "pixel_attention_mask" in concatenated_batch:\n'
+        '            model_kwargs["pixel_attention_mask"] = concatenated_batch["pixel_attention_mask"]\n'
+        '        if "image_sizes" in concatenated_batch:\n'
+        '            model_kwargs["image_sizes"] = concatenated_batch["image_sizes"]\n',
+        f"{_extra_forward}"
+    )
+
+
+def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
+    if "data_collator" not in call_args:
+        return ""
+
+    _vision_keys = str(_DPO_VISION_KEYS)
+    return (
+        "from trl.trainer.dpo_trainer import DataCollatorForPreference\n"
+        "if not hasattr(DataCollatorForPreference, '_unsloth_vision_keys_patch'):\n"
+        "    _old_dpo_collator_torch_call = DataCollatorForPreference.torch_call\n"
+        "\n"
+        "    def _unsloth_dpo_torch_call(self, examples):\n"
+        "        output = _old_dpo_collator_torch_call(self, examples)\n"
+        "        for _k in " + _vision_keys + ":\n"
+        "            if _k in examples[0]:\n"
+        "                import torch as _unsloth_torch\n"
+        "                from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
+        "                _values = [_unsloth_torch.tensor(example[_k]) for example in examples]\n"
+        "                output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=0)\n"
+        "        return output\n"
+        "\n"
+        "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
+        "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
 
 
 def dpo_trainer_prepare_dataset(function_name, function):
@@ -232,6 +342,10 @@ def dpo_trainer_prepare_dataset(function_name, function):
 
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
+RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
 # Fix tokenizer double BOS
