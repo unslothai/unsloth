@@ -590,7 +590,9 @@ try {
         } catch {}
         exit 1
     }
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
+    # Single-quote the path in the child -Command so `$` / backtick in custom
+    # roots don't get reparsed; double any apostrophes so 'O''Brien' survives.
+    `$studioCommand = "& '" + (`$studioExe -replace "'", "''") + "' studio -H 0.0.0.0 -p " + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
