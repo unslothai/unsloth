@@ -1157,6 +1157,20 @@ if ($PyLauncher) {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
             if ($out -match 'Python (3\.\d+\.\d+)') {
                 $DetectedPyVer = $Matches[1]
+                # Make `python` resolvable for the rest of setup. Without this,
+                # py-launcher-only installs (no python.exe on PATH) pass the gate
+                # and then crash on the first bare `python` call below.
+                try {
+                    $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
+                        $resolvedDir = Split-Path -Parent $resolvedExe
+                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+                        if (-not $alreadyOnPath) {
+                            $env:PATH = "$resolvedDir;$env:PATH"
+                        }
+                        $HasPython = $true
+                    }
+                } catch { }
                 $PythonOk = $true
                 break
             }
@@ -1177,9 +1191,12 @@ if (-not $PythonOk -and $HasPython) {
 
 if ($PythonOk) {
     substep "Python $DetectedPyVer"
-} elseif (-not $HasPython -and -not $PyLauncher) {
-    # No Python at all -- install 3.12
-    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+} elseif (-not $HasPython) {
+    # No `python` on PATH (and py.exe either absent or only had unsupported
+    # minors). Try winget as before -- gating on $HasPython alone, not also
+    # on $PyLauncher, so a launcher-only install with just 3.14 still gets
+    # an automatic 3.12 install instead of a hard error.
+    Write-Host "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
@@ -1194,6 +1211,8 @@ if ($PythonOk) {
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
 } else {
+    # python.exe is on PATH but its version is unsupported, and py.exe (if
+    # present) had no supported minor either.
     Write-Host "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
     Write-Host "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
     Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
