@@ -501,11 +501,15 @@ class LlamaCppBackend:
 
             _resolved_sr = _sr()
             _legacy_studio = Path.home() / ".unsloth" / "studio"
-            if _resolved_sr.resolve() == _legacy_studio.resolve():
+            try:
+                _is_legacy = _resolved_sr.resolve() == _legacy_studio.resolve()
+            except (OSError, ValueError):
+                _is_legacy = _resolved_sr == _legacy_studio
+            if _is_legacy:
                 search_roots = [legacy_llama]
             else:
                 search_roots = [_resolved_sr / "llama.cpp", legacy_llama]
-        except (ImportError, OSError, ValueError):
+        except ImportError:
             search_roots = [legacy_llama]
         _seen_roots: set[str] = set()
         _unique_roots: list[Path] = []
@@ -2098,7 +2102,7 @@ class LlamaCppBackend:
                     _is_custom_root = _resolved_sr != _legacy_studio
                 if _is_custom_root:
                     install_roots.append(_resolved_sr / "llama.cpp")
-            except ImportError:
+            except (ImportError, OSError, ValueError):
                 pass
 
             # Primary install dir (default mode only). In env-mode we skip the

@@ -23,9 +23,13 @@ def _infer_studio_home_from_venv() -> Path | None:
         return None
     candidate = prefix.parent
     shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
-    if (candidate / "share" / "studio.conf").is_file() or (
-        candidate / "bin" / shim_name
-    ).is_file():
+    try:
+        has_sentinel = (candidate / "share" / "studio.conf").is_file() or (
+            candidate / "bin" / shim_name
+        ).is_file()
+    except OSError:
+        return None
+    if has_sentinel:
         return candidate
     return None
 
