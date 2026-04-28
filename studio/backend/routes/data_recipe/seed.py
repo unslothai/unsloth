@@ -405,20 +405,17 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     return normalize_unstructured_text(raw)
 
 
-def _get_block_total_size(block_dir: Path, file_ids: list[str]) -> int:
-    """Sum raw upload sizes for tracked file IDs only."""
-    if not block_dir.exists() or not file_ids:
+def _get_block_total_size(block_dir: Path) -> int:
+    """Sum raw upload sizes from disk; a client-supplied ID list would let callers omit prior uploads and undercount."""
+    if not block_dir.exists():
         return 0
-    id_set = set(file_ids)
     total = 0
     for f in block_dir.iterdir():
         if not f.is_file():
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
             continue
-        stem = f.name.split(".")[0]
-        if stem in id_set:
-            total += f.stat().st_size
+        total += f.stat().st_size
     return total
 
 
@@ -429,8 +426,6 @@ async def upload_unstructured_file(
     existing_file_ids: str = Form(""),
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
-
-    tracked_ids = [fid.strip() for fid in existing_file_ids.split(",") if fid.strip()]
 
     original_filename = file.filename or "upload"
     ext = Path(original_filename).suffix.lower()
@@ -453,7 +448,7 @@ async def upload_unstructured_file(
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
+    current_total = _get_block_total_size(block_dir)
     if current_total + size_bytes > MAX_TOTAL_SIZE:
         raise HTTPException(
             413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
