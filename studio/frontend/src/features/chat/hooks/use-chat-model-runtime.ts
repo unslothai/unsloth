@@ -266,6 +266,10 @@ export function useChatModelRuntime() {
           ? (statusRes.native_context_length ?? null)
           : null;
         const currentSpecType = normalizeSpeculativeType(statusRes.speculative_type);
+        const nextDefaultChatTemplate =
+          statusRes.chat_template === undefined
+            ? useChatRuntimeStore.getState().defaultChatTemplate
+            : statusRes.chat_template;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
@@ -282,6 +286,7 @@ export function useChatModelRuntime() {
           ggufNativeContextLength,
           modelRequiresTrustRemoteCode:
             statusRes.requires_trust_remote_code ?? false,
+          defaultChatTemplate: nextDefaultChatTemplate,
           speculativeType: currentSpecType,
           loadedSpeculativeType: currentSpecType,
         });
