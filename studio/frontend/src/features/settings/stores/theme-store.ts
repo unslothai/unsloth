@@ -9,7 +9,7 @@ export type ResolvedTheme = "light" | "dark";
 const STORAGE_KEY = "theme";
 
 function readStoredTheme(): Theme {
-  if (typeof globalThis === "undefined") return "system";
+  if (typeof window === "undefined") return "system";
   let stored: string | null = null;
   try {
     stored = globalThis.localStorage.getItem(STORAGE_KEY);
@@ -22,7 +22,7 @@ function readStoredTheme(): Theme {
 }
 
 function systemPrefersDark(): boolean {
-  if (typeof globalThis === "undefined") return false;
+  if (typeof window === "undefined") return false;
   return globalThis.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
@@ -39,7 +39,7 @@ function applyToDocument(resolved: ResolvedTheme) {
 const listeners = new Set<() => void>();
 function subscribe(cb: () => void) {
   listeners.add(cb);
-  if (typeof globalThis === "undefined") {
+  if (typeof window === "undefined") {
     return () => listeners.delete(cb);
   }
   const mq = globalThis.matchMedia("(prefers-color-scheme: dark)");
@@ -73,7 +73,7 @@ function getServerSnapshot(): Theme {
  * keeps the class, localStorage, and React subscribers in sync after that.
  */
 export function setTheme(next: Theme): void {
-  if (typeof globalThis === "undefined") return;
+  if (typeof window === "undefined") return;
   try {
     globalThis.localStorage.setItem(STORAGE_KEY, next);
   } catch {
