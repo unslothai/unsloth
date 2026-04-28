@@ -67,10 +67,14 @@ const CATEGORY_ORDER = [
   "Other",
 ] as const;
 
-const EXPECTED_RUNTIME_WIKI_ENV_VARS = 56;
+const EXPECTED_RUNTIME_WIKI_ENV_VARS = 58;
 
 function categoryForVariable(name: string): (typeof CATEGORY_ORDER)[number] {
-  if (name.includes("ENGINE_ENRICH_WEB") || name.includes("ENGINE_ENRICH_FILL")) {
+  if (
+    name.includes("ENGINE_ENRICH_WEB") ||
+    name.includes("ENGINE_ENRICH_FILL") ||
+    name.includes("ENGINE_ENRICH_LLM_SELECTOR")
+  ) {
     return "Web Enrichment";
   }
   if (name.includes("AUTO_ANALYSIS")) {

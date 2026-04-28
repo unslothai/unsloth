@@ -3,6 +3,53 @@
 ## Scope
 This document summarizes the backend RAG changes made to unblock end-to-end wiki retrieval for GGUF chat, and adds practical debugging and cleanup workflows.
 
+## Incremental Update (2026-04-28)
+
+This incremental update hardens wiki maintenance quality in three areas:
+
+- semantic relevance for analysis-page Enrichment links
+- semantic relevance for analysis Context Pages selection
+- stable index summaries for resolved fallback pages
+
+### A) Enrichment link selection is semantic-first
+
+Updated in `studio/backend/core/wiki/engine.py` and `studio/backend/tests/test_wiki_rag_pipeline.py`:
+
+- Enrichment now treats LLM selection as authoritative when valid JSON is returned, including explicit empty selections.
+- Lexical selection is now used only when LLM output is invalid/unparseable schema.
+- Candidate snippets in the selector prompt now include compact page summaries to improve semantic picks.
+- Enrichment section strategy text now reflects semantic LLM selector mode when enabled.
+
+### B) Context Pages ranking is semantic-first when LLM rerank is enabled
+
+Updated in `studio/backend/core/wiki/engine.py` and `studio/backend/tests/test_wiki_rag_pipeline.py`:
+
+- LLM rerank candidate pool and top-N now scale with context-page needs so rerank output can directly drive actual context selection.
+- Deterministic tail appending after LLM rerank was removed to avoid unrelated pages leaking into `## Context Pages`.
+- Added regression coverage to ensure reranked output is not padded with non-semantic tail pages.
+
+### C) Duplicate external source summarization prevention across maintenance runs
+
+Updated in `studio/backend/core/wiki/engine.py` and `studio/backend/tests/test_wiki_rag_pipeline.py`:
+
+- Web gap-fill now normalizes source URLs and reuses existing source pages by `source_ref`.
+- If an existing source-first summary page already exists for that source, maintenance reuses it instead of creating a new `-2` analysis page.
+- Report counters now distinguish reused vs newly ingested/created external artifacts.
+
+### D) Index analysis summary title hardening
+
+Updated in `studio/backend/core/wiki/engine.py` and `studio/backend/tests/test_wiki_rag_pipeline.py`:
+
+- Index summary extraction now rejects source-first template placeholder titles such as `Section A: Brief summary paragraph`.
+- When placeholder titles are detected, index summary falls back to informative source title from the question (and keeps primary source annotation and fallback-resolved tags).
+
+### Runtime/UI parity for enrichment selector controls
+
+Updated in `studio/backend/core/wiki/runtime_env.py` and `studio/frontend/src/components/wiki-behaviour-dialog.tsx`:
+
+- Added runtime variables for enrichment LLM selector enablement and candidate cap.
+- Updated wiki behaviour dialog expected env count and category mapping.
+
 ## Changed Files
 - `studio/backend/core/wiki/ingestor.py`
 - `studio/backend/core/wiki/engine.py`

@@ -727,6 +727,41 @@ def test_rank_pages_llm_rerank_invalid_output_falls_back_to_deterministic_rankin
     assert "sources/beta.md" in ranked_paths
 
 
+def test_rank_pages_llm_rerank_does_not_append_deterministic_tail(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "ordered_pages" in prompt and "INDEX_FILE:" in prompt:
+            return '{"ordered_pages": ["sources/beta.md"]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+    engine.cfg.ranking_llm_rerank_enabled = True
+    engine.cfg.ranking_llm_rerank_candidates = 8
+    engine.cfg.ranking_llm_rerank_top_n = 3
+    engine.cfg.max_context_pages = 3
+    engine.cfg.ranking_link_depth = 0
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\npython retrieval answer notes and ranking clues.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "sources" / "beta.md").write_text(
+        "# Beta\n\npython retrieval answer notes and ranking clues.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "sources" / "gamma.md").write_text(
+        "# Gamma\n\npython retrieval answer notes and ranking clues.\n",
+        encoding = "utf-8",
+    )
+
+    ranked = engine._rank_pages("python retrieval answer")
+    ranked_paths = [rel for rel, _ in ranked]
+
+    assert ranked_paths == ["sources/beta.md"]
+
+
 def test_rank_pages_does_not_promote_unrelated_entity_on_person_query(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1059,6 +1094,83 @@ def test_enrich_analysis_pages_prepends_enrichment_section(tmp_path: Path):
 
     second_report = engine.enrich_analysis_pages(dry_run = False, max_analysis_pages = 10)
     assert second_report["updated_pages"] == 0
+
+
+def test_enrich_link_selection_can_use_llm_selector(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "enrichment link selector for wiki analysis maintenance" in prompt:
+            return '{"selected_links":["concepts/currency-debasement"]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    selected = engine._select_enrichment_links(
+        analysis_text = "Retrieval pipeline details for ranking and context assembly.",
+        candidates = [
+            "concepts/retrieval-pipeline",
+            "concepts/currency-debasement",
+        ],
+        existing_links = set(),
+        limit = 1,
+        group_name = "concepts",
+    )
+
+    assert selected == ["concepts/currency-debasement"]
+
+
+def test_enrich_link_selection_llm_invalid_falls_back_to_lexical(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "enrichment link selector for wiki analysis maintenance" in prompt:
+            return "not-json"
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    selected = engine._select_enrichment_links(
+        analysis_text = "Retrieval pipeline details for ranking and context assembly.",
+        candidates = [
+            "concepts/retrieval-pipeline",
+            "concepts/currency-debasement",
+        ],
+        existing_links = set(),
+        limit = 1,
+        group_name = "concepts",
+    )
+
+    assert selected == ["concepts/retrieval-pipeline"]
+
+
+def test_enrich_link_selection_llm_empty_does_not_fallback_to_lexical(
+    tmp_path: Path,
+):
+    def _llm(prompt: str) -> str:
+        if "enrichment link selector for wiki analysis maintenance" in prompt:
+            return '{"selected_ids":[],"selected_links":[]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    selected = engine._select_enrichment_links(
+        analysis_text = "Retrieval pipeline details for ranking and context assembly.",
+        candidates = [
+            "concepts/retrieval-pipeline",
+            "concepts/currency-debasement",
+        ],
+        existing_links = set(),
+        limit = 1,
+        group_name = "concepts",
+    )
+
+    assert selected == []
 
 
 def test_lint_includes_graphify_insights_payload(tmp_path: Path):
@@ -1514,6 +1626,77 @@ def test_external_source_summary_uses_watcher_style_source_first_prompt(
         "- Section I: Is this information date/time sensitive? If yes, print timestamp."
         in question
     )
+
+
+def test_external_source_summary_reuses_existing_source_and_summary(
+    tmp_path: Path,
+    monkeypatch,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_slug = "external-source-inflation-wikipedia-en-wikipedia-org-6e41185e"
+    source_page = tmp_path / "wiki" / "sources" / f"{source_slug}.md"
+    source_page.write_text(
+        "---\n"
+        "title: External Source: Inflation - Wikipedia [en.wikipedia.org#6e41185e]\n"
+        "type: source\n"
+        "source_ref: https://en.wikipedia.org/wiki/Inflation\n"
+        "ingested_at: 2026-04-28T00:00:00+00:00\n"
+        "---\n\n"
+        "# Inflation\n\n"
+        "## Summary\n"
+        "Existing source page content.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_slug = "2026-04-28-inflation-wikipedia-source-first-len-primary"
+    analysis_page = tmp_path / "wiki" / "analysis" / f"{analysis_slug}.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Inflation - Wikipedia' with a source-first lens.\n"
+        f"Primary page to ground on: [[sources/{source_slug}]].\n\n"
+        "## Answer Mode\n"
+        "llm\n\n"
+        "## Answer\n"
+        "Existing source-first summary.\n\n"
+        "## Context Pages\n"
+        f"- [[sources/{source_slug}]]\n",
+        encoding = "utf-8",
+    )
+
+    def _unexpected_fetch(_url: str, _max_chars: int) -> str:
+        raise AssertionError("Should not fetch external content for reused source")
+
+    def _unexpected_ingest(*_args, **_kwargs):
+        raise AssertionError("Should not ingest duplicate external source")
+
+    def _unexpected_query(*_args, **_kwargs):
+        raise AssertionError("Should not regenerate duplicate source-first summary")
+
+    monkeypatch.setattr(engine, "_fetch_external_page_text", _unexpected_fetch)
+    monkeypatch.setattr(engine, "ingest_source", _unexpected_ingest)
+    monkeypatch.setattr(engine, "query", _unexpected_query)
+
+    report = engine._ingest_and_summarize_external_source(
+        concept_title = "Inflation",
+        search_result = {
+            "title": "Inflation - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Inflation#history",
+            "snippet": "Inflation overview from encyclopedia.",
+        },
+    )
+
+    assert report["status"] == "ok"
+    assert report["source_page"] == f"sources/{source_slug}"
+    assert report["summary_page"] == f"analysis/{analysis_slug}"
+    assert report["reused_source"] is True
+    assert report["reused_summary"] is True
+
+    assert len(list((tmp_path / "wiki" / "analysis").glob("*.md"))) == 1
 
 
 def test_enrich_analysis_pages_can_compact_knowledge_updates(tmp_path: Path):
@@ -2213,6 +2396,46 @@ def test_index_analysis_summary_uses_title_and_full_primary_source_link(tmp_path
     assert (
         "[[sources/accelerating-set-cover-problems-with-graph-neural-networks]]" in line
     )
+
+
+def test_index_analysis_summary_ignores_template_placeholder_title(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "source-first-placeholder.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'FORGE Framework' with a source-first lens. "
+        "Primary page: [[sources/2508-20330v4]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: Section A: Brief summary paragraph\n"
+        "Section A: Placeholder-like output.\n\n"
+        "## Context Pages\n"
+        "- [[sources/2508-20330v4]]\n\n"
+        "## Retry Status\n"
+        "- status: resolved_in_place\n"
+        "- resolved_by: [[analysis/source-first-placeholder]]\n"
+        "- resolved_at: 2026-04-28T22:00:00+00:00\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/source-first-placeholder]]" in item
+    )
+
+    assert "Section A: Brief summary paragraph" not in line
+    assert "FORGE Framework" in line
+    assert "[[sources/2508-20330v4]]" in line
+    assert "[fallback-resolved:" in line
 
 
 def test_rebuild_index_omits_sources_when_source_index_disabled(

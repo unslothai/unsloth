@@ -579,6 +579,16 @@ class WikiConfig:
             "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_LLM_SELECTOR_ENABLED", True
         )
     )
+    enrichment_llm_selector_enabled: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_LLM_SELECTOR_ENABLED", True
+        )
+    )
+    enrichment_llm_selector_max_candidates: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_LLM_SELECTOR_MAX_CANDIDATES", 48, minimum = 8
+        )
+    )
     enrichment_refresh_oldest_non_fallback_pages: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_ENGINE_ENRICH_REFRESH_OLDEST_NON_FALLBACK_PAGES",
@@ -1759,6 +1769,7 @@ class LLMWikiEngine:
                     candidates = links,
                     existing_links = existing_links,
                     limit = limit,
+                    group_name = group_name,
                 )
                 if selected_links:
                     selected_by_group[group_name] = selected_links
@@ -2188,6 +2199,84 @@ class LLMWikiEngine:
             "url": url,
             "snippet": snippet,
         }
+
+    def _normalize_source_ref_url(self, source_ref: str) -> str:
+        raw = str(source_ref or "").strip()
+        if not raw:
+            return ""
+
+        parsed = urlparse(raw)
+        if not parsed.scheme and not parsed.netloc:
+            return raw
+
+        path = parsed.path or ""
+        if path.endswith("/") and path != "/":
+            path = path.rstrip("/")
+
+        normalized = parsed._replace(
+            scheme = parsed.scheme.lower(),
+            netloc = parsed.netloc.lower(),
+            path = path,
+            fragment = "",
+        )
+        return normalized.geturl()
+
+    def _extract_source_ref_from_page(self, text: str) -> Optional[str]:
+        frontmatter, _body = self._split_frontmatter_block(str(text or ""))
+        if not frontmatter:
+            return None
+
+        match = re.search(r"(?mi)^source_ref:\s*(.+?)\s*$", frontmatter)
+        if not match:
+            return None
+
+        source_ref = match.group(1).strip().strip("\"'")
+        return source_ref or None
+
+    def _find_source_page_by_source_ref(self, source_ref: str) -> Optional[str]:
+        target = self._normalize_source_ref_url(source_ref)
+        if not target:
+            return None
+
+        for source_path in sorted(self.sources_dir.glob("*.md")):
+            source_text = source_path.read_text(encoding = "utf-8", errors = "ignore")
+            page_ref = self._extract_source_ref_from_page(source_text)
+            if not page_ref:
+                continue
+            if self._normalize_source_ref_url(page_ref) != target:
+                continue
+            return f"sources/{source_path.stem}"
+
+        return None
+
+    def _find_source_first_summary_page_for_source(
+        self,
+        source_page: str,
+    ) -> Optional[str]:
+        target_source = self._normalize_wikilink(source_page)
+        if not target_source:
+            return None
+
+        analysis_pages = sorted(
+            self.analysis_dir.glob("*.md"),
+            key = lambda path: path.stat().st_mtime,
+            reverse = True,
+        )
+        for analysis_path in analysis_pages:
+            text = analysis_path.read_text(encoding = "utf-8", errors = "ignore")
+            question = self._extract_analysis_question(text) or ""
+            if not self._question_is_source_first_summary(question):
+                continue
+
+            linked_source = self._extract_primary_source_link_from_question(question)
+            if not linked_source:
+                linked_source = self._extract_analysis_primary_source_link(text)
+            if self._normalize_wikilink(linked_source or "") != target_source:
+                continue
+
+            return f"analysis/{analysis_path.stem}"
+
+        return None
 
     def _llm_plan_web_gap_queries(
         self,
@@ -2716,6 +2805,53 @@ class LLMWikiEngine:
                 "reason": "missing_url",
             }
 
+        existing_source_page = self._find_source_page_by_source_ref(source_url)
+        if existing_source_page:
+            existing_summary_page = self._find_source_first_summary_page_for_source(
+                existing_source_page
+            )
+            if existing_summary_page:
+                return {
+                    "status": "ok",
+                    "source_page": existing_source_page,
+                    "summary_page": existing_summary_page,
+                    "url": source_url,
+                    "title": source_title,
+                    "reused_source": True,
+                    "reused_summary": True,
+                }
+
+            question = self._source_first_summary_question(
+                title = source_title,
+                source_slug = existing_source_page,
+            )
+            summary_result = self.query(
+                question,
+                save_answer = True,
+                preferred_context_page = existing_source_page,
+                keep_preferred_context_full = True,
+                preferred_context_only = True,
+            )
+
+            answer_page = str(summary_result.get("answer_page", "")).strip()
+            if not answer_page:
+                return {
+                    "status": "error",
+                    "reason": "summary_page_missing",
+                    "source_page": existing_source_page,
+                    "url": source_url,
+                }
+
+            return {
+                "status": "ok",
+                "source_page": existing_source_page,
+                "summary_page": answer_page,
+                "url": source_url,
+                "title": source_title,
+                "reused_source": True,
+                "reused_summary": False,
+            }
+
         fetched_text = self._fetch_external_page_text(
             source_url,
             max_chars = self.cfg.extract_source_max_chars,
@@ -2779,6 +2915,8 @@ class LLMWikiEngine:
             "summary_page": answer_page,
             "url": source_url,
             "title": source_title,
+            "reused_source": False,
+            "reused_summary": False,
         }
 
     def _fill_gaps_from_lint_via_web(
@@ -2886,6 +3024,8 @@ class LLMWikiEngine:
 
                     source_page = str(summary_report.get("source_page", "")).strip()
                     summary_page = str(summary_report.get("summary_page", "")).strip()
+                    reused_source = bool(summary_report.get("reused_source", False))
+                    reused_summary = bool(summary_report.get("reused_summary", False))
 
                     if source_page:
                         source_page_md = (
@@ -2893,12 +3033,15 @@ class LLMWikiEngine:
                             if not source_page.endswith(".md")
                             else source_page
                         )
-                        external_source_pages_created.append(source_page_md)
+                        if not reused_source:
+                            external_source_pages_created.append(source_page_md)
 
-                    external_sources_ingested += 1
+                    if not reused_source:
+                        external_sources_ingested += 1
                     if summary_page:
                         external_summary_refs.append(summary_page)
-                        external_summary_pages_created.append(summary_page)
+                        if not reused_summary:
+                            external_summary_pages_created.append(summary_page)
 
             summary_refs_md = [
                 f"- [[{ref[:-3] if ref.endswith('.md') else ref}]]"
@@ -4820,7 +4963,24 @@ class LLMWikiEngine:
         if not filtered_candidates:
             return []
 
-        top_n = min(len(filtered_candidates), self.cfg.ranking_llm_rerank_top_n)
+        effective_context_pages = (
+            int(self.cfg.max_context_pages)
+            if self.cfg.max_context_pages > 0
+            else int(self.cfg.ranking_llm_rerank_top_n)
+        )
+        candidate_limit = max(
+            int(self.cfg.ranking_llm_rerank_candidates),
+            int(self.cfg.ranking_llm_rerank_top_n),
+            effective_context_pages,
+        )
+        candidate_limit = max(3, min(len(filtered_candidates), candidate_limit))
+        filtered_candidates = filtered_candidates[:candidate_limit]
+        candidate_scores = {rel: score for rel, score in filtered_candidates}
+
+        top_n = min(
+            len(filtered_candidates),
+            max(int(self.cfg.ranking_llm_rerank_top_n), effective_context_pages),
+        )
         candidate_paths = sorted(candidate_scores.keys())
 
         index_text = self._planner_index_text(candidate_paths)
@@ -4932,22 +5092,66 @@ class LLMWikiEngine:
 
         _log_rerank("ok", raw, ordered_paths)
 
-        # Keep planner intent first, but retain the remaining deterministic
-        # candidates so prompt-injection does not collapse to a single page.
-        full_order = list(ordered_paths)
-        for rel, _score in filtered_candidates:
-            if rel not in seen_paths:
-                full_order.append(rel)
-
         reranked: List[Tuple[str, float]] = []
-        total = max(1, len(full_order))
-        for idx, rel in enumerate(full_order):
+        total = max(1, len(ordered_paths))
+        for idx, rel in enumerate(ordered_paths):
             rank_signal = (total - idx) / total
             reranked.append((rel, rank_signal))
 
         return reranked
 
     def _select_enrichment_links(
+        self,
+        analysis_text: str,
+        candidates: List[str],
+        existing_links: Set[str],
+        limit: int,
+        group_name: str = "",
+    ) -> List[str]:
+        if limit <= 0:
+            return []
+
+        filtered_candidates: List[str] = []
+        seen_candidates: Set[str] = set()
+        for candidate in candidates:
+            normalized = str(candidate).strip().replace("\\", "/")
+            if not normalized or normalized in existing_links:
+                continue
+            if normalized.startswith("analysis/"):
+                continue
+            if normalized in seen_candidates:
+                continue
+            seen_candidates.add(normalized)
+            filtered_candidates.append(normalized)
+
+        if not filtered_candidates:
+            return []
+
+        if not self.cfg.enrichment_llm_selector_enabled:
+            return self._select_enrichment_links_lexical(
+                analysis_text = analysis_text,
+                candidates = filtered_candidates,
+                existing_links = existing_links,
+                limit = limit,
+            )
+
+        llm_selected = self._llm_select_enrichment_links(
+            analysis_text = analysis_text,
+            candidates = filtered_candidates,
+            limit = limit,
+            group_name = group_name,
+        )
+        if llm_selected is not None:
+            return llm_selected
+
+        return self._select_enrichment_links_lexical(
+            analysis_text = analysis_text,
+            candidates = filtered_candidates,
+            existing_links = existing_links,
+            limit = limit,
+        )
+
+    def _select_enrichment_links_lexical(
         self,
         analysis_text: str,
         candidates: List[str],
@@ -4994,10 +5198,146 @@ class LLMWikiEngine:
                 break
         return selected
 
+    def _llm_select_enrichment_links(
+        self,
+        analysis_text: str,
+        candidates: List[str],
+        limit: int,
+        group_name: str = "",
+    ) -> Optional[List[str]]:
+        if limit <= 0 or not candidates:
+            return []
+
+        analysis_focus = self._extract_analysis_answer(analysis_text) or analysis_text
+        analysis_preview = self._normalize_web_text(analysis_focus, 2200)
+        if len(analysis_preview) < 24:
+            analysis_preview = self._normalize_web_text(analysis_text, 2200)
+        if not analysis_preview:
+            return []
+
+        analysis_lower = analysis_preview.lower()
+        analysis_terms = self._terms(analysis_preview)
+        candidate_cap = max(limit, int(self.cfg.enrichment_llm_selector_max_candidates))
+
+        scored: List[Tuple[int, str, int, bool]] = []
+        for candidate in candidates:
+            normalized = str(candidate).strip().replace("\\", "/")
+            if not normalized:
+                continue
+
+            label = normalized.split("/", 1)[-1]
+            phrase = label.replace("-", " ").replace("_", " ").strip().lower()
+            candidate_terms = [term for term in self._terms(phrase) if len(term) >= 3]
+            overlap = len(set(candidate_terms).intersection(analysis_terms))
+            phrase_match = bool(phrase) and phrase in analysis_lower
+            score_hint = overlap + (2 if phrase_match else 0)
+            scored.append((score_hint, normalized, overlap, phrase_match))
+
+        if not scored:
+            return []
+
+        scored.sort(key = lambda item: (-item[0], item[1]))
+        candidate_pool = scored[:candidate_cap]
+
+        summary_by_page = self._index_summary_by_page()
+        id_to_link: Dict[str, str] = {}
+        lines: List[str] = []
+        for idx, (_score, rel, overlap, phrase_match) in enumerate(candidate_pool, start = 1):
+            cid = f"E{idx:03d}"
+            id_to_link[cid] = rel
+            summary = str(summary_by_page.get(f"{rel}.md", "")).strip()
+            if not summary:
+                page_path = self.wiki_dir / f"{rel}.md"
+                if page_path.exists():
+                    page_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                    if rel.startswith("analysis/"):
+                        summary = self._analysis_index_summary(page_text)
+                    else:
+                        summary = self._first_nonempty_content_line(page_text)
+            summary = self._normalize_web_text(summary, 180)
+            lines.append(
+                f"{cid} | {rel} | overlap_terms: {overlap} | phrase_match: {'yes' if phrase_match else 'no'} | brief: {summary or '(no summary)'}"
+            )
+
+        group_label = self._normalize_web_text(
+            str(group_name or "mixed").replace("_", " "),
+            48,
+        )
+        prompt = (
+            "You are an enrichment link selector for wiki analysis maintenance.\n"
+            "Select the most relevant wiki links that should be added to the Enrichment section for this analysis page.\n"
+            "Return strict JSON only with this schema:\n"
+            '{"selected_ids":["E001"],"selected_links":["entities/example"],"reason":"string"}\n\n'
+            "Rules:\n"
+            "- Use only IDs or links from CANDIDATES.\n"
+            f"- Return at most {limit} links.\n"
+            "- Prefer links that directly support the page's core topic and evidence.\n"
+            "- Avoid generic, weakly related, or noisy links.\n"
+            "- If none are truly relevant, return empty selected_ids and selected_links.\n"
+            "- No markdown fences and no extra commentary.\n\n"
+            f"GROUP: {group_label}\n\n"
+            "ANALYSIS_PAGE_EXCERPT:\n"
+            f"{analysis_preview}\n\n"
+            "CANDIDATES:\n"
+            + "\n".join(lines)
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return None
+
+        has_ids_key = "selected_ids" in parsed
+        has_links_key = ("selected_links" in parsed) or ("ordered_links" in parsed)
+        if not has_ids_key and not has_links_key:
+            return None
+
+        selected: List[str] = []
+        selected_set: Set[str] = set()
+        candidate_set = {rel for _score, rel, _overlap, _phrase in candidate_pool}
+
+        raw_ids = parsed.get("selected_ids", [])
+        if has_ids_key and not isinstance(raw_ids, list):
+            return None
+        if isinstance(raw_ids, list):
+            for item in raw_ids:
+                cid = str(item or "").strip()
+                rel = id_to_link.get(cid)
+                if not rel or rel in selected_set:
+                    continue
+                selected_set.add(rel)
+                selected.append(rel)
+                if len(selected) >= limit:
+                    break
+
+        if len(selected) < limit:
+            raw_links = parsed.get("selected_links", parsed.get("ordered_links", []))
+            if has_links_key and not isinstance(raw_links, list):
+                return None
+            if isinstance(raw_links, list):
+                for item in raw_links:
+                    normalized = self._normalize_wikilink(str(item))
+                    if normalized not in candidate_set or normalized in selected_set:
+                        continue
+                    selected_set.add(normalized)
+                    selected.append(normalized)
+                    if len(selected) >= limit:
+                        break
+
+        return selected[:limit]
+
     def _render_enrichment_body(self, selected_by_group: Dict[str, List[str]]) -> str:
+        if self.cfg.enrichment_llm_selector_enabled:
+            strategy = (
+                "index-driven candidate inventory + semantic LLM selector "
+                "(lexical fallback only when LLM output is invalid)"
+            )
+        else:
+            strategy = "index-driven lexical overlap from index.md link inventory"
+
         lines = [
             f"- generated_at: {self._now_iso()}",
-            "- strategy: index-driven enrichment from index.md link inventory",
+            f"- strategy: {strategy}",
         ]
 
         headings = [
@@ -6198,17 +6538,36 @@ class LLMWikiEngine:
             match = re.match(r"(?i)^\*{0,2}title\*{0,2}\s*:\s*(.+)$", plain)
             if match:
                 cleaned = _clean_title(match.group(1))
-                if cleaned:
+                if cleaned and not self._looks_like_source_first_template_title(cleaned):
                     return cleaned
 
         for line in lines:
             match = re.match(r"^#{1,3}\s+(.+)$", line)
             if match:
                 cleaned = _clean_title(match.group(1))
-                if cleaned:
+                if cleaned and not self._looks_like_source_first_template_title(cleaned):
                     return cleaned
 
         return None
+
+    def _looks_like_source_first_template_title(self, title: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+        if not normalized:
+            return False
+
+        if re.match(r"^section\s+[a-i]\b", normalized):
+            return True
+
+        placeholder_phrases = (
+            "brief summary paragraph",
+            "key takeaways",
+            "wiki updates",
+            "important equations or formulas",
+            "any assumptions",
+            "any caveats",
+            "summary title",
+        )
+        return any(phrase in normalized for phrase in placeholder_phrases)
 
     def _analysis_slug_terms(
         self,
