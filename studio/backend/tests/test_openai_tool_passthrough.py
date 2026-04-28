@@ -144,12 +144,9 @@ class TestChatMessageToolRoles:
 
     # ── Role-aware content requirements ────────────────────────────
 
-    def test_user_empty_string_content_allowed(self):
-        msg = ChatMessage(role = "user", content = "")
-        assert msg.content == ""
-
-    def test_system_empty_string_content_allowed(self):
-        msg = ChatMessage(role = "system", content = "")
+    @pytest.mark.parametrize("role", ["user", "system"])
+    def test_empty_string_content_allowed(self, role):
+        msg = ChatMessage(role = role, content = "")
         assert msg.content == ""
 
     def test_user_missing_content_rejected(self):
