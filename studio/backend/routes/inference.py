@@ -1235,7 +1235,9 @@ async def wiki_merge_maintenance(
             report.get("semantic_concept_merge_enabled", payload.semantic_concept_merge)
         ),
         semantic_merge_writeback_enabled = bool(
-            report.get("semantic_merge_writeback_enabled", payload.semantic_merge_writeback)
+            report.get(
+                "semantic_merge_writeback_enabled", payload.semantic_merge_writeback
+            )
         ),
         semantic_concept_candidates = int(report.get("semantic_concept_candidates", 0)),
         scanned_candidates = int(report.get("scanned_candidates", 0)),

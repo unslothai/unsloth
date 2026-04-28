@@ -1082,11 +1082,13 @@ class LLMWikiEngine:
             concept_items = list(concept_items_lexical)
 
             if semantic_concept_merge:
-                semantic_items, semantic_error = self._semantic_merge_candidates_for_folder(
-                    self.concepts_dir,
-                    "concepts",
-                    similarity_threshold = threshold,
-                    max_pairs = max(32, merge_limit * 4),
+                semantic_items, semantic_error = (
+                    self._semantic_merge_candidates_for_folder(
+                        self.concepts_dir,
+                        "concepts",
+                        similarity_threshold = threshold,
+                        max_pairs = max(32, merge_limit * 4),
+                    )
                 )
                 semantic_concept_candidates = len(semantic_items)
                 if semantic_error:
@@ -2338,8 +2340,7 @@ class LLMWikiEngine:
             "- Prefer sources with substantive technical detail and broad usefulness.\n"
             "- Reject generic, thin, or likely noisy pages.\n"
             "- No markdown fences and no text outside JSON.\n\n"
-            "CANDIDATES:\n"
-            + "\n".join(lines)
+            "CANDIDATES:\n" + "\n".join(lines)
         )
 
         raw = str(self.llm_fn(prompt) or "").strip()
@@ -2413,9 +2414,7 @@ class LLMWikiEngine:
         )
 
         direct_results = [
-            item
-            for item in plan.get("direct_results", [])
-            if isinstance(item, dict)
+            item for item in plan.get("direct_results", []) if isinstance(item, dict)
         ]
         if direct_results:
             selected, selected_meta = self._llm_select_web_gap_results(
@@ -2604,7 +2603,9 @@ class LLMWikiEngine:
                     continue
                 if existing and existing not in set(known_sorted):
                     continue
-                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+                reason = self._normalize_web_text(
+                    str(item.get("reason", "")).strip(), 180
+                )
                 related_items.append(
                     {
                         "slug": slug,
@@ -2621,7 +2622,9 @@ class LLMWikiEngine:
                 slug = self._slug(str(item.get("slug", "")).strip())
                 if slug not in lexical_set:
                     continue
-                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+                reason = self._normalize_web_text(
+                    str(item.get("reason", "")).strip(), 180
+                )
                 rejected_items.append(
                     {
                         "slug": slug,
@@ -2664,7 +2667,9 @@ class LLMWikiEngine:
                 content_type = str(response.headers.get("Content-Type", "")).lower()
                 charset = response.headers.get_content_charset() or "utf-8"
         except Exception as exc:
-            logger.warning("External source fetch failed for %r: %s", normalized_url, exc)
+            logger.warning(
+                "External source fetch failed for %r: %s", normalized_url, exc
+            )
             return ""
 
         try:
@@ -2867,13 +2872,13 @@ class LLMWikiEngine:
                             search_result = item,
                         )
                     except Exception as exc:
-                        failed_external_sources.append(
-                            f"{slug}: {source_url} ({exc})"
-                        )
+                        failed_external_sources.append(f"{slug}: {source_url} ({exc})")
                         continue
 
                     if summary_report.get("status") != "ok":
-                        reason = str(summary_report.get("reason", "unknown_error")).strip()
+                        reason = str(
+                            summary_report.get("reason", "unknown_error")
+                        ).strip()
                         failed_external_sources.append(
                             f"{slug}: {source_url} ({reason})"
                         )
@@ -3525,18 +3530,22 @@ class LLMWikiEngine:
             return lexical_candidates
 
         if prefix == "concepts":
-            semantic_candidates, _semantic_error = self._semantic_merge_candidates_for_folder(
-                folder,
-                prefix,
-                similarity_threshold = similarity_threshold,
-                max_pairs = 128,
+            semantic_candidates, _semantic_error = (
+                self._semantic_merge_candidates_for_folder(
+                    folder,
+                    prefix,
+                    similarity_threshold = similarity_threshold,
+                    max_pairs = 128,
+                )
             )
         else:
-            semantic_candidates, _semantic_error = self._llm_merge_candidates_for_folder(
-                folder,
-                prefix,
-                similarity_threshold = similarity_threshold,
-                max_pairs = 128,
+            semantic_candidates, _semantic_error = (
+                self._llm_merge_candidates_for_folder(
+                    folder,
+                    prefix,
+                    similarity_threshold = similarity_threshold,
+                    max_pairs = 128,
+                )
             )
 
         if semantic_candidates:
@@ -3658,10 +3667,7 @@ class LLMWikiEngine:
             "- Prefer keeping the more complete or more recent page as canonical.\n"
             "- Use INDEX_CONTEXT only as supporting signal; PAGES remain the source of truth.\n"
             "- No markdown fences and no explanatory text outside JSON.\n\n"
-            "PAGES:\n"
-            + "\n".join(lines)
-            + "\n\nINDEX_CONTEXT:\n"
-            + index_excerpt
+            "PAGES:\n" + "\n".join(lines) + "\n\nINDEX_CONTEXT:\n" + index_excerpt
         )
 
         raw = str(self.llm_fn(prompt) or "").strip()
@@ -3709,7 +3715,11 @@ class LLMWikiEngine:
 
             canonical_page = str(canonical.get("page", "")).strip()
             duplicate_page = str(duplicate.get("page", "")).strip()
-            if not canonical_page or not duplicate_page or canonical_page == duplicate_page:
+            if (
+                not canonical_page
+                or not duplicate_page
+                or canonical_page == duplicate_page
+            ):
                 continue
 
             confidence_raw = item.get("confidence", item.get("similarity", 0.0))
@@ -3732,9 +3742,7 @@ class LLMWikiEngine:
                     "duplicate": duplicate_page,
                     "duplicate_title": str(duplicate.get("title", "")).strip(),
                     "similarity": round(confidence, 3),
-                    "reason": (
-                        f"semantic-llm: {reason}" if reason else "semantic-llm"
-                    ),
+                    "reason": (f"semantic-llm: {reason}" if reason else "semantic-llm"),
                 }
             )
 
@@ -3817,8 +3825,7 @@ class LLMWikiEngine:
             "- Do not merge merely related but distinct concepts (parent-child, adjacent topics, implementation detail).\n"
             "- Prefer keeping the more complete or more recent page as canonical.\n"
             "- No markdown fences and no explanatory text outside JSON.\n\n"
-            "CONCEPT_PAGES:\n"
-            + "\n".join(lines)
+            "CONCEPT_PAGES:\n" + "\n".join(lines)
         )
 
         raw = str(self.llm_fn(prompt) or "").strip()
@@ -3866,7 +3873,11 @@ class LLMWikiEngine:
 
             canonical_page = str(canonical.get("page", "")).strip()
             duplicate_page = str(duplicate.get("page", "")).strip()
-            if not canonical_page or not duplicate_page or canonical_page == duplicate_page:
+            if (
+                not canonical_page
+                or not duplicate_page
+                or canonical_page == duplicate_page
+            ):
                 continue
 
             confidence_raw = item.get("confidence", item.get("similarity", 0.0))
@@ -3889,9 +3900,7 @@ class LLMWikiEngine:
                     "duplicate": duplicate_page,
                     "duplicate_title": str(duplicate.get("title", "")).strip(),
                     "similarity": round(confidence, 3),
-                    "reason": (
-                        f"semantic-llm: {reason}" if reason else "semantic-llm"
-                    ),
+                    "reason": (f"semantic-llm: {reason}" if reason else "semantic-llm"),
                 }
             )
 
@@ -5403,7 +5412,7 @@ class LLMWikiEngine:
             "Return strict JSON only with this schema:\n"
             '{"is_entity_lookup":true,"target":"Entity Name"}\n\n'
             "Rules:\n"
-            "- If query is not primarily entity lookup, return is_entity_lookup=false and target=\"\".\n"
+            '- If query is not primarily entity lookup, return is_entity_lookup=false and target="".\n'
             "- target should be the canonical mention phrase, not a slug.\n"
             "- No markdown fences and no text outside JSON.\n\n"
             f"QUERY:\n{query_text}"
@@ -5643,8 +5652,7 @@ class LLMWikiEngine:
             "- No markdown fences and no text outside JSON.\n\n"
             f"QUERY:\n{query_text}\n\n"
             f"SOURCE_PAGE: {source_page}\n\n"
-            "CANDIDATE_LINKS:\n"
-            + "\n".join(lines)
+            "CANDIDATE_LINKS:\n" + "\n".join(lines)
         )
 
         raw = str(self.llm_fn(prompt) or "").strip()

@@ -1319,8 +1319,7 @@ def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
         llm_fn = (
-            lambda _:
-            "Source summary: retrieval benchmarking compares ranking quality, recall tradeoffs, and evaluation setup details across datasets."
+            lambda _: "Source summary: retrieval benchmarking compares ranking quality, recall tradeoffs, and evaluation setup details across datasets."
         ),
     )
 
@@ -1511,7 +1510,10 @@ def test_external_source_summary_uses_watcher_style_source_first_prompt(
     assert report["status"] == "ok"
     question = captured["question"]
     assert "Primary page to ground on: [[sources/alpha-source]]." in question
-    assert "- Section I: Is this information date/time sensitive? If yes, print timestamp." in question
+    assert (
+        "- Section I: Is this information date/time sensitive? If yes, print timestamp."
+        in question
+    )
 
 
 def test_enrich_analysis_pages_can_compact_knowledge_updates(tmp_path: Path):
@@ -1987,7 +1989,9 @@ def test_lint_normalizes_md_suffixed_links_and_ignores_log_page_links(tmp_path: 
     report = engine.lint()
     broken_links = report.get("broken_links", [])
 
-    assert not any(item.get("source") == "analysis/md-suffix-links.md" for item in broken_links)
+    assert not any(
+        item.get("source") == "analysis/md-suffix-links.md" for item in broken_links
+    )
     assert not any(item.get("source") == "log.md" for item in broken_links)
 
 
@@ -2678,7 +2682,10 @@ def test_semantic_concept_merge_candidates_use_llm_pass(tmp_path: Path):
 
 def test_semantic_entity_merge_candidates_use_llm_pass(tmp_path: Path):
     def llm_fn(prompt: str) -> str:
-        if "semantic duplicate merge planner" in prompt and "Page kind: entities" in prompt:
+        if (
+            "semantic duplicate merge planner" in prompt
+            and "Page kind: entities" in prompt
+        ):
             return (
                 '{"merges":['
                 '{"canonical_id":"M001","duplicate_id":"M002","confidence":0.89,'
