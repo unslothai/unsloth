@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -60,6 +61,7 @@ function ModelSelectorTrigger({
   className?: string;
   dataTour?: string;
 }) {
+  const { t } = useI18n();
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -81,7 +83,7 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         <span className="font-heading font-medium text-[16px] text-black dark:text-white">
-          {currentModel?.name ?? "Select model"}
+          {currentModel?.name ?? t("assistant.modelSelector.selectModel")}
         </span>
         {currentModel?.description && (
           <span className="text-muted-foreground text-xs">{currentModel.description}</span>
@@ -115,6 +117,7 @@ function ModelSelectorContent({
   className?: string;
   dataTour?: string;
 }) {
+  const { t } = useI18n();
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
 
@@ -132,8 +135,8 @@ function ModelSelectorContent({
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
-            <TabsTrigger value="hub">Hub models</TabsTrigger>
-            <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
+            <TabsTrigger value="hub">{t("assistant.modelSelector.hubModels")}</TabsTrigger>
+            <TabsTrigger value="lora">{t("assistant.modelSelector.finetuned")}</TabsTrigger>
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
@@ -156,10 +159,10 @@ function ModelSelectorContent({
             type="button"
             onClick={onEject}
             className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            title="Eject model"
+            title={t("assistant.modelSelector.ejectModel")}
           >
             <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
-            Eject loaded model
+            {t("assistant.modelSelector.ejectLoaded")}
           </button>
         </div>
       ) : null}

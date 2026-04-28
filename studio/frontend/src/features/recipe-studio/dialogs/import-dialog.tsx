@@ -12,6 +12,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useState } from "react";
 import { FieldLabel } from "./shared/field-label";
+import { useI18n } from "@/features/i18n";
 
 type ImportDialogProps = {
   open: boolean;
@@ -26,6 +27,7 @@ export function ImportDialog({
   onImport,
   container,
 }: ImportDialogProps): ReactElement {
+  const { t } = useI18n();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const payloadId = "recipe-import-payload";
@@ -56,18 +58,18 @@ export function ImportDialog({
         className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
         <DialogHeader>
-          <DialogTitle>Import recipe</DialogTitle>
+          <DialogTitle>{t("recipe.import.title")}</DialogTitle>
         </DialogHeader>
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Recipe JSON"
+            label={t("recipe.import.jsonLabel")}
             htmlFor={payloadId}
-            hint="Paste JSON exported from Recipe Studio."
+            hint={t("recipe.import.jsonHint")}
           />
           <Textarea
             id={payloadId}
             className="corner-squircle nodrag min-h-[220px] max-h-[450px]"
-            placeholder='{"recipe": { "columns": [] }}'
+            placeholder={t("recipe.import.placeholder")}
             value={value}
             onChange={(event) => setValue(event.target.value)}
           />
@@ -79,7 +81,7 @@ export function ImportDialog({
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={handleImport}>
-            Import recipe
+            {t("recipe.import.action")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type ReactElement, useRef } from "react";
+import { useI18n } from "@/features/i18n";
 import type { LlmConfig } from "../../types";
 import { LlmGeneralTab } from "./general-tab";
 import { LlmScoresTab } from "./scores-tab";
@@ -27,6 +28,7 @@ export function LlmDialog({
   toolProfileAliases,
   onUpdate,
 }: LlmDialogProps): ReactElement {
+  const { t } = useI18n();
   const modelAliasAnchorRef = useRef<HTMLDivElement>(null);
 
   if (config.llm_type !== "judge") {
@@ -45,8 +47,10 @@ export function LlmDialog({
   return (
     <Tabs defaultValue="general" className="w-full">
       <TabsList className="w-full">
-        <TabsTrigger value="general">General</TabsTrigger>
-        {config.llm_type === "judge" && <TabsTrigger value="scores">Scores</TabsTrigger>}
+        <TabsTrigger value="general">{t("recipe.llm.tab.general")}</TabsTrigger>
+        {config.llm_type === "judge" && (
+          <TabsTrigger value="scores">{t("recipe.llm.tab.scores")}</TabsTrigger>
+        )}
       </TabsList>
       <TabsContent value="general" className="pt-3">
         <LlmGeneralTab

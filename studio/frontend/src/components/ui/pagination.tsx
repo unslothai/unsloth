@@ -4,6 +4,7 @@
 import type * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { useI18nStore, translate } from "@/features/i18n/store";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft01Icon,
@@ -13,9 +14,10 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
+  const locale = useI18nStore((s) => s.locale);
   return (
     <nav
-      aria-label="pagination"
+      aria-label={translate(locale, "ui.pagination.label")}
       data-slot="pagination"
       className={cn("mx-auto flex w-full justify-center", className)}
       {...props}
@@ -72,9 +74,10 @@ function PaginationPrevious({
   className,
   ...props
 }: React.ComponentProps<typeof PaginationLink>) {
+  const locale = useI18nStore((s) => s.locale);
   return (
     <PaginationLink
-      aria-label="Go to previous page"
+      aria-label={translate(locale, "ui.pagination.previousAria")}
       size="default"
       className={cn("pl-2!", className)}
       {...props}
@@ -84,7 +87,9 @@ function PaginationPrevious({
         strokeWidth={2}
         data-icon="inline-start"
       />
-      <span className="hidden sm:block">Previous</span>
+      <span className="hidden sm:block">
+        {translate(locale, "ui.pagination.previous")}
+      </span>
     </PaginationLink>
   );
 }
@@ -93,14 +98,17 @@ function PaginationNext({
   className,
   ...props
 }: React.ComponentProps<typeof PaginationLink>) {
+  const locale = useI18nStore((s) => s.locale);
   return (
     <PaginationLink
-      aria-label="Go to next page"
+      aria-label={translate(locale, "ui.pagination.nextAria")}
       size="default"
       className={cn("pr-2!", className)}
       {...props}
     >
-      <span className="hidden sm:block">Next</span>
+      <span className="hidden sm:block">
+        {translate(locale, "ui.pagination.next")}
+      </span>
       <HugeiconsIcon
         icon={ArrowRight01Icon}
         strokeWidth={2}
@@ -114,6 +122,7 @@ function PaginationEllipsis({
   className,
   ...props
 }: React.ComponentProps<"span">) {
+  const locale = useI18nStore((s) => s.locale);
   return (
     <span
       aria-hidden
@@ -125,7 +134,9 @@ function PaginationEllipsis({
       {...props}
     >
       <HugeiconsIcon icon={MoreHorizontalCircle01Icon} strokeWidth={2} />
-      <span className="sr-only">More pages</span>
+      <span className="sr-only">
+        {translate(locale, "ui.pagination.morePages")}
+      </span>
     </span>
   );
 }

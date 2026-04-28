@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
@@ -54,6 +55,7 @@ export function ExecutionsView({
   onCancelExecution,
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
+  const { t } = useI18n();
   const formatEta = (value: number | null | undefined): string =>
     typeof value === "number" && Number.isFinite(value)
       ? `${value.toLocaleString()} s`
@@ -399,7 +401,7 @@ export function ExecutionsView({
                       )}
                     />
                     <p className="text-sm font-semibold text-foreground">
-                      Progress
+                      {t("recipe.execution.progress.title")}
                     </p>
                   </div>
                   <p className="text-xs text-muted-foreground">{formatPercent(progressPercent)}</p>
@@ -407,21 +409,21 @@ export function ExecutionsView({
                 <Progress value={progressPercent} className="h-1" />
                 <div className="grid gap-2 text-xs md:grid-cols-4">
                   <p className="text-muted-foreground">
-                    Done: <span className="text-foreground">{selectedExecution.progress?.done ?? "--"}</span>
+                    {t("recipe.progress.done")}: <span className="text-foreground">{selectedExecution.progress?.done ?? "--"}</span>
                   </p>
                   <p className="text-muted-foreground">
-                    Total: <span className="text-foreground">{selectedExecution.progress?.total ?? "--"}</span>
+                    {t("recipe.progress.total")}: <span className="text-foreground">{selectedExecution.progress?.total ?? "--"}</span>
                   </p>
                   <p className="text-muted-foreground">
-                    Rate: <span className="text-foreground">{selectedExecution.progress?.rate ?? "--"} rec/s</span>
+                    {t("recipe.progress.rate")}: <span className="text-foreground">{selectedExecution.progress?.rate ?? "--"} rec/s</span>
                   </p>
                   <p className="text-muted-foreground">
-                    ETA: <span className="text-foreground">{formatEta(selectedExecution.progress?.eta_sec)}</span>
+                    {t("recipe.progress.eta")}: <span className="text-foreground">{formatEta(selectedExecution.progress?.eta_sec)}</span>
                   </p>
                 </div>
                 {selectedExecution.current_column && selectedExecution.column_progress && (
                   <p className="text-xs text-muted-foreground">
-                    Column {selectedExecution.current_column}:{" "}
+                    {t("recipe.progress.column")} {selectedExecution.current_column}:{" "}
                     {selectedExecution.column_progress.done ?? "--"}/
                     {selectedExecution.column_progress.total ?? "--"} (
                     {formatPercent(selectedExecution.column_progress.percent)})
@@ -429,10 +431,10 @@ export function ExecutionsView({
                 )}
                 {showBatchProgress && (
                   <p className="text-xs text-muted-foreground">
-                    Processed batch: {batchIdx ?? "--"}/{batchTotal}
+                    {t("recipe.progress.batch")}: {batchIdx ?? "--"}/{batchTotal}
                   </p>
                 )}
-                {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
+                {isStale && <Badge variant="outline">{t("recipe.execution.stale")}</Badge>}
               </div>
             )}
 
@@ -441,11 +443,11 @@ export function ExecutionsView({
               <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
                 <p className="text-sm font-semibold text-destructive">
                   {selectedExecution.status === "cancelled"
-                    ? "Execution cancelled"
-                    : "Execution failed"}
+                    ? t("recipe.execution.cancelled")
+                    : t("recipe.execution.failed")}
                 </p>
                 <p className="text-xs text-destructive">
-                  {selectedExecution.error ?? "Unknown error."}
+                  {selectedExecution.error ?? t("common.unknownError")}
                 </p>
               </div>
             )}
@@ -453,10 +455,10 @@ export function ExecutionsView({
             <Tabs value={detailTab} onValueChange={setDetailTab}>
               <div className="flex items-center justify-between gap-2">
                 <TabsList className="border border-border/60 bg-card/40">
-                  <TabsTrigger value="data">Data</TabsTrigger>
-                  <TabsTrigger value="overview">Overview</TabsTrigger>
-                  <TabsTrigger value="columns">Columns</TabsTrigger>
-                  <TabsTrigger value="raw">Raw</TabsTrigger>
+                  <TabsTrigger value="data">{t("recipe.execution.tab.data")}</TabsTrigger>
+                  <TabsTrigger value="overview">{t("recipe.execution.tab.overview")}</TabsTrigger>
+                  <TabsTrigger value="columns">{t("recipe.execution.tab.columns")}</TabsTrigger>
+                  <TabsTrigger value="raw">{t("recipe.execution.tab.raw")}</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2">
                   {canPublish && (
@@ -467,7 +469,7 @@ export function ExecutionsView({
                       onClick={() => setPublishDialogOpen(true)}
                     >
                       <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
-                      Publish to Hugging Face
+                      {t("recipe.execution.overview.publish")}
                     </Button>
                   )}
                   {canCancel && (
@@ -477,7 +479,7 @@ export function ExecutionsView({
                       variant="outline"
                       onClick={() => onCancelExecution(selectedExecution.id)}
                     >
-                      Cancel
+                      {t("recipe.run.action.cancel")}
                     </Button>
                   )}
                 </div>

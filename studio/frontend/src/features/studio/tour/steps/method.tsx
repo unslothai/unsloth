@@ -2,17 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ReadMore, type TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n";
 
-export const studioMethodStep: TourStep = {
-  id: "method",
-  target: "studio-method",
-  title: "Method: QLoRA vs LoRA vs Full",
-  body: (
-    <>
-      LoRA: trains small adapter weights (fast, common default). QLoRA: LoRA on
-      4-bit base weights (much lower VRAM). Full: updates all weights (highest
-      cost, usually needs more data to be worth it).{" "}
-      <ReadMore href="https://unsloth.ai/docs/basics/lora-hyperparameters-guide" />
-    </>
-  ),
-};
+type Translator = (key: TranslationKey) => string;
+
+export function studioMethodStep(t: Translator): TourStep {
+  return {
+    id: "method",
+    target: "studio-method",
+    title: t("studio.tour.method.title"),
+    body: (
+      <>
+        {t("studio.tour.method.body")}{" "}
+        <ReadMore href="https://unsloth.ai/docs/basics/lora-hyperparameters-guide" />
+      </>
+    ),
+  };
+}

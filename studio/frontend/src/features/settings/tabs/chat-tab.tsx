@@ -18,10 +18,12 @@ import { downloadChatExport } from "@/features/chat/utils/export-chat-history";
 import { Delete02Icon, Download02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { useI18n } from "@/features/i18n";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
 export function ChatTab() {
+  const { t } = useI18n();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -54,16 +56,18 @@ export function ChatTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">Chat</h1>
+        <h1 className="text-lg font-semibold font-heading">
+          {t("settings.chat.title")}
+        </h1>
         <p className="text-xs text-muted-foreground">
-          Manage your chat history stored on this device.
+          {t("settings.chat.subtitle")}
         </p>
       </header>
 
-      <SettingsSection title="Data">
+      <SettingsSection title={t("settings.chat.data")}>
         <SettingsRow
-          label="Export chat history"
-          description="Download all chats and messages as a JSON file."
+          label={t("settings.chat.export.label")}
+          description={t("settings.chat.export.description")}
         >
           <Button
             variant="outline"
@@ -72,19 +76,21 @@ export function ChatTab() {
             disabled={exporting || count === 0}
           >
             <HugeiconsIcon icon={Download02Icon} className="size-3.5 mr-1.5" />
-            {exporting ? "Exporting…" : "Export"}
+            {exporting ? t("settings.chat.export.exporting") : t("settings.chat.export.cta")}
           </Button>
         </SettingsRow>
 
         <SettingsRow
           destructive
-          label="Clear all chats"
+          label={t("settings.chat.clear.label")}
           description={
             count === null
-              ? "Permanently delete every chat on this device."
+              ? t("settings.chat.clear.descLoading")
               : count === 0
-                ? "No chats to clear."
-                : `Permanently delete all ${count} chat${count === 1 ? "" : "s"} on this device.`
+                ? t("settings.chat.clear.descEmpty")
+                : t("settings.chat.clear.descCount")
+                    .replace("{count}", String(count))
+                    .replace("{suffix}", count === 1 ? "" : "s")
           }
         >
           <Button
@@ -95,7 +101,7 @@ export function ChatTab() {
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
             <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
-            Clear chats
+            {t("settings.chat.clear.cta")}
           </Button>
         </SettingsRow>
       </SettingsSection>
@@ -104,22 +110,28 @@ export function ChatTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              Clear {count ?? 0} chat{count === 1 ? "" : "s"}?
+              {t("settings.chat.clear.confirmTitle")
+                .replace("{count}", String(count ?? 0))
+                .replace("{suffix}", count === 1 ? "" : "s")}
             </DialogTitle>
             <DialogDescription>
-              This permanently deletes every chat and message stored on this device. This cannot be undone.
+              {t("settings.chat.clear.confirmDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
-              Cancel
+              {t("settings.chat.clear.cancel")}
             </Button>
             <Button
               onClick={handleClear}
               disabled={clearing}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              {clearing ? "Clearing…" : `Clear ${count ?? 0} chat${count === 1 ? "" : "s"}`}
+              {clearing
+                ? t("settings.chat.clear.clearing")
+                : t("settings.chat.clear.confirmCta")
+                    .replace("{count}", String(count ?? 0))
+                    .replace("{suffix}", count === 1 ? "" : "s")}
             </Button>
           </DialogFooter>
         </DialogContent>

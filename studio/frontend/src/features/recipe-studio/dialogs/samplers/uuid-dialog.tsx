@@ -3,6 +3,7 @@
 
 import { Input } from "@/components/ui/input";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
@@ -16,6 +17,7 @@ export function UuidDialog({
   config,
   onUpdate,
 }: UuidDialogProps): ReactElement {
+  const { t } = useI18n();
   const uuidId = `${config.id}-uuid-format`;
   const updateField = <K extends keyof SamplerConfig>(
     key: K,
@@ -31,9 +33,9 @@ export function UuidDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="UUID format (optional)"
+          label={t("recipe.sampler.uuid.format")}
           htmlFor={uuidId}
-          hint="Optional formatter e.g. prefix:, short, uppercase."
+          hint={t("recipe.sampler.uuid.formatHint")}
         />
         <Input
           id={uuidId}

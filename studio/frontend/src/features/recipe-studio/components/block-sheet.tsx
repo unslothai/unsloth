@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { useI18n } from "@/features/i18n";
 import {
   Sheet,
   SheetContent,
@@ -98,29 +99,29 @@ export type RecipeBlockDragPayload = {
   type: BlockType;
 };
 
-function getSheetTitle(sheetView: SheetView): string {
+function getSheetTitle(sheetView: SheetView, t: (key: any) => string): string {
   if (sheetView === "root") {
-    return "Add a step";
+    return t("recipe.blockSheet.addStep");
   }
   if (sheetView === "sampler") {
-    return "Generated fields";
+    return t("recipe.blockSheet.generatedFields");
   }
   if (sheetView === "seed") {
-    return "Source data";
+    return t("recipe.blockSheet.sourceData");
   }
   if (sheetView === "expression") {
-    return "Formulas";
+    return t("recipe.blockSheet.formulas");
   }
   if (sheetView === "validator") {
-    return "Checks";
+    return t("recipe.blockSheet.checks");
   }
   if (sheetView === "note") {
-    return "Notes";
+    return t("recipe.blockSheet.notes");
   }
   if (sheetView === "processor") {
-    return "Processor blocks";
+    return t("recipe.blockSheet.processorBlocks");
   }
-  return "AI generation";
+  return t("recipe.blockSheet.aiGeneration");
 }
 
 const VIEW_KIND: Record<SheetView, SheetKind | null> = {
@@ -250,7 +251,8 @@ export function BlockSheet({
   onCopy,
   onImport,
 }: BlockSheetProps): ReactElement {
-  const sheetTitle = getSheetTitle(sheetView);
+  const { t } = useI18n();
+  const sheetTitle = getSheetTitle(sheetView, t);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [search, setSearch] = useState("");
   const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
@@ -406,8 +408,8 @@ export function BlockSheet({
             size="icon"
             className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
             variant="ghost"
-            aria-label="Add a step"
-            title="Add a step"
+            aria-label={t("recipe.blockSheet.addStep")}
+            title={t("recipe.blockSheet.addStep")}
           >
             <HugeiconsIcon
               icon={PlusSignIcon}
@@ -431,8 +433,8 @@ export function BlockSheet({
                   variant="ghost"
                   size="icon-sm"
                   onClick={() => onViewChange("root")}
-                  aria-label="Back to step groups"
-                  title="Back to step groups"
+                  aria-label={t("recipe.blockSheet.backToGroups")}
+                  title={t("recipe.blockSheet.backToGroups")}
                 >
                   <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
                 </Button>
@@ -447,9 +449,9 @@ export function BlockSheet({
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search steps..."
+                placeholder={t("recipe.blockSheet.searchSteps")}
                 className="corner-squircle h-9 pl-8"
-                aria-label="Search steps"
+                aria-label={t("recipe.blockSheet.searchSteps")}
               />
             </div>
           </SheetHeader>
@@ -467,11 +469,10 @@ export function BlockSheet({
                     <div className="min-w-0 flex-1 space-y-2">
                       <div>
                         <p className="text-sm font-semibold text-foreground">
-                          Need a place to start?
+                          {t("recipe.blockSheet.needStart")}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          Open Source data first, then add generation and checks
-                          on top of it.
+                          {t("recipe.blockSheet.needStartHint")}
                         </p>
                       </div>
                       <Button
@@ -481,7 +482,7 @@ export function BlockSheet({
                         className="corner-squircle justify-start px-0 text-primary hover:bg-transparent hover:text-primary/80"
                         onClick={() => onViewChange("seed")}
                       >
-                        Start with source data
+                        {t("recipe.blockSheet.startWithSourceData")}
                       </Button>
                     </div>
                   </div>
@@ -559,11 +560,10 @@ export function BlockSheet({
                   <div className="pb-2">
                     <div className="px-3 pb-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        Recommended first step
+                        {t("recipe.blockSheet.recommendedFirstStep")}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Best when you want to turn PDFs, DOCX files, or text
-                        files into source rows.
+                        {t("recipe.blockSheet.recommendedFirstStepHint")}
                       </p>
                     </div>
                     <BlockSheetButton
@@ -576,7 +576,7 @@ export function BlockSheet({
                         featuredSeedBlock.type,
                       )}
                       trailing={getTrailing()}
-                      badge="Start here"
+                      badge={t("recipe.blockSheet.startHere")}
                       onClick={() =>
                         onBlockClick(
                           featuredSeedBlock.kind,
@@ -592,11 +592,10 @@ export function BlockSheet({
                 otherSeedBlocks.length > 0 && (
                   <div className="px-3 pt-2 pb-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Other source options
+                      {t("recipe.blockSheet.otherSourceOptions")}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Use a dataset or structured file when your source is
-                      already tabular.
+                      {t("recipe.blockSheet.otherSourceOptionsHint")}
                     </p>
                   </div>
                 )}
@@ -605,10 +604,10 @@ export function BlockSheet({
                 llmCreateBlocks.length > 0 && (
                   <div className="px-3 pb-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Create
+                      {t("recipe.blockSheet.create")}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Start with the kind of output you want to generate.
+                      {t("recipe.blockSheet.createHint")}
                     </p>
                   </div>
                 )}
@@ -631,10 +630,10 @@ export function BlockSheet({
                 llmSetupBlocks.length > 0 && (
                   <div className="px-3 pt-4 pb-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Setup
+                      {t("recipe.blockSheet.setup")}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Add these only when you need a new model or tool setup.
+                      {t("recipe.blockSheet.setupHint")}
                     </p>
                   </div>
                 )}
@@ -695,10 +694,10 @@ export function BlockSheet({
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground">
-                        Edit final dataset shape
+                        {t("recipe.blockSheet.editFinalShape")}
                       </p>
                       <p className="break-words text-xs text-muted-foreground">
-                        Rename, reorder, or reshape your final output.
+                        {t("recipe.blockSheet.editFinalShapeHint")}
                       </p>
                     </div>
                     <HugeiconsIcon
@@ -710,7 +709,7 @@ export function BlockSheet({
               )}
               {showNoMatches && (
                 <p className="px-3 py-2 text-xs text-muted-foreground">
-                  No matching steps.
+                  {t("recipe.blockSheet.noMatchingSteps")}
                 </p>
               )}
             </div>
@@ -723,8 +722,8 @@ export function BlockSheet({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={onImport}
-        aria-label="Paste recipe JSON"
-        title="Paste recipe JSON"
+        aria-label={t("recipe.blockSheet.pasteRecipeJson")}
+        title={t("recipe.blockSheet.pasteRecipeJson")}
       >
         <HugeiconsIcon
           icon={Upload01Icon}
@@ -737,8 +736,16 @@ export function BlockSheet({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={onCopy}
-        aria-label={copied ? "Recipe JSON copied" : "Copy recipe JSON"}
-        title={copied ? "Recipe JSON copied" : "Copy recipe JSON"}
+        aria-label={
+          copied
+            ? t("recipe.blockSheet.recipeJsonCopied")
+            : t("recipe.blockSheet.copyRecipeJson")
+        }
+        title={
+          copied
+            ? t("recipe.blockSheet.recipeJsonCopied")
+            : t("recipe.blockSheet.copyRecipeJson")
+        }
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy02Icon}

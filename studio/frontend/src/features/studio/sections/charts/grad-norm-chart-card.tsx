@@ -23,10 +23,7 @@ import {
   formatStepTick,
   fromLog1p,
 } from "./utils";
-
-const gradNormConfig = {
-  displayGradNorm: { label: "Grad Norm", color: "#f97316" },
-} satisfies ChartConfig;
+import { useI18n } from "@/features/i18n";
 
 interface GradNormPoint {
   step: number;
@@ -47,12 +44,19 @@ export function GradNormChartCard({
   xAxisTicks: number[];
   scale: ScaleMode;
 }): ReactElement {
+  const { t } = useI18n();
+  const gradNormConfig = {
+    displayGradNorm: {
+      label: t("studio.progress.metric.gradNorm"),
+      color: "#f97316",
+    },
+  } satisfies ChartConfig;
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm">Gradient Norm</CardTitle>
+        <CardTitle className="text-sm">{t("studio.charts.gradientNorm")}</CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={gradNormConfig} className={CHART_CONTAINER_CLASS}>
@@ -101,11 +105,11 @@ export function GradNormChartCard({
               content={
                 <ChartTooltipContent
                   labelFormatter={(_value, payload) =>
-                    `Step ${payload?.[0]?.payload?.step ?? ""}`
+                    `${t("studio.progress.step")} ${payload?.[0]?.payload?.step ?? ""}`
                   }
                   formatter={(_value, _name, item) => {
                     const raw = Number(item?.payload?.gradNorm);
-                    return [formatMetric(raw), "Grad Norm"];
+                    return [formatMetric(raw), t("studio.progress.metric.gradNorm")];
                   }}
                 />
               }

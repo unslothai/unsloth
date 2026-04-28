@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useI18n, type TranslationKey } from "@/features/i18n";
 import {
   Cancel01Icon,
   Key01Icon,
@@ -29,17 +30,17 @@ import { ProfileTab } from "./tabs/profile-tab";
 
 interface TabDef {
   id: SettingsTab;
-  label: string;
+  labelKey: TranslationKey;
   icon: typeof Settings02Icon;
 }
 
 const TABS: TabDef[] = [
-  { id: "general", label: "General", icon: Settings02Icon },
-  { id: "profile", label: "Profile", icon: UserIcon },
-  { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
-  { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "api-keys", label: "API Keys", icon: Key01Icon },
-  { id: "about", label: "About", icon: SparklesIcon },
+  { id: "general", labelKey: "settings.tab.general", icon: Settings02Icon },
+  { id: "profile", labelKey: "settings.tab.profile", icon: UserIcon },
+  { id: "appearance", labelKey: "settings.tab.appearance", icon: PaintBrush02Icon },
+  { id: "chat", labelKey: "settings.tab.chat", icon: Message01Icon },
+  { id: "api-keys", labelKey: "settings.tab.apiKeys", icon: Key01Icon },
+  { id: "about", labelKey: "settings.tab.about", icon: SparklesIcon },
 ];
 
 function renderTab(tab: SettingsTab) {
@@ -60,6 +61,7 @@ function renderTab(tab: SettingsTab) {
 }
 
 export function SettingsDialog() {
+  const { t } = useI18n();
   const open = useSettingsDialogStore((s) => s.open);
   const activeTab = useSettingsDialogStore((s) => s.activeTab);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
@@ -78,9 +80,9 @@ export function SettingsDialog() {
           "max-sm:h-dvh max-sm:w-dvw max-sm:rounded-none",
         )}
       >
-        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogTitle className="sr-only">{t("settings.dialog.title")}</DialogTitle>
         <DialogDescription className="sr-only">
-          Manage your Unsloth Studio preferences.
+          {t("settings.dialog.description")}
         </DialogDescription>
         <div className="flex h-full min-h-0">
           <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
@@ -121,7 +123,7 @@ export function SettingsDialog() {
                       strokeWidth={1.5}
                       className="relative z-10 size-[18px]"
                     />
-                    <span className="relative z-10">{tab.label}</span>
+                    <span className="relative z-10">{t(tab.labelKey)}</span>
                   </button>
                 );
               })}
@@ -133,7 +135,7 @@ export function SettingsDialog() {
               type="button"
               onClick={closeDialog}
               className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Close settings"
+              aria-label={t("settings.dialog.close")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>

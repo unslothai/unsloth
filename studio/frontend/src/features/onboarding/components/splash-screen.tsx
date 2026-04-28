@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useI18n } from "@/features/i18n";
 import { motion } from "motion/react";
 
 interface SplashScreenProps {
@@ -14,6 +15,7 @@ export function SplashScreen({
   onStartOnboarding,
   onSkipOnboarding,
 }: SplashScreenProps) {
+  const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-b from-background via-background to-primary/5 p-6">
       <Card className="w-full max-w-md px-8 py-8 shadow-border ring-1 ring-border">
@@ -21,7 +23,7 @@ export function SplashScreen({
         <div className="flex justify-center">
           <motion.img
             src="/Sloth emojis/Sloth loca pc.png"
-            alt="Sloth mascot"
+            alt={t("onboarding.splash.mascotAlt")}
             className="size-30"
             initial={{ opacity: 0, y: 40, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -48,7 +50,7 @@ export function SplashScreen({
           <h1 className="text-2xl font-semibold tracking-tight">
             Unsloth Studio
           </h1>
-          <p className="text-sm text-muted-foreground">Train and run LLMs locally</p>
+          <p className="text-sm text-muted-foreground">{t("onboarding.splash.subtitle")}</p>
         </motion.div>
 
         {/* Buttons */}
@@ -63,10 +65,10 @@ export function SplashScreen({
           }}
         >
           <Button size="lg" onClick={onStartOnboarding}>
-            Start Onboarding
+            {t("onboarding.splash.start")}
           </Button>
           <Button size="lg" variant="outline" onClick={onSkipOnboarding}>
-            Skip Onboarding
+            {t("onboarding.splash.skip")}
           </Button>
         </motion.div>
       </Card>

@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useI18nStore, translate } from "@/features/i18n/store";
 import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
 import { SearchIcon, Tick02Icon } from "@hugeicons/core-free-icons";
@@ -35,8 +36,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title,
+  description,
   children,
   className,
   overlayClassName,
@@ -49,11 +50,15 @@ function CommandDialog({
   overlayClassName?: string;
   showCloseButton?: boolean;
 }) {
+  const locale = useI18nStore((s) => s.locale);
+  const resolvedTitle = title ?? translate(locale, "ui.command.title");
+  const resolvedDescription =
+    description ?? translate(locale, "ui.command.description");
   return (
     <Dialog {...props}>
       <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
+        <DialogTitle>{resolvedTitle}</DialogTitle>
+        <DialogDescription>{resolvedDescription}</DialogDescription>
       </DialogHeader>
       <DialogContent
         className={cn(

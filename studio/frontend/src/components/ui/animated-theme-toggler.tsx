@@ -7,6 +7,7 @@ import { flushSync } from "react-dom"
 
 import { cn } from "@/lib/utils"
 import { setTheme } from "@/features/settings/stores/theme-store"
+import { useI18nStore, translate } from "@/features/i18n/store"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
@@ -78,6 +79,7 @@ export const AnimatedThemeToggler = ({
   duration = 400,
   ...props
 }: AnimatedThemeTogglerProps) => {
+  const locale = useI18nStore((s) => s.locale)
   const [isDark, setIsDark] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
@@ -147,7 +149,7 @@ export const AnimatedThemeToggler = ({
       {...props}
     >
       {isDark ? <Sun /> : <Moon />}
-      <span className="sr-only">Toggle theme</span>
+      <span className="sr-only">{translate(locale, "ui.theme.toggle")}</span>
     </button>
   )
 }

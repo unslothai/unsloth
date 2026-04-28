@@ -41,6 +41,7 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
@@ -66,6 +67,7 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
 ];
 
 export function DatasetStep() {
+  const { t } = useI18n();
   const {
     hfToken,
     setHfToken,
@@ -140,7 +142,7 @@ export function DatasetStep() {
   return (
     <FieldGroup>
       <Field>
-        <FieldLabel>Source</FieldLabel>
+        <FieldLabel>{t("onboarding.dataset.source")}</FieldLabel>
         <div className="flex gap-2">
           <Button
             variant={datasetSource === "huggingface" ? "dark" : "outline"}
@@ -155,7 +157,7 @@ export function DatasetStep() {
               className="size-4 invert"
               data-icon="inline-start"
             />
-            Hugging Face
+            {t("onboarding.dataset.huggingFace")}
           </Button>
           <Button
             variant={datasetSource === "upload" ? "dark" : "outline"}
@@ -167,7 +169,7 @@ export function DatasetStep() {
             className="flex-1"
           >
             <HugeiconsIcon icon={Upload04Icon} data-icon="inline-start" />
-            Upload
+            {t("onboarding.dataset.upload")}
           </Button>
         </div>
       </Field>
@@ -176,20 +178,20 @@ export function DatasetStep() {
         <>
           <Field>
             <FieldLabel>
-              Hugging Face Token{" "}
+              {t("onboarding.modelSelection.hfToken")}{" "}
               <span className="text-muted-foreground font-normal">
-                (Optional)
+                ({t("onboarding.common.optional")})
               </span>
             </FieldLabel>
             <FieldDescription>
-              Required for gated or private datasets.{" "}
+              {t("onboarding.dataset.hfTokenHint")}{" "}
               <a
                 href="https://huggingface.co/settings/tokens"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary hover:underline"
               >
-                Get token
+                {t("onboarding.common.getToken")}
               </a>
             </FieldDescription>
             <InputGroup>
@@ -215,17 +217,17 @@ export function DatasetStep() {
                   rel="noopener noreferrer"
                   className="underline"
                 >
-                  Get or update token
+                  {t("onboarding.common.getOrUpdateToken")}
                 </a>
               </p>
             )}
             {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+              <p className="text-xs text-muted-foreground">{t("onboarding.common.checkingToken")}</p>
             )}
           </Field>
 
           <Field>
-            <FieldLabel>Search datasets</FieldLabel>
+            <FieldLabel>{t("onboarding.dataset.searchDatasets")}</FieldLabel>
             <div ref={comboboxAnchorRef}>
               <Combobox
                 items={resultIds}
@@ -247,7 +249,7 @@ export function DatasetStep() {
                 autoHighlight={true}
               >
                 <ComboboxInput
-                  placeholder="Search datasets..."
+                  placeholder={t("onboarding.dataset.searchPlaceholder")}
                   className="w-full"
                 >
                   <InputGroupAddon>
@@ -257,10 +259,10 @@ export function DatasetStep() {
                 <ComboboxContent anchor={comboboxAnchorRef}>
                   {isLoading ? (
                     <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching...
+                      <Spinner className="size-4" /> {t("onboarding.common.searching")}
                     </div>
                   ) : (
-                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                    <ComboboxEmpty>{t("onboarding.dataset.noDatasetsFound")}</ComboboxEmpty>
                   )}
                   <div
                     ref={scrollRef}
@@ -315,9 +317,9 @@ export function DatasetStep() {
       ) : (
         <>
           <Field>
-            <FieldLabel>Upload Dataset</FieldLabel>
+            <FieldLabel>{t("onboarding.dataset.uploadDataset")}</FieldLabel>
             <FieldDescription>
-              Supports JSONL, JSON, CSV formats
+              {t("onboarding.dataset.uploadHint")}
             </FieldDescription>
             <button
               type="button"
@@ -333,7 +335,7 @@ export function DatasetStep() {
                     {uploadedFile}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    Click to replace
+                    {t("onboarding.dataset.clickToReplace")}
                   </span>
                 </div>
               ) : (
@@ -343,7 +345,7 @@ export function DatasetStep() {
                     className="size-8 text-muted-foreground"
                   />
                   <span className="text-sm text-muted-foreground">
-                    Click to upload or drag and drop
+                    {t("onboarding.dataset.clickToUpload")}
                   </span>
                 </div>
               )}
@@ -369,15 +371,14 @@ export function DatasetStep() {
                 </button>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs">
-                Auto will try to identify and convert your dataset to a
-                supported format.{" "}
+                {t("onboarding.dataset.formatHint")}{" "}
                 <a
                   href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-primary underline"
                 >
-                  Read more
+                  {t("onboarding.common.readMore")}
                 </a>
               </TooltipContent>
             </Tooltip>
@@ -398,7 +399,7 @@ export function DatasetStep() {
                       className="mr-1.5 inline size-3.5 align-text-bottom"
                     />
                   )}
-                  {opt.label}
+                  {opt.value === "auto" ? t("onboarding.dataset.autoDetect") : opt.label}
                 </SelectItem>
               ))}
             </SelectContent>

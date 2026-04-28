@@ -2,15 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n";
 
-export const studioSaveStep: TourStep = {
-  id: "save",
-  target: "studio-save",
-  title: "Save config",
-  body: (
-    <>
-      Save your training config as a YAML file. Re-running the same baseline
-      makes it obvious if a change helped (or if you just got lucky).
-    </>
-  ),
-};
+type Translator = (key: TranslationKey) => string;
+
+export function studioSaveStep(t: Translator): TourStep {
+  return {
+    id: "save",
+    target: "studio-save",
+    title: t("studio.tour.save.title"),
+    body: <>{t("studio.tour.save.body")}</>,
+  };
+}

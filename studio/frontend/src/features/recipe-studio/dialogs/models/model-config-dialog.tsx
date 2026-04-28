@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useEffect, useRef, useState } from "react";
+import { useI18n } from "@/features/i18n";
 import type { ModelConfig } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
@@ -36,6 +37,7 @@ export function ModelConfigDialog({
   localProviderNames,
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
+  const { t } = useI18n();
   const isLinkedToLocal = localProviderNames.has(config.provider);
   const [optionalOpen, setOptionalOpen] = useState(false);
   const modelId = `${config.id}-model`;
@@ -79,24 +81,23 @@ export function ModelConfigDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Model preset name"
+        label={t("recipe.modelConfig.presetName")}
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
         <p className="text-sm font-semibold text-foreground">
-          Set up one reusable model choice for your AI steps
+          {t("recipe.modelConfig.setupTitle")}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Choose the provider connection, enter the exact model ID, then save any
-          generation defaults you want to reuse.
+          {t("recipe.modelConfig.setupDescription")}
         </p>
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Provider connection"
+          label={t("recipe.modelConfig.providerConnection")}
           htmlFor={providerId}
-          hint="Choose where this model should run."
+          hint={t("recipe.modelConfig.providerConnectionHint")}
         />
         <div ref={providerAnchorRef}>
           <Combobox
@@ -114,7 +115,7 @@ export function ModelConfigDialog({
             <ComboboxInput
               id={providerId}
               className="nodrag w-full"
-              placeholder="Choose a provider connection"
+              placeholder={t("recipe.modelConfig.providerPlaceholder")}
               onBlur={() => {
                 const next = providerInputRef.current;
                 if (next !== config.provider) {
@@ -123,7 +124,7 @@ export function ModelConfigDialog({
               }}
             />
             <ComboboxContent anchor={providerAnchorRef}>
-              <ComboboxEmpty>No providers found</ComboboxEmpty>
+              <ComboboxEmpty>{t("recipe.modelConfig.noProviders")}</ComboboxEmpty>
               <ComboboxList>
                 {(provider: string) => (
                   <ComboboxItem key={provider} value={provider}>
@@ -136,20 +137,24 @@ export function ModelConfigDialog({
         </div>
         <p className="text-xs text-muted-foreground">
           {providerOptions.length === 0
-            ? "Add a Provider connection step first, then come back here."
-            : "Matching blocks are linked automatically on the canvas."}
+            ? t("recipe.modelConfig.providerEmptyHint")
+            : t("recipe.modelConfig.providerLinkedHint")}
         </p>
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Model ID"
+          label={t("recipe.modelConfig.modelId")}
           htmlFor={modelId}
-          hint={isLinkedToLocal ? "Uses the model loaded in Chat. Any value works here." : "The exact model name sent to the connection."}
+          hint={
+            isLinkedToLocal
+              ? t("recipe.modelConfig.modelIdHintLocal")
+              : t("recipe.modelConfig.modelIdHintExternal")
+          }
         />
         <Input
           id={modelId}
           className="nodrag"
-          placeholder={isLinkedToLocal ? "local" : "gpt-4o-mini"}
+          placeholder={isLinkedToLocal ? "local" : t("recipe.modelConfig.modelIdPlaceholder")}
           value={config.model}
           onChange={(event) => updateField("model", event.target.value)}
         />
@@ -157,18 +162,18 @@ export function ModelConfigDialog({
       <div className="grid gap-3">
         <div className="space-y-1">
           <p className="text-sm font-semibold text-foreground">
-            Default generation settings
+            {t("recipe.modelConfig.defaultsTitle")}
           </p>
           <p className="text-xs text-muted-foreground">
-            These defaults are reused anywhere you choose this model preset.
+            {t("recipe.modelConfig.defaultsDescription")}
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Temperature"
+              label={t("recipe.modelConfig.temperature")}
               htmlFor={tempId}
-              hint="Higher values make responses more varied."
+              hint={t("recipe.modelConfig.temperatureHint")}
             />
             <Input
               id={tempId}
@@ -181,9 +186,9 @@ export function ModelConfigDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Top-p"
+              label={t("recipe.modelConfig.topP")}
               htmlFor={topPId}
-              hint="Use this to limit how broad token selection can be."
+              hint={t("recipe.modelConfig.topPHint")}
             />
             <Input
               id={topPId}
@@ -196,9 +201,9 @@ export function ModelConfigDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Max tokens"
+              label={t("recipe.modelConfig.maxTokens")}
               htmlFor={maxTokensId}
-              hint="Maximum length of the model response."
+              hint={t("recipe.modelConfig.maxTokensHint")}
             />
             <Input
               id={maxTokensId}
@@ -211,9 +216,9 @@ export function ModelConfigDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Timeout (seconds)"
+              label={t("recipe.modelConfig.timeout")}
               htmlFor={timeoutId}
-              hint="How long to wait before a request is treated as failed."
+              hint={t("recipe.modelConfig.timeoutHint")}
             />
             <Input
               id={timeoutId}
@@ -229,16 +234,16 @@ export function ModelConfigDialog({
       <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
         <CollapsibleTrigger asChild={true}>
           <CollapsibleSectionTriggerButton
-            label="Advanced request fields"
+            label={t("recipe.modelConfig.advanced")}
             open={optionalOpen}
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Advanced request fields (JSON)"
+              label={t("recipe.modelConfig.advancedFields")}
               htmlFor={extraBodyId}
-              hint="Extra request fields to send with every call."
+              hint={t("recipe.modelConfig.advancedFieldsHint")}
             />
             <Textarea
               id={extraBodyId}
@@ -257,7 +262,7 @@ export function ModelConfigDialog({
                 updateField("skip_health_check", Boolean(value))
               }
             />
-            Skip connection check
+            {t("recipe.modelConfig.skipConnectionCheck")}
           </label>
         </CollapsibleContent>
       </Collapsible>

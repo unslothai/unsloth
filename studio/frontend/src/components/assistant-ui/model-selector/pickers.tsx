@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useI18n } from "@/features/i18n";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -85,6 +86,7 @@ function ListLabel({
   collapsed?: boolean;
   onToggle?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
       <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -95,7 +97,7 @@ function ListLabel({
         <button
           type="button"
           onClick={onToggle}
-          aria-label={collapsed ? "Expand section" : "Collapse section"}
+          aria-label={collapsed ? t("assistant.pickers.expandSection") : t("assistant.pickers.collapseSection")}
           className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
         >
           {collapsed
@@ -135,16 +137,17 @@ function ModelRow({
   gpuGb?: number;
   tooltipText?: ReactNode;
 }) {
+  const { t } = useI18n();
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
     showVramTooltip && vramStatus
       ? exceeds
-        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpuGb}GB)`
+        ? t("assistant.pickers.vram.needs").replace("{vram}", String(vramEst)).replace("{gpu}", String(gpuGb))
         : vramStatus === "tight"
-          ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
-          : `~${vramEst}GB VRAM`
+          ? t("assistant.pickers.vram.tight").replace("{vram}", String(vramEst)).replace("{gpu}", String(gpuGb))
+          : t("assistant.pickers.vram.normal").replace("{vram}", String(vramEst))
       : null;
 
   const content = (
@@ -169,7 +172,7 @@ function ModelRow({
           <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">OOM</span>
         )}
         {vramStatus === "tight" && (
-          <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
+          <span className="text-[9px] font-medium !text-amber-400">{t("assistant.pickers.tight")}</span>
         )}
         {meta ? (
           <span className="text-[10px] text-muted-foreground">{meta}</span>
@@ -218,6 +221,7 @@ function GgufVariantExpander({
   systemRamGb?: number;
   onDeleteVariant?: (quant: string) => void;
 }) {
+  const { t } = useI18n();
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState(false);
@@ -239,7 +243,7 @@ function GgufVariantExpander({
       .catch((err) => {
         if (canceled) return;
         setError(
-          err instanceof Error ? err.message : "Failed to load variants",
+          err instanceof Error ? err.message : t("assistant.pickers.error.loadVariants"),
         );
       })
       .finally(() => {
@@ -249,7 +253,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId]);
+  }, [repoId, t]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
@@ -337,7 +341,7 @@ function GgufVariantExpander({
     return (
       <div className="flex items-center gap-2 px-5 py-2">
         <Spinner className="size-3 text-muted-foreground" />
-        <span className="text-xs text-muted-foreground">Loading variants…</span>
+        <span className="text-xs text-muted-foreground">{t("assistant.pickers.loadingVariants")}</span>
       </div>
     );
   }
@@ -349,7 +353,7 @@ function GgufVariantExpander({
   if (!sortedVariants || sortedVariants.length === 0) {
     return (
       <div className="px-5 py-2 text-xs text-muted-foreground">
-        No GGUF variants found.
+        {t("assistant.pickers.noGgufVariants")}
       </div>
     );
   }
@@ -358,10 +362,10 @@ function GgufVariantExpander({
     <div className="pl-4 border-l-2 border-accent/50 ml-3 my-1">
       <div className="px-2 py-1 flex items-center gap-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Quantizations
+          {t("assistant.pickers.quantizations")}
         </span>
         {hasVision && (
-          <span className="text-[9px] font-medium text-blue-400">Vision</span>
+          <span className="text-[9px] font-medium text-blue-400">{t("assistant.pickers.vision")}</span>
         )}
       </div>
       {sortedVariants.map((v) => {
@@ -383,11 +387,11 @@ function GgufVariantExpander({
                 <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>{v.quant}</span>
                 {v.downloaded ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
-                    downloaded
+                    {t("assistant.pickers.downloaded")}
                   </span>
                 ) : v.quant === effectiveRecommended ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
-                    recommended
+                    {t("assistant.pickers.recommended")}
                   </span>
                 ) : null}
               </span>
@@ -399,7 +403,7 @@ function GgufVariantExpander({
                 )}
                 {tight && (
                   <span className="text-[9px] font-medium !text-amber-400">
-                    TIGHT
+                    {t("assistant.pickers.tight")}
                   </span>
                 )}
                 <span className="text-[10px] text-muted-foreground">
@@ -476,6 +480,7 @@ export function HubModelPicker({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
 }) {
+  const { t } = useI18n();
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
@@ -600,15 +605,15 @@ export function HubModelPicker({
       // Background reconciliation with the server
       void refreshScanFolders();
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to add folder";
+      const message = e instanceof Error ? e.message : t("assistant.pickers.error.addFolder");
       setFolderError(message);
       if (fromBrowser) {
-        toast.error("Couldn't add folder", { description: message });
+        toast.error(t("assistant.pickers.error.couldNotAddFolder"), { description: message });
       }
     } finally {
       setFolderLoading(false);
     }
-  }, [folderInput, folderLoading, refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
+  }, [folderInput, folderLoading, onFoldersChange, refreshLocalModelsList, refreshScanFolders, t]);
 
   const handleRemoveFolder = useCallback(async (id: number) => {
     try {
@@ -621,10 +626,10 @@ export function HubModelPicker({
       refreshLocalModelsList();
       onFoldersChange?.();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to remove folder");
+      toast.error(e instanceof Error ? e.message : t("assistant.pickers.error.removeFolder"));
       refreshScanFolders();
     }
-  }, [refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
+  }, [onFoldersChange, refreshLocalModelsList, refreshScanFolders, t]);
 
   const refreshCachedLists = useCallback(() => {
     listCachedGguf()
@@ -684,17 +689,17 @@ export function HubModelPicker({
       const repoId = sepIdx >= 0 ? deleteTarget.slice(0, sepIdx) : deleteTarget;
       const variant = sepIdx >= 0 ? deleteTarget.slice(sepIdx + 2) : undefined;
       await deleteCachedModel(repoId, variant);
-      toast.success(`Deleted ${variant ? `${repoId} ${variant}` : repoId}`);
+      toast.success(t("assistant.pickers.deletedModel").replace("{model}", variant ? `${repoId} ${variant}` : repoId));
       refreshCachedLists();
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Failed to delete model",
+        err instanceof Error ? err.message : t("assistant.pickers.error.deleteModel"),
       );
     } finally {
       setDeleting(false);
       setDeleteTarget(null);
     }
-  }, [deleteTarget, refreshCachedLists]);
+  }, [deleteTarget, refreshCachedLists, t]);
 
   // Deduplicate: don't show downloaded models in the recommended list.
   // Compare case-insensitively since HF cache lowercases repo IDs.
@@ -905,7 +910,7 @@ export function HubModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search Hugging Face models"
+          placeholder={t("assistant.pickers.searchHfModels")}
           className="h-9 pl-8 pr-8"
         />
         {isLoading && (
@@ -919,7 +924,7 @@ export function HubModelPicker({
             <div className="flex items-center gap-2 px-5 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
-                Loading models…
+                {t("assistant.pickers.loadingModels")}
               </span>
             </div>
           ) : !showHfSection &&
@@ -930,12 +935,12 @@ export function HubModelPicker({
                 icon={<DownloadIcon className="size-3" />}
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
-              >Downloaded</ListLabel>
+              >{t("assistant.pickers.downloaded")}</ListLabel>
               {!downloadedCollapsed && cachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
                     label={c.repo_id}
-                    meta={`GGUF · ${formatBytes(c.size_bytes)}`}
+                    meta={`${t("assistant.pickers.gguf")} · ${formatBytes(c.size_bytes)}`}
                     selected={value === c.repo_id}
                     onClick={() =>
                       setExpandedGguf((prev) =>
@@ -994,7 +999,7 @@ export function HubModelPicker({
 
           {!showHfSection && chatOnly && lmStudioModels.length > 0 ? (
             <>
-              <ListLabel>LM Studio</ListLabel>
+              <ListLabel>{t("assistant.pickers.lmStudio")}</ListLabel>
               {lmStudioModels.map((m) => {
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
                 return (
@@ -1002,7 +1007,9 @@ export function HubModelPicker({
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={
-                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
+                        isGguf || m.path.toLowerCase().endsWith(".gguf")
+                          ? t("assistant.pickers.gguf")
+                          : t("assistant.pickers.local")
                       }
                       selected={value === m.id}
                       onClick={() => {
@@ -1041,13 +1048,13 @@ export function HubModelPicker({
               <div className="flex items-center gap-1 px-2.5 py-1.5">
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   <HugeiconsIcon icon={Folder02Icon} className="size-3" />
-                  Custom Folders
+                  {t("assistant.pickers.customFolders")}
                 </span>
                 <div className="flex items-center gap-0.5">
                   <button
                     type="button"
-                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
-                    title={showFolderInput ? "Cancel" : "Add by typing a path"}
+                    aria-label={showFolderInput ? t("assistant.pickers.cancelAddFolder") : t("assistant.pickers.addFolderByPath")}
+                    title={showFolderInput ? t("common.cancel") : t("assistant.pickers.addByTypingPath")}
                     onClick={() => {
                       setShowFolderInput((open) => {
                         if (open) { setFolderInput(""); setFolderError(null); }
@@ -1060,8 +1067,8 @@ export function HubModelPicker({
                   </button>
                   <button
                     type="button"
-                    aria-label="Browse for a folder on the server"
-                    title="Browse folders on the server"
+                    aria-label={t("assistant.pickers.browseFolderOnServer")}
+                    title={t("assistant.pickers.browseFoldersOnServer")}
                     onClick={() => setShowFolderBrowser(true)}
                     className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
                   >
@@ -1071,8 +1078,8 @@ export function HubModelPicker({
                 <div className="ml-auto">
                   <button
                     type="button"
-                    aria-label={customFoldersCollapsed ? "Expand custom folders" : "Collapse custom folders"}
-                    title={customFoldersCollapsed ? "Expand" : "Collapse"}
+                    aria-label={customFoldersCollapsed ? t("assistant.pickers.expandCustomFolders") : t("assistant.pickers.collapseCustomFolders")}
+                    title={customFoldersCollapsed ? t("assistant.pickers.expand") : t("assistant.pickers.collapse")}
                     onClick={() => setCustomFoldersCollapsed((v) => !v)}
                     className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                   >
@@ -1099,7 +1106,7 @@ export function HubModelPicker({
                   <button
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
-                    aria-label={`Remove folder ${f.path}`}
+                    aria-label={t("assistant.pickers.removeFolder").replace("{path}", f.path)}
                     className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                   >
                     <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
@@ -1120,7 +1127,7 @@ export function HubModelPicker({
                         type="button"
                         onClick={() => void handleAddFolder(p)}
                         disabled={folderLoading}
-                        title={`Add ${p}`}
+                        title={t("assistant.pickers.addFolder").replace("{path}", p)}
                         className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
                       >
                         <span className="text-[11px] font-semibold">+</span> {p.length > 30 ? `...${p.slice(-27)}` : p}
@@ -1151,8 +1158,8 @@ export function HubModelPicker({
                       type="button"
                       onClick={() => setShowFolderBrowser(true)}
                       disabled={folderLoading}
-                      aria-label="Browse for folder"
-                      title="Browse folders on the server"
+                      aria-label={t("assistant.pickers.browseFolder")}
+                      title={t("assistant.pickers.browseFoldersOnServer")}
                       className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
                     >
                       <HugeiconsIcon icon={Search01Icon} className="size-3" />
@@ -1163,7 +1170,7 @@ export function HubModelPicker({
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
-                      Add
+                      {t("assistant.pickers.add")}
                     </button>
                   </div>
                   {folderError && (
@@ -1201,7 +1208,7 @@ export function HubModelPicker({
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
-                      meta={isGguf ? "GGUF" : "Local"}
+                      meta={isGguf ? t("assistant.pickers.gguf") : t("assistant.pickers.local")}
                       selected={value === m.id}
                       onClick={() => {
                         if (isDirectGguf) {
@@ -1246,10 +1253,10 @@ export function HubModelPicker({
                 icon={<StarIcon className="size-3" />}
                 collapsed={recommendedCollapsed}
                 onToggle={() => setRecommendedCollapsed((v) => !v)}
-              >Recommended</ListLabel>
+              >{t("assistant.pickers.recommended")}</ListLabel>
               {recommendedCollapsed ? null : visibleRecommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                  No default models.
+                  {t("assistant.pickers.noDefaultModels")}
                 </div>
               ) : (
                 visibleRecommendedIds.map((id) => {
@@ -1260,7 +1267,7 @@ export function HubModelPicker({
                         label={id}
                         meta={
                           isKnownGgufRepo(id)
-                            ? "GGUF"
+                            ? t("assistant.pickers.gguf")
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
@@ -1304,7 +1311,7 @@ export function HubModelPicker({
 
           {showHfSection && filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel icon={<StarIcon className="size-3" />}>Recommended</ListLabel>
+              <ListLabel icon={<StarIcon className="size-3" />}>{t("assistant.pickers.recommended")}</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
                 return (
@@ -1313,7 +1320,7 @@ export function HubModelPicker({
                       label={id}
                       meta={
                         isKnownGgufRepo(id)
-                          ? "GGUF"
+                          ? t("assistant.pickers.gguf")
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
@@ -1349,12 +1356,12 @@ export function HubModelPicker({
           {showHfSection ? (
             <>
               {(hfIds.length > 0 || isLoading) && (
-                <ListLabel>Hugging Face</ListLabel>
+                <ListLabel>{t("assistant.pickers.huggingFace")}</ListLabel>
               )}
               {hfIds.length === 0 && !isLoading ? (
                 filteredRecommendedIds.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                    No matching models.
+                    {t("assistant.pickers.noMatchingModels")}
                   </div>
                 ) : null
                 ) : (
@@ -1367,7 +1374,7 @@ export function HubModelPicker({
                         label={id}
                         meta={
                           isSearchGguf
-                            ? "GGUF"
+                            ? t("assistant.pickers.gguf")
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
@@ -1417,19 +1424,19 @@ export function HubModelPicker({
       >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
+            <AlertDialogTitle>{t("assistant.pickers.deleteCachedModelTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove{" "}
+              {t("assistant.pickers.deleteCachedModelDescriptionPrefix")}{" "}
               <span className="font-medium text-foreground">
                 {deleteTarget?.includes("::")
                   ? `${deleteTarget.split("::")[0]} (${deleteTarget.split("::")[1]})`
                   : deleteTarget}
               </span>{" "}
-              from disk. You can re-download it later.
+              {t("assistant.pickers.deleteCachedModelDescriptionSuffix")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>No</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>{t("common.no")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={deleting}
@@ -1438,7 +1445,7 @@ export function HubModelPicker({
                 handleDeleteConfirm();
               }}
             >
-              {deleting ? "Deleting..." : "Yes"}
+              {deleting ? t("assistant.pickers.deleting") : t("common.yes")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1456,6 +1463,7 @@ export function LoraModelPicker({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   const gpu = useGpuInfo();
@@ -1466,7 +1474,7 @@ export function LoraModelPicker({
         .map((model) => ({
           ...model,
           baseModel:
-            model.baseModel || model.description || "Unknown base model",
+            model.baseModel || model.description || t("assistant.pickers.unknownBaseModel"),
         }))
         .sort((a, b) => {
           const baseCmp = a.baseModel.localeCompare(b.baseModel);
@@ -1482,7 +1490,7 @@ export function LoraModelPicker({
           if (aTime !== bTime) return bTime - aTime;
           return a.name.localeCompare(b.name);
         }),
-    [loraModels],
+    [loraModels, t],
   );
 
   const grouped = useMemo(() => {
@@ -1495,7 +1503,7 @@ export function LoraModelPicker({
       );
       if (needle && !searchText.includes(needle)) continue;
 
-      const key = model.baseModel || "Unknown base model";
+      const key = model.baseModel || t("assistant.pickers.unknownBaseModel");
       const prev = out.get(key) ?? [];
       prev.push(model);
       out.set(key, prev);
@@ -1507,7 +1515,7 @@ export function LoraModelPicker({
       if (aLatest !== bLatest) return bLatest - aLatest;
       return a[0].localeCompare(b[0]);
     });
-  }, [normalized, query]);
+  }, [normalized, query, t]);
 
   return (
     <div className="space-y-2">
@@ -1519,7 +1527,7 @@ export function LoraModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search trained models"
+          placeholder={t("assistant.pickers.searchTrainedModels")}
           className="h-9 pl-8"
         />
       </div>
@@ -1528,7 +1536,7 @@ export function LoraModelPicker({
         <div className="p-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No trained models found.
+              {t("assistant.pickers.noTrainedModelsFound")}
             </div>
           ) : (
             grouped.map(([baseModel, adapters], index) => (
@@ -1547,25 +1555,25 @@ export function LoraModelPicker({
                     (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
                   const tag = isLocal
                     ? isLocalGgufDir
-                      ? "GGUF"
-                      : "Local"
+                      ? t("assistant.pickers.gguf")
+                      : t("assistant.pickers.local")
                     : isGguf
-                      ? "GGUF"
+                      ? t("assistant.pickers.gguf")
                       : isTrainingFull
-                        ? "Full"
+                        ? t("assistant.pickers.full")
                       : isExported
                         ? isMerged
-                          ? "Merged"
-                          : "LoRA"
-                        : "LoRA";
+                          ? t("assistant.pickers.merged")
+                          : t("assistant.pickers.lora")
+                        : t("assistant.pickers.lora");
                   const meta = isLocal
                     ? isLocalGgufDir
-                      ? "GGUF"
-                      : "Local"
+                      ? t("assistant.pickers.gguf")
+                      : t("assistant.pickers.local")
                     : isTrainingFull
-                      ? "Full finetune"
+                      ? t("assistant.pickers.fullFinetune")
                     : isExported
-                      ? `${tag} · Exported`
+                      ? `${tag} · ${t("assistant.pickers.exported")}`
                       : tag;
                   return (
                     <div key={adapter.id}>

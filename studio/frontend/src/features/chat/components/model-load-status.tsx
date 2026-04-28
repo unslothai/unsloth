@@ -4,6 +4,7 @@
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 
 type ModelLoadDescriptionProps = {
   title?: string | null;
@@ -47,6 +48,7 @@ export function ModelLoadDescription({
   progressLabel,
   onStop,
 }: ModelLoadDescriptionProps) {
+  const { t } = useI18n();
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top of the render so the JSX below stays flat --
   // no IIFE required. splitProgressLabel is a trivial string op.
@@ -91,7 +93,7 @@ export function ModelLoadDescription({
           className="h-auto self-stretch shrink-0 !rounded-none !border-0 bg-transparent px-1 text-[10px] text-muted-foreground hover:bg-transparent hover:text-destructive focus-visible:text-destructive"
           onClick={onStop}
         >
-          Cancel
+          {t("chat.modelLoad.cancel")}
         </Button>
       ) : null}
     </div>
@@ -113,6 +115,7 @@ export function ModelLoadInlineStatus({
   progressLabel,
   onStop,
 }: ModelLoadInlineStatusProps) {
+  const { t } = useI18n();
   const hasProgress = typeof progressPercent === "number";
 
   return (
@@ -148,7 +151,7 @@ export function ModelLoadInlineStatus({
           className="shrink-0 text-[11px]"
           onClick={onStop}
         >
-          Stop
+          {t("chat.modelLoad.stop")}
         </Button>
       ) : null}
     </div>

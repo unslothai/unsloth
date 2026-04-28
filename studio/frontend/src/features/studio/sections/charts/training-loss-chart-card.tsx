@@ -30,11 +30,7 @@ import {
   formatStepTick,
   fromLog1p,
 } from "./utils";
-
-const lossConfig = {
-  displayLoss: { label: "Loss", color: "#3b82f6" },
-  displaySmoothed: { label: "Smoothed", color: "#f59e0b" },
-} satisfies ChartConfig;
+import { useI18n } from "@/features/i18n";
 
 interface LossChartPoint {
   step: number;
@@ -67,12 +63,17 @@ export function TrainingLossChartCard({
   showAvgLine: boolean;
   scale: ScaleMode;
 }): ReactElement {
+  const { t } = useI18n();
+  const lossConfig = {
+    displayLoss: { label: t("studio.progress.metric.loss"), color: "#3b82f6" },
+    displaySmoothed: { label: t("studio.charts.smoothed"), color: "#f59e0b" },
+  } satisfies ChartConfig;
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
     <Card data-tour="studio-training-loss" size="sm">
       <CardHeader>
-        <CardTitle className="text-sm">Training Loss</CardTitle>
+        <CardTitle className="text-sm">{t("studio.charts.trainingLoss")}</CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={lossConfig} className={CHART_CONTAINER_CLASS}>
@@ -121,16 +122,16 @@ export function TrainingLossChartCard({
               content={
                 <ChartTooltipContent
                   labelFormatter={(_value, payload) =>
-                    `Step ${payload?.[0]?.payload?.step ?? ""}`
+                    `${t("studio.progress.step")} ${payload?.[0]?.payload?.step ?? ""}`
                   }
                   formatter={(_value, name, item) => {
                     if (name === "displaySmoothed") {
                       return [
                         formatMetric(Number(item?.payload?.smoothed)),
-                        "Smoothed",
+                        t("studio.charts.smoothed"),
                       ];
                     }
-                    return [formatMetric(Number(item?.payload?.loss)), "Loss"];
+                    return [formatMetric(Number(item?.payload?.loss)), t("studio.progress.metric.loss")];
                   }}
                 />
               }
@@ -142,7 +143,7 @@ export function TrainingLossChartCard({
                 strokeDasharray="4 4"
                 strokeOpacity={0.5}
                 label={{
-                  value: `avg ${formatMetric(avgRaw)}`,
+                  value: `${t("studio.charts.avg")} ${formatMetric(avgRaw)}`,
                   position: "insideTopRight",
                   fontSize: 10,
                   fill: "#3b82f6",

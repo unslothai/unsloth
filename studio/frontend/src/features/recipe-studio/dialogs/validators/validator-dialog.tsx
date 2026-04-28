@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type ReactElement, useMemo, useRef } from "react";
+import { useI18n } from "@/features/i18n";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
 import {
@@ -53,6 +54,7 @@ export function ValidatorDialog({
   config,
   onUpdate,
 }: ValidatorDialogProps): ReactElement {
+  const { t } = useI18n();
   const configs = useRecipeStudioStore((state) => state.configs);
   const targetColumnId = `${config.id}-target-column`;
   const oxcModeId = `${config.id}-oxc-mode`;
@@ -102,16 +104,16 @@ export function ValidatorDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Check name"
-        hint="Name used for this check in the canvas and run results."
+        label={t("recipe.validator.checkName")}
+        hint={t("recipe.validator.checkNameHint")}
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Code to check"
+          label={t("recipe.validator.codeToCheck")}
           htmlFor={targetColumnId}
-          hint="Choose the AI code step this check should review."
+          hint={t("recipe.validator.codeToCheckHint")}
         />
         <Select
           value={currentTarget || NONE_VALUE}
@@ -137,10 +139,10 @@ export function ValidatorDialog({
           }}
         >
           <SelectTrigger className="nodrag w-full" id={targetColumnId}>
-            <SelectValue placeholder="Select code column" />
+            <SelectValue placeholder={t("recipe.validator.selectCodeColumn")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE_VALUE}>None</SelectItem>
+            <SelectItem value={NONE_VALUE}>{t("recipe.seed.selection.none")}</SelectItem>
             {codeOptions.map((item) => (
               <SelectItem key={item.name} value={item.name}>
                 {item.name}
@@ -151,8 +153,8 @@ export function ValidatorDialog({
         {codeOptions.length === 0 && (
               <p className="text-xs text-muted-foreground">
                 {config.validator_type === "oxc"
-                  ? "Add an AI code step that generates JavaScript or TypeScript first."
-                  : "Add an AI code step first."}
+                  ? t("recipe.validator.addCodeStepOxc")
+                  : t("recipe.validator.addCodeStep")}
               </p>
         )}
       </div>
@@ -160,9 +162,9 @@ export function ValidatorDialog({
         <div className="grid gap-3">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Check mode"
+              label={t("recipe.validator.checkMode")}
               htmlFor={oxcModeId}
-              hint="Choose whether to check syntax, lint rules, or both."
+              hint={t("recipe.validator.checkModeHint")}
             />
             <div ref={oxcModeAnchorRef}>
               <Combobox
@@ -181,11 +183,11 @@ export function ValidatorDialog({
                 <ComboboxInput
                   id={oxcModeId}
                   className="nodrag w-full"
-                  placeholder="Select validation mode"
+                  placeholder={t("recipe.validator.selectValidationMode")}
                   readOnly={true}
                 />
                 <ComboboxContent anchor={oxcModeAnchorRef}>
-                  <ComboboxEmpty>No modes available</ComboboxEmpty>
+                  <ComboboxEmpty>{t("recipe.validator.noModesAvailable")}</ComboboxEmpty>
                   <ComboboxList>
                     {(mode: string) => (
                       <ComboboxItem key={mode} value={mode}>
@@ -199,9 +201,9 @@ export function ValidatorDialog({
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Code shape"
+              label={t("recipe.validator.codeShape")}
               htmlFor={oxcCodeShapeId}
-              hint="Choose whether the code should be treated like a full file or a smaller snippet."
+              hint={t("recipe.validator.codeShapeHint")}
             />
             <div ref={oxcCodeShapeAnchorRef}>
               <Combobox
@@ -220,11 +222,11 @@ export function ValidatorDialog({
                 <ComboboxInput
                   id={oxcCodeShapeId}
                   className="nodrag w-full"
-                  placeholder="Select code shape"
+                  placeholder={t("recipe.validator.selectCodeShape")}
                   readOnly={true}
                 />
                 <ComboboxContent anchor={oxcCodeShapeAnchorRef}>
-                  <ComboboxEmpty>No code-shape options</ComboboxEmpty>
+                  <ComboboxEmpty>{t("recipe.validator.noCodeShapeOptions")}</ComboboxEmpty>
                   <ComboboxList>
                     {(shape: string) => (
                       <ComboboxItem key={shape} value={shape}>
@@ -244,16 +246,16 @@ export function ValidatorDialog({
       >
         <CollapsibleTrigger asChild={true}>
           <CollapsibleSectionTriggerButton
-            label="Advanced check settings"
+            label={t("recipe.validator.advancedSettings")}
             open={advancedOpen}
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Batch size"
+              label={t("recipe.validator.batchSize")}
               htmlFor={batchSizeId}
-              hint="How many records to check at a time."
+              hint={t("recipe.validator.batchSizeHint")}
             />
             <Input
               id={batchSizeId}

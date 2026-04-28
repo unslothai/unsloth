@@ -3,6 +3,7 @@
 
 "use client";
 
+import { useI18n } from "@/features/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
@@ -133,12 +134,13 @@ function sanitizeSvg(source: string): string | null {
 }
 
 function SvgPreview({ source }: { source: string }) {
+  const { t } = useI18n();
   const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
   return (
     <div className="mt-2 flex justify-center rounded-lg border border-border bg-white p-4 dark:bg-neutral-100">
       <img
         src={dataUri}
-        alt="SVG preview"
+        alt={t("assistant.markdown.svgPreviewAlt")}
         style={{ maxWidth: "100%", maxHeight: 512 }}
       />
     </div>
@@ -149,6 +151,7 @@ const HTML_PREVIEW_DEFAULT_HEIGHT = 400;
 const HTML_PREVIEW_MAX_HEIGHT = 800;
 
 function HtmlPreview({ source }: { source: string }) {
+  const { t } = useI18n();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(HTML_PREVIEW_DEFAULT_HEIGHT);
   const [enlarged, setEnlarged] = useState(false);
@@ -194,10 +197,10 @@ parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*"
               type="button"
               className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               onClick={() => setEnlarged(false)}
-              title="Exit fullscreen (Esc)"
+              title={t("assistant.markdown.exitFullscreenTitle")}
             >
               <Minimize2Icon className="size-4" />
-              Exit fullscreen
+              {t("assistant.markdown.exitFullscreen")}
             </button>
           </div>
           <div className="mx-4 mb-4 flex-1 overflow-hidden rounded-lg border border-border bg-background">
@@ -206,7 +209,7 @@ parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*"
               srcDoc={srcDoc}
               sandbox="allow-scripts"
               style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-              title="HTML preview"
+              title={t("assistant.markdown.htmlPreviewTitle")}
             />
           </div>
         </div>
@@ -220,7 +223,7 @@ parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*"
         type="button"
         className="absolute top-2 right-2 z-10 rounded-md border border-border bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover/html-preview:opacity-100 supports-[backdrop-filter]:backdrop-blur"
         onClick={() => setEnlarged(true)}
-        title="Enlarge preview"
+        title={t("assistant.markdown.enlargePreview")}
       >
         <Maximize2Icon className="size-4" />
       </button>
@@ -229,7 +232,7 @@ parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*"
         srcDoc={srcDoc}
         sandbox="allow-scripts"
         style={{ width: "100%", height, border: "none", display: "block" }}
-        title="HTML preview"
+        title={t("assistant.markdown.htmlPreviewTitle")}
       />
     </div>
   );
@@ -274,13 +277,14 @@ function useCopiedState() {
 }
 
 function MermaidCopyButton({ source }: { source: string }) {
+  const { t } = useI18n();
   const { copied, showCopied } = useCopiedState();
 
   return (
     <button
       type="button"
       className="absolute top-3.5 right-20 z-20 cursor-pointer text-muted-foreground transition-all hover:text-foreground"
-      title="Copy Mermaid source"
+      title={t("assistant.markdown.copyMermaidSource")}
       onClick={async () => {
         if (!(await copyToClipboard(source))) {
           return;
@@ -305,6 +309,7 @@ function CodeBlockActions({
   language: string | null;
   source: string;
 }) {
+  const { t } = useI18n();
   const { copied, showCopied } = useCopiedState();
 
   return (
@@ -313,7 +318,7 @@ function CodeBlockActions({
         <button
           type="button"
           className={ACTION_BUTTON_CLASS}
-          title="Copy code"
+          title={t("assistant.markdown.copyCode")}
           disabled={disabled}
           onClick={async () => {
             if (!(await copyToClipboard(source))) {
@@ -330,7 +335,7 @@ function CodeBlockActions({
         <button
           type="button"
           className={ACTION_BUTTON_CLASS}
-          title="Download file"
+          title={t("assistant.markdown.downloadFile")}
           disabled={disabled}
           onClick={() => {
             downloadTextFile(getCodeFilename(language), source);
@@ -344,6 +349,7 @@ function CodeBlockActions({
 }
 
 function StreamdownBlock(props: BlockProps) {
+  const { t } = useI18n();
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
@@ -351,7 +357,7 @@ function StreamdownBlock(props: BlockProps) {
   if (props.isIncomplete && hasMermaidFence) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading diagram...
+        {t("assistant.markdown.loadingDiagram")}
       </div>
     );
   }
@@ -360,7 +366,7 @@ function StreamdownBlock(props: BlockProps) {
     return (
       <div className="relative isolate">
         <div className="my-4 rounded-xl border border-border bg-muted/30 p-4">
-          <div className="mb-2 text-xs font-medium text-muted-foreground">svg</div>
+          <div className="mb-2 text-xs font-medium text-muted-foreground">{t("assistant.markdown.svgLabel")}</div>
           <pre className="overflow-x-auto text-xs text-muted-foreground whitespace-pre-wrap break-all">
             <code>{codeFence.source}</code>
           </pre>
@@ -372,7 +378,7 @@ function StreamdownBlock(props: BlockProps) {
   if (props.isIncomplete && codeFence && isHtmlFence(codeFence)) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading preview...
+        {t("assistant.markdown.loadingPreview")}
       </div>
     );
   }

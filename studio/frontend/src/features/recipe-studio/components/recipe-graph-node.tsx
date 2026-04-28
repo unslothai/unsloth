@@ -4,6 +4,7 @@
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
@@ -356,6 +357,7 @@ function RecipeGraphNodeBase({
   data,
   selected,
 }: NodeProps<RecipeGraphNodeType>): ReactElement {
+  const { t } = useI18n();
   const meta = NODE_META[data.kind];
   const icon = resolveNodeIcon(data.kind, data.blockType);
   const layoutDirection = data.layoutDirection ?? "LR";
@@ -476,7 +478,7 @@ function RecipeGraphNodeBase({
         <div className="pointer-events-none absolute -top-7 right-2 z-20">
           <span
             className="block size-6 animate-spin rounded-full border-[3px] border-primary/90 border-t-transparent bg-background"
-            aria-label="Running"
+            aria-label={t("recipe.node.running")}
           />
         </div>
       )}

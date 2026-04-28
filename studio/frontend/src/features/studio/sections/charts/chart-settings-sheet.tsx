@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { useI18n } from "@/features/i18n";
 import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
@@ -71,12 +72,18 @@ function SettingRow({
 
 function ScaleSection({
   title,
+  subtitle,
+  scaleOptions,
+  outlierOptions,
   scale,
   setScale,
   outlierMode,
   setOutlierMode,
 }: {
   title: string;
+  subtitle: string;
+  scaleOptions: { label: string; value: ScaleMode }[];
+  outlierOptions: { label: string; value: OutlierMode }[];
   scale: ScaleMode;
   setScale: (value: ScaleMode) => void;
   outlierMode: OutlierMode;
@@ -86,22 +93,15 @@ function ScaleSection({
     <div className="space-y-3">
       <div>
         <p className="text-sm font-medium">{title}</p>
-        <p className="text-xs text-muted-foreground">Scale and cleanup</p>
+        <p className="text-xs text-muted-foreground">{subtitle}</p>
       </div>
       <ChoiceButtons
-        options={[
-          { label: "Linear", value: "linear" },
-          { label: "Log", value: "log" },
-        ]}
+        options={scaleOptions}
         value={scale}
         onChange={setScale}
       />
       <ChoiceButtons
-        options={[
-          { label: "No clip", value: "none" },
-          { label: "Clip p99", value: "p99" },
-          { label: "Clip p95", value: "p95" },
-        ]}
+        options={outlierOptions}
         value={outlierMode}
         onChange={setOutlierMode}
       />
@@ -110,6 +110,7 @@ function ScaleSection({
 }
 
 export function ChartSettingsSheet(): ReactElement {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const {
     availableSteps,
@@ -181,7 +182,7 @@ export function ChartSettingsSheet(): ReactElement {
         size="icon-sm"
         className="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
         onClick={() => setOpen(true)}
-        aria-label="Open chart settings"
+        aria-label={t("studio.charts.settings.openAria")}
       >
         <HugeiconsIcon icon={Settings02Icon} className="size-4" />
       </Button>
@@ -191,24 +192,24 @@ export function ChartSettingsSheet(): ReactElement {
           overlayClassName="bg-transparent backdrop-blur-0"
         >
           <SheetHeader className="pb-4">
-            <SheetTitle>Chart Settings</SheetTitle>
+            <SheetTitle>{t("studio.charts.settings.title")}</SheetTitle>
             <SheetDescription>
-              Tune chart presentation while training keeps running.
+              {t("studio.charts.settings.description")}
             </SheetDescription>
           </SheetHeader>
           <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-6">
             <div className="space-y-3">
               <div>
-                <p className="text-sm font-medium">View window</p>
+                <p className="text-sm font-medium">{t("studio.charts.settings.viewWindow")}</p>
                 <p className="text-xs text-muted-foreground">
-                  Show latest steps only or the full history.
+                  {t("studio.charts.settings.viewWindowHint")}
                 </p>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Window</span>
+                  <span>{t("studio.charts.settings.window")}</span>
                   <span className="tabular-nums">
-                    {showingAll ? "All" : effectiveWindowSize}
+                    {showingAll ? t("studio.charts.settings.all") : effectiveWindowSize}
                   </span>
                 </div>
                 <Slider
@@ -224,14 +225,14 @@ export function ChartSettingsSheet(): ReactElement {
             <Separator />
             <div className="space-y-4">
               <div>
-                <p className="text-sm font-medium">Training loss</p>
+                <p className="text-sm font-medium">{t("studio.charts.trainingLoss")}</p>
                 <p className="text-xs text-muted-foreground">
-                  Control overlays and EMA smoothing.
+                  {t("studio.charts.settings.trainingLossHint")}
                 </p>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Smoothing</span>
+                  <span>{t("studio.charts.settings.smoothing")}</span>
                   <span className="tabular-nums">{smoothing.toFixed(2)}</span>
                 </div>
                 <Slider
@@ -242,17 +243,17 @@ export function ChartSettingsSheet(): ReactElement {
                   step={0.01}
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Move right for more smoothing. `0` = raw.
+                  {t("studio.charts.settings.smoothingHint")}
                 </p>
               </div>
               <SettingRow
-                label="Show raw loss"
+                label={t("studio.charts.settings.showRawLoss")}
                 control={
                   <Switch checked={showRaw} onCheckedChange={setShowRaw} />
                 }
               />
               <SettingRow
-                label="Show smoothed loss"
+                label={t("studio.charts.settings.showSmoothedLoss")}
                 control={
                   <Switch
                     checked={showSmoothed}
@@ -261,7 +262,7 @@ export function ChartSettingsSheet(): ReactElement {
                 }
               />
               <SettingRow
-                label="Show average line"
+                label={t("studio.charts.settings.showAverageLine")}
                 control={
                   <Switch
                     checked={showAvgLine}
@@ -272,7 +273,17 @@ export function ChartSettingsSheet(): ReactElement {
             </div>
             <Separator />
             <ScaleSection
-              title="Loss axis"
+              title={t("studio.charts.settings.lossAxis")}
+              subtitle={t("studio.charts.settings.scaleAndCleanup")}
+              scaleOptions={[
+                { label: t("studio.charts.settings.linear"), value: "linear" },
+                { label: t("studio.charts.settings.log"), value: "log" },
+              ]}
+              outlierOptions={[
+                { label: t("studio.charts.settings.noClip"), value: "none" },
+                { label: t("studio.charts.settings.clipP99"), value: "p99" },
+                { label: t("studio.charts.settings.clipP95"), value: "p95" },
+              ]}
               scale={lossScale}
               setScale={setLossScale}
               outlierMode={lossOutlierMode}
@@ -280,7 +291,17 @@ export function ChartSettingsSheet(): ReactElement {
             />
             <Separator />
             <ScaleSection
-              title="Gradient norm axis"
+              title={t("studio.charts.settings.gradientNormAxis")}
+              subtitle={t("studio.charts.settings.scaleAndCleanup")}
+              scaleOptions={[
+                { label: t("studio.charts.settings.linear"), value: "linear" },
+                { label: t("studio.charts.settings.log"), value: "log" },
+              ]}
+              outlierOptions={[
+                { label: t("studio.charts.settings.noClip"), value: "none" },
+                { label: t("studio.charts.settings.clipP99"), value: "p99" },
+                { label: t("studio.charts.settings.clipP95"), value: "p95" },
+              ]}
               scale={gradScale}
               setScale={setGradScale}
               outlierMode={gradOutlierMode}
@@ -288,7 +309,17 @@ export function ChartSettingsSheet(): ReactElement {
             />
             <Separator />
             <ScaleSection
-              title="Learning rate axis"
+              title={t("studio.charts.settings.learningRateAxis")}
+              subtitle={t("studio.charts.settings.scaleAndCleanup")}
+              scaleOptions={[
+                { label: t("studio.charts.settings.linear"), value: "linear" },
+                { label: t("studio.charts.settings.log"), value: "log" },
+              ]}
+              outlierOptions={[
+                { label: t("studio.charts.settings.noClip"), value: "none" },
+                { label: t("studio.charts.settings.clipP99"), value: "p99" },
+                { label: t("studio.charts.settings.clipP95"), value: "p95" },
+              ]}
               scale={lrScale}
               setScale={setLrScale}
               outlierMode={lrOutlierMode}
@@ -302,10 +333,10 @@ export function ChartSettingsSheet(): ReactElement {
               size="sm"
               onClick={resetPreferences}
             >
-              Reset defaults
+              {t("studio.charts.settings.resetDefaults")}
             </Button>
             <Button type="button" size="sm" onClick={() => setOpen(false)}>
-              Done
+              {t("studio.charts.settings.done")}
             </Button>
           </SheetFooter>
         </SheetContent>

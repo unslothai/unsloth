@@ -2,17 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ReadMore, type TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n";
 
-export const studioBaseModelStep: TourStep = {
-  id: "base-model",
-  target: "studio-base-model",
-  title: "Hugging Face Model",
-  body: (
-    <>
-      Paste <span className="font-mono">org/model</span> or search. Pick a base
-      model close to your task (chat/instruct vs base). Smaller models iterate
-      faster; scale up once prompts + data look good.{" "}
-      <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use" />
-    </>
-  ),
-};
+type Translator = (key: TranslationKey) => string;
+
+export function studioBaseModelStep(t: Translator): TourStep {
+  return {
+    id: "base-model",
+    target: "studio-base-model",
+    title: t("studio.tour.baseModel.title"),
+    body: (
+      <>
+        {t("studio.tour.baseModel.bodyPrefix")} <span className="font-mono">org/model</span>{" "}
+        {t("studio.tour.baseModel.bodySuffix")}{" "}
+        <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use" />
+      </>
+    ),
+  };
+}

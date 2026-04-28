@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { STEPS } from "@/config/training";
+import { useI18n } from "@/features/i18n";
 import { useTrainingConfigStore } from "@/features/training";
 import type { StepNumber } from "@/types/training";
 import { DatasetStep } from "./steps/dataset-step";
@@ -27,6 +28,7 @@ const STEP_MASCOTS: Record<StepNumber, string> = {
 };
 
 export function WizardContent() {
+  const { t } = useI18n();
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const stepConfig = STEPS[currentStep - 1];
   const StepComponent = STEP_COMPONENTS[currentStep];
@@ -35,7 +37,7 @@ export function WizardContent() {
   return (
     <main className="flex-1 flex flex-col overflow-y-auto">
       <header className="flex flex-wrap items-start gap-3 p-4 pb-3 sm:p-6 sm:pb-4">
-        <img src={mascotSrc} alt="Unsloth mascot" className="size-12 sm:size-14" />
+        <img src={mascotSrc} alt={t("onboarding.wizard.mascotAlt")} className="size-12 sm:size-14" />
         <div className="flex flex-col min-w-0">
           <h1 className="text-lg font-semibold sm:text-xl">{stepConfig.title}</h1>
           <p className="text-sm text-muted-foreground">
@@ -43,7 +45,7 @@ export function WizardContent() {
           </p>
         </div>
         <p className="ml-auto hidden shrink-0 text-xs text-muted-foreground uppercase tracking-wider md:block">
-          Step {currentStep} of {STEPS.length}
+          {t("onboarding.wizard.stepOf").replace("{current}", String(currentStep)).replace("{total}", String(STEPS.length))}
         </p>
       </header>
       <div className="flex-1 p-4 pt-1.5 sm:p-6 sm:pt-2">

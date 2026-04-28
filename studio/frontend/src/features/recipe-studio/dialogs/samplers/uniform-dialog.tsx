@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
@@ -23,6 +24,7 @@ export function UniformDialog({
   config,
   onUpdate,
 }: UniformDialogProps): ReactElement {
+  const { t } = useI18n();
   const lowId = `${config.id}-uniform-low`;
   const highId = `${config.id}-uniform-high`;
   const convertId = `${config.id}-uniform-convert`;
@@ -35,9 +37,9 @@ export function UniformDialog({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Low"
+            label={t("recipe.sampler.uniform.low")}
             htmlFor={lowId}
-            hint="Minimum sampled value."
+            hint={t("recipe.sampler.uniform.lowHint")}
           />
           <Input
             id={lowId}
@@ -49,9 +51,9 @@ export function UniformDialog({
         </div>
         <div className="grid gap-1.5">
           <FieldLabel
-            label="High"
+            label={t("recipe.sampler.uniform.high")}
             htmlFor={highId}
-            hint="Maximum sampled value."
+            hint={t("recipe.sampler.uniform.highHint")}
           />
           <Input
             id={highId}
@@ -64,9 +66,9 @@ export function UniformDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Convert to"
+          label={t("recipe.sampler.common.convertTo")}
           htmlFor={convertId}
-          hint="Optionally cast sampled values before output."
+          hint={t("recipe.sampler.common.convertHint")}
         />
         <Select
           value={config.convert_to ?? "none"}
@@ -78,10 +80,10 @@ export function UniformDialog({
           }
         >
           <SelectTrigger className="nodrag w-full" id={convertId}>
-            <SelectValue placeholder="No conversion" />
+            <SelectValue placeholder={t("recipe.sampler.common.noConversion")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="none">None</SelectItem>
+            <SelectItem value="none">{t("recipe.sampler.common.none")}</SelectItem>
             <SelectItem value="int">int</SelectItem>
             <SelectItem value="float">float</SelectItem>
             <SelectItem value="str">str</SelectItem>

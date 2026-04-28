@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useI18n } from "@/features/i18n";
 import {
   Handle,
   Position,
@@ -74,6 +75,7 @@ function AuxNodeBase({
   id,
   data,
 }: NodeProps<RecipeGraphAuxNodeType>): ReactElement | null {
+  const { t } = useI18n();
   const config = useRecipeStudioStore((state) => state.configs[data.llmId]);
   const configs = useRecipeStudioStore((state) => state.configs);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
@@ -198,7 +200,7 @@ function AuxNodeBase({
     <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
       <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
         <BaseNodeHeaderTitle className="text-xs">
-          {score.name.trim() || `Scorer ${data.scoreIndex + 1}`}
+          {score.name.trim() || `${t("recipe.llm.scores.scorer")} ${data.scoreIndex + 1}`}
         </BaseNodeHeaderTitle>
         <Button
           type="button"
@@ -208,20 +210,20 @@ function AuxNodeBase({
           disabled={executionLocked}
           onClick={removeScore}
         >
-          Remove
+          {t("recipe.llm.scores.remove")}
         </Button>
       </BaseNodeHeader>
       <BaseNodeContent className="gap-2 px-3 py-2">
         <Input
           className="nodrag h-7 w-full text-xs"
-          placeholder="Score name"
+          placeholder={t("recipe.llm.scores.scoreName")}
           value={score.name}
           disabled={executionLocked}
           onChange={(event) => updateScore({ name: event.target.value })}
         />
         <Textarea
           className="corner-squircle nodrag nowheel max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
-          placeholder="Score description"
+          placeholder={t("recipe.llm.scores.scoreDescription")}
           value={score.description}
           disabled={executionLocked}
           onChange={(event) => updateScore({ description: event.target.value })}
@@ -231,7 +233,7 @@ function AuxNodeBase({
             <div key={`${data.llmId}-score-${data.scoreIndex}-opt-${optionIndex}`} className="grid grid-cols-[74px_1fr_auto] gap-1">
               <Input
                 className="nodrag h-7 text-xs"
-                placeholder="Value"
+                placeholder={t("recipe.llm.scores.value")}
                 value={option.value}
                 disabled={executionLocked}
                 onChange={(event) =>
@@ -240,7 +242,7 @@ function AuxNodeBase({
               />
               <Input
                 className="nodrag h-7 text-xs"
-                placeholder="Description"
+                placeholder={t("recipe.llm.scores.description")}
                 value={option.description}
                 disabled={executionLocked}
                 onChange={(event) =>
@@ -269,7 +271,7 @@ function AuxNodeBase({
             disabled={executionLocked}
             onClick={addOption}
           >
-            Add option
+            {t("recipe.llm.scores.addOption")}
           </Button>
         </div>
       </BaseNodeContent>

@@ -8,6 +8,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useI18n } from "@/features/i18n";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -112,13 +113,16 @@ function ToolFallbackTrigger({
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
 }) {
+  const { t } = useI18n();
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const StatusIcon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const label = isCancelled
+    ? t("assistant.toolFallback.cancelledTool")
+    : t("assistant.toolFallback.usedTool");
 
   return (
     <CollapsibleTrigger
@@ -243,6 +247,7 @@ function ToolFallbackResult({
 }: ComponentProps<"div"> & {
   result?: unknown;
 }) {
+  const { t } = useI18n();
   if (result === undefined) {
     return null;
   }
@@ -256,7 +261,9 @@ function ToolFallbackResult({
       )}
       {...props}
     >
-      <p className="aui-tool-fallback-result-header font-semibold">Result:</p>
+      <p className="aui-tool-fallback-result-header font-semibold">
+        {t("assistant.toolFallback.result")}
+      </p>
       <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
         {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
       </pre>
@@ -271,6 +278,7 @@ function ToolFallbackError({
 }: ComponentProps<"div"> & {
   status?: ToolCallMessagePartStatus;
 }) {
+  const { t } = useI18n();
   if (status?.type !== "incomplete") {
     return null;
   }
@@ -287,7 +295,9 @@ function ToolFallbackError({
   }
 
   const isCancelled = status.reason === "cancelled";
-  const headerText = isCancelled ? "Cancelled reason:" : "Error:";
+  const headerText = isCancelled
+    ? t("assistant.toolFallback.cancelledReason")
+    : t("assistant.toolFallback.error");
 
   return (
     <div

@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { toast } from "sonner";
+import { translate, useI18nStore } from "@/features/i18n/store";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type ChatLoraSummary,
@@ -289,9 +290,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       const persisted = saveInferenceParams(params);
       if (!persisted && !hasShownInferencePersistenceWarning) {
         hasShownInferencePersistenceWarning = true;
-        toast.warning("Chat settings could not be persisted", {
-          description:
-            "Your changes apply now, but may reset after refresh.",
+        const locale = useI18nStore.getState().locale;
+        toast.warning(translate(locale, "chat.settings.toast.persistFailed.title"), {
+          description: translate(
+            locale,
+            "chat.settings.toast.persistFailed.description",
+          ),
         });
       }
       return { params };

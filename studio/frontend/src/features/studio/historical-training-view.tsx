@@ -4,6 +4,7 @@
 import type { TrainingViewData } from "@/features/training";
 import { getTrainingRun } from "@/features/training";
 import type { TrainingRunDetailResponse } from "@/features/training";
+import { type TranslationKey, useI18n } from "@/features/i18n";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
@@ -21,7 +22,10 @@ function normalizeTrainingMethod(config: Record<string, unknown>): string {
   return "full";
 }
 
-function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
+function mapToViewData(
+  detail: TrainingRunDetailResponse,
+  t: (key: TranslationKey) => string,
+): TrainingViewData {
   const { run, metrics } = detail;
 
   const lossHistory = metrics.loss_step_history
@@ -69,12 +73,12 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     evalEnabled: evalLossHistory.length > 0,
     message:
       run.status === "completed"
-        ? "Training completed"
+        ? t("studio.historical.status.completed")
         : run.status === "stopped"
-          ? "Training stopped"
+          ? t("studio.historical.status.stopped")
           : run.status === "running"
-            ? "Training in progress"
-            : run.error_message ?? "Training errored",
+            ? t("studio.historical.status.inProgress")
+            : run.error_message ?? t("studio.historical.status.errored"),
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.model_name,
@@ -89,6 +93,7 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
 export function HistoricalTrainingView({
   runId,
 }: HistoricalTrainingViewProps): ReactElement {
+  const { t } = useI18n();
   const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,7 +108,7 @@ export function HistoricalTrainingView({
       })
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof Error ? err.message : "Failed to load run");
+        setError(err instanceof Error ? err.message : t("studio.historical.error.load"));
       });
     return () => {
       controller.abort();
@@ -116,7 +121,7 @@ export function HistoricalTrainingView({
   if (loading) {
     return (
       <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
-        Loading training run...
+        {t("studio.historical.loading")}
       </div>
     );
   }
@@ -124,12 +129,12 @@ export function HistoricalTrainingView({
   if (error || !detail) {
     return (
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-8 text-sm text-red-500">
-        {error ?? "Run not found"}
+        {error ?? t("studio.historical.error.notFound")}
       </div>
     );
   }
 
-  const viewData = mapToViewData(detail);
+  const viewData = mapToViewData(detail, t);
   const configOverride = detail.config
     ? {
         epochs: detail.config.num_epochs as number | undefined,

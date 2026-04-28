@@ -14,19 +14,24 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { useEffect } from "react";
+import { useI18n } from "@/features/i18n";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
 
-function formatRelative(createdAt: number): string {
+function formatRelative(
+  createdAt: number,
+  t: (key: "chat.search.today" | "chat.search.pastWeek" | "chat.search.pastMonth" | "chat.search.older") => string,
+): string {
   const diff = Date.now() - createdAt;
   const day = 86_400_000;
-  if (diff < day) return "Today";
-  if (diff < 7 * day) return "Past week";
-  if (diff < 30 * day) return "Past month";
-  return "Older";
+  if (diff < day) return t("chat.search.today");
+  if (diff < 7 * day) return t("chat.search.pastWeek");
+  if (diff < 30 * day) return t("chat.search.pastMonth");
+  return t("chat.search.older");
 }
 
 export function ChatSearchDialog() {
+  const { t } = useI18n();
   const isOpen = useChatSearchStore((s) => s.isOpen);
   const setOpen = useChatSearchStore((s) => s.setOpen);
   const close = useChatSearchStore((s) => s.close);
@@ -62,14 +67,14 @@ export function ChatSearchDialog() {
             className="size-4 shrink-0 text-muted-foreground"
           />
           <CommandPrimitive.Input
-            placeholder="Search chats..."
+            placeholder={t("chat.search.placeholder")}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
           <button
             type="button"
             onClick={close}
             className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="Close"
+            aria-label={t("chat.search.close")}
           >
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
@@ -77,10 +82,10 @@ export function ChatSearchDialog() {
         <CommandList className="max-h-[420px] p-1">
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
-              ? "Loading…"
+              ? t("chat.search.loading")
               : items.length === 0
-                ? "No chats yet."
-                : "No chats match."}
+                ? t("chat.search.empty")
+                : t("chat.search.noMatch")}
           </CommandEmpty>
           <CommandGroup className="p-0">
             {items.map((item) => (
@@ -105,10 +110,10 @@ export function ChatSearchDialog() {
                   className="size-4 shrink-0 text-muted-foreground"
                 />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
-                  {item.title || "Untitled chat"}
+                  {item.title || t("chat.search.untitled")}
                 </span>
                 <span className="shrink-0 text-[11px] text-muted-foreground">
-                  {formatRelative(item.createdAt)}
+                  {formatRelative(item.createdAt, t)}
                 </span>
               </CommandPrimitive.Item>
             ))}

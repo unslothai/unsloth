@@ -5,6 +5,7 @@ import { type ReactElement, useCallback } from "react";
 import { Lock, LockOpen, Maximize2, Minus, Plus } from "lucide-react";
 import { Panel, useReactFlow } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import { buildFitViewOptions } from "../../utils/graph/fit-view";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-button-class";
 
@@ -19,6 +20,7 @@ export function ViewportControls({
   lockDisabled = false,
   onToggleInteractive,
 }: ViewportControlsProps): ReactElement {
+  const { t } = useI18n();
   const { zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
 
   const handleZoomIn = useCallback(() => {
@@ -41,7 +43,7 @@ export function ViewportControls({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={handleZoomIn}
-        aria-label="Zoom in"
+        aria-label={t("recipe.viewport.zoomIn")}
       >
         <Plus className="size-4" />
       </Button>
@@ -51,7 +53,7 @@ export function ViewportControls({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={handleZoomOut}
-        aria-label="Zoom out"
+        aria-label={t("recipe.viewport.zoomOut")}
       >
         <Minus className="size-4" />
       </Button>
@@ -61,7 +63,7 @@ export function ViewportControls({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={handleFitView}
-        aria-label="Fit view"
+        aria-label={t("recipe.viewport.fitView")}
       >
         <Maximize2 className="size-4" />
       </Button>
@@ -72,7 +74,11 @@ export function ViewportControls({
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         disabled={lockDisabled}
         onClick={onToggleInteractive}
-        aria-label={interactive ? "Lock interaction" : "Unlock interaction"}
+        aria-label={
+          interactive
+            ? t("recipe.viewport.lockInteraction")
+            : t("recipe.viewport.unlockInteraction")
+        }
       >
         {interactive ? <LockOpen className="size-4" /> : <Lock className="size-4" />}
       </Button>

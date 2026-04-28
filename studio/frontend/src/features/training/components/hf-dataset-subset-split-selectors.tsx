@@ -18,6 +18,7 @@ import {
   Field,
   FieldLabel,
 } from "@/components/ui/field";
+import { useI18n } from "@/features/i18n";
 import { useHfDatasetSplits } from "@/hooks";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -48,6 +49,7 @@ export function HfDatasetSubsetSplitSelectors({
   datasetEvalSplit,
   setDatasetEvalSplit,
 }: Props) {
+  const { t } = useI18n();
   const {
     subsets: hfSubsets,
     splits: hfSplits,
@@ -94,33 +96,33 @@ export function HfDatasetSubsetSplitSelectors({
           <div className="grid min-w-0 gap-3 sm:grid-cols-2">
             <SelectorDropdown
               variant={variant}
-              label="Subset"
-              tooltip="Select which subset (config) of the dataset to use."
+              label={t("training.dataset.subset")}
+              tooltip={t("training.dataset.subsetHint")}
               value={null}
               onChange={setDatasetSubset}
               options={[]}
-              placeholder="Select a subset..."
+              placeholder={t("training.dataset.selectSubset")}
               disabled={true}
             />
             <SelectorDropdown
               variant={variant}
-              label="Train Split"
-              tooltip="Select which split to use for training."
+              label={t("training.dataset.trainSplit")}
+              tooltip={t("training.dataset.trainSplitHint")}
               value={null}
               onChange={setDatasetSplit}
               options={[]}
-              placeholder="Select a split..."
+              placeholder={t("training.dataset.selectSplit")}
               disabled={true}
             />
           </div>
           <SelectorDropdown
             variant={variant}
-            label="Evaluation Split"
-            tooltip="Select which split to use for evaluation. None means no evaluation during training."
+            label={t("training.dataset.evalSplit")}
+            tooltip={t("training.dataset.evalSplitHint")}
             value={null}
             onChange={setDatasetEvalSplit}
             options={[]}
-            placeholder="None"
+            placeholder={t("training.dataset.none")}
             allowNone
             disabled={true}
           />
@@ -136,7 +138,7 @@ export function HfDatasetSubsetSplitSelectors({
           }
         >
           <Spinner className="size-3.5" />
-          Loading dataset configs and splits...
+          {t("training.dataset.loadingConfigs")}
         </div>
       )}
 
@@ -158,53 +160,53 @@ export function HfDatasetSubsetSplitSelectors({
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
               <SelectorDropdown
                 variant={variant}
-                label="Subset"
-                tooltip="Select which subset (config) of the dataset to use."
+                label={t("training.dataset.subset")}
+                tooltip={t("training.dataset.subsetHint")}
                 value={datasetSubset}
                 onChange={setDatasetSubset}
                 options={hfSubsets}
-                placeholder="Select a subset..."
+                placeholder={t("training.dataset.selectSubset")}
               />
               <SelectorDropdown
                 variant={variant}
-                label="Train Split"
-                tooltip="Select which split to use for training."
+                label={t("training.dataset.trainSplit")}
+                tooltip={t("training.dataset.trainSplitHint")}
                 value={datasetSplit}
                 onChange={setDatasetSplit}
                 options={hfSplits}
-                placeholder="Select a split..."
+                placeholder={t("training.dataset.selectSplit")}
               />
             </div>
           ) : (
             <>
               <SelectorDropdown
                 variant={variant}
-                label="Subset"
-                tooltip="Select which subset (config) of the dataset to use."
+                label={t("training.dataset.subset")}
+                tooltip={t("training.dataset.subsetHint")}
                 value={datasetSubset}
                 onChange={setDatasetSubset}
                 options={hfSubsets}
-                placeholder="Select a subset..."
+                placeholder={t("training.dataset.selectSubset")}
               />
               <SelectorDropdown
                 variant={variant}
-                label="Train Split"
-                tooltip="Select which split to use for training."
+                label={t("training.dataset.trainSplit")}
+                tooltip={t("training.dataset.trainSplitHint")}
                 value={datasetSplit}
                 onChange={setDatasetSplit}
                 options={hfSplits}
-                placeholder="Select a split..."
+                placeholder={t("training.dataset.selectSplit")}
               />
             </>
           )}
           <SelectorDropdown
             variant={variant}
-            label="Evaluation Split"
-            tooltip="Select which split to use for evaluation. None means no evaluation during training."
+            label={t("training.dataset.evalSplit")}
+            tooltip={t("training.dataset.evalSplitHint")}
             value={datasetEvalSplit}
             onChange={setDatasetEvalSplit}
             options={hfSplits}
-            placeholder="None"
+            placeholder={t("training.dataset.none")}
             allowNone
           />
         </>
@@ -234,6 +236,7 @@ function SelectorDropdown({
   allowNone?: boolean;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const selectValue =
     value ?? (allowNone && !disabled ? "_none" : undefined);
 
@@ -269,7 +272,7 @@ function SelectorDropdown({
           </SelectTrigger>
           <SelectContent>
             {allowNone && (
-              <SelectItem value="_none">None</SelectItem>
+              <SelectItem value="_none">{t("training.dataset.none")}</SelectItem>
             )}
             {options.map((opt) => (
               <SelectItem key={opt} value={opt}>
@@ -313,7 +316,7 @@ function SelectorDropdown({
         </SelectTrigger>
         <SelectContent>
           {allowNone && (
-            <SelectItem value="_none">None</SelectItem>
+            <SelectItem value="_none">{t("training.dataset.none")}</SelectItem>
           )}
           {options.map((opt) => (
             <SelectItem key={opt} value={opt}>

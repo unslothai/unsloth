@@ -25,6 +25,7 @@ import {
 } from "@/features/chat/api/chat-api";
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
 import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
+import { useI18n } from "@/features/i18n";
 import {
   useTrainingActions,
   useTrainingConfigStore,
@@ -153,6 +154,7 @@ type DownloadRowProps = {
 };
 
 function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
+  const { t } = useI18n();
   // Compute a rolling-window rate + ETA from the same cumulative-byte
   // series the poll hook already produces, so we can show
   // "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left" instead of just the pair.
@@ -161,22 +163,22 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
   const isComplete = state.totalBytes > 0 && state.percent >= 100;
   const statusLabel = isComplete
-    ? "Ready"
+    ? t("studio.overlay.download.ready")
     : state.totalBytes > 0
-      ? "Downloading"
+      ? t("studio.overlay.download.downloading")
       : state.downloadedBytes === 0
-        ? "Preparing"
+        ? t("studio.overlay.download.preparing")
         : null;
   const showRate = stats.stable && !isComplete;
   const rateSuffix = showRate ? ` • ${formatRate(stats.rateBytesPerSecond)}` : "";
   const etaStr =
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
-  const etaSuffix = etaStr !== "--" ? ` • ${etaStr} left` : "";
+  const etaSuffix = etaStr !== "--" ? ` • ${etaStr} ${t("studio.overlay.download.left")}` : "";
   const sizeLabel =
     state.totalBytes > 0
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}${rateSuffix}${etaSuffix}`
       : state.downloadedBytes > 0
-        ? `${formatBytes(state.downloadedBytes)} downloaded${rateSuffix}`
+        ? `${formatBytes(state.downloadedBytes)} ${t("studio.overlay.download.downloaded")}${rateSuffix}`
         : null;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
@@ -227,6 +229,7 @@ export function TrainingStartOverlay({
   message,
   currentStep,
 }: TrainingStartOverlayProps): ReactElement {
+  const { t } = useI18n();
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
@@ -251,7 +254,7 @@ export function TrainingStartOverlay({
       <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
         <img
           src="/unsloth-gem.png"
-          alt="Unsloth mascot"
+          alt={t("studio.overlay.mascotAlt")}
           className="size-24 object-contain"
         />
         <div className="relative w-full">
@@ -267,13 +270,13 @@ export function TrainingStartOverlay({
             </Button>
             <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
-                <AlertDialogTitle>Cancel Training</AlertDialogTitle>
+                <AlertDialogTitle>{t("studio.overlay.cancel.title")}</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Do you want to cancel the current training run?
+                  {t("studio.overlay.cancel.description")}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Continue Training</AlertDialogCancel>
+                <AlertDialogCancel>{t("studio.overlay.cancel.continue")}</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
                   onClick={() => {
@@ -289,7 +292,7 @@ export function TrainingStartOverlay({
                     });
                   }}
                 >
-                  Cancel Training
+                  {t("studio.overlay.cancel.confirm")}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -302,24 +305,24 @@ export function TrainingStartOverlay({
             duration={36}
             className="bg-gradient-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
           >
-            {"> unsloth training starts..."}
+            {`> ${t("studio.overlay.terminal.starting")}`}
           </TypingAnimation>
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
           <TypingAnimation duration={44}>
-            {"> Preparing model and dataset..."}
+            {`> ${t("studio.overlay.terminal.preparing")}`}
           </TypingAnimation>
           <TypingAnimation duration={44}>
-            {"> We are getting everything ready for your run..."}
+            {`> ${t("studio.overlay.terminal.readying")}`}
           </TypingAnimation>
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
+            {`> ${message || t("studio.overlay.terminal.startingFallback")} | ${t("studio.overlay.terminal.waitingStep")} (${currentStep})`}
           </AnimatedSpan>
           {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Dataset"
+                label={t("studio.overlay.download.dataset")}
                 state={datasetDownload}
               />
             </AnimatedSpan>
@@ -327,7 +330,7 @@ export function TrainingStartOverlay({
           {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Model weights"
+                label={t("studio.overlay.download.modelWeights")}
                 state={modelDownload}
               />
             </AnimatedSpan>

@@ -28,6 +28,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
@@ -117,6 +118,7 @@ export function RecipeStudioPage({
   initialSavedAt,
   onPersistRecipe,
 }: RecipeStudioPageProps): ReactElement {
+  const { t } = useI18n();
   const {
     nodes,
     edges,
@@ -766,9 +768,11 @@ export function RecipeStudioPage({
     editorContent = (
       <div className="flex h-full items-center justify-center px-6">
         <div className="rounded-2xl border border-border/70 bg-background/80 px-5 py-4 text-center shadow-border backdrop-blur-[1px]">
-          <p className="text-sm font-medium text-foreground">Loading recipe</p>
+          <p className="text-sm font-medium text-foreground">
+            {t("recipe.loading.title")}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Restoring the studio graph and saved settings.
+            {t("recipe.loading.description")}
           </p>
         </div>
       </div>

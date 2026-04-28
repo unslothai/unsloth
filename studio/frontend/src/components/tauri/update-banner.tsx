@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import type { UpdateInfo, UpdateStatus } from "@/hooks/use-tauri-update";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -24,6 +25,7 @@ export function UpdateBanner({
   onInstall,
   onDismiss,
 }: UpdateBannerProps) {
+  const { t } = useI18n();
   const visible = status === "available";
   const show = visible && !dismissed;
 
@@ -54,12 +56,12 @@ export function UpdateBanner({
               <span className="text-lg">🦥</span>
               <div>
                 <p className="text-sm font-semibold text-foreground">
-                  New version: v{info.version}
+                  {t("update.banner.newVersion").replace("{version}", info.version)}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {isExternalServer
-                    ? "Run `unsloth studio update` from your terminal"
-                    : "A new app update is available"}
+                    ? t("update.banner.externalHint")
+                    : t("update.banner.available")}
                 </p>
               </div>
             </div>
@@ -67,13 +69,13 @@ export function UpdateBanner({
             {/* Actions */}
             <div className="mt-3 flex items-center gap-2">
               <Button size="sm" className="corner-squircle" onClick={onInstall} disabled={isExternalServer}>
-                Update Now
+                {t("update.banner.updateNow")}
               </Button>
               <Button size="sm" variant="outline" className="corner-squircle" disabled>
-                Release Notes
+                {t("update.banner.releaseNotes")}
               </Button>
               <Button size="sm" variant="ghost" className="corner-squircle" onClick={onDismiss}>
-                Later
+                {t("update.banner.later")}
               </Button>
             </div>
           </div>

@@ -3,6 +3,7 @@
 
 import { Input } from "@/components/ui/input";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
@@ -16,6 +17,7 @@ export function BernoulliDialog({
   config,
   onUpdate,
 }: BernoulliDialogProps): ReactElement {
+  const { t } = useI18n();
   const pId = `${config.id}-bernoulli-p`;
   return (
     <div className="space-y-4">
@@ -25,9 +27,9 @@ export function BernoulliDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Probability (p)"
+          label={t("recipe.sampler.bernoulli.probability")}
           htmlFor={pId}
-          hint="Success probability in [0, 1]."
+          hint={t("recipe.sampler.bernoulli.probabilityHint")}
         />
         <Input
           id={pId}

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { useI18n } from "@/features/i18n";
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
@@ -197,6 +198,7 @@ function ValidationResultPanel({
 }: {
   validateResult: ValidationResult;
 }): ReactElement | null {
+  const { t } = useI18n();
   if (!validateResult) {
     return null;
   }
@@ -235,12 +237,14 @@ function ValidationResultPanel({
                 : "text-destructive",
             )}
           >
-            {validateResult.valid ? "Ready to run" : "Fix these issues first"}
+            {validateResult.valid
+              ? t("recipe.run.validation.readyTitle")
+              : t("recipe.run.validation.fixTitle")}
           </p>
           <p className="text-xs text-muted-foreground">
             {validateResult.valid
-              ? "Everything checks out. Start the run when you're ready."
-              : "Update the recipe, then check it again."}
+              ? t("recipe.run.validation.readyDescription")
+              : t("recipe.run.validation.fixDescription")}
           </p>
         </div>
       </div>
@@ -291,15 +295,23 @@ function RunDialogBody({
   onValidate,
   onClose,
 }: RunDialogBodyProps): ReactElement {
+  const { t } = useI18n();
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const kindLabel = kind === "preview" ? "Test run" : "Full run";
+  const kindLabel =
+    kind === "preview"
+      ? t("recipe.run.kind.test")
+      : t("recipe.run.kind.full");
+  const startLabel =
+    kind === "preview"
+      ? t("recipe.run.action.startTest")
+      : t("recipe.run.action.startFull");
   const normalizedFullRunName = fullRunName.trim();
   const isFullRunNameMissing =
     kind === "full" && normalizedFullRunName.length === 0;
   const rowHint =
     kind === "preview"
-      ? "How many sample rows to generate for a quick check."
-      : "How many rows to generate in total.";
+      ? t("recipe.run.records.hintPreview")
+      : t("recipe.run.records.hintFull");
 
   const [rowsDraft, setRowsDraft] = useState(String(rows));
   const [batchSizeDraft, setBatchSizeDraft] = useState(
@@ -331,14 +343,14 @@ function RunDialogBody({
       <DialogHeader className="space-y-2">
         <DialogTitle>{kindLabel}</DialogTitle>
         <p className="text-sm text-muted-foreground">
-          Choose a quick test or a full run. Advanced settings are optional.
+          {t("recipe.run.dialog.description")}
         </p>
       </DialogHeader>
 
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Run type"
-          hint="Start with a quick check or generate the full dataset."
+          label={t("recipe.run.type.label")}
+          hint={t("recipe.run.type.hint")}
         />
         <div className="grid grid-cols-2 gap-2">
           <Button
@@ -348,7 +360,7 @@ function RunDialogBody({
             aria-pressed={kind === "preview"}
             onClick={() => onKindChange("preview")}
           >
-            Test run
+            {t("recipe.run.kind.test")}
           </Button>
           <Button
             type="button"
@@ -357,7 +369,7 @@ function RunDialogBody({
             aria-pressed={kind === "full"}
             onClick={() => onKindChange("full")}
           >
-            Full run
+            {t("recipe.run.kind.full")}
           </Button>
         </div>
       </div>
@@ -365,28 +377,28 @@ function RunDialogBody({
       {kind === "full" && (
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Run name"
+            label={t("recipe.run.name.label")}
             htmlFor="run-name"
-            hint="Name shown in your run history."
+            hint={t("recipe.run.name.hint")}
           />
           <Input
             id="run-name"
             type="text"
             value={fullRunName}
             onChange={(event) => onFullRunNameChange(event.target.value)}
-            placeholder="Sprint dataset v2"
+            placeholder={t("recipe.run.name.placeholder")}
             aria-invalid={isFullRunNameMissing}
           />
           {isFullRunNameMissing ? (
             <p className="text-xs text-destructive">
-              Give this full run a name before you start.
+              {t("recipe.run.name.required")}
             </p>
           ) : null}
         </div>
       )}
 
       <div className="grid gap-1.5">
-        <FieldLabel label="Records" htmlFor="run-rows" hint={rowHint} />
+        <FieldLabel label={t("recipe.run.records.label")} htmlFor="run-rows" hint={rowHint} />
         <Input
           id="run-rows"
           type="text"
@@ -420,21 +432,21 @@ function RunDialogBody({
               )}
             />
             {advancedOpen
-              ? "Hide advanced run settings"
-              : "Show advanced run settings"}
+              ? t("recipe.run.advanced.hide")
+              : t("recipe.run.advanced.show")}
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           {kind === "full" && (
             <AdvancedSettingsSection
-              title="Batching"
-              description="Use batches when you want to split a larger run into smaller pieces."
+              title={t("recipe.run.batching.title")}
+              description={t("recipe.run.batching.description")}
             >
               <div className="flex items-center justify-between gap-3 text-sm">
                 <div className="space-y-0.5">
-                  <span className="font-medium">Enable batching</span>
+                  <span className="font-medium">{t("recipe.run.batching.enableLabel")}</span>
                   <p className="text-xs text-muted-foreground">
-                    Split a larger run into smaller chunks.
+                    {t("recipe.run.batching.enableHint")}
                   </p>
                 </div>
                 <Switch
@@ -446,20 +458,20 @@ function RunDialogBody({
               </div>
               {rows >= 1000 && !settings.batchEnabled ? (
                 <p className="text-xs text-muted-foreground">
-                  Larger runs are usually easier to manage in batches.
+                  {t("recipe.run.batching.recommendation")}
                 </p>
               ) : null}
             </AdvancedSettingsSection>
           )}
           <AdvancedSettingsSection
-            title="Throughput"
-            description="Control how much work runs at the same time."
+            title={t("recipe.run.throughput.title")}
+            description={t("recipe.run.throughput.description")}
           >
             <div className="grid gap-4 md:grid-cols-2">
               <DraftInputField
                 id="run-llm-parallel"
-                label="AI requests at once"
-                hint="Leave empty to use each saved model's own setting."
+                label={t("recipe.run.throughput.aiRequests")}
+                hint={t("recipe.run.throughput.aiRequestsHint")}
                 inputMode="numeric"
                 value={llmParallelDraft}
                 onChange={setLlmParallelDraft}
@@ -483,12 +495,12 @@ function RunDialogBody({
                   onSettingsChange({ llmParallelRequests: next });
                   setLlmParallelDraft(String(next));
                 }}
-                placeholder="Use saved model setting"
+                placeholder={t("recipe.run.throughput.aiRequestsPlaceholder")}
               />
               <DraftInputField
                 id="run-non-inference-workers"
-                label="CPU workers"
-                hint="Used for steps like source data, generated fields, and formulas."
+                label={t("recipe.run.throughput.cpuWorkers")}
+                hint={t("recipe.run.throughput.cpuWorkersHint")}
                 inputMode="numeric"
                 value={workersDraft}
                 onChange={setWorkersDraft}
@@ -507,8 +519,8 @@ function RunDialogBody({
                 <>
                   <DraftInputField
                     id="run-batch-size"
-                    label="Batch size"
-                    hint="How many rows to generate in each batch."
+                    label={t("recipe.run.batching.batchSize")}
+                    hint={t("recipe.run.batching.batchSizeHint")}
                     inputMode="numeric"
                     value={batchSizeDraft}
                     onChange={setBatchSizeDraft}
@@ -525,9 +537,9 @@ function RunDialogBody({
                   />
                   <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground">
                     <div className="space-y-0.5">
-                      <p className="font-medium">Merge batches into one file</p>
+                      <p className="font-medium">{t("recipe.run.batching.mergeLabel")}</p>
                       <p className="text-xs text-muted-foreground">
-                        Combine every batch output into one final file.
+                        {t("recipe.run.batching.mergeHint")}
                       </p>
                     </div>
                     <Switch
@@ -542,14 +554,14 @@ function RunDialogBody({
             </div>
           </AdvancedSettingsSection>
           <AdvancedSettingsSection
-            title="Retries and recovery"
-            description="Choose how hard the run should try before it gives up."
+            title={t("recipe.run.retries.title")}
+            description={t("recipe.run.retries.description")}
           >
             <div className="grid gap-4 md:grid-cols-2">
               <DraftInputField
                 id="run-shutdown-window"
-                label="Failure check window"
-                hint="How many recent attempts to inspect before stopping early."
+                label={t("recipe.run.retries.failureWindow")}
+                hint={t("recipe.run.retries.failureWindowHint")}
                 inputMode="numeric"
                 value={windowDraft}
                 onChange={setWindowDraft}
@@ -566,8 +578,8 @@ function RunDialogBody({
               />
               <DraftInputField
                 id="run-shutdown-rate"
-                label="Stop after too many failures"
-                hint="Example: 0.5 stops when about half of recent attempts fail."
+                label={t("recipe.run.retries.stopAfterFailures")}
+                hint={t("recipe.run.retries.stopAfterFailuresHint")}
                 inputMode="decimal"
                 value={shutdownRateDraft}
                 onChange={setShutdownRateDraft}
@@ -584,8 +596,8 @@ function RunDialogBody({
               />
               <DraftInputField
                 id="run-max-restarts"
-                label="Full retries"
-                hint="How many times to retry when a model answer fails checks."
+                label={t("recipe.run.retries.fullRetries")}
+                hint={t("recipe.run.retries.fullRetriesHint")}
                 inputMode="numeric"
                 value={restartsDraft}
                 onChange={setRestartsDraft}
@@ -603,8 +615,8 @@ function RunDialogBody({
               />
               <DraftInputField
                 id="run-correction-steps"
-                label="Correction attempts"
-                hint="How many follow-up fixes to try before starting over."
+                label={t("recipe.run.retries.correctionAttempts")}
+                hint={t("recipe.run.retries.correctionAttemptsHint")}
                 inputMode="numeric"
                 value={correctionsDraft}
                 onChange={setCorrectionsDraft}
@@ -622,9 +634,9 @@ function RunDialogBody({
               />
               <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2">
                 <div className="space-y-0.5">
-                  <p className="font-medium">Keep running through failures</p>
+                  <p className="font-medium">{t("recipe.run.retries.keepRunningLabel")}</p>
                   <p className="text-xs text-muted-foreground">
-                    Useful for longer runs when you want as many rows as possible.
+                    {t("recipe.run.retries.keepRunningHint")}
                   </p>
                 </div>
                 <Switch
@@ -652,7 +664,7 @@ function RunDialogBody({
               variant="outline"
               className="rounded-full text-[10px] text-destructive"
             >
-              Before you run
+              {t("recipe.run.beforeRun")}
             </Badge>
           </div>
           {errors.map((error) => (
@@ -673,7 +685,7 @@ function RunDialogBody({
           disabled={loading}
           className="corner-squircle border-border/70 bg-card/70"
         >
-          Cancel
+          {t("recipe.run.action.cancel")}
         </Button>
         <Button
           type="button"
@@ -683,7 +695,9 @@ function RunDialogBody({
           className="corner-squircle border-border/70 bg-card/70"
         >
           <HugeiconsIcon icon={TestTube01Icon} className="size-3.5" />
-          {validateLoading ? "Checking..." : "Check recipe"}
+          {validateLoading
+            ? t("recipe.run.action.checking")
+            : t("recipe.run.action.checkRecipe")}
         </Button>
         <Button
           type="button"
@@ -692,7 +706,7 @@ function RunDialogBody({
           className="corner-squircle"
         >
           <HugeiconsIcon icon={CookBookIcon} className="size-3.5" />
-          {loading ? "Starting..." : `Start ${kindLabel.toLowerCase()}`}
+          {loading ? t("recipe.run.action.starting") : startLabel}
         </Button>
       </DialogFooter>
     </>

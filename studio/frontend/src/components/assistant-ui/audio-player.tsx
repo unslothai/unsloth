@@ -4,6 +4,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/features/i18n";
 import { DownloadIcon, PauseIcon, PlayIcon } from "lucide-react";
 import { type FC, useRef, useState } from "react";
 
@@ -12,6 +13,7 @@ interface AudioPlayerProps {
 }
 
 export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
+  const { t } = useI18n();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -108,7 +110,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
         size="icon"
         className="size-7 shrink-0 text-muted-foreground"
         onClick={handleDownload}
-        title="Download audio"
+        title={t("assistant.audio.download")}
       >
         <DownloadIcon className="size-3.5" />
       </Button>

@@ -14,6 +14,7 @@ import { ChartAverageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import { useI18n } from "@/features/i18n";
 import {
   CHART_CONTAINER_CLASS,
   DEFAULT_CHART_MARGIN,
@@ -23,10 +24,6 @@ import {
   formatStepTick,
   placeholderEvalData,
 } from "./utils";
-
-const evalLossConfig = {
-  loss: { label: "Eval Loss", color: "#ef4444" },
-} satisfies ChartConfig;
 
 export function EvalLossChartCard({
   data,
@@ -41,11 +38,16 @@ export function EvalLossChartCard({
   isTraining: boolean;
   evalEnabled: boolean;
 }): ReactElement {
+  const { t } = useI18n();
+  const evalLossConfig = {
+    loss: { label: t("studio.charts.evalLoss"), color: "#ef4444" },
+  } satisfies ChartConfig;
+
   return (
     <Card data-tour="studio-eval-loss" size="sm">
       <CardHeader>
         <CardTitle className={`text-sm${data.length > 0 ? "" : " text-muted-foreground"}`}>
-          Eval Loss
+          {t("studio.charts.evalLoss")}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -86,12 +88,12 @@ export function EvalLossChartCard({
               <ChartTooltip
                 content={
                   <ChartTooltipContent
-                    labelFormatter={(_value, payload) =>
-                      `Step ${payload?.[0]?.payload?.step ?? ""}`
+                  labelFormatter={(_value, payload) =>
+                      `${t("studio.progress.step")} ${payload?.[0]?.payload?.step ?? ""}`
                     }
                     formatter={(_value, _name, item) => [
                       formatMetric(Number(item?.payload?.loss)),
-                      "Eval Loss",
+                      t("studio.charts.evalLoss"),
                     ]}
                   />
                 }
@@ -156,13 +158,13 @@ export function EvalLossChartCard({
               />
               <p className="text-sm font-medium text-muted-foreground">
                 {isTraining && evalEnabled
-                  ? "Waiting for first evaluation step…"
-                  : "Evaluation not configured"}
+                  ? t("studio.charts.eval.waitingFirstStep")
+                  : t("studio.charts.eval.notConfigured")}
               </p>
               <p className="text-xs text-muted-foreground/60">
                 {isTraining && evalEnabled
-                  ? "Chart will appear once eval_steps is reached"
-                  : "Set eval dataset & eval_steps to track eval loss"}
+                  ? t("studio.charts.eval.waitingHint")
+                  : t("studio.charts.eval.configureHint")}
               </p>
             </div>
           </div>

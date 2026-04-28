@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type ReactElement, useCallback, useEffect, useMemo } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { ChipInput } from "../../components/chip-input";
 import { NameField } from "../shared/name-field";
@@ -25,6 +26,7 @@ export function SubcategoryDialog({
   categoryOptions,
   onUpdate,
 }: SubcategoryDialogProps): ReactElement {
+  const { t } = useI18n();
   const parentSelectId = `${config.id}-parent-category`;
   const updateField = useCallback(
     <K extends keyof SamplerConfig>(key: K, value: SamplerConfig[K]) => {
@@ -76,9 +78,9 @@ export function SubcategoryDialog({
       <div className="space-y-3">
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Parent category column"
+            label={t("recipe.sampler.subcategory.parentCategory")}
             htmlFor={parentSelectId}
-            hint="Category column this block maps from."
+            hint={t("recipe.sampler.subcategory.parentCategoryHint")}
           />
           <Select
             value={config.subcategory_parent ?? ""}
@@ -90,7 +92,7 @@ export function SubcategoryDialog({
             }}
           >
             <SelectTrigger className="nodrag w-full" id={parentSelectId}>
-              <SelectValue placeholder="Select category column" />
+              <SelectValue placeholder={t("recipe.sampler.subcategory.selectCategoryColumn")} />
             </SelectTrigger>
             <SelectContent>
               {categoryOptions.map((option) => (
@@ -101,7 +103,7 @@ export function SubcategoryDialog({
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Map each parent category value to its subcategory options below.
+            {t("recipe.sampler.subcategory.mappingHint")}
           </p>
         </div>
         {categoryValues.length > 0 && (
@@ -113,7 +115,7 @@ export function SubcategoryDialog({
                     {value}
                   </p>
                   <span className="text-xs text-muted-foreground">
-                    {mapping[value]?.length ?? 0} subvalues
+                    {mapping[value]?.length ?? 0} {t("recipe.sampler.subcategory.subvalues")}
                   </span>
                 </div>
                 <ChipInput
@@ -132,11 +134,11 @@ export function SubcategoryDialog({
                     next[value] = list;
                     updateField("subcategory_mapping", next);
                   }}
-                  placeholder="Type subcategory and press Enter"
+                  placeholder={t("recipe.sampler.subcategory.placeholder")}
                 />
                 {(mapping[value] ?? []).length === 0 && (
                   <p className="mt-2 text-xs text-rose-500">
-                    Add at least 1 subcategory.
+                    {t("recipe.sampler.subcategory.addAtLeastOne")}
                   </p>
                 )}
               </div>

@@ -8,8 +8,9 @@ import {
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { useI18n } from "@/features/i18n";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { studioTourSteps, studioTrainingTourSteps } from "./tour";
+import { getStudioTourSteps, getStudioTrainingTourSteps } from "./tour";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -26,6 +27,7 @@ import { HistoricalTrainingView } from "./historical-training-view";
 import { HistoryCardGrid } from "./history-card-grid";
 
 export function StudioPage(): ReactElement {
+  const { t } = useI18n();
   useTrainingRuntimeLifecycle();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
@@ -70,7 +72,8 @@ export function StudioPage(): ReactElement {
 
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const baseTourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
+  const baseTourSteps =
+    activeTab === "current-run" ? getStudioTrainingTourSteps(t) : getStudioTourSteps(t);
   // Inject onEnter for navbar-targeting steps so the sidebar expands during the tour.
   const tourSteps = useMemo(
     () =>
@@ -120,10 +123,10 @@ export function StudioPage(): ReactElement {
   }
 
   const subtitle = (() => {
-    if (activeTab === "current-run") return runtimeMessage || "Training in progress";
+    if (activeTab === "current-run") return runtimeMessage || t("studio.subtitle.training");
     if (activeTab === "history")
-      return selectedHistoryRunId ? "Viewing past run" : "View past training runs";
-    return "Configure and start training";
+      return selectedHistoryRunId ? t("studio.subtitle.viewingPastRun") : t("studio.subtitle.viewPastRuns");
+    return t("studio.subtitle.configure");
   })();
 
   return (
@@ -150,14 +153,14 @@ export function StudioPage(): ReactElement {
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Fine-tuning Studio
+            {t("studio.title")}
           </h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
 
         {!hasHydratedRuntime && isHydratingRuntime ? (
           <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
-            Loading training runtime...
+            {t("studio.loadingRuntime")}
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
@@ -168,19 +171,19 @@ export function StudioPage(): ReactElement {
                   size="icon-sm"
                   className="rounded-full text-muted-foreground"
                   onClick={() => setSelectedHistoryRunId(null)}
-                  aria-label="Back to history"
+                  aria-label={t("studio.backToHistory")}
                 >
                   <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
                 </Button>
               )}
               <TabsList variant="line">
                 <TabsTrigger value="configure" disabled={isTrainingRunning}>
-                  Configure
+                  {t("studio.tab.configure")}
                 </TabsTrigger>
                 <TabsTrigger value="current-run" disabled={!showTrainingView}>
-                  Current Run
+                  {t("studio.tab.currentRun")}
                 </TabsTrigger>
-                <TabsTrigger value="history">History</TabsTrigger>
+                <TabsTrigger value="history">{t("studio.tab.history")}</TabsTrigger>
               </TabsList>
             </div>
 

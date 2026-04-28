@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { useI18n } from "@/features/i18n";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
@@ -231,6 +232,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
 }): ReactElement {
+  const { t } = useI18n();
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -423,15 +425,15 @@ export function SharedComposer({
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
-      const toastId = toast("Comparing models…", { duration: Infinity });
+      const toastId = toast(t("compare.toast.comparing"), { duration: Infinity });
 
       setComparing(true);
       try {
         // Side 1: load → generate → wait
         if (handle1 && model1?.id) {
-          toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
+          toast(t("compare.toast.loadingModel1"), { id: toastId, description: name1, duration: Infinity });
           const status1 = await ensureModelLoaded(model1);
-          toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
+          toast(t("compare.toast.generatingModel1"), { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
@@ -442,20 +444,20 @@ export function SharedComposer({
           const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
             || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
           if (needsLoad) {
-            toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
+            toast(t("compare.toast.loadingModel2"), { id: toastId, description: name2, duration: Infinity });
           }
           const status2 = await ensureModelLoaded(model2);
-          toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
+          toast(t("compare.toast.generatingModel2"), { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
         }
 
-        toast.success("Compare complete", { id: toastId, duration: 2000 });
+        toast.success(t("compare.toast.complete"), { id: toastId, duration: 2000 });
       } catch (err) {
-        toast.error("Compare failed", {
+        toast.error(t("compare.toast.failed"), {
           id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
+          description: err instanceof Error ? err.message : t("common.unknownError"),
           duration: 4000,
         });
       } finally {
@@ -520,7 +522,7 @@ export function SharedComposer({
                 type="button"
                 onClick={() => { setPendingAudio(null); clearPendingAudioStore(); }}
                 className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
-                aria-label="Remove audio"
+                aria-label={t("compare.audio.remove")}
               >
                 <XIcon className="size-3" />
               </button>
@@ -533,7 +535,7 @@ export function SharedComposer({
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Send to both models..."
+        placeholder={t("compare.placeholder.sendBoth")}
         className="mb-1 min-h-12 w-full resize-none overflow-y-hidden bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
         rows={1}
       />
@@ -551,13 +553,13 @@ export function SharedComposer({
             }}
           />
           <TooltipIconButton
-            tooltip="Add Attachment"
+            tooltip={t("compare.attachment.add")}
             side="bottom"
             variant="ghost"
             size="icon"
             className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Add Attachment"
+            aria-label={t("compare.attachment.add")}
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />
           </TooltipIconButton>
@@ -574,13 +576,13 @@ export function SharedComposer({
                 }}
               />
               <TooltipIconButton
-                tooltip="Upload audio"
+                tooltip={t("compare.audio.upload")}
                 side="bottom"
                 variant="ghost"
                 size="icon"
                 className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
                 onClick={() => audioInputRef.current?.click()}
-                aria-label="Upload audio"
+                aria-label={t("compare.audio.upload")}
               >
                 <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
               </TooltipIconButton>
@@ -598,11 +600,11 @@ export function SharedComposer({
                       ? "cursor-not-allowed opacity-40"
                       : "bg-primary/10 text-primary hover:bg-primary/20",
                   )}
-                  aria-label={`Reasoning effort: ${reasoningEffort}`}
+                  aria-label={`${t("thread.reasoning.effort")}: ${reasoningEffort}`}
                 >
                   <LightbulbIcon className="size-3.5" />
                   <span>
-                    Think:{" "}
+                    {t("thread.reasoning.thinkPrefix")}{" "}
                     {reasoningEffort.charAt(0).toUpperCase() +
                       reasoningEffort.slice(1)}
                   </span>
@@ -638,14 +640,18 @@ export function SharedComposer({
                     ? "bg-primary/10 text-primary hover:bg-primary/20"
                     : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
-              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+              aria-label={
+                reasoningEnabled
+                  ? t("thread.reasoning.disableThinking")
+                  : t("thread.reasoning.enableThinking")
+              }
             >
               {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
                 <LightbulbIcon className="size-3.5" />
               ) : (
                 <LightbulbOffIcon className="size-3.5" />
               )}
-              <span>Think</span>
+              <span>{t("thread.reasoning.thinkLabel")}</span>
             </button>
           )}
           {supportsPreserveThinking && (
@@ -662,7 +668,9 @@ export function SharedComposer({
                     : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
               aria-label={
-                preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
+                preserveThinking
+                  ? t("thread.reasoning.disablePreserve")
+                  : t("thread.reasoning.enablePreserve")
               }
             >
               {preserveThinking && modelLoaded ? (
@@ -670,7 +678,7 @@ export function SharedComposer({
               ) : (
                 <LightbulbOffIcon className="size-3.5" />
               )}
-              <span>Preserve Thinking</span>
+              <span>{t("thread.reasoning.preserveLabel")}</span>
             </button>
           )}
           <button
@@ -685,10 +693,10 @@ export function SharedComposer({
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
             )}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+            aria-label={toolsEnabled ? t("thread.search.disable") : t("thread.search.enable")}
           >
             <GlobeIcon className="size-3.5" />
-            <span>Search</span>
+            <span>{t("thread.search.label")}</span>
           </button>
           <button
             type="button"
@@ -702,10 +710,10 @@ export function SharedComposer({
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
             )}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+            aria-label={codeToolsEnabled ? t("thread.code.disable") : t("thread.code.enable")}
           >
             <CodeToggleIcon className="size-3.5" />
-            <span>Code</span>
+            <span>{t("thread.code.label")}</span>
           </button>
         </div>
         <div className="flex items-center gap-1">
@@ -713,25 +721,25 @@ export function SharedComposer({
             <>
               {!isDictating ? (
                 <TooltipIconButton
-                  tooltip="Dictate"
+                  tooltip={t("thread.dictate.start")}
                   side="bottom"
                   variant="ghost"
                   size="icon"
                   className="size-8 rounded-full text-muted-foreground"
                   onClick={startDictation}
-                  aria-label="Dictate"
+                  aria-label={t("thread.dictate.start")}
                 >
                   <MicIcon className="size-4" />
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
-                  tooltip="Stop dictation"
+                  tooltip={t("thread.dictate.stop")}
                   side="bottom"
                   variant="ghost"
                   size="icon"
                   className="size-8 rounded-full text-destructive"
                   onClick={stopDictation}
-                  aria-label="Stop dictation"
+                  aria-label={t("thread.dictate.stop")}
                 >
                   <SquareIcon className="size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
@@ -750,7 +758,7 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={t("thread.message.send")}
               side="bottom"
               variant="default"
               size="icon"

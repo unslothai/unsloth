@@ -21,6 +21,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
+import { useI18n } from "@/features/i18n";
 import {
   useTrainingActions,
   useTrainingConfigStore,
@@ -47,7 +48,6 @@ import {
   formatDuration,
   formatNumber,
   phaseColors,
-  phaseLabel,
 } from "./progress-section-lib";
 
 type ConfigGroup = {
@@ -85,7 +85,20 @@ export function ProgressSection({
   isHistorical = false,
   configOverride,
 }: ProgressSectionProps): ReactElement {
+  const { t } = useI18n();
   const navigate = useNavigate();
+  const phaseLabel = {
+    idle: t("studio.status.idle"),
+    downloading_model: t("studio.status.downloadingModel"),
+    downloading_dataset: t("studio.status.downloadingDataset"),
+    loading_model: t("studio.status.loadingModel"),
+    loading_dataset: t("studio.status.loadingDataset"),
+    configuring: t("studio.status.configuring"),
+    training: t("studio.status.training"),
+    completed: t("studio.status.completed"),
+    error: t("studio.status.error"),
+    stopped: t("studio.status.stopped"),
+  } as const;
 
   const config = useTrainingConfigStore(
     useShallow((state) => ({
@@ -169,26 +182,26 @@ export function ProgressSection({
 
   const configItems: ConfigGroup[] = [
     {
-      section: "Hyperparams",
+      section: t("studio.progress.config.section.hyperparams"),
       rows: [
-        configRow("Epochs", cfgEpochs),
-        configRow("Batch size", cfgBatchSize),
-        configRow("Learning rate", cfgLearningRate),
-        configRow("Optimizer", optimizerLabel),
-        configRow("Max steps", cfgMaxSteps),
-        configRow("Context length", cfgContextLength),
-        configRow("Warmup steps", cfgWarmupSteps),
+        configRow(t("studio.progress.config.epochs"), cfgEpochs),
+        configRow(t("studio.progress.config.batchSize"), cfgBatchSize),
+        configRow(t("studio.progress.config.learningRate"), cfgLearningRate),
+        configRow(t("studio.progress.config.optimizer"), optimizerLabel),
+        configRow(t("studio.progress.config.maxSteps"), cfgMaxSteps),
+        configRow(t("studio.progress.config.contextLength"), cfgContextLength),
+        configRow(t("studio.progress.config.warmupSteps"), cfgWarmupSteps),
       ],
     },
     ...(data.trainingMethod !== "full"
       ? [
           {
-            section: "LoRA",
+            section: t("studio.progress.config.section.lora"),
             rows: [
-              configRow("Rank", cfgLoraRank),
-              configRow("Alpha", cfgLoraAlpha),
-              configRow("Dropout", cfgLoraDropout),
-              configRow("Variant", cfgLoraVariant),
+              configRow(t("studio.progress.config.rank"), cfgLoraRank),
+              configRow(t("studio.progress.config.alpha"), cfgLoraAlpha),
+              configRow(t("studio.progress.config.dropout"), cfgLoraDropout),
+              configRow(t("studio.progress.config.variant"), cfgLoraVariant),
             ],
           },
         ]
@@ -198,8 +211,8 @@ export function ProgressSection({
   return (
     <SectionCard
       icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-      title="Training Progress"
-      description={data.message || "Live training metrics"}
+      title={t("studio.progress.title")}
+      description={data.message || t("studio.progress.description")}
       accent="emerald"
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
@@ -226,17 +239,17 @@ export function ProgressSection({
               {phaseLabel[data.phase]}
             </span>
             <span className="text-[10px] tabular-nums text-muted-foreground">
-              Epoch {formatNumber(data.currentEpoch, 2)}
+              {t("studio.progress.epoch")} {formatNumber(data.currentEpoch, 2)}
             </span>
             <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
-              {pct}% complete
+              {t("studio.progress.completePercent").replace("{percent}", String(pct))}
             </span>
           </div>
 
           <div className="flex flex-col gap-2">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
-                Step {data.currentStep} / {data.totalSteps || "--"}
+                {t("studio.progress.step")} {data.currentStep} / {data.totalSteps || "--"}
               </span>
               <span>{pct}%</span>
             </div>
@@ -259,33 +272,33 @@ export function ProgressSection({
 
           <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-5">
             <MetricStat
-              label="Loss"
+              label={t("studio.progress.metric.loss")}
               valueClassName="text-2xl font-bold tracking-tight"
             >
               {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
             </MetricStat>
-            <MetricStat label="LR">{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
-            <MetricStat label="Grad Norm">
+            <MetricStat label={t("studio.progress.metric.lr")}>{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
+            <MetricStat label={t("studio.progress.metric.gradNorm")}>
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
-            <MetricStat label="Model" valueClassName="truncate">
+            <MetricStat label={t("studio.progress.metric.model")} valueClassName="truncate">
               {data.modelName || "--"}
             </MetricStat>
-            <MetricStat label="Method">
-              {data.trainingMethod === "qlora" ? "QLoRA" : data.trainingMethod === "lora" ? "LoRA" : "Full"}
+            <MetricStat label={t("studio.progress.metric.method")}>
+              {data.trainingMethod === "qlora" ? "QLoRA" : data.trainingMethod === "lora" ? "LoRA" : t("studio.training.method.full")}
             </MetricStat>
           </div>
 
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>Elapsed: {formatDuration(elapsed)}</span>
-            {!isHistorical && <span>ETA: {formatDuration(eta)}</span>}
+            <span>{t("studio.progress.elapsed")}: {formatDuration(elapsed)}</span>
+            {!isHistorical && <span>{t("studio.progress.eta")}: {formatDuration(eta)}</span>}
             <span>
               {stepsPerSecond == null
-                ? "-- steps/s"
-                : `${stepsPerSecond.toFixed(2)} steps/s`}
+                ? t("studio.progress.stepsPerSecondEmpty")
+                : t("studio.progress.stepsPerSecond").replace("{value}", stepsPerSecond.toFixed(2))}
             </span>
             {data.currentNumTokens != null && (
-              <span>Tokens: {data.currentNumTokens}</span>
+              <span>{t("studio.progress.tokens")}: {data.currentNumTokens}</span>
             )}
           </div>
         </div>
@@ -303,19 +316,20 @@ function LiveGpuPanel({
 }: {
   isTrainingRunning: boolean;
 }): ReactElement {
+  const { t } = useI18n();
   const gpu = useGpuUtilization(isTrainingRunning);
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-muted-foreground">
-          GPU Monitor
+          {t("studio.progress.gpu.title")}
         </p>
-        <span className="text-[11px] text-muted-foreground">Live</span>
+        <span className="text-[11px] text-muted-foreground">{t("studio.progress.live")}</span>
       </div>
       <div className="grid grid-cols-2 gap-2.5">
         <GpuStat
-          label="Utilization"
+          label={t("studio.progress.gpu.utilization")}
           icon={
             <HugeiconsIcon
               icon={DashboardSpeed01Icon}
@@ -330,7 +344,7 @@ function LiveGpuPanel({
           pct={gpu.gpu_utilization_pct ?? 0}
         />
         <GpuStat
-          label="Temperature"
+          label={t("studio.progress.gpu.temperature")}
           icon={
             <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
           }
@@ -341,7 +355,7 @@ function LiveGpuPanel({
           max={100}
         />
         <GpuStat
-          label="VRAM"
+          label={t("studio.progress.gpu.vram")}
           icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
           value={
             gpu.vram_used_gb != null && gpu.vram_total_gb != null
@@ -351,7 +365,7 @@ function LiveGpuPanel({
           pct={gpu.vram_utilization_pct ?? 0}
         />
         <GpuStat
-          label="Power"
+          label={t("studio.progress.gpu.power")}
           icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
           value={
             gpu.power_draw_w != null
@@ -415,6 +429,7 @@ function ConfigPopoverButton({
 }: {
   configItems: ConfigGroup[];
 }): ReactElement {
+  const { t } = useI18n();
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
@@ -423,14 +438,14 @@ function ConfigPopoverButton({
           variant="ghost"
           size="icon-sm"
           className="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label="Open training config"
+          aria-label={t("studio.progress.config.openAria")}
         >
           <HugeiconsIcon icon={Notebook01Icon} className="size-4" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-72" align="end">
         <div className="flex flex-col gap-3">
-          <p className="text-xs font-semibold">Training Config</p>
+          <p className="text-xs font-semibold">{t("studio.training.config.title")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -467,6 +482,7 @@ function TrainingHeaderActions({
   stopDialogOpen: boolean;
   stopRequested: boolean;
 }): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-2">
       <ConfigPopoverButton configItems={configItems} />
@@ -484,25 +500,25 @@ function TrainingHeaderActions({
           disabled={!isTrainingRunning || stopRequested}
         >
           <HugeiconsIcon icon={StopIcon} className="size-3" />
-          {stopRequested ? "Stopping…" : "Stop"}
+          {stopRequested ? t("studio.progress.stop.stopping") : t("studio.progress.stop.stop")}
         </Button>
         <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
           <AlertDialogHeader>
-            <AlertDialogTitle>Stop Training</AlertDialogTitle>
+            <AlertDialogTitle>{t("studio.progress.stop.title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Choose how you want to stop the current training run.
+              {t("studio.progress.stop.description")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Continue Training</AlertDialogCancel>
+            <AlertDialogCancel>{t("studio.progress.stop.continue")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => onRequestStop(false)}
             >
-              Cancel Training
+              {t("studio.progress.stop.cancelTraining")}
             </AlertDialogAction>
             <AlertDialogAction onClick={() => onRequestStop(true)}>
-              Stop and Save
+              {t("studio.progress.stop.stopAndSave")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -520,6 +536,7 @@ function MilestoneCallout({
   showHalfwayHint: boolean;
   onCompareInChat: () => Promise<void>;
 }): ReactElement | null {
+  const { t } = useI18n();
   if (!(showHalfwayHint || showCompletedHint)) {
     return null;
   }
@@ -530,7 +547,7 @@ function MilestoneCallout({
         <div className="min-w-0">
           {!showCompletedHint && (
             <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-              Milestone
+              {t("studio.progress.milestone.title")}
             </p>
           )}
           <p
@@ -540,8 +557,8 @@ function MilestoneCallout({
             )}
           >
             {showCompletedHint
-              ? "Training done. Next step: compare base vs fine-tuned outputs."
-              : "Halfway done. Training is past 50%."}
+              ? t("studio.progress.milestone.completed")
+              : t("studio.progress.milestone.halfway")}
           </p>
         </div>
         {!showCompletedHint && (
@@ -553,10 +570,10 @@ function MilestoneCallout({
       {showCompletedHint && (
         <div className="mt-2 flex flex-wrap gap-2">
           <Button size="xs" onClick={onCompareInChat}>
-            Compare in Chat
+            {t("studio.progress.milestone.compareInChat")}
           </Button>
           <Button asChild={true} size="xs" variant="outline">
-            <Link to="/export">Export Model</Link>
+            <Link to="/export">{t("studio.progress.milestone.exportModel")}</Link>
           </Button>
         </div>
       )}

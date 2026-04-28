@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useI18n } from "@/features/i18n";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -81,6 +82,7 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const { pathname, search } = useRouterState({
@@ -132,21 +134,21 @@ export function GeneralTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">General</h1>
+        <h1 className="text-lg font-semibold font-heading">{t("settings.general.title")}</h1>
         <p className="text-xs text-muted-foreground">
-          Global preferences for Unsloth Studio.
+          {t("settings.general.subtitle")}
         </p>
       </header>
 
-      <SettingsSection title="Account">
+      <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
-          label="Hugging Face token"
-          description="Used to load gated models and push artifacts."
+          label={t("settings.general.hfToken.label")}
+          description={t("settings.general.hfToken.description")}
         >
           <div className="relative w-[260px]">
             <Input
               type={showToken ? "text" : "password"}
-              placeholder="hf_…"
+              placeholder={t("settings.general.hfToken.placeholder")}
               value={draftToken}
               onChange={(e) => setDraftToken(e.target.value)}
               onBlur={commitToken}
@@ -156,7 +158,7 @@ export function GeneralTab() {
               type="button"
               onClick={() => setShowToken((s) => !s)}
               className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-              aria-label={showToken ? "Hide token" : "Show token"}
+              aria-label={showToken ? t("settings.general.hfToken.hide") : t("settings.general.hfToken.show")}
               tabIndex={-1}
             >
               {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
@@ -165,20 +167,20 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Chat defaults">
+      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
-          label="Auto-title new chats"
-          description="Generate a short title from the first message."
+          label={t("settings.general.autoTitle.label")}
+          description={t("settings.general.autoTitle.description")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
 
       {!chatOnly && (
-        <SettingsSection title="Getting started">
+        <SettingsSection title={t("settings.general.gettingStarted")}>
           <SettingsRow
-            label="Start onboarding"
-            description="Open the setup wizard again without changing your account."
+            label={t("settings.general.startOnboarding.label")}
+            description={t("settings.general.startOnboarding.description")}
           >
             <Button
               variant="outline"
@@ -189,17 +191,17 @@ export function GeneralTab() {
                 navigate({ to: "/onboarding", search: { redirectTo } });
               }}
             >
-              Start onboarding
+              {t("settings.general.startOnboarding.cta")}
             </Button>
           </SettingsRow>
         </SettingsSection>
       )}
 
-      <SettingsSection title="Danger zone">
+      <SettingsSection title={t("settings.general.dangerZone")}>
         <SettingsRow
           destructive
-          label="Reset all local preferences"
-          description="Clears theme, tokens, sidebar state, and presets. Chats and API keys are not affected."
+          label={t("settings.general.resetPrefs.label")}
+          description={t("settings.general.resetPrefs.description")}
         >
           <Button
             variant="outline"
@@ -207,7 +209,7 @@ export function GeneralTab() {
             onClick={() => setConfirmOpen(true)}
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
-            Reset preferences
+            {t("settings.general.resetPrefs.cta")}
           </Button>
         </SettingsRow>
       </SettingsSection>
@@ -215,21 +217,18 @@ export function GeneralTab() {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Reset all local preferences?</DialogTitle>
+            <DialogTitle>{t("settings.general.resetConfirm.title")}</DialogTitle>
             <DialogDescription>
-              This clears your theme, tokens, and stored settings, then reloads
-              Studio. Chats and API keys are not affected.
+              {t("settings.general.resetConfirm.description")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
-              Cancel
-            </Button>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>{t("shutdown.cancel")}</Button>
             <Button
               onClick={resetAllPrefs}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              Reset and reload
+              {t("settings.general.resetConfirm.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

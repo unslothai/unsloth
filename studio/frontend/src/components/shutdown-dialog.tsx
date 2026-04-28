@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { useI18n } from "@/features/i18n";
 import { toastError } from "@/shared/toast";
 import { useState } from "react";
 import {
@@ -31,6 +32,7 @@ export function ShutdownDialog({
   onAfterShutdown,
 }: ShutdownDialogProps) {
   const [stopping, setStopping] = useState(false);
+  const { t } = useI18n();
 
   const handleStop = async () => {
     setStopping(true);
@@ -39,13 +41,13 @@ export function ShutdownDialog({
       const res = await authFetch("/api/shutdown", { method: "POST" });
       accepted = res.ok;
       if (!accepted) {
-        toastError("Failed to shut down server");
+        toastError(t("shutdown.error.failed"));
         setStopping(false);
         return;
       }
     } catch {
       // Network error — shutdown request never reached the server
-      toastError("Could not reach server");
+      toastError(t("shutdown.error.unreachable"));
       setStopping(false);
       return;
     }
@@ -53,8 +55,8 @@ export function ShutdownDialog({
     onAfterShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
-        <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>
-        <p style="font-size:0.9rem;color:#888;margin:0">You can now close this tab.</p>
+        <p style="font-size:1.1rem;font-weight:600;margin:0">${t("shutdown.stopped.title")}</p>
+        <p style="font-size:0.9rem;color:#888;margin:0">${t("shutdown.stopped.hint")}</p>
       </div>`;
   };
 
@@ -62,21 +64,19 @@ export function ShutdownDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Stop Unsloth Studio?</AlertDialogTitle>
+          <AlertDialogTitle>{t("shutdown.title")}</AlertDialogTitle>
           <AlertDialogDescription>
-            This will shut down the server. Any active training or inference
-            jobs will be terminated. You can restart it any time from the
-            desktop shortcut.
+            {t("shutdown.description")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("shutdown.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             onClick={handleStop}
             disabled={stopping}
             variant="destructive"
           >
-            {stopping ? "Stopping…" : "Stop server"}
+            {stopping ? t("shutdown.stopping") : t("shutdown.stop")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

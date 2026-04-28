@@ -2,17 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ReadMore, type TourStep } from "@/features/tour";
+import type { TranslationKey } from "@/features/i18n";
 
-export const studioLocalModelStep: TourStep = {
-  id: "local-model",
-  target: "studio-local-model",
-  title: "Local model path",
-  body: (
-    <>
-      Use this if you already downloaded weights locally (eg{" "}
-      <span className="font-mono">./models/...</span>) to avoid re-downloading.
-      Folder should look like a Hugging Face model (config + tokenizer + weights).{" "}
-      <ReadMore href="https://unsloth.ai/docs/basics/fine-tuning-llms-guide" />
-    </>
-  ),
-};
+type Translator = (key: TranslationKey) => string;
+
+export function studioLocalModelStep(t: Translator): TourStep {
+  return {
+    id: "local-model",
+    target: "studio-local-model",
+    title: t("studio.tour.localModel.title"),
+    body: (
+      <>
+        {t("studio.tour.localModel.bodyPrefix")}{" "}
+        <span className="font-mono">./models/...</span> {t("studio.tour.localModel.bodySuffix")}{" "}
+        <ReadMore href="https://unsloth.ai/docs/basics/fine-tuning-llms-guide" />
+      </>
+    ),
+  };
+}

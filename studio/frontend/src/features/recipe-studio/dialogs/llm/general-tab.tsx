@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, type RefObject, useMemo, useRef } from "react";
+import { useI18n } from "@/features/i18n";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
 import { isLikelyImageValue } from "../../utils/image-preview";
@@ -56,6 +57,11 @@ const CODE_LANG_OPTIONS = [
 ];
 
 const TRACE_MODE_OPTIONS = ["none", "last_message", "all_messages"] as const;
+const TRACE_MODE_LABEL_KEYS = {
+  none: "recipe.llm.trace.none",
+  last_message: "recipe.llm.trace.lastMessage",
+  all_messages: "recipe.llm.trace.allMessages",
+} as const;
 
 function normalizeTraceMode(value: string): LlmConfig["with_trace"] {
   if (value === "last_message" || value === "all_messages") {
@@ -81,6 +87,7 @@ export function LlmGeneralTab({
   modelAliasAnchorRef,
   onUpdate,
 }: LlmGeneralTabProps): ReactElement {
+  const { t } = useI18n();
   const configs = useRecipeStudioStore((state) => state.configs);
   const modelAliasId = `${config.id}-model-alias`;
   const toolAliasId = `${config.id}-tool-alias`;
@@ -181,7 +188,7 @@ export function LlmGeneralTab({
       {needsSetupHelp ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
-            Set up the model once, then come back here
+            {t("recipe.llm.setup.title")}
           </p>
           <div className="mt-2 space-y-1.5">
             {!hasModelProviders && (
@@ -190,7 +197,7 @@ export function LlmGeneralTab({
                   icon={ArrowRight01Icon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
-                <span>Add a Provider connection step in AI generation → Setup.</span>
+                <span>{t("recipe.llm.setup.addProvider")}</span>
               </p>
             )}
             {!hasModelConfigs && (
@@ -199,7 +206,7 @@ export function LlmGeneralTab({
                   icon={ArrowRight01Icon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
-                <span>Add a Model preset step, connect it, then choose it below.</span>
+                <span>{t("recipe.llm.setup.addModelPreset")}</span>
               </p>
             )}
           </div>
@@ -207,19 +214,18 @@ export function LlmGeneralTab({
       ) : needsModelChoice ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
-            Start by choosing a model preset
+            {t("recipe.llm.start.title")}
           </p>
           <p className="mt-1">
-            Once that is in place, write the prompt and add optional tool access
-            if this step needs tools.
+            {t("recipe.llm.start.hint")}
           </p>
         </div>
       ) : null}
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Model preset"
+          label={t("recipe.llm.modelPreset.label")}
           htmlFor={modelAliasId}
-          hint="Choose the reusable model setup for this step."
+          hint={t("recipe.llm.modelPreset.hint")}
         />
         <div ref={modelAliasAnchorRef}>
           <Combobox
@@ -234,7 +240,7 @@ export function LlmGeneralTab({
             <ComboboxInput
               id={modelAliasId}
               className="nodrag w-full"
-              placeholder="Choose a model preset"
+              placeholder={t("recipe.llm.modelPreset.placeholder")}
               onBlur={(event) => {
                 const inputValue = event.target.value;
                 if (inputValue !== config.model_alias) {
@@ -243,7 +249,7 @@ export function LlmGeneralTab({
               }}
             />
             <ComboboxContent anchor={modelAliasAnchorRef}>
-              <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxEmpty>{t("recipe.llm.modelPreset.empty")}</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>
@@ -257,16 +263,15 @@ export function LlmGeneralTab({
       </div>
       {!hasToolProfiles && (
         <p className="text-xs text-muted-foreground">
-          Need tools for this step? Add a Tool access step in AI generation →
-          Setup.
+          {t("recipe.llm.tools.needHint")}
         </p>
       )}
       {(hasToolProfiles || Boolean(config.tool_alias?.trim())) && (
         <div className="grid gap-1.5">
-          <FieldLabel
-            label="Tool access (optional)"
+        <FieldLabel
+            label={t("recipe.llm.tools.label")}
             htmlFor={toolAliasId}
-            hint="Choose saved tool access for this step. Leave empty if this step should not use tools."
+            hint={t("recipe.llm.tools.hint")}
           />
           <div ref={toolAliasAnchorRef}>
             <Combobox
@@ -281,7 +286,7 @@ export function LlmGeneralTab({
               <ComboboxInput
                 id={toolAliasId}
                 className="nodrag w-full"
-                placeholder="Choose tool access"
+                placeholder={t("recipe.llm.tools.placeholder")}
                 onBlur={(event) => {
                   const inputValue = event.target.value;
                   if (inputValue !== (config.tool_alias ?? "")) {
@@ -290,7 +295,7 @@ export function LlmGeneralTab({
                 }}
               />
               <ComboboxContent anchor={toolAliasAnchorRef}>
-                <ComboboxEmpty>No tool access found</ComboboxEmpty>
+                <ComboboxEmpty>{t("recipe.llm.tools.empty")}</ComboboxEmpty>
                 <ComboboxList>
                   {(alias: string) => (
                     <ComboboxItem key={alias} value={alias}>
@@ -306,16 +311,16 @@ export function LlmGeneralTab({
       {config.llm_type === "code" && (
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Code language"
+            label={t("recipe.llm.codeLanguage.label")}
             htmlFor={codeLangId}
-            hint="Choose the language this AI step should generate."
+            hint={t("recipe.llm.codeLanguage.hint")}
           />
           <Select
             value={config.code_lang ?? "python"}
             onValueChange={(value) => onUpdate({ code_lang: value })}
           >
             <SelectTrigger className="nodrag w-full" id={codeLangId}>
-              <SelectValue placeholder="Select language" />
+              <SelectValue placeholder={t("recipe.llm.codeLanguage.select")} />
             </SelectTrigger>
             <SelectContent>
               {CODE_LANG_OPTIONS.map((lang) => (
@@ -329,9 +334,9 @@ export function LlmGeneralTab({
       )}
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Prompt"
+          label={t("recipe.llm.prompt.label")}
           htmlFor={promptId}
-          hint="Write the prompt for this step. Insert other fields with {{ field_name }}."
+          hint={t("recipe.llm.prompt.hint")}
         />
         <Textarea
           id={promptId}
@@ -342,9 +347,9 @@ export function LlmGeneralTab({
         />
         {invalidPromptRefs.length > 0 && (
           <p className="text-xs text-destructive">
-            Unknown field: {invalidPromptText}
+            {t("recipe.expression.unknownField")}: {invalidPromptText}
             {invalidPromptRefs.length > 3
-              ? ` +${invalidPromptRefs.length - 3} more`
+              ? ` +${invalidPromptRefs.length - 3} ${t("recipe.expression.more")}`
               : ""}
           </p>
         )}
@@ -354,9 +359,9 @@ export function LlmGeneralTab({
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-3">
             <FieldLabel
-              label="Use image context"
+              label={t("recipe.llm.imageContext.label")}
               htmlFor={imageContextToggleId}
-              hint="Attach one image field from your source data to this AI step."
+              hint={t("recipe.llm.imageContext.hint")}
             />
             <Switch
               id={imageContextToggleId}
@@ -379,9 +384,9 @@ export function LlmGeneralTab({
           {imageContext.enabled && (
             <div className="grid gap-1.5">
               <FieldLabel
-                label="Image field"
+                label={t("recipe.llm.imageContext.imageField")}
                 htmlFor={imageContextColumnId}
-                hint="Choose the source-data field that contains the image."
+                hint={t("recipe.llm.imageContext.imageFieldHint")}
               />
               <Select
                 value={imageContext.column_name || undefined}
@@ -399,7 +404,7 @@ export function LlmGeneralTab({
                   className="nodrag w-full"
                   id={imageContextColumnId}
                 >
-                  <SelectValue placeholder="Select image column" />
+                  <SelectValue placeholder={t("recipe.llm.imageContext.selectImageColumn")} />
                 </SelectTrigger>
                 <SelectContent>
                   {imageContextColumnOptions.map((columnName) => (
@@ -416,9 +421,9 @@ export function LlmGeneralTab({
       {config.llm_type === "structured" && (
         <div className="grid gap-1.5">
           <FieldLabel
-            label="Response format"
+            label={t("recipe.llm.responseFormat.label")}
             htmlFor={outputFormatId}
-            hint="Describe the JSON shape you want back."
+            hint={t("recipe.llm.responseFormat.hint")}
           />
           <Textarea
             id={outputFormatId}
@@ -436,16 +441,16 @@ export function LlmGeneralTab({
       >
         <CollapsibleTrigger asChild={true}>
           <CollapsibleSectionTriggerButton
-            label="Trace and extra controls"
+            label={t("recipe.llm.advanced.label")}
             open={advancedOpen}
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Instructions (optional)"
+              label={t("recipe.llm.instructions.label")}
               htmlFor={systemPromptId}
-              hint="Add extra guidance that should apply before the prompt."
+              hint={t("recipe.llm.instructions.hint")}
             />
             <Textarea
               id={systemPromptId}
@@ -458,18 +463,18 @@ export function LlmGeneralTab({
             />
             {invalidSystemRefs.length > 0 && (
               <p className="text-xs text-destructive">
-                Unknown field: {invalidSystemText}
+                {t("recipe.expression.unknownField")}: {invalidSystemText}
                 {invalidSystemRefs.length > 3
-                  ? ` +${invalidSystemRefs.length - 3} more`
+                  ? ` +${invalidSystemRefs.length - 3} ${t("recipe.expression.more")}`
                   : ""}
               </p>
             )}
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Save trace details"
+              label={t("recipe.llm.trace.label")}
               htmlFor={traceModeId}
-              hint="Adds a trace field you can inspect later."
+              hint={t("recipe.llm.trace.hint")}
             />
             <Select
               value={config.with_trace ?? "none"}
@@ -481,12 +486,12 @@ export function LlmGeneralTab({
               }
             >
               <SelectTrigger className="nodrag w-full" id={traceModeId}>
-                <SelectValue placeholder="Select trace mode" />
+                <SelectValue placeholder={t("recipe.llm.trace.selectMode")} />
               </SelectTrigger>
               <SelectContent>
                 {TRACE_MODE_OPTIONS.map((traceMode) => (
                   <SelectItem key={traceMode} value={traceMode}>
-                    {traceMode}
+                    {t(TRACE_MODE_LABEL_KEYS[traceMode])}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -494,9 +499,9 @@ export function LlmGeneralTab({
           </div>
           <div className="flex items-center justify-between gap-3">
             <FieldLabel
-              label="Save reasoning text"
+              label={t("recipe.llm.reasoning.label")}
               htmlFor={reasoningToggleId}
-              hint="Adds a reasoning field when the model returns one."
+              hint={t("recipe.llm.reasoning.hint")}
             />
             <Switch
               id={reasoningToggleId}

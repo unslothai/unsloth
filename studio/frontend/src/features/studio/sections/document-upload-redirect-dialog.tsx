@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/features/i18n";
 import {
   ArrowRight01Icon,
   DocumentAttachmentIcon,
@@ -31,6 +32,7 @@ export function DocumentUploadRedirectDialog({
   fileName,
   onOpenLearningRecipes,
 }: DocumentUploadRedirectDialogProps): ReactElement {
+  const { t } = useI18n();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -45,32 +47,30 @@ export function DocumentUploadRedirectDialog({
                 className="size-5 text-foreground/90"
               />
             </div>
-            <Badge variant="outline">Recipe Studio</Badge>
+            <Badge variant="outline">{t("studio.documentRedirect.recipeStudio")}</Badge>
           </div>
           <div className="space-y-1">
-            <DialogTitle>This file needs conversion first</DialogTitle>
+            <DialogTitle>{t("studio.documentRedirect.title")}</DialogTitle>
             <DialogDescription>
               {fileName ? (
                 <>
                   <span className="font-medium text-foreground">{fileName}</span>{" "}
-                  is source material, not a ready-to-train dataset.
+                  {t("studio.documentRedirect.fileNotReady")}
                 </>
               ) : (
-                "This file is source material, not a ready-to-train dataset."
+                t("studio.documentRedirect.fileNotReadyNoName")
               )}{" "}
-              Use Data Recipes to turn documents into a dataset, then bring the
-              result back here for fine-tuning.
+              {t("studio.documentRedirect.descriptionSuffix")}
             </DialogDescription>
           </div>
         </DialogHeader>
 
         <div className="corner-squircle rounded-2xl border border-border/70 bg-muted/20 p-4">
           <p className="text-sm font-medium text-foreground">
-            Best next step
+            {t("studio.documentRedirect.bestNextStep")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Open Learning Recipes and start from a document-based recipe like PDF
-            grounded QA.
+            {t("studio.documentRedirect.bestNextStepHint")}
           </p>
         </div>
 
@@ -80,10 +80,10 @@ export function DocumentUploadRedirectDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
           >
-            Cancel
+            {t("studio.documentRedirect.cancel")}
           </Button>
           <Button type="button" onClick={onOpenLearningRecipes}>
-            Open Learning Recipes
+            {t("studio.documentRedirect.openLearningRecipes")}
             <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
           </Button>
         </DialogFooter>

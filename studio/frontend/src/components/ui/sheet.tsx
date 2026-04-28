@@ -7,6 +7,8 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogPortalContainerContext } from "@/components/ui/dialog";
+import { useI18nStore } from "@/features/i18n/store";
+import { translate } from "@/features/i18n/store";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -71,6 +73,8 @@ function SheetContent({
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
 }) {
+  const locale = useI18nStore((s) => s.locale);
+  const tClose = translate(locale, "common.close");
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
   return (
     <SheetPortal container={container ?? undefined}>
@@ -100,7 +104,7 @@ function SheetContent({
               size="icon-sm"
             >
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
-              <span className="sr-only">Close</span>
+              <span className="sr-only">{tClose}</span>
             </Button>
           </SheetPrimitive.Close>
         )}

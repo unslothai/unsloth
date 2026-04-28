@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
@@ -28,6 +29,7 @@ export function TimedeltaDialog({
   datetimeOptions,
   onUpdate,
 }: TimedeltaDialogProps): ReactElement {
+  const { t } = useI18n();
   const dtMinId = `${config.id}-timedelta-min`;
   const dtMaxId = `${config.id}-timedelta-max`;
   const unitId = `${config.id}-timedelta-unit`;
@@ -47,9 +49,9 @@ export function TimedeltaDialog({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-1.5">
           <FieldLabel
-            label="dt_min"
+            label={t("recipe.sampler.timedelta.dtMin")}
             htmlFor={dtMinId}
-            hint="Minimum offset from reference datetime."
+            hint={t("recipe.sampler.timedelta.dtMinHint")}
           />
           <Input
             id={dtMinId}
@@ -61,9 +63,9 @@ export function TimedeltaDialog({
         </div>
         <div className="grid gap-1.5">
           <FieldLabel
-            label="dt_max"
+            label={t("recipe.sampler.timedelta.dtMax")}
             htmlFor={dtMaxId}
-            hint="Maximum offset from reference datetime."
+            hint={t("recipe.sampler.timedelta.dtMaxHint")}
           />
           <Input
             id={dtMaxId}
@@ -76,9 +78,9 @@ export function TimedeltaDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Unit"
+          label={t("recipe.sampler.timedelta.unit")}
           htmlFor={unitId}
-          hint="Offset unit. D/h/m/s."
+          hint={t("recipe.sampler.timedelta.unitHint")}
         />
         <Select
           value={config.timedelta_unit ?? "D"}
@@ -87,7 +89,7 @@ export function TimedeltaDialog({
           }
         >
           <SelectTrigger className="nodrag w-full" id={unitId}>
-            <SelectValue placeholder="Select unit" />
+            <SelectValue placeholder={t("recipe.sampler.timedelta.selectUnit")} />
           </SelectTrigger>
           <SelectContent>
             {TIMEDELTA_UNITS.map((unit) => (
@@ -100,9 +102,9 @@ export function TimedeltaDialog({
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Reference datetime column"
+          label={t("recipe.sampler.timedelta.reference")}
           htmlFor={referenceId}
-          hint="Datetime column used as anchor before offset."
+          hint={t("recipe.sampler.timedelta.referenceHint")}
         />
         <Select
           value={config.reference_column_name?.trim() || NONE_VALUE}
@@ -111,10 +113,10 @@ export function TimedeltaDialog({
           }
         >
           <SelectTrigger className="nodrag w-full" id={referenceId}>
-            <SelectValue placeholder="Select datetime column" />
+            <SelectValue placeholder={t("recipe.sampler.timedelta.selectReference")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE_VALUE}>None</SelectItem>
+            <SelectItem value={NONE_VALUE}>{t("recipe.sampler.common.none")}</SelectItem>
             {datetimeOptions.map((name) => (
               <SelectItem key={name} value={name}>
                 {name}

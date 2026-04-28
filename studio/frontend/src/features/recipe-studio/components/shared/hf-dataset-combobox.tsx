@@ -10,6 +10,7 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Spinner } from "@/components/ui/spinner";
+import { useI18n } from "@/features/i18n";
 import { useDebouncedValue, useHfDatasetSearch } from "@/hooks";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 
@@ -27,9 +28,10 @@ export function HfDatasetCombobox({
   onValueChange,
   accessToken,
   inputId,
-  placeholder = "Search datasets...",
+  placeholder,
   className,
 }: HfDatasetComboboxProps): ReactElement {
+  const { t } = useI18n();
   const [inputValue, setInputValue] = useState(value);
   const selectingRef = useRef(false);
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -89,16 +91,16 @@ export function HfDatasetCombobox({
         <ComboboxInput
           id={inputId}
           className="nodrag w-full"
-          placeholder={placeholder}
+          placeholder={placeholder ?? t("recipe.hfDataset.searchPlaceholder")}
         />
         <ComboboxContent anchor={anchorRef}>
           {isLoading ? (
             <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
-              Searching...
+              {t("recipe.hfDataset.searching")}
             </div>
           ) : (
-            <ComboboxEmpty>No datasets found</ComboboxEmpty>
+            <ComboboxEmpty>{t("recipe.hfDataset.noneFound")}</ComboboxEmpty>
           )}
           <ComboboxList>
             {(id: string) => (

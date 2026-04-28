@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import {
   Table,
   TableBody,
@@ -19,22 +20,23 @@ type ExecutionColumnsTabProps = {
 export function ExecutionColumnsTab({
   analysisColumns,
 }: ExecutionColumnsTabProps): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="mt-3 rounded-xl border p-3">
-      <p className="mb-2 text-sm font-semibold">Column statistics</p>
+      <p className="mb-2 text-sm font-semibold">{t("recipe.execution.columns.title")}</p>
       {analysisColumns.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No column statistics yet.</p>
+        <p className="text-xs text-muted-foreground">{t("recipe.execution.columns.empty")}</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Column</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Data type</TableHead>
-              <TableHead>Unique</TableHead>
-              <TableHead>Nulls</TableHead>
-              <TableHead>Input tok avg</TableHead>
-              <TableHead>Output tok avg</TableHead>
+              <TableHead>{t("recipe.execution.columns.column")}</TableHead>
+              <TableHead>{t("recipe.execution.columns.type")}</TableHead>
+              <TableHead>{t("recipe.execution.columns.dataType")}</TableHead>
+              <TableHead>{t("recipe.execution.columns.unique")}</TableHead>
+              <TableHead>{t("recipe.execution.columns.nulls")}</TableHead>
+              <TableHead>{t("recipe.execution.columns.inputTokAvg")}</TableHead>
+              <TableHead>{t("recipe.execution.columns.outputTokAvg")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

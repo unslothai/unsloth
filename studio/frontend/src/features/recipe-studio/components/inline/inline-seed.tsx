@@ -9,6 +9,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
+import { useI18n } from "@/features/i18n";
 import type { SeedConfig } from "../../types";
 import { HfDatasetCombobox } from "../shared/hf-dataset-combobox";
 import { InlineField } from "./inline-field";
@@ -36,6 +37,7 @@ export function InlineSeed({
   config,
   onUpdate,
 }: InlineSeedProps): ReactElement {
+  const { t } = useI18n();
   const mode = config.seed_source_type ?? "hf";
 
   if (mode === "github_repo") {
@@ -90,7 +92,7 @@ export function InlineSeed({
   if (mode === "hf") {
     return (
       <div className="space-y-2">
-        <InlineField label="Dataset">
+        <InlineField label={t("recipe.seed.dataset.label")}>
           <HfDatasetCombobox
             value={config.hf_repo_id}
             accessToken={config.hf_token?.trim() || undefined}
@@ -103,11 +105,11 @@ export function InlineSeed({
                 seed_preview_rows: [],
               })
             }
-            placeholder="org/repo"
+            placeholder={t("recipe.seed.dataset.placeholder")}
           />
         </InlineField>
         <p className="text-[11px] text-muted-foreground">
-          Load columns in dialog.
+          {t("recipe.inline.seed.loadColumnsHint")}
         </p>
       </div>
     );
@@ -117,7 +119,7 @@ export function InlineSeed({
   const fileName = isLocal
     ? config.local_file_name?.trim()
     : config.unstructured_file_names?.length
-      ? `${config.unstructured_file_names.length} file${config.unstructured_file_names.length !== 1 ? "s" : ""}`
+      ? `${config.unstructured_file_names.length} ${t("recipe.inline.seed.files")}`
       : undefined;
 
   return (
@@ -130,11 +132,13 @@ export function InlineSeed({
       </div>
       <div className="min-w-0">
         <p className="truncate text-xs font-medium">
-          {fileName || "No file selected"}
+          {fileName || t("recipe.inline.seed.noFile")}
         </p>
         <p className="text-[11px] text-muted-foreground">
-          {isLocal ? "Structured file" : "Unstructured document"} · configure in
-          dialog
+          {isLocal
+            ? t("recipe.inline.seed.structuredFile")
+            : t("recipe.inline.seed.unstructuredDocument")}{" "}
+          · {t("recipe.inline.seed.configureInDialog")}
         </p>
       </div>
       <HugeiconsIcon
