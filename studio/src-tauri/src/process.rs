@@ -15,6 +15,7 @@ pub struct BackendProcess {
     pub port: Option<u16>,
     pub logs: VecDeque<String>,
     pub intentional_stop: bool,
+    pub generation: u64,
 }
 
 impl Default for BackendProcess {
@@ -24,6 +25,7 @@ impl Default for BackendProcess {
             port: None,
             logs: VecDeque::with_capacity(MAX_LOG_LINES),
             intentional_stop: false,
+            generation: 0,
         }
     }
 }
@@ -245,7 +247,7 @@ pub fn start_backend(
     state: &BackendState,
     port: u16,
     shutdown: &ShutdownFlag,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let bin = resolve_backend_binary()?;
 
     shutdown.store(false, Ordering::SeqCst);
@@ -308,17 +310,19 @@ pub fn start_backend(
     let stderr = child.stderr().take();
 
     // Store child in state
-    {
+    let generation = {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
         proc.child = Some(child);
-    }
+        proc.generation = proc.generation.wrapping_add(1);
+        proc.generation
+    };
 
     // Spawn stdout reader thread
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
         std::thread::spawn(move || {
-            read_output_stream(stdout, &app_handle, &state_clone, false);
+            read_output_stream(stdout, &app_handle, &state_clone, false, generation);
         });
     }
 
@@ -327,11 +331,11 @@ pub fn start_backend(
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
         std::thread::spawn(move || {
-            read_output_stream(stderr, &app_handle, &state_clone, true);
+            read_output_stream(stderr, &app_handle, &state_clone, true, generation);
         });
     }
 
-    Ok(())
+    Ok(generation)
 }
 
 /// Read lines from a child process stream (stdout or stderr).
@@ -342,6 +346,7 @@ fn read_output_stream<R: std::io::Read>(
     app: &AppHandle,
     state: &BackendState,
     is_stderr: bool,
+    generation: u64,
 ) {
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
@@ -360,26 +365,42 @@ fn read_output_stream<R: std::io::Read>(
                 };
 
                 // Check for TAURI_PORT on stdout only
-                if !is_stderr {
-                    if let Some(caps) = port_re.captures(&text) {
-                        if let Some(port_str) = caps.get(1) {
-                            if let Ok(port) = port_str.as_str().parse::<u16>() {
-                                info!("Detected backend port: {}", port);
-                                if let Ok(mut proc) = state.lock() {
-                                    proc.port = Some(port);
-                                }
-                                let _ = app.emit("server-port", port);
-                            }
+                let detected_port = if !is_stderr {
+                    port_re
+                        .captures(&text)
+                        .and_then(|caps| caps.get(1))
+                        .and_then(|port_str| port_str.as_str().parse::<u16>().ok())
+                } else {
+                    None
+                };
+
+                // Buffer the log line only for the current backend generation.
+                // Old reader threads can briefly outlive a stop/start cycle;
+                // they must not overwrite the new backend's port or logs.
+                let current_generation = if let Ok(mut proc) = state.lock() {
+                    if proc.generation != generation {
+                        false
+                    } else {
+                        if let Some(port) = detected_port {
+                            proc.port = Some(port);
                         }
+                        if proc.logs.len() >= MAX_LOG_LINES {
+                            proc.logs.pop_front();
+                        }
+                        proc.logs.push_back(log_line.clone());
+                        true
                     }
+                } else {
+                    false
+                };
+
+                if !current_generation {
+                    break;
                 }
 
-                // Buffer the log line
-                if let Ok(mut proc) = state.lock() {
-                    if proc.logs.len() >= MAX_LOG_LINES {
-                        proc.logs.pop_front();
-                    }
-                    proc.logs.push_back(log_line.clone());
+                if let Some(port) = detected_port {
+                    info!("Detected backend port: {}", port);
+                    let _ = app.emit("server-port", port);
                 }
 
                 info!("[backend] {}", log_line);
@@ -401,6 +422,9 @@ fn read_output_stream<R: std::io::Read>(
     // Stream closed. Only the stdout reader checks for crashes.
     if !is_stderr {
         if let Ok(mut proc) = state.lock() {
+            if proc.generation != generation {
+                return;
+            }
             let intentional = proc.intentional_stop;
             let exited = if let Some(ref mut child) = proc.child {
                 match child.try_wait() {
@@ -525,13 +549,4 @@ pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(),
         info!("Backend process group forcefully stopped");
         Ok(())
     }
-}
-
-/// Spawn `stop_backend` on a background thread and return immediately.
-/// Used by the tray "quit" path so the 5s graceful-wait does not block
-/// the Tauri main event loop before `app.exit(0)` fires.
-pub fn stop_backend_detached(state: BackendState, shutdown: ShutdownFlag) {
-    std::thread::spawn(move || {
-        let _ = stop_backend(&state, &shutdown);
-    });
 }

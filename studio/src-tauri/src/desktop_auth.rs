@@ -1,6 +1,6 @@
 use crate::preflight::{DesktopPreflightDisposition, DesktopPreflightResult};
 use crate::process::BackendState;
-use log::info;
+use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -39,13 +39,16 @@ struct BackendPort {
 #[derive(Debug)]
 enum AuthError {
     Connectivity(String),
+    StaleResponder(String),
     Failed(String),
 }
 
 impl AuthError {
     fn message(self) -> String {
         match self {
-            Self::Connectivity(message) | Self::Failed(message) => message,
+            Self::Connectivity(message) | Self::StaleResponder(message) | Self::Failed(message) => {
+                message
+            }
         }
     }
 }
@@ -73,11 +76,14 @@ fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(s.trim().to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "Failed to read auth secret at {}: {}",
-            path.display(),
-            e
-        )),
+        Err(e) => {
+            warn!(
+                "Desktop auth: ignoring unreadable auth secret at {}: {}",
+                path.display(),
+                e
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -138,7 +144,10 @@ fn classify_auth_send_error(error: reqwest::Error) -> AuthError {
 fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> bool {
     matches!(
         (source, error),
-        (PortSource::Cached, AuthError::Connectivity(_))
+        (
+            PortSource::Cached,
+            AuthError::Connectivity(_) | AuthError::StaleResponder(_)
+        )
     )
 }
 
@@ -157,7 +166,7 @@ async fn exchange_desktop_secret(
         .map_err(classify_auth_send_error)?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(AuthError::Failed(
+        return Err(AuthError::StaleResponder(
             "Running Studio backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
@@ -166,7 +175,7 @@ async fn exchange_desktop_secret(
         return Ok(None);
     }
     if !response.status().is_success() {
-        return Err(AuthError::Failed("Desktop auth failed".to_string()));
+        return Err(AuthError::StaleResponder("Desktop auth failed".to_string()));
     }
 
     response
@@ -213,6 +222,33 @@ async fn provision_desktop_auth() -> Result<(), String> {
     ))
 }
 
+async fn retry_on_discovered_port(
+    client: &Client,
+    state: &tauri::State<'_, BackendState>,
+    previous: BackendPort,
+    secret: &str,
+) -> Result<Option<(Option<DesktopAuthResponse>, BackendPort)>, String> {
+    if previous.source != PortSource::Cached {
+        return Ok(None);
+    }
+    let Some(port) = discover_compatible_backend_port().await else {
+        return Ok(None);
+    };
+    if port == previous.port {
+        return Ok(None);
+    }
+
+    update_backend_port(state, port)?;
+    let backend = BackendPort {
+        port,
+        source: PortSource::Discovered,
+    };
+    exchange_desktop_secret(client, port, secret)
+        .await
+        .map(|tokens| Some((tokens, backend)))
+        .map_err(AuthError::message)
+}
+
 async fn authenticate_with_stale_port_retry(
     client: &Client,
     state: &tauri::State<'_, BackendState>,
@@ -220,20 +256,18 @@ async fn authenticate_with_stale_port_retry(
     secret: &str,
 ) -> Result<(Option<DesktopAuthResponse>, BackendPort), String> {
     match exchange_desktop_secret(client, backend.port, secret).await {
-        Ok(tokens) => Ok((tokens, backend)),
+        Ok(Some(tokens)) => Ok((Some(tokens), backend)),
+        Ok(None) => {
+            if let Some(retried) = retry_on_discovered_port(client, state, backend, secret).await? {
+                return Ok(retried);
+            }
+            Ok((None, backend))
+        }
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
-            let Some(port) = discover_compatible_backend_port().await else {
-                return Err(error.message());
-            };
-            update_backend_port(state, port)?;
-            let backend = BackendPort {
-                port,
-                source: PortSource::Discovered,
-            };
-            exchange_desktop_secret(client, port, secret)
-                .await
-                .map(|tokens| (tokens, backend))
-                .map_err(AuthError::message)
+            if let Some(retried) = retry_on_discovered_port(client, state, backend, secret).await? {
+                return Ok(retried);
+            }
+            Err(error.message())
         }
         Err(error) => Err(error.message()),
     }
@@ -317,10 +351,14 @@ mod tests {
     }
 
     #[test]
-    fn retry_discovery_only_for_cached_connectivity_errors() {
+    fn retry_discovery_only_for_cached_recoverable_errors() {
         assert!(should_retry_with_discovered_port(
             PortSource::Cached,
             &AuthError::Connectivity("connection refused".to_string())
+        ));
+        assert!(should_retry_with_discovered_port(
+            PortSource::Cached,
+            &AuthError::StaleResponder("old responder".to_string())
         ));
         assert!(!should_retry_with_discovered_port(
             PortSource::Discovered,
@@ -330,6 +368,64 @@ mod tests {
             PortSource::Cached,
             &AuthError::Failed("Desktop auth failed".to_string())
         ));
+    }
+
+    #[test]
+    fn read_secret_returns_none_for_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "unsloth-missing-desktop-secret-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(read_secret_if_exists(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_secret_trims_existing_file() {
+        let path =
+            std::env::temp_dir().join(format!("unsloth-desktop-secret-{}", std::process::id()));
+        std::fs::write(&path, "  desktop-secret\n").unwrap();
+
+        assert_eq!(
+            read_secret_if_exists(&path).unwrap(),
+            Some("desktop-secret".to_string())
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_secret_treats_invalid_utf8_as_missing_for_repair() {
+        let path = std::env::temp_dir().join(format!(
+            "unsloth-invalid-desktop-secret-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+
+        assert_eq!(read_secret_if_exists(&path).unwrap(), None);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_treats_permission_denied_as_missing_for_repair() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "unsloth-unreadable-desktop-secret-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, "desktop-stale").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = read_secret_if_exists(&path);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_file(path).unwrap();
+        if matches!(result, Ok(Some(_))) {
+            return;
+        }
+        assert_eq!(result.unwrap(), None);
     }
 
     #[test]

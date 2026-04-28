@@ -481,7 +481,7 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     }
 }
 
-/// Install system packages with elevated permissions (Linux only).
+/// Install apt system packages with elevated permissions (Linux only).
 /// Uses `elevated-command` crate for native auth dialog.
 #[cfg(target_os = "linux")]
 pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
@@ -497,42 +497,44 @@ pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
         }
     }
 
-    // AppImage bundles run on non-Debian distros too. Pick the first package
-    // manager we find. Names in `packages` are Debian-style; callers that want
-    // cross-distro support should translate before invoking.
-    let (program, base_args): (&str, &[&str]) = if Path::new("/usr/bin/apt-get").exists() {
-        ("apt-get", &["install", "-y"])
-    } else if Path::new("/usr/bin/dnf").exists() {
-        ("dnf", &["install", "-y"])
-    } else if Path::new("/usr/bin/zypper").exists() {
-        ("zypper", &["install", "-y"])
-    } else if Path::new("/usr/bin/pacman").exists() {
-        ("pacman", &["-S", "--noconfirm"])
-    } else {
+    // install.sh reports Debian package names. Do not pass them to dnf,
+    // zypper, or pacman where names differ; show an explicit support boundary
+    // instead of offering an elevation flow that is likely to fail.
+    if !Path::new("/usr/bin/apt-get").exists() {
         return Err(
-            "No supported system package manager found (apt-get, dnf, zypper, pacman)".to_string(),
+            "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
+                .to_string(),
         );
-    };
+    }
 
     info!(
-        "[install] Elevated install of packages via {}: {}",
-        program,
+        "[install] Elevated install of apt packages: {}",
         packages.join(", ")
     );
 
-    let mut cmd = StdCommand::new(program);
-    cmd.args(base_args).args(packages);
+    let mut update_cmd = StdCommand::new("apt-get");
+    update_cmd.args(["update", "-y"]);
+    let elevated_update = elevated_command::Command::new(update_cmd)
+        .output()
+        .map_err(|e| format!("Elevated apt update failed: {}", e))?;
+    if !elevated_update.status.success() {
+        let stderr = String::from_utf8_lossy(&elevated_update.stderr);
+        return Err(format!("Package index update failed: {}", stderr));
+    }
 
-    let elevated = elevated_command::Command::new(cmd)
+    let mut install_cmd = StdCommand::new("apt-get");
+    install_cmd.args(["install", "-y"]).args(packages);
+
+    let elevated_install = elevated_command::Command::new(install_cmd)
         .output()
         .map_err(|e| format!("Elevated install failed: {}", e))?;
 
-    if !elevated.status.success() {
-        let stderr = String::from_utf8_lossy(&elevated.stderr);
+    if !elevated_install.status.success() {
+        let stderr = String::from_utf8_lossy(&elevated_install.stderr);
         return Err(format!("Package installation failed: {}", stderr));
     }
 
-    info!("[install] Elevated package install succeeded");
+    info!("[install] Elevated apt package install succeeded");
     Ok(())
 }
 

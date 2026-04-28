@@ -35,6 +35,54 @@ interface DesktopPreflightResult {
   managed_bin: string | null;
 }
 
+const MANAGED_STARTUP_TIMEOUT_MS = 5 * 60_000;
+const MANAGED_STARTUP_POLL_MS = 500;
+
+type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
+type ManagedStartupResult =
+  | { status: "ready"; port: number }
+  | { status: "aborted" }
+  | { status: "missing-port" }
+  | { status: "unhealthy" };
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForManagedServerReady(
+  invoke: TauriInvoke,
+  getPort: () => number | null,
+  shouldContinue: () => boolean,
+): Promise<ManagedStartupResult> {
+  const deadline = Date.now() + MANAGED_STARTUP_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    if (!shouldContinue()) {
+      return { status: "aborted" };
+    }
+
+    const port = getPort();
+    if (port === null) {
+      await wait(MANAGED_STARTUP_POLL_MS);
+      continue;
+    }
+
+    const healthy = await invoke<boolean>("check_health", { port });
+    if (!shouldContinue()) {
+      return { status: "aborted" };
+    }
+    if (healthy && getPort() === port) {
+      return { status: "ready", port };
+    }
+
+    await wait(MANAGED_STARTUP_POLL_MS);
+  }
+
+  return getPort() === null
+    ? { status: "missing-port" }
+    : { status: "unhealthy" };
+}
+
 export function useTauriBackend() {
   const [status, setStatus] = useState<BackendStatus>("checking");
   const statusRef = useRef<BackendStatus>(status);
@@ -181,8 +229,11 @@ export function useTauriBackend() {
 
   async function startManagedServer() {
     // Prevent double-start race condition
-    if (startingRef.current) return;
+    if (startingRef.current) {
+      return;
+    }
     startingRef.current = true;
+    portRef.current = null;
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -192,23 +243,27 @@ export function useTauriBackend() {
 
       // Wait for the owned backend's server-port event. Do not attach to an
       // external backend if the managed start does not report a port.
-      for (let i = 0; i < 120; i++) {
-        if (portRef.current) {
-          const healthy = await invoke<boolean>("check_health", {
-            port: portRef.current,
-          });
-          if (healthy) {
-            setApiBase(portRef.current);
-            setRunningStatus();
-            startingRef.current = false;
-            return;
-          }
-        }
-        await new Promise((r) => setTimeout(r, 500));
+      const startupResult = await waitForManagedServerReady(
+        invoke,
+        () => portRef.current,
+        () => startingRef.current,
+      );
+
+      if (startupResult.status === "ready") {
+        setApiBase(startupResult.port);
+        setRunningStatus();
+        startingRef.current = false;
+        return;
       }
-      const message = !portRef.current
-        ? "Managed server started without reporting a port. Check the logs for details."
-        : "Server started but is not responding. Check the logs for details.";
+
+      if (startupResult.status === "aborted") {
+        return;
+      }
+
+      const message =
+        startupResult.status === "missing-port"
+          ? "Managed server started without reporting a port. Check the logs for details."
+          : "Server started but is not responding. Check the logs for details.";
       setBackendError(message);
     } catch (e) {
       const msg = String(e);
@@ -283,12 +338,12 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // Install completed — this is the ONLY path that starts the server
-      // after install. The install-complete event listener does NOT call
+      // Install completed — validate the managed binary's desktop capability
+      // before starting it. The install-complete event listener does NOT call
       // startServer() to avoid a double-start race condition.
       setBackendStatus("starting");
       elevationResumeRef.current = null;
-      await startServer();
+      await checkInstallAndStart();
     } catch (e) {
       const msg = String(e);
       // NEEDS_ELEVATION is not a real error — the Rust side also emits

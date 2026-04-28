@@ -2,7 +2,16 @@ use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
 use log::{error, info, warn};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+
+const BACKEND_STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(5 * 60);
+const HEALTH_WATCHDOG_INTERVAL: Duration = Duration::from_secs(15);
+const HEALTH_WATCHDOG_MAX_FAILURES: u32 = 3;
+
+fn should_count_watchdog_failure(has_seen_healthy: bool, elapsed_since_start: Duration) -> bool {
+    has_seen_healthy || elapsed_since_start >= BACKEND_STARTUP_GRACE_PERIOD
+}
 
 async fn managed_install_ready_after_repair() -> bool {
     crate::preflight::managed_install_ready().await
@@ -86,7 +95,7 @@ pub async fn start_server(
 ) -> Result<(), String> {
     info!("start_server command called with port {}", port);
 
-    process::start_backend(&app, &state, port, &shutdown)?;
+    let generation = process::start_backend(&app, &state, port, &shutdown)?;
 
     // Spawn health watchdog for the owned backend — detects
     // deadlocks and hangs that stdout-based crash detection misses.
@@ -94,7 +103,7 @@ pub async fn start_server(
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
     tokio::spawn(async move {
-        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown).await;
+        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown, generation).await;
     });
 
     Ok(())
@@ -109,13 +118,13 @@ pub async fn start_managed_server(
     port: u16,
 ) -> Result<(), String> {
     info!("start_managed_server command called with port {}", port);
-    process::start_backend(&app, &state, port, &shutdown)?;
+    let generation = process::start_backend(&app, &state, port, &shutdown)?;
 
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
     tokio::spawn(async move {
-        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown).await;
+        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown, generation).await;
     });
 
     Ok(())
@@ -403,6 +412,8 @@ pub async fn start_managed_repair(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
@@ -410,36 +421,69 @@ mod tests {
             "Installer exited with code 1"
         ));
     }
+
+    #[test]
+    fn watchdog_ignores_startup_failures_within_grace_period() {
+        assert!(!super::should_count_watchdog_failure(
+            false,
+            super::BACKEND_STARTUP_GRACE_PERIOD - Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn watchdog_counts_failures_after_backend_was_healthy() {
+        assert!(super::should_count_watchdog_failure(
+            true,
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn watchdog_counts_startup_failures_after_grace_period() {
+        assert!(super::should_count_watchdog_failure(
+            false,
+            super::BACKEND_STARTUP_GRACE_PERIOD
+        ));
+    }
 }
 
 /// Periodic health check that detects deadlocked or hung backends.
-/// Starts 30s after the backend is launched (to allow initial startup),
-/// then pings /api/health every 15s. After 3 consecutive failures (45s)
-/// with the process still alive, emits `server-crashed` so the frontend
-/// can offer a restart.
-async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: ShutdownFlag) {
+/// During startup, failures are ignored for a generous grace period so a slow
+/// but legitimate backend boot is not killed. After the backend has answered at
+/// least once, or after the startup grace expires, 3 consecutive failed checks
+/// emit `server-crashed` so the frontend can offer a restart.
+async fn health_watchdog(
+    app: AppHandle,
+    state: BackendState,
+    shutdown: ShutdownFlag,
+    generation: u64,
+) {
     use std::sync::atomic::Ordering;
 
-    // Give the backend time to start up
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-
+    let started_at = Instant::now();
     let mut consecutive_failures: u32 = 0;
+    let mut has_seen_healthy = false;
 
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        tokio::time::sleep(HEALTH_WATCHDOG_INTERVAL).await;
 
         if shutdown.load(Ordering::SeqCst) {
             info!("Health watchdog: shutdown flag set, exiting");
             break;
         }
 
-        let (port, has_child) = {
+        let (port, has_child, current_generation) = {
             let proc = match state.lock() {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            (proc.port, proc.child.is_some())
+            (proc.port, proc.child.is_some(), proc.generation)
         };
+
+        if current_generation != generation {
+            info!("Health watchdog: backend generation changed, exiting");
+            break;
+        }
 
         // Stop watching if the backend is gone
         if !has_child {
@@ -447,24 +491,49 @@ async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: Shutdown
             break;
         }
 
+        let should_count_failure =
+            should_count_watchdog_failure(has_seen_healthy, started_at.elapsed());
+
         let Some(port) = port else {
-            continue; // Port not yet known
+            if should_count_failure {
+                consecutive_failures += 1;
+                warn!(
+                    "Health watchdog: backend has not reported a port ({}/{})",
+                    consecutive_failures, HEALTH_WATCHDOG_MAX_FAILURES
+                );
+            }
+
+            if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
+                error!(
+                    "Health watchdog: backend never reported a port, killing and declaring dead"
+                );
+                let _ = process::stop_backend(&state, &shutdown);
+                let _ = app.emit("server-crashed", ());
+                break;
+            }
+
+            continue;
         };
 
         match check_health_inner(port).await {
             Ok(true) => {
+                has_seen_healthy = true;
                 consecutive_failures = 0;
+            }
+            _ if !should_count_failure => {
+                info!(
+                    "Health watchdog: startup health check failed on port {} before grace period elapsed",
+                    port
+                );
             }
             _ => {
                 consecutive_failures += 1;
                 warn!(
-                    "Health watchdog: failure {}/3 on port {}",
-                    consecutive_failures, port
+                    "Health watchdog: failure {}/{} on port {}",
+                    consecutive_failures, HEALTH_WATCHDOG_MAX_FAILURES, port
                 );
-                if consecutive_failures >= 3 {
-                    error!(
-                        "Health watchdog: backend unresponsive for 45s, killing and declaring dead"
-                    );
+                if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
+                    error!("Health watchdog: backend unresponsive, killing and declaring dead");
                     // Kill the zombie process so retry can start fresh
                     let _ = process::stop_backend(&state, &shutdown);
                     let _ = app.emit("server-crashed", ());

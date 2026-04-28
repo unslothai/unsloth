@@ -67,6 +67,21 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+fn cleanup_child_processes(app: &tauri::AppHandle) {
+    if let Some(install_state) = app.try_state::<install::InstallState>() {
+        let _ = install::stop_install(&install_state);
+    }
+    if let Some(update_state) = app.try_state::<update::UpdateState>() {
+        let _ = update::stop_update(&update_state);
+    }
+    if let Some(backend_state) = app.try_state::<process::BackendState>() {
+        let shutdown = app
+            .try_state::<process::ShutdownFlag>()
+            .expect("ShutdownFlag must be managed");
+        let _ = process::stop_backend(&backend_state, &shutdown);
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Studio").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -90,17 +105,15 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = app.emit("tray-toggle-server", ());
             }
             "quit" => {
-                let install_state = app.state::<crate::install::InstallState>();
-                let _ = crate::install::stop_install(&install_state);
-                let update_state = app.state::<crate::update::UpdateState>();
-                let _ = crate::update::stop_update(&update_state);
-                // Detach the 5s graceful-wait so the tray click does not
-                // block the Tauri main loop. Exit runs the RunEvent::Exit
-                // safety net which also calls stop_backend synchronously.
-                let shutdown = app.state::<crate::process::ShutdownFlag>().inner().clone();
-                let backend_state = app.state::<crate::process::BackendState>().inner().clone();
-                crate::process::stop_backend_detached(backend_state, shutdown);
-                app.exit(0);
+                // Run cleanup off the menu callback, but only exit after the
+                // backend tree has been reaped. Exiting first can terminate this
+                // process while a detached cleanup thread is still waiting,
+                // leaving the backend orphaned.
+                let app_handle = app.clone();
+                std::thread::spawn(move || {
+                    cleanup_child_processes(&app_handle);
+                    app_handle.exit(0);
+                });
             }
             _ => {}
         })
@@ -183,18 +196,7 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Cleanup on ALL exit paths — safety net for non-tray exits
-                if let Some(install_state) = app.try_state::<install::InstallState>() {
-                    let _ = install::stop_install(&install_state);
-                }
-                if let Some(update_state) = app.try_state::<update::UpdateState>() {
-                    let _ = update::stop_update(&update_state);
-                }
-                if let Some(backend_state) = app.try_state::<process::BackendState>() {
-                    let shutdown = app
-                        .try_state::<process::ShutdownFlag>()
-                        .expect("ShutdownFlag must be managed");
-                    let _ = process::stop_backend(&backend_state, &shutdown);
-                }
+                cleanup_child_processes(app);
             }
         });
 }
