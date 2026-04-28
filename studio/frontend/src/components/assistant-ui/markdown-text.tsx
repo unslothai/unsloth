@@ -5,10 +5,11 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
+import { openLink } from "@/lib/open-link";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { code } from "@streamdown/code";
+import { createCodePlugin } from "./code-plugin";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
@@ -16,8 +17,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
+const code = createCodePlugin({
+  themes: [unslothLightTheme, unslothDarkTheme],
+});
 const { withSmoothContextProvider } = INTERNAL;
 
 const STREAMDOWN_COMPONENTS = {
@@ -28,9 +33,13 @@ const STREAMDOWN_COMPONENTS = {
   }: React.ComponentProps<"a">) => (
     <a
       href={href}
-      target="_blank"
       rel="noopener noreferrer"
-      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors"
+      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer"
+      onClick={(e) => {
+        if (href && openLink(href)) {
+          e.preventDefault();
+        }
+      }}
       {...props}
     >
       {children}
@@ -272,8 +281,8 @@ function MermaidCopyButton({ source }: { source: string }) {
       type="button"
       className="absolute top-3.5 right-20 z-20 cursor-pointer text-muted-foreground transition-all hover:text-foreground"
       title="Copy Mermaid source"
-      onClick={() => {
-        if (!copyToClipboard(source)) {
+      onClick={async () => {
+        if (!(await copyToClipboard(source))) {
           return;
         }
         showCopied();
@@ -306,8 +315,8 @@ function CodeBlockActions({
           className={ACTION_BUTTON_CLASS}
           title="Copy code"
           disabled={disabled}
-          onClick={() => {
-            if (!copyToClipboard(source)) {
+          onClick={async () => {
+            if (!(await copyToClipboard(source))) {
               return;
             }
             showCopied();
@@ -425,7 +434,7 @@ const MarkdownTextImpl = () => {
             panZoom: true,
           },
         }}
-        shikiTheme={["github-light", "github-dark"]}
+        shikiTheme={[unslothLightTheme, unslothDarkTheme]}
         BlockComponent={StreamdownBlock}
       >
         {processedText}

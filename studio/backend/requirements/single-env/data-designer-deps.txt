@@ -19,7 +19,8 @@ ruff<1,>=0.14.10
 scipy<2,>=1.11.0
 sqlfluff<4,>=3.2.0
 tiktoken<1,>=0.8.0
-# Unstructured-seed plugin deps (plugin installed with --no-deps)
+# Local seed plugin deps (plugins installed with --no-deps)
+requests>=2.31
 pymupdf>=1.24.0
 pymupdf4llm>=0.0.17
 mammoth>=1.8.0

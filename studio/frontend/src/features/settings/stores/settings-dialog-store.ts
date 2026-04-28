@@ -5,6 +5,7 @@ import { create } from "zustand";
 
 export type SettingsTab =
   | "general"
+  | "profile"
   | "appearance"
   | "chat"
   | "api-keys"
@@ -28,7 +29,7 @@ function loadInitialTab(): SettingsTab {
   } catch {
     return "general";
   }
-  const valid: SettingsTab[] = ["general", "appearance", "chat", "api-keys", "about"];
+  const valid: SettingsTab[] = ["general", "profile", "appearance", "chat", "api-keys", "about"];
   return valid.includes(stored as SettingsTab) ? (stored as SettingsTab) : "general";
 }
 

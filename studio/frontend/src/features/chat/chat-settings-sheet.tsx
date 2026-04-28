@@ -19,6 +19,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -52,60 +53,47 @@ import {
   CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
-  PencilEdit01Icon,
   Settings02Icon,
+  Settings05Icon,
   SlidersHorizontalIcon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Tooltip,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
-  DEFAULT_INFERENCE_PARAMS,
-  type InferenceParams,
-} from "./types/runtime";
+  applyPresetParams,
+  BUILTIN_PRESET_NAMES,
+  BUILTIN_PRESETS,
+  defaultInferenceParams,
+  getBuiltinVariantName,
+  getOrderedPresets,
+  getPresetOwnedConfigKey,
+  getPresetSaveState,
+  getPresetSource,
+  getUniquePresetName,
+  isSamePresetConfig,
+  normalizeCustomPresets,
+  toPresetParams,
+  type Preset,
+} from "./presets/preset-policy";
+import type { InferenceParams } from "./types/runtime";
 
-export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
+export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
-
-export interface Preset {
-  name: string;
-  params: InferenceParams;
-}
 
 interface LegacySystemPromptTemplate {
   name: string;
   content: string;
 }
-
-const BUILTIN_PRESETS: Preset[] = [
-  { name: "Default", params: { ...defaultInferenceParams } },
-  {
-    name: "Creative",
-    params: {
-      ...defaultInferenceParams,
-      temperature: 1.5,
-      topP: 1.0,
-      topK: 0,
-      minP: 0.1,
-      repetitionPenalty: 1.0,
-    },
-  },
-  {
-    name: "Precise",
-    params: {
-      ...defaultInferenceParams,
-      temperature: 0.1,
-      topP: 0.95,
-      topK: 80,
-      minP: 0.01,
-      repetitionPenalty: 1.0,
-    },
-  },
-];
 
 const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
@@ -117,16 +105,13 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
-function getUniquePresetName(baseName: string, usedNames: Set<string>): string {
-  const normalizedBase = baseName.trim() || "Imported Prompt";
-  let nextName = normalizedBase;
-  let suffix = 2;
-  while (usedNames.has(nextName)) {
-    nextName = `${normalizedBase} ${suffix}`;
-    suffix += 1;
+function saveCustomPresets(presets: Preset[]): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(presets));
+  } catch {
+    // ignore
   }
-  usedNames.add(nextName);
-  return nextName;
 }
 
 function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
@@ -156,18 +141,7 @@ function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
     ]);
     const seenImportedConfigKeys = new Set(
       [...BUILTIN_PRESETS, ...presets].map((preset) =>
-        JSON.stringify({
-          temperature: preset.params.temperature,
-          topP: preset.params.topP,
-          topK: preset.params.topK,
-          minP: preset.params.minP,
-          repetitionPenalty: preset.params.repetitionPenalty,
-          presencePenalty: preset.params.presencePenalty,
-          maxSeqLength: preset.params.maxSeqLength,
-          maxTokens: preset.params.maxTokens,
-          systemPrompt: preset.params.systemPrompt,
-          trustRemoteCode: preset.params.trustRemoteCode ?? false,
-        }),
+        getPresetOwnedConfigKey(preset.params),
       ),
     );
     const importedPresets = parsed
@@ -186,18 +160,7 @@ function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
         },
       }))
       .filter(({ importedParams }) => {
-        const configKey = JSON.stringify({
-          temperature: importedParams.temperature,
-          topP: importedParams.topP,
-          topK: importedParams.topK,
-          minP: importedParams.minP,
-          repetitionPenalty: importedParams.repetitionPenalty,
-          presencePenalty: importedParams.presencePenalty,
-          maxSeqLength: importedParams.maxSeqLength,
-          maxTokens: importedParams.maxTokens,
-          systemPrompt: importedParams.systemPrompt,
-          trustRemoteCode: importedParams.trustRemoteCode ?? false,
-        });
+        const configKey = getPresetOwnedConfigKey(importedParams);
         if (seenImportedConfigKeys.has(configKey)) return false;
         seenImportedConfigKeys.add(configKey);
         return true;
@@ -211,8 +174,8 @@ function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
       localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
       return presets;
     }
-    const mergedPresets = [...presets, ...importedPresets];
-    localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(mergedPresets));
+    const mergedPresets = normalizeCustomPresets([...presets, ...importedPresets]);
+    saveCustomPresets(mergedPresets);
     try {
       localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
       localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
@@ -250,7 +213,11 @@ function loadSavedCustomPresets(): Preset[] {
         },
       }))
       .filter((preset) => preset.name.length > 0);
-    return migrateLegacySystemPromptTemplates(presets);
+    const normalized = normalizeCustomPresets(presets);
+    if (JSON.stringify(normalized) !== JSON.stringify(presets)) {
+      saveCustomPresets(normalized);
+    }
+    return migrateLegacySystemPromptTemplates(normalized);
   } catch {
     return migrateLegacySystemPromptTemplates([]);
   }
@@ -263,82 +230,6 @@ function loadSavedActivePreset(): string {
   } catch {
     return "Default";
   }
-}
-
-type PresetSaveMode =
-  | "disabled"
-  | "overwrite-active"
-  | "overwrite-other"
-  | "create";
-
-interface PresetSaveState {
-  mode: PresetSaveMode;
-  canSubmit: boolean;
-  isSaveReady: boolean;
-  buttonLabel: string;
-  title: string;
-}
-
-function isSamePresetConfig(a: InferenceParams, b: InferenceParams): boolean {
-  return (
-    a.temperature === b.temperature &&
-    a.topP === b.topP &&
-    a.topK === b.topK &&
-    a.minP === b.minP &&
-    a.repetitionPenalty === b.repetitionPenalty &&
-    a.presencePenalty === b.presencePenalty &&
-    a.maxSeqLength === b.maxSeqLength &&
-    a.maxTokens === b.maxTokens &&
-    a.systemPrompt === b.systemPrompt &&
-    (a.trustRemoteCode ?? false) === (b.trustRemoteCode ?? false)
-  );
-}
-
-function getPresetSaveState({
-  rawName,
-  activePreset,
-  presets,
-  activePresetDirty,
-}: {
-  rawName: string;
-  activePreset: string;
-  presets: Preset[];
-  activePresetDirty: boolean;
-}): PresetSaveState {
-  const trimmedName = rawName.trim();
-  if (!trimmedName) {
-    return {
-      mode: "disabled",
-      canSubmit: false,
-      isSaveReady: false,
-      buttonLabel: "Save",
-      title: "Enter a preset name",
-    };
-  }
-
-  const matchingPreset = presets.find((preset) => preset.name === trimmedName);
-  if (matchingPreset) {
-    const isActiveMatch = matchingPreset.name === activePreset;
-    return {
-      mode: isActiveMatch ? "overwrite-active" : "overwrite-other",
-      canSubmit: !isActiveMatch || activePresetDirty,
-      isSaveReady: !isActiveMatch || activePresetDirty,
-      buttonLabel: isActiveMatch && !activePresetDirty ? "Saved" : "Overwrite",
-      title: isActiveMatch
-        ? activePresetDirty
-          ? "Save current settings to this preset"
-          : "No unsaved changes"
-        : `Overwrite preset "${trimmedName}"`,
-    };
-  }
-
-  return {
-    mode: "create",
-    canSubmit: true,
-    isSaveReady: true,
-    buttonLabel: "Save as New",
-    title: `Save current settings as "${trimmedName}"`,
-  };
 }
 
 function ParamSlider({
@@ -513,6 +404,10 @@ export function ChatSettingsPanel({
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
   );
+  const setActivePresetSource = useChatRuntimeStore(
+    (s) => s.setActivePresetSource,
+  );
+  const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
 
   const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
   const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
@@ -535,12 +430,9 @@ export function ChatSettingsPanel({
   >(undefined);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  const [activePresetBaseline, setActivePresetBaseline] = useState(params);
   const presets = useMemo(() => {
-    const overrides = new Set(customPresets.map((preset) => preset.name));
-    return [
-      ...BUILTIN_PRESETS.filter((preset) => !overrides.has(preset.name)),
-      ...customPresets,
-    ];
+    return getOrderedPresets(customPresets);
   }, [customPresets]);
   const activePresetDefinition = useMemo(
     () => presets.find((preset) => preset.name === activePreset) ?? null,
@@ -550,17 +442,23 @@ export function ChatSettingsPanel({
     () => customPresets.find((preset) => preset.name === activePreset) ?? null,
     [activePreset, customPresets],
   );
-  const activeBuiltinPreset = useMemo(
-    () =>
-      BUILTIN_PRESETS.find((preset) => preset.name === activePreset) ?? null,
-    [activePreset],
-  );
-  const activePresetDirty = useMemo(
-    () =>
-      activePresetDefinition == null
-        ? false
-        : !isSamePresetConfig(activePresetDefinition.params, params),
-    [activePresetDefinition, params],
+  const hasUnsavedPresetChanges = useMemo(
+    () => {
+      if (activePresetDefinition == null) {
+        return false;
+      }
+      if (BUILTIN_PRESET_NAMES.has(activePresetDefinition.name)) {
+        if (activePresetDefinition.name === "Default") {
+          return activePresetSource === "modified";
+        }
+        return (
+          activePresetSource === "modified" ||
+          !isSamePresetConfig(activePresetDefinition.params, params)
+        );
+      }
+      return !isSamePresetConfig(activePresetDefinition.params, params);
+    },
+    [activePresetDefinition, activePresetSource, params],
   );
   const presetSaveState = useMemo(
     () =>
@@ -568,9 +466,9 @@ export function ChatSettingsPanel({
         rawName: presetNameInput,
         activePreset,
         presets,
-        activePresetDirty,
+        hasUnsavedPresetChanges,
       }),
-    [activePreset, activePresetDirty, presetNameInput, presets],
+    [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
   const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
   const trustRemoteCodeMissing =
@@ -579,27 +477,24 @@ export function ChatSettingsPanel({
     !(params.trustRemoteCode ?? false);
 
   function set<K extends keyof InferenceParams>(key: K) {
-    return (v: InferenceParams[K]) => onParamsChange({ ...params, [key]: v });
+    return (v: InferenceParams[K]) => {
+      const nextParams = { ...params, [key]: v };
+      const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+        ? getPresetSource(activePreset)
+        : "modified";
+      setActivePresetSource(nextSource);
+      onParamsChange(nextParams);
+    };
   }
 
   function applyPreset(name: string) {
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      if (
-        modelRequiresTrustRemoteCode &&
-        !(p.params.trustRemoteCode ?? false)
-      ) {
-        toast.warning("This configuration turns custom code off", {
-          description:
-            "The current model needs custom code enabled to load. Keep it on for this model.",
-        });
-        return;
-      }
       onParamsChange({
-        ...p.params,
-        checkpoint: params.checkpoint,
+        ...applyPresetParams(params, p.params),
       });
       setActivePreset(name);
+      setActivePresetSource(getPresetSource(name));
       if (canUseStorage()) {
         try {
           localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, name);
@@ -616,27 +511,29 @@ export function ChatSettingsPanel({
       toast.error("Enter a preset name");
       return;
     }
+    const usedNames = new Set([
+      ...BUILTIN_PRESET_NAMES,
+      ...customPresets.map((preset) => preset.name),
+    ]);
+    const saveName = BUILTIN_PRESET_NAMES.has(trimmed)
+      ? getBuiltinVariantName(trimmed, usedNames)
+      : trimmed;
     setCustomPresets((prev) => {
-      const next = prev.filter((p) => p.name !== trimmed);
-      const merged = [...next, { name: trimmed, params: { ...params } }];
-      if (canUseStorage()) {
-        try {
-          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(merged));
-        } catch {
-          // ignore
-        }
-      }
+      const next = prev.filter((p) => p.name !== saveName);
+      const merged = [...next, { name: saveName, params: toPresetParams(params) }];
+      saveCustomPresets(merged);
       return merged;
     });
     if (canUseStorage()) {
       try {
-        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, trimmed);
+        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, saveName);
       } catch {
         // ignore
       }
     }
-    setActivePreset(trimmed);
-    setPresetNameInput(trimmed);
+    setActivePreset(saveName);
+    setActivePresetSource("custom");
+    setPresetNameInput(saveName);
   }
 
   function deletePreset(name: string) {
@@ -646,41 +543,20 @@ export function ChatSettingsPanel({
     if (!hasCustomPreset) {
       return;
     }
-    const builtinPreset = BUILTIN_PRESETS.find((preset) => preset.name === name);
     const fallbackPreset =
-      builtinPreset ??
-      BUILTIN_PRESETS.find((preset) => preset.name === "Default") ??
-      null;
-    if (
-      activePreset === name &&
-      fallbackPreset &&
-      modelRequiresTrustRemoteCode &&
-      !(fallbackPreset.params.trustRemoteCode ?? false)
-    ) {
-      toast.warning("Reset would turn custom code off", {
-        description:
-          "The current model needs custom code enabled to load. Keep it on for this model.",
-      });
-      return;
-    }
+      BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
     setCustomPresets((prev) => {
       const next = prev.filter((preset) => preset.name !== name);
-      if (canUseStorage()) {
-        try {
-          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(next));
-        } catch {
-          // ignore
-        }
-      }
+      saveCustomPresets(next);
       return next;
     });
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange({
-          ...fallbackPreset.params,
-          checkpoint: params.checkpoint,
+          ...applyPresetParams(params, fallbackPreset.params),
         });
         setActivePreset(fallbackPreset.name);
+        setActivePresetSource("builtin-default");
         if (canUseStorage()) {
           try {
             localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, fallbackPreset.name);
@@ -703,8 +579,46 @@ export function ChatSettingsPanel({
   }
 
   useEffect(() => {
-    if (presets.some((preset) => preset.name === activePreset)) return;
+    if (activePresetSource !== "modified") {
+      setActivePresetBaseline(params);
+    }
+  }, [activePresetSource, params]);
+
+  useEffect(() => {
+    if (presets.some((preset) => preset.name === activePreset)) {
+      const expectedSource = getPresetSource(activePreset);
+      if (activePresetDefinition != null) {
+        if (BUILTIN_PRESET_NAMES.has(activePresetDefinition.name)) {
+          if (activePresetDefinition.name === "Default") {
+            if (
+              activePresetSource !== "modified" &&
+              activePresetSource !== expectedSource
+            ) {
+              setActivePresetSource(expectedSource);
+            }
+            return;
+          }
+          const matchesActivePreset = isSamePresetConfig(
+            activePresetDefinition.params,
+            params,
+          );
+          const nextSource = matchesActivePreset ? expectedSource : "modified";
+          if (activePresetSource !== nextSource) {
+            setActivePresetSource(nextSource);
+          }
+          return;
+        }
+      }
+      if (
+        activePresetSource !== "modified" &&
+        activePresetSource !== expectedSource
+      ) {
+        setActivePresetSource(expectedSource);
+      }
+      return;
+    }
     setActivePreset("Default");
+    setActivePresetSource("builtin-default");
     if (canUseStorage()) {
       try {
         localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
@@ -712,7 +626,14 @@ export function ChatSettingsPanel({
         // ignore
       }
     }
-  }, [activePreset, presets]);
+  }, [
+    activePreset,
+    activePresetDefinition,
+    activePresetSource,
+    params,
+    presets,
+    setActivePresetSource,
+  ]);
 
   useEffect(() => {
     setPresetNameInput(activePreset);
@@ -736,17 +657,217 @@ export function ChatSettingsPanel({
     return () => ro.disconnect();
   }, [open]);
 
+  const modelSection = (
+    <CollapsibleSection
+      icon={Settings02Icon}
+      label="Model"
+      defaultOpen={true}
+    >
+      <div className="flex flex-col gap-3 py-1">
+        {isGguf && (
+          <>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">Context Length</span>
+                <Input
+                  type="number"
+                  value={
+                    typeof ctxDisplayValue === "number"
+                      ? ctxDisplayValue
+                      : (ggufContextLength ?? "")
+                  }
+                  placeholder="..."
+                  min={128}
+                  max={ctxMaxValue ?? undefined}
+                  step={1024}
+                  className="h-6 w-[100px] text-right text-xs tabular-nums"
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") {
+                      setCustomContextLength(null);
+                      return;
+                    }
+                    const v = Number.parseInt(raw, 10);
+                    if (!Number.isNaN(v) && v >= 0) {
+                      const maxCtx = ctxMaxValue ?? Number.POSITIVE_INFINITY;
+                      const clamped = Math.min(v, maxCtx);
+                      setCustomContextLength(
+                        clamped === (ggufContextLength ?? 0) ? null : clamped,
+                      );
+                    }
+                  }}
+                />
+              </div>
+              <Slider
+                min={1024}
+                max={ctxMaxValue ?? 4096}
+                step={1024}
+                value={[
+                  Math.min(
+                    typeof ctxDisplayValue === "number"
+                      ? ctxDisplayValue
+                      : (ggufContextLength ?? 4096),
+                    ctxMaxValue ?? 4096,
+                  ),
+                ]}
+                onValueChange={([v]) => {
+                  setCustomContextLength(
+                    v === (ggufContextLength ?? 0) ? null : v,
+                  );
+                }}
+              />
+              {ggufMaxContextLength != null &&
+                typeof ctxDisplayValue === "number" &&
+                ctxDisplayValue > ggufMaxContextLength && (
+                  <p className="text-[11px] text-amber-500">
+                    Exceeds estimated VRAM capacity (
+                    {ggufMaxContextLength.toLocaleString()} tokens). The model
+                    may use system RAM.
+                  </p>
+                )}
+            </div>
+            <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
+              <div className="min-w-0">
+                <div className="text-xs font-medium">KV Cache Dtype</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Quantize KV cache to reduce VRAM.
+                </div>
+              </div>
+              <div className="w-full min-w-0">
+                <Select
+                  value={kvCacheDtype ?? "f16"}
+                  onValueChange={(v) => {
+                    setKvCacheDtype(v === "f16" ? null : v);
+                  }}
+                >
+                  <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="f16">f16</SelectItem>
+                    <SelectItem value="bf16">bf16</SelectItem>
+                    <SelectItem value="q8_0">q8_0</SelectItem>
+                    <SelectItem value="q5_1">q5_1</SelectItem>
+                    <SelectItem value="q4_1">q4_1</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {!currentModelIsVision && (
+              <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium">
+                    Speculative Decoding
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Speed up generation with no VRAM cost.
+                  </div>
+                </div>
+                <div className="w-full min-w-0">
+                  <Select
+                    value={speculativeType ?? "off"}
+                    onValueChange={(v) => {
+                      setSpeculativeType(v === "off" ? null : v);
+                    }}
+                  >
+                    <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">On</SelectItem>
+                      <SelectItem value="off">Off</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+            {modelSettingsDirty && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => onReloadModel?.()}
+                  className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomContextLength(null);
+                    setKvCacheDtype(loadedKvCacheDtype);
+                    setSpeculativeType(loadedSpeculativeType);
+                  }}
+                  className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+                >
+                  Reset
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        {!isGguf && params.checkpoint && (
+          <>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-medium">Enable custom code</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Allow models with custom code (e.g. Nemotron). Only enable if
+                  sure.
+                </div>
+              </div>
+              <Switch
+                checked={params.trustRemoteCode ?? false}
+                onCheckedChange={set("trustRemoteCode")}
+              />
+            </div>
+            {trustRemoteCodeMissing && (
+              <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
+                <AlertTitle className="text-[11px] font-medium">
+                  Keep custom code enabled for this model
+                </AlertTitle>
+                <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
+                  This model requires custom code to load. You can edit the
+                  toggle, but loading will stay blocked until it is turned back
+                  on.
+                </AlertDescription>
+              </Alert>
+            )}
+          </>
+        )}
+      </div>
+    </CollapsibleSection>
+  );
+
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto bg-muted/70">
-      <div className="sticky top-0 z-10 flex items-center gap-2 bg-muted/70 px-4 py-3 backdrop-blur">
-        <HugeiconsIcon
-          icon={PencilEdit01Icon}
-          className="size-4 text-muted-foreground/70"
-        />
-        <span className="flex-1 text-base font-semibold tracking-tight">
-          Configuration
-        </span>
+      <div className="aui-thread-viewport relative h-full overflow-y-auto">
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 pl-2 pr-2 pt-[11px] backdrop-blur">
+        {isMobile ? (
+          <span className="flex h-[34px] flex-1 items-center pl-1 text-base font-semibold tracking-tight">
+            Configuration
+          </span>
+        ) : (
+          <>
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onOpenChange?.(false)}
+                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close configuration"
+                >
+                  <HugeiconsIcon icon={Settings05Icon} className="size-5" />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                Close configuration
+              </TooltipContent>
+            </Tooltip>
+            <span className="flex h-[34px] flex-1 items-center text-base font-semibold tracking-tight">
+              Configuration
+            </span>
+          </>
+        )}
       </div>
 
       <div className="px-1.5">
@@ -810,13 +931,16 @@ export function ChatSettingsPanel({
                       : undefined
                   }
                 >
-                  {presets.map((p) => (
-                    <DropdownMenuItem
-                      key={p.name}
-                      onSelect={() => applyPreset(p.name)}
-                    >
-                      {p.name}
-                    </DropdownMenuItem>
+                  {presets.map((p, index) => (
+                    <Fragment key={p.name}>
+                      <DropdownMenuItem onSelect={() => applyPreset(p.name)}>
+                        {p.name}
+                      </DropdownMenuItem>
+                      {index === BUILTIN_PRESETS.length - 1 &&
+                        presets.length > BUILTIN_PRESETS.length && (
+                          <DropdownMenuSeparator className="mx-2.5! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
+                        )}
+                    </Fragment>
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -850,9 +974,7 @@ export function ChatSettingsPanel({
                 className="h-8 w-full text-xs text-muted-foreground"
                 title={
                   activeCustomPreset
-                    ? activeBuiltinPreset
-                      ? "Reset selected preset to built-in defaults"
-                      : "Delete selected preset"
+                    ? "Delete selected preset"
                     : "No saved override to delete"
                 }
               >
@@ -889,192 +1011,10 @@ export function ChatSettingsPanel({
             value={params.systemPrompt}
             onChange={(e) => set("systemPrompt")(e.target.value)}
             placeholder="You are a helpful assistant..."
-            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle"
+            className="min-h-20 max-h-48 overflow-y-auto text-xs corner-squircle focus-visible:ring-[1px]"
             rows={3}
           />
         </div>
-
-        <CollapsibleSection
-          icon={Settings02Icon}
-          label="Model"
-          defaultOpen={true}
-        >
-          <div className="flex flex-col gap-3 py-1">
-            {isGguf && (
-              <>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">Context Length</span>
-                    <Input
-                      type="number"
-                      value={
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (ggufContextLength ?? "")
-                      }
-                      placeholder="..."
-                      min={128}
-                      max={ctxMaxValue ?? undefined}
-                      step={1024}
-                      className="h-6 w-[100px] text-right text-xs tabular-nums"
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
-                          setCustomContextLength(null);
-                          return;
-                        }
-                        const v = Number.parseInt(raw, 10);
-                        if (!Number.isNaN(v) && v >= 0) {
-                          const maxCtx =
-                            ctxMaxValue ?? Number.POSITIVE_INFINITY;
-                          const clamped = Math.min(v, maxCtx);
-                          setCustomContextLength(
-                            clamped === (ggufContextLength ?? 0)
-                              ? null
-                              : clamped,
-                          );
-                        }
-                      }}
-                    />
-                  </div>
-                  <Slider
-                    min={1024}
-                    max={ctxMaxValue ?? 4096}
-                    step={1024}
-                    value={[
-                      Math.min(
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (ggufContextLength ?? 4096),
-                        ctxMaxValue ?? 4096,
-                      ),
-                    ]}
-                    onValueChange={([v]) => {
-                      setCustomContextLength(
-                        v === (ggufContextLength ?? 0) ? null : v,
-                      );
-                    }}
-                  />
-                  {ggufMaxContextLength != null &&
-                    typeof ctxDisplayValue === "number" &&
-                    ctxDisplayValue > ggufMaxContextLength && (
-                      <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity (
-                        {ggufMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
-                      </p>
-                    )}
-                </div>
-                <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">KV Cache Dtype</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Quantize KV cache to reduce VRAM.
-                    </div>
-                  </div>
-                  <div className="w-full min-w-0">
-                    <Select
-                      value={kvCacheDtype ?? "f16"}
-                      onValueChange={(v) => {
-                        setKvCacheDtype(v === "f16" ? null : v);
-                      }}
-                    >
-                      <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="f16">f16</SelectItem>
-                        <SelectItem value="bf16">bf16</SelectItem>
-                        <SelectItem value="q8_0">q8_0</SelectItem>
-                        <SelectItem value="q5_1">q5_1</SelectItem>
-                        <SelectItem value="q4_1">q4_1</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                {!currentModelIsVision && (
-                  <div className="grid grid-cols-[minmax(0,1fr)_65px] items-center gap-x-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium">
-                        Speculative Decoding
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        Speed up generation with no VRAM cost.
-                      </div>
-                    </div>
-                    <div className="w-full min-w-0">
-                      <Select
-                        value={speculativeType ?? "off"}
-                        onValueChange={(v) => {
-                          setSpeculativeType(v === "off" ? null : v);
-                        }}
-                      >
-                        <SelectTrigger className="grid h-7 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-0 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="ngram-mod">On</SelectItem>
-                          <SelectItem value="off">Off</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                )}
-                {modelSettingsDirty && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => onReloadModel?.()}
-                      className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                    >
-                      Apply
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomContextLength(null);
-                        setKvCacheDtype(loadedKvCacheDtype);
-                        setSpeculativeType(loadedSpeculativeType);
-                      }}
-                      className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
-                    >
-                      Reset
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-            {!isGguf && params.checkpoint && (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">Enable custom code</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only
-                      enable if sure.
-                    </div>
-                  </div>
-                  <Switch
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-                {trustRemoteCodeMissing && (
-                  <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
-                    <AlertTitle className="text-[11px] font-medium">
-                      Keep custom code enabled for this model
-                    </AlertTitle>
-                    <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </>
-            )}
-          </div>
-        </CollapsibleSection>
 
         <CollapsibleSection
           icon={SlidersHorizontalIcon}
@@ -1162,6 +1102,8 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
+        {modelSection}
+
         <CollapsibleSection icon={Wrench01Icon} label="Tools">
           <div className="flex flex-col gap-3 py-1">
             <AutoHealToolCallsToggle />
@@ -1202,6 +1144,7 @@ export function ChatSettingsPanel({
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
+              fieldSizing="fixed"
               className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
               rows={14}
             />
@@ -1246,7 +1189,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 transition-[width] duration-200 ease-linear ${open ? "w-[17rem]" : "w-0"}`}
+      className={`relative z-50 shrink-0 h-full overflow-hidden bg-muted/70 ${open ? "w-[17rem]" : "w-0"}`}
     >
       <div className="h-full w-[17rem]">{settingsContent}</div>
     </aside>
