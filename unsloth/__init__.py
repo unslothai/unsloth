@@ -67,7 +67,12 @@ if _IS_MLX:
             )
 
     def is_bfloat16_supported():
-        return True
+        try:
+            import mlx.core as mx
+            name = mx.device_info().get("device_name", "") or ""
+            return not name.startswith(("Apple M1", "Apple M2"))
+        except Exception:
+            return True
 
     is_bf16_supported = is_bfloat16_supported
 
