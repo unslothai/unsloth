@@ -1247,6 +1247,49 @@ def test_enrich_can_repair_broken_links_in_answer_when_enabled(tmp_path: Path):
     assert "entities/missing-enrichment.md" not in broken_targets
 
 
+def test_enrich_repair_answer_links_handles_backslash_literals(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "valid-entity.md").write_text(
+        "# Valid Entity\n\nEntity page.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "backslash-answer.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Answer\n"
+        "Math notation should remain literal: x \\in S.\n"
+        "Broken link should be removed: [[concepts/ghost-answer-link]].\n"
+        "Valid link should remain: [[entities/valid-entity]].\n\n"
+        "## Context Pages\n"
+        "- [[entities/valid-entity]]\n\n"
+        "## Enrichment\n"
+        "### Related Entities\n"
+        "- [[entities/valid-entity]]\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.enrich_analysis_pages(
+        dry_run = False,
+        max_analysis_pages = 10,
+        repair_answer_links = True,
+    )
+
+    repair = report.get("analysis_link_repair", {})
+    assert repair.get("repair_answer_links_enabled") is True
+    assert repair.get("repaired_pages") == 1
+    assert repair.get("removed_links") == 1
+
+    updated = analysis_path.read_text(encoding = "utf-8")
+    assert "x \\in S" in updated
+    assert "[[concepts/ghost-answer-link]]" not in updated
+    assert "[[entities/valid-entity]]" in updated
+
+
 def test_enrich_link_repair_dry_run_reports_without_writing(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -2018,6 +2061,60 @@ def test_index_flags_source_first_llm_with_missing_sections_as_fallback(
 
     report = engine.retry_fallback_analysis_pages(dry_run = True, max_analysis_pages = 10)
     assert report["fallback_pages_found"] == 1
+
+
+def test_source_first_llm_heading_sections_with_sectino_typo_not_flagged_fallback(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_slug = "alpha-source"
+    (tmp_path / "wiki" / "sources" / f"{source_slug}.md").write_text(
+        "# Alpha Source\n\nDetails.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_path = tmp_path / "wiki" / "analysis" / "source-first-heading-typo.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Alpha Source' with a source-first lens. "
+        "Primary page: [[sources/alpha-source]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: Alpha Source Summary\n\n"
+        "## Sectino A\n"
+        "A brief summary tied to [[sources/alpha-source]].\n\n"
+        "## Section B\n- Key findings.\n\n"
+        "## Section C\n- Supporting evidence.\n\n"
+        "## Section D\n- Method notes.\n\n"
+        "## Section E\n- Limitations.\n\n"
+        "## Section F\n- Comparison context.\n\n"
+        "## Section G\n- Relevance to the graph.\n\n"
+        "## Section H\n- Open questions.\n\n"
+        "## Section I\n- Confidence and caveats.\n\n"
+        "## Retrieval Diagnostics\n"
+        "- llm_rerank_enabled: true\n\n"
+        "## Context Pages\n"
+        "- [[sources/alpha-source]]\n",
+        encoding = "utf-8",
+    )
+
+    page_text = analysis_path.read_text(encoding = "utf-8")
+    assert engine._analysis_missing_watcher_sections_reason(page_text) is None
+    assert engine._analysis_page_uses_fallback(page_text) is False
+
+    engine._rebuild_index()
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/source-first-heading-typo]]" in item
+    )
+    assert "[fallback:" not in line
 
 
 def test_non_source_first_llm_page_without_sections_is_not_fallback(tmp_path: Path):

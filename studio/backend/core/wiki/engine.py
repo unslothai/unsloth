@@ -4378,15 +4378,58 @@ class LLMWikiEngine:
 
         missing_sections: List[str] = []
         for label in ("A", "B", "C", "D", "E", "F", "G", "H", "I"):
-            if not re.search(
-                rf"(?im)^\s*(?:[-*#+]\s*)?section\s+{label}\b",
-                answer,
-            ):
+            if not self._analysis_answer_has_section_label(answer, label):
                 missing_sections.append(label)
 
         if not missing_sections:
             return None
         return f"missing_watcher_sections:{','.join(missing_sections)}"
+
+    def _analysis_answer_has_section_label(self, answer: str, label: str) -> bool:
+        expected_label = str(label or "").strip().upper()
+        if not expected_label:
+            return False
+
+        for raw_line in answer.splitlines():
+            line = re.sub(
+                r"^\s*(?:>\s*)?(?:(?:[-*+]\s*)|(?:#{1,6}\s*))+",
+                "",
+                raw_line,
+            ).strip()
+            if not line:
+                continue
+
+            tokens = re.findall(r"[A-Za-z]+", line)
+            if len(tokens) < 2:
+                continue
+
+            if not self._looks_like_section_keyword(tokens[0]):
+                continue
+
+            if tokens[1].upper() == expected_label:
+                return True
+
+        return False
+
+    def _looks_like_section_keyword(self, token: str) -> bool:
+        value = re.sub(r"[^a-z]", "", str(token or "").lower())
+        target = "section"
+        if value == target:
+            return True
+        if len(value) != len(target):
+            return False
+        if not value.startswith("sect"):
+            return False
+
+        mismatches = [
+            idx for idx, (left, right) in enumerate(zip(value, target)) if left != right
+        ]
+        if len(mismatches) == 1:
+            return True
+        if len(mismatches) == 2:
+            i, j = mismatches
+            return j == i + 1 and value[i] == target[j] and value[j] == target[i]
+        return False
 
     def _extract_analysis_resolved_by(self, text: str) -> Optional[str]:
         m = re.search(r"(?mi)^-\s*resolved_by:\s*\[\[([^\]]+)\]\]\s*$", text)
@@ -4405,7 +4448,10 @@ class LLMWikiEngine:
         return question or None
 
     def _extract_analysis_answer(self, text: str) -> Optional[str]:
-        m = re.search(r"(?ms)^## Answer\n(.+?)(?=\n## |\Z)", text)
+        m = re.search(
+            r"(?ms)^## Answer\n(.+?)(?=\n## (?:Fallback Reason|LLM Raw Answer Preview|Retrieval Diagnostics|Context Pages|Retry Status)\n|\Z)",
+            text,
+        )
         if not m:
             return None
         answer = m.group(1).strip()
@@ -4963,7 +5009,9 @@ class LLMWikiEngine:
         section_block = f"## {section_title}\n{section_body.rstrip()}\n"
         pattern = re.compile(rf"(?ms)^## {escaped}\n.*?(?=^## |\Z)")
         if pattern.search(text):
-            replaced = pattern.sub(section_block + "\n", text, count = 1)
+            # Use a callable replacement so markdown content is treated literally;
+            # this avoids `re.error: bad escape` for bodies containing sequences like `\in`.
+            replaced = pattern.sub(lambda _m: section_block + "\n", text, count = 1)
             return replaced.rstrip() + "\n"
 
         cleaned = text.rstrip()
