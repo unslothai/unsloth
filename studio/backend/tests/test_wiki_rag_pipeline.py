@@ -2597,12 +2597,8 @@ def test_replace_wikilinks_with_map_preserves_alias_and_heading_fragments(
     assert rewritten == 4
     assert "[[entities/retrieval-pipeline-system]]" in updated
     assert "[[entities/retrieval-pipeline-system#timeline]]" in updated
-    assert (
-        "[[entities/retrieval-pipeline-system#timeline|legacy profile]]" in updated
-    )
-    assert (
-        "[[entities/retrieval-pipeline-system#details|legacy details]]" in updated
-    )
+    assert "[[entities/retrieval-pipeline-system#timeline|legacy profile]]" in updated
+    assert "[[entities/retrieval-pipeline-system#details|legacy details]]" in updated
     assert "[[entities/retrieval-pipeline#timeline|legacy profile]]" not in updated
 
 
