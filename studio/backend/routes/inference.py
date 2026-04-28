@@ -1215,6 +1215,8 @@ async def wiki_merge_maintenance(
             include_concepts = payload.include_concepts,
             similarity_threshold = payload.similarity_threshold,
             max_merges = payload.max_merges,
+            semantic_concept_merge = payload.semantic_concept_merge,
+            semantic_merge_writeback = payload.semantic_merge_writeback,
             compact_knowledge_pages = payload.compact_knowledge_pages,
             max_incremental_updates = payload.max_incremental_updates,
         )
@@ -1229,6 +1231,13 @@ async def wiki_merge_maintenance(
         dry_run = bool(report.get("dry_run", payload.dry_run)),
         entity_candidates = int(report.get("entity_candidates", 0)),
         concept_candidates = int(report.get("concept_candidates", 0)),
+        semantic_concept_merge_enabled = bool(
+            report.get("semantic_concept_merge_enabled", payload.semantic_concept_merge)
+        ),
+        semantic_merge_writeback_enabled = bool(
+            report.get("semantic_merge_writeback_enabled", payload.semantic_merge_writeback)
+        ),
+        semantic_concept_candidates = int(report.get("semantic_concept_candidates", 0)),
         scanned_candidates = int(report.get("scanned_candidates", 0)),
         planned_merges = int(report.get("planned_merges", 0)),
         applied_merges = int(report.get("applied_merges", 0)),

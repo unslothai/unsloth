@@ -200,30 +200,9 @@ class WikiFileEventHandler(FileSystemEventHandler):
             source_slug = self.ingestor.wiki_manager.engine._slug(title)
             source_page_rel = f"sources/{source_slug}.md"
             source_chars = self._source_page_chars(source_slug)
-            question = (
-                f"Summarize source '{title}' with a source-first lens.\n"
-                f"Primary page to ground on: [[sources/{source_slug}]].\n\n"
-                "Focus on:\n"
-                "1. What this source is about (2-3 sentences)\n"
-                "2. 4-7 concrete key takeaways\n"
-                "3. What changed in the wiki after ingest (new or updated entities/concepts)\n"
-                "4. Any caveats, uncertainty, or possible extraction gaps\n\n"
-                "Output format:\n"
-                "- Title: Summary title (either from the document or rephrased for brevity)\n"
-                "- Section A: Brief summary paragraph\n"
-                "- Section B: Key takeaways (bullets)\n"
-                "- Section C: Wiki updates (bullets)\n"
-                "- Section D: Any important equations or formulas (bullets)\n"
-                "- Section E: Caveats (bullets)\n"
-                "- Section F: Any assumptions (bullets)\n"
-                "- Section G: Is this a source or a conversation?\n"
-                "- Section H: Any potential disputable claims?\n"
-                "- Section I: Is this information date/time sensitive? If yes, print timestamp.\n\n"
-                "Requirements:\n"
-                "- Cite claims inline with wiki links like [[sources/...]] [[entities/...]] [[concepts/...]]\n"
-                "- Keep the response specific and avoid generic filler\n"
-                "- Make sure you populate caveats and limitations by looking at the content critically, especially if it's technical. If the source is very clean and straightforward, say so but still include a caveats section with a note to that effect.\n"
-                f"- Prioritize [[sources/{source_slug}]] over unrelated pages"
+            question = self.ingestor.wiki_manager.engine._source_first_summary_question(
+                title = title,
+                source_slug = source_slug,
             )
             context_override_chars = self._analysis_context_override_chars()
             if source_chars is not None and context_override_chars is not None:

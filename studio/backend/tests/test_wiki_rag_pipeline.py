@@ -515,6 +515,87 @@ def test_rank_pages_can_expand_via_links(tmp_path: Path):
     assert "concepts/beta.md" in ranked_paths
 
 
+def test_rank_pages_link_expansion_can_use_llm_selector(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "link expansion selector" in prompt:
+            return '{"ordered_links": ["L002"]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    source_page = tmp_path / "wiki" / "sources" / "alpha.md"
+    preferred_page = tmp_path / "wiki" / "concepts" / "beta.md"
+    lexical_page = tmp_path / "wiki" / "concepts" / "gamma.md"
+
+    source_page.write_text(
+        "# Alpha\n\n"
+        "alpha unique query token appears in this source.\n\n"
+        "See [[concepts/gamma]] and [[concepts/beta]].\n",
+        encoding = "utf-8",
+    )
+    preferred_page.write_text(
+        "# Beta\n\nBeta details without lexical overlap.\n",
+        encoding = "utf-8",
+    )
+    lexical_page.write_text(
+        "# Gamma\n\nContains alpha unique query token for lexical fallback preference.\n",
+        encoding = "utf-8",
+    )
+
+    engine.cfg.ranking_llm_rerank_enabled = False
+    engine.cfg.ranking_link_depth = 1
+    engine.cfg.ranking_link_fanout = 1
+
+    ranked = engine._rank_pages("alpha unique query token")
+    ranked_paths = [rel for rel, _ in ranked]
+
+    assert "concepts/beta.md" in ranked_paths
+
+
+def test_rank_pages_link_expansion_llm_selector_falls_back_to_lexical(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "link expansion selector" in prompt:
+            return "not-json"
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    source_page = tmp_path / "wiki" / "sources" / "alpha.md"
+    preferred_page = tmp_path / "wiki" / "concepts" / "beta.md"
+    lexical_page = tmp_path / "wiki" / "concepts" / "gamma.md"
+
+    source_page.write_text(
+        "# Alpha\n\n"
+        "alpha unique query token appears in this source.\n\n"
+        "See [[concepts/gamma]] and [[concepts/beta]].\n",
+        encoding = "utf-8",
+    )
+    preferred_page.write_text(
+        "# Beta\n\nBeta details without lexical overlap.\n",
+        encoding = "utf-8",
+    )
+    lexical_page.write_text(
+        "# Gamma\n\nContains alpha unique query token for lexical fallback preference.\n",
+        encoding = "utf-8",
+    )
+
+    engine.cfg.ranking_llm_rerank_enabled = False
+    engine.cfg.ranking_link_depth = 1
+    engine.cfg.ranking_link_fanout = 1
+
+    ranked = engine._rank_pages("alpha unique query token")
+    ranked_paths = [rel for rel, _ in ranked]
+
+    assert "concepts/gamma.md" in ranked_paths
+    assert "concepts/beta.md" not in ranked_paths
+
+
 def test_rank_pages_boosts_entity_targets_for_who_is_queries(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -536,6 +617,24 @@ def test_rank_pages_boosts_entity_targets_for_who_is_queries(tmp_path: Path):
 
     assert ranked
     assert ranked[0][0] == "entities/zohair.md"
+
+
+def test_entity_query_focus_uses_llm_parser_when_available(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "entity intent parser" in prompt:
+            return '{"is_entity_lookup": true, "target": "Jane Doe"}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    terms, slug = engine._entity_query_focus("Could you profile this person for me?")
+
+    assert slug == "jane-doe"
+    assert "jane" in terms
+    assert "doe" in terms
 
 
 def test_rank_pages_falls_back_to_recency_when_no_match(tmp_path: Path):
@@ -1176,7 +1275,10 @@ def test_enrich_link_repair_dry_run_reports_without_writing(tmp_path: Path):
 def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = (
+            lambda _:
+            "Source summary: retrieval benchmarking compares ranking quality, recall tradeoffs, and evaluation setup details across datasets."
+        ),
     )
 
     engine.lint = lambda: {"missing_concepts": ["retrieval-benchmarking"]}  # type: ignore[assignment]
@@ -1188,6 +1290,11 @@ def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
                 "snippet": "Retrieval benchmarking evaluates ranking quality with relevance metrics.",
             }
         ]
+    )
+    engine._fetch_external_page_text = (  # type: ignore[assignment]
+        lambda _url, max_chars: (
+            "Retrieval benchmarking measures ranking quality, precision, recall, and nDCG across curated relevance datasets."
+        )
     )
 
     report = engine.enrich_analysis_pages(
@@ -1203,12 +1310,22 @@ def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
     concept_text = concept_page.read_text(encoding = "utf-8")
     assert "# Retrieval Benchmarking" in concept_text
     assert "## External Sources" in concept_text
+    assert "## External Source Summaries" in concept_text
     assert "https://example.com/retrieval-benchmarking" in concept_text
+
+    analysis_pages = sorted((tmp_path / "wiki" / "analysis").glob("*.md"))
+    assert analysis_pages
+    analysis_text = analysis_pages[0].read_text(encoding = "utf-8")
+    assert "Summarize source" in analysis_text
+    assert "Primary page: [[sources/" in analysis_text
 
     web_gap_fill = report["web_gap_fill"]
     assert web_gap_fill["enabled"] is True
     assert web_gap_fill["lint_missing_concepts"] == 1
     assert web_gap_fill["concepts_created"] == 1
+    assert web_gap_fill["external_sources_ingested"] == 1
+    assert web_gap_fill["external_summary_pages_created"] == 1
+    assert web_gap_fill["created_summary_pages"]
     assert "concepts/retrieval-benchmarking.md" in web_gap_fill["created_pages"]
 
 
@@ -1245,7 +1362,113 @@ def test_enrich_analysis_pages_web_gap_fill_dry_run_does_not_write_pages(
     assert web_gap_fill["enabled"] is True
     assert web_gap_fill["queries_used"] == 1
     assert web_gap_fill["concepts_created"] == 1
+    assert web_gap_fill["external_sources_ingested"] == 0
+    assert web_gap_fill["external_summary_pages_created"] == 0
+    assert web_gap_fill["created_summary_pages"] == []
     assert "concepts/semantic-layering.md" in web_gap_fill["created_pages"]
+
+
+def test_llm_web_gap_discovery_uses_planner_and_selector(tmp_path: Path):
+    def llm_fn(prompt: str) -> str:
+        if "web research planner" in prompt:
+            return '{"queries":["retrieval benchmarking ranking metrics"]}'
+        if "selecting the best external sources" in prompt:
+            return '{"selected_ids":["R002"]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = llm_fn,
+    )
+
+    seen_queries: list[str] = []
+
+    def _fake_search(query: str, _max_results: int):
+        seen_queries.append(query)
+        return [
+            {
+                "title": "Result A",
+                "url": "https://example.com/a",
+                "snippet": "General overview of retrieval.",
+            },
+            {
+                "title": "Result B",
+                "url": "https://example.com/b",
+                "snippet": "Detailed benchmarking metrics, datasets, and evaluation setup.",
+            },
+        ]
+
+    engine._web_search_results = _fake_search  # type: ignore[assignment]
+
+    selected, meta = engine._llm_web_discover_results_for_concept(
+        concept_slug = "retrieval-benchmarking",
+        query_budget = 2,
+        max_results = 1,
+    )
+
+    assert seen_queries == ["retrieval benchmarking ranking metrics"]
+    assert selected
+    assert selected[0]["url"] == "https://example.com/b"
+    assert meta["plan_status"] == "ok"
+    assert meta["selector_status"] == "ok"
+
+
+def test_external_source_summary_uses_watcher_style_source_first_prompt(
+    tmp_path: Path,
+    monkeypatch,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    monkeypatch.setattr(
+        engine,
+        "_fetch_external_page_text",
+        lambda _url, max_chars: "alpha source content"[:max_chars],
+    )
+
+    monkeypatch.setattr(
+        engine,
+        "ingest_source",
+        lambda source_title, source_text, source_ref = None: {
+            "status": "ok",
+            "source_page": "sources/alpha-source",
+        },
+    )
+
+    captured: dict[str, str] = {}
+
+    def _fake_query(
+        question: str,
+        save_answer: bool = True,
+        query_context_max_chars_override = None,
+        preferred_context_page = None,
+        keep_preferred_context_full: bool = False,
+        preferred_context_only: bool = False,
+    ):
+        captured["question"] = question
+        return {
+            "status": "ok",
+            "answer_page": "analysis/alpha-source-summary",
+            "used_extractive_fallback": False,
+        }
+
+    monkeypatch.setattr(engine, "query", _fake_query)
+
+    report = engine._ingest_and_summarize_external_source(
+        concept_title = "Alpha Concept",
+        search_result = {
+            "title": "Alpha Source",
+            "url": "https://example.com/alpha",
+            "snippet": "Alpha overview",
+        },
+    )
+
+    assert report["status"] == "ok"
+    question = captured["question"]
+    assert "Primary page to ground on: [[sources/alpha-source]]." in question
+    assert "- Section I: Is this information date/time sensitive? If yes, print timestamp." in question
 
 
 def test_enrich_analysis_pages_can_compact_knowledge_updates(tmp_path: Path):
@@ -1690,6 +1913,41 @@ def test_index_flags_fallback_analysis_pages(tmp_path: Path):
     assert "[fallback" not in normal_line
 
 
+def test_lint_normalizes_md_suffixed_links_and_ignores_log_page_links(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "entities" / "graph-model.md").write_text(
+        "# Graph Model\n\nEntity page.\n",
+        encoding = "utf-8",
+    )
+
+    (tmp_path / "wiki" / "analysis" / "md-suffix-links.md").write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat is graph model?\n\n"
+        "## Answer\n"
+        "See [[entities/graph-model.md]] and [[entities/graph-model.md.md]].\n",
+        encoding = "utf-8",
+    )
+
+    # log.md can contain free-form user text snippets, which should not affect
+    # wiki broken-link linting.
+    (tmp_path / "wiki" / "log.md").write_text(
+        "# Log\n\n"
+        "## [2026-04-27] query | [[sources/2406-\n"
+        "- Result page: [[analysis/some-result]]\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.lint()
+    broken_links = report.get("broken_links", [])
+
+    assert not any(item.get("source") == "analysis/md-suffix-links.md" for item in broken_links)
+    assert not any(item.get("source") == "log.md" for item in broken_links)
+
+
 def test_retry_fallback_skips_pages_marked_resolved_by(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -1990,6 +2248,87 @@ def test_lint_reports_entity_and_concept_merge_candidates(tmp_path: Path):
     )
 
 
+def test_lint_semantic_filters_missing_concepts(tmp_path: Path):
+    def llm_fn(prompt: str) -> str:
+        if "semantic filter for wiki concept maintenance" in prompt:
+            return (
+                "{"
+                '"keep_missing":["retrieval-benchmarking"],'
+                '"related_to_existing":[{"slug":"instances","existing":"instance","reason":"plural variant of existing concept"}],'
+                '"reject":[{"slug":"business","reason":"generic non-concept term"}]'
+                "}"
+            )
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = llm_fn,
+    )
+
+    (tmp_path / "wiki" / "concepts" / "instance.md").write_text(
+        "# Instance\n",
+        encoding = "utf-8",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "sources" / "beta.md").write_text(
+        "# Beta\n",
+        encoding = "utf-8",
+    )
+
+    # Force lexical candidates with one true missing concept, one related
+    # pluralization, and one generic noisy term.
+    engine._top_concepts = (  # type: ignore[assignment]
+        lambda _text, limit: ["instances", "business", "retrieval benchmarking"]
+    )
+
+    report = engine.lint()
+
+    assert report.get("missing_concepts") == ["retrieval-benchmarking"]
+    semantic = report.get("semantic_missing_concepts", {})
+    assert semantic.get("status") == "ok"
+    assert semantic.get("related_to_existing") == 1
+    assert semantic.get("rejected_candidates") == 1
+
+
+def test_lint_missing_concepts_semantic_filter_falls_back_to_lexical(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    (tmp_path / "wiki" / "concepts" / "instance.md").write_text(
+        "# Instance\n",
+        encoding = "utf-8",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "sources" / "beta.md").write_text(
+        "# Beta\n",
+        encoding = "utf-8",
+    )
+
+    engine._top_concepts = (  # type: ignore[assignment]
+        lambda _text, limit: ["instances", "business", "retrieval benchmarking"]
+    )
+
+    report = engine.lint()
+
+    assert set(report.get("missing_concepts", [])) == {
+        "instances",
+        "business",
+        "retrieval-benchmarking",
+    }
+    semantic = report.get("semantic_missing_concepts", {})
+    assert semantic.get("status") == "fallback_lexical"
+
+
 def test_merge_duplicate_knowledge_pages_dry_run_reports_without_writing(
     tmp_path: Path,
 ):
@@ -2131,6 +2470,237 @@ def test_merge_duplicate_knowledge_pages_apply_archives_and_rewrites_links(
     index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
     assert f"[[{duplicate_link}]]" not in index_text
     assert f"[[{canonical_link}]]" in index_text
+
+
+def test_merge_candidates_handle_instance_pluralization(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    singular = tmp_path / "wiki" / "concepts" / "instance.md"
+    plural = tmp_path / "wiki" / "concepts" / "instances.md"
+
+    singular.write_text(
+        "---\n"
+        "title: Instance\n"
+        "updated_at: 2026-04-27T20:00:00+00:00\n"
+        "---\n\n"
+        "# Instance\n",
+        encoding = "utf-8",
+    )
+    plural.write_text(
+        "---\n"
+        "title: Instances\n"
+        "updated_at: 2026-04-27T21:00:00+00:00\n"
+        "---\n\n"
+        "# Instances\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.merge_duplicate_knowledge_pages(
+        dry_run = True,
+        include_entities = False,
+        include_concepts = True,
+        similarity_threshold = 0.75,
+        max_merges = 8,
+    )
+
+    assert report["concept_candidates"] >= 1
+    assert report["planned_merges"] >= 1
+
+    concept_merges = [
+        merge
+        for merge in report.get("merges", [])
+        if merge.get("canonical", "").startswith("concepts/")
+        and merge.get("duplicate", "").startswith("concepts/")
+    ]
+    assert concept_merges
+
+    merged_pair_pages = {
+        concept_merges[0]["canonical"],
+        concept_merges[0]["duplicate"],
+    }
+    assert merged_pair_pages == {"concepts/instance.md", "concepts/instances.md"}
+
+
+def test_semantic_concept_merge_candidates_use_llm_pass(tmp_path: Path):
+    def llm_fn(prompt: str) -> str:
+        if "semantic concept merge planner" in prompt:
+            return (
+                '{"merges":['
+                '{"canonical_id":"C001","duplicate_id":"C002","confidence":0.91,'
+                '"reason":"Same concept, alias naming"}'
+                "]}"
+            )
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = llm_fn,
+    )
+
+    (tmp_path / "wiki" / "concepts" / "lattice-routing.md").write_text(
+        "---\n"
+        "title: Lattice Routing\n"
+        "updated_at: 2026-04-27T10:00:00+00:00\n"
+        "---\n\n"
+        "# Lattice Routing\n\n"
+        "## Summary\nA routing method that uses lattice state transitions.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "concepts" / "policy-distillation.md").write_text(
+        "---\n"
+        "title: Policy Distillation\n"
+        "updated_at: 2026-04-27T09:00:00+00:00\n"
+        "---\n\n"
+        "# Policy Distillation\n\n"
+        "## Summary\nA synthetic alias page intentionally used for semantic-merge regression.\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.merge_duplicate_knowledge_pages(
+        dry_run = True,
+        include_entities = False,
+        include_concepts = True,
+        similarity_threshold = 0.8,
+        max_merges = 8,
+        semantic_concept_merge = True,
+        semantic_merge_writeback = False,
+    )
+
+    assert report["semantic_concept_merge_enabled"] is True
+    assert report["semantic_concept_candidates"] >= 1
+    assert report["planned_merges"] >= 1
+
+    merge = report["merges"][0]
+    assert merge["canonical"].startswith("concepts/")
+    assert merge["duplicate"].startswith("concepts/")
+    assert merge["reason"].startswith("semantic-llm")
+
+
+def test_semantic_entity_merge_candidates_use_llm_pass(tmp_path: Path):
+    def llm_fn(prompt: str) -> str:
+        if "semantic duplicate merge planner" in prompt and "Page kind: entities" in prompt:
+            return (
+                '{"merges":['
+                '{"canonical_id":"M001","duplicate_id":"M002","confidence":0.89,'
+                '"reason":"Alias pages for the same entity"}'
+                "]}"
+            )
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = llm_fn,
+    )
+
+    (tmp_path / "wiki" / "entities" / "alpha-expert.md").write_text(
+        "---\n"
+        "title: Alpha Expert\n"
+        "updated_at: 2026-04-27T10:00:00+00:00\n"
+        "---\n\n"
+        "# Alpha Expert\n\n"
+        "## Summary\nProfiles a specialist in alpha methods.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "a-expert-profile.md").write_text(
+        "---\n"
+        "title: A Expert Profile\n"
+        "updated_at: 2026-04-27T09:00:00+00:00\n"
+        "---\n\n"
+        "# A Expert Profile\n\n"
+        "## Summary\nAlternative naming for the same person profile.\n",
+        encoding = "utf-8",
+    )
+
+    candidates = engine._merge_candidates_for_folder(
+        tmp_path / "wiki" / "entities",
+        "entities",
+        similarity_threshold = 0.8,
+    )
+
+    assert candidates
+    assert candidates[0]["canonical"].startswith("entities/")
+    assert candidates[0]["duplicate"].startswith("entities/")
+    assert str(candidates[0]["reason"]).startswith("semantic-llm")
+
+
+def test_semantic_merge_writeback_updates_canonical_content(tmp_path: Path):
+    def llm_fn(prompt: str) -> str:
+        if "semantic concept merge planner" in prompt:
+            return (
+                '{"merges":['
+                '{"canonical_id":"C001","duplicate_id":"C002","confidence":0.95,'
+                '"reason":"Equivalent concept pages"}'
+                "]}"
+            )
+        if "semantic concept merge writer" in prompt:
+            return (
+                "{"
+                '"merged_summary":"Unified semantic summary for alpha graph.",'
+                '"merged_facts":["Supports weighted path traversal","Used in scheduler internals"],'
+                '"merged_contradictions":["No contradictions currently confirmed"],'
+                '"merged_sources":["[[sources/alpha-paper]]","[[sources/alpha-notes]]"],'
+                '"confidence":0.88,'
+                '"rationale":"Both pages describe the same artifact with naming variation"'
+                "}"
+            )
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = llm_fn,
+    )
+
+    canonical_path = tmp_path / "wiki" / "concepts" / "alpha-graph.md"
+    duplicate_path = tmp_path / "wiki" / "concepts" / "alpha-graph-alias.md"
+
+    canonical_path.write_text(
+        "---\n"
+        "title: Alpha Graph\n"
+        "updated_at: 2026-04-27T10:00:00+00:00\n"
+        "---\n\n"
+        "# Alpha Graph\n\n"
+        "## Summary\nOriginal summary.\n\n"
+        "## Facts\n- Existing fact\n\n"
+        "## Contradictions\n- none\n\n"
+        "## Sources\n- [[sources/alpha-paper]]\n",
+        encoding = "utf-8",
+    )
+    duplicate_path.write_text(
+        "---\n"
+        "title: Alpha Graph Alias\n"
+        "updated_at: 2026-04-27T09:00:00+00:00\n"
+        "---\n\n"
+        "# Alpha Graph Alias\n\n"
+        "## Summary\nAlias page summary.\n\n"
+        "## Facts\n- Alias fact\n\n"
+        "## Contradictions\n- none\n\n"
+        "## Sources\n- [[sources/alpha-notes]]\n",
+        encoding = "utf-8",
+    )
+
+    report = engine.merge_duplicate_knowledge_pages(
+        dry_run = False,
+        include_entities = False,
+        include_concepts = True,
+        similarity_threshold = 0.8,
+        max_merges = 8,
+        semantic_concept_merge = True,
+        semantic_merge_writeback = True,
+    )
+
+    assert report["applied_merges"] == 1
+    assert report["semantic_merge_writeback_enabled"] is True
+
+    updated = canonical_path.read_text(encoding = "utf-8")
+    assert "Unified semantic summary for alpha graph." in updated
+    assert "Supports weighted path traversal" in updated
+    assert "Used in scheduler internals" in updated
+    assert "[[sources/alpha-notes]]" in updated
+    assert "## Merge History" in updated
+    assert "semantic_summary_applied: true" in updated
 
 
 def test_merge_duplicate_normalizes_misplaced_frontmatter_blocks(tmp_path: Path):

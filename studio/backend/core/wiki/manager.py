@@ -185,6 +185,8 @@ class WikiManager:
         include_concepts: bool = True,
         similarity_threshold: float = 0.75,
         max_merges: int = _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES,
+        semantic_concept_merge: bool = True,
+        semantic_merge_writeback: bool = True,
         compact_knowledge_pages: bool = False,
         max_incremental_updates: Optional[int] = None,
     ) -> Dict:
@@ -195,6 +197,8 @@ class WikiManager:
             include_concepts = include_concepts,
             similarity_threshold = similarity_threshold,
             max_merges = max_merges,
+            semantic_concept_merge = semantic_concept_merge,
+            semantic_merge_writeback = semantic_merge_writeback,
             compact_knowledge_pages = compact_knowledge_pages,
             max_incremental_updates = max_incremental_updates,
         )

@@ -863,6 +863,14 @@ class WikiMergeMaintenanceRequest(BaseModel):
         le = 512,
         description = "Maximum number of merges to plan/apply in a single run (default from UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES)",
     )
+    semantic_concept_merge: bool = Field(
+        True,
+        description = "Use an LLM semantic pass to propose concept merges in addition to lexical title overlap",
+    )
+    semantic_merge_writeback: bool = Field(
+        True,
+        description = "Use an LLM semantic synthesis pass to update canonical concept Summary/Facts/Contradictions/Sources during merge",
+    )
     compact_knowledge_pages: bool = Field(
         False,
         description = "If true, trim oversized Incremental Updates sections in entity/concept pages after merge maintenance",
@@ -882,6 +890,9 @@ class WikiMergeMaintenanceResponse(BaseModel):
     dry_run: bool
     entity_candidates: int
     concept_candidates: int
+    semantic_concept_merge_enabled: bool
+    semantic_merge_writeback_enabled: bool
+    semantic_concept_candidates: int
     scanned_candidates: int
     planned_merges: int
     applied_merges: int

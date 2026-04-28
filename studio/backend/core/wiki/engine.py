@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 from pathlib import Path
+import hashlib
+import html
 import json
 import os
 import shutil
@@ -10,6 +12,8 @@ import logging
 import importlib
 import sys
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +440,18 @@ class WikiConfig:
     ranking_link_fanout: int = field(
         default_factory = lambda: _env_int("UNSLOTH_WIKI_ENGINE_RANKING_LINK_FANOUT", 8)
     )
+    ranking_link_llm_selector_enabled: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_RANKING_LINK_LLM_SELECTOR_ENABLED", True
+        )
+    )
+    ranking_link_llm_selector_max_candidates: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_RANKING_LINK_LLM_SELECTOR_MAX_CANDIDATES",
+            24,
+            minimum = 4,
+        )
+    )
     ranking_llm_rerank_enabled: bool = field(
         default_factory = lambda: _env_flag(
             "UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED", True
@@ -553,6 +569,16 @@ class WikiConfig:
             "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_MAX_SNIPPET_CHARS", 280, minimum = 80
         )
     )
+    enrichment_web_gap_llm_planner_enabled: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_LLM_PLANNER_ENABLED", True
+        )
+    )
+    enrichment_web_gap_llm_selector_enabled: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_LLM_SELECTOR_ENABLED", True
+        )
+    )
     enrichment_refresh_oldest_non_fallback_pages: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_ENGINE_ENRICH_REFRESH_OLDEST_NON_FALLBACK_PAGES",
@@ -563,6 +589,16 @@ class WikiConfig:
     enrichment_repair_answer_links: bool = field(
         default_factory = lambda: _env_flag(
             "UNSLOTH_WIKI_ENGINE_ENRICH_REPAIR_ANSWER_LINKS", False
+        )
+    )
+    merge_llm_candidate_planner_enabled: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_MERGE_LLM_CANDIDATE_PLANNER_ENABLED", True
+        )
+    )
+    entity_query_focus_llm_enabled: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_ENTITY_QUERY_FOCUS_LLM_ENABLED", True
         )
     )
     stale_days: int = 30
@@ -856,6 +892,8 @@ class LLMWikiEngine:
                 "## Retrieval Diagnostics",
                 f"- ranking_link_depth: {self.cfg.ranking_link_depth}",
                 f"- ranking_link_fanout: {self.cfg.ranking_link_fanout}",
+                f"- ranking_link_llm_selector_enabled: {self.cfg.ranking_link_llm_selector_enabled}",
+                f"- ranking_link_llm_selector_max_candidates: {self.cfg.ranking_link_llm_selector_max_candidates}",
                 f"- llm_rerank_enabled: {self.cfg.ranking_llm_rerank_enabled}",
                 f"- llm_rerank_candidates: {self.cfg.ranking_llm_rerank_candidates}",
                 f"- llm_rerank_top_n: {self.cfg.ranking_llm_rerank_top_n}",
@@ -946,6 +984,23 @@ class LLMWikiEngine:
                 if count >= 2 and slug not in known_concepts
             ]
         )
+        semantic_missing_concepts: Dict[str, Any] = {
+            "status": "skipped",
+            "reason": "no_missing_candidates",
+            "kept_missing": 0,
+            "rejected_candidates": 0,
+            "related_to_existing": 0,
+        }
+        if missing_concepts:
+            filtered_missing, semantic_missing_concepts = (
+                self._semantic_filter_missing_or_related_concepts(
+                    missing_candidates = missing_concepts,
+                    candidate_counts = candidate_concepts,
+                    known_concepts = known_concepts,
+                )
+            )
+            if semantic_missing_concepts.get("status") == "ok":
+                missing_concepts = filtered_missing
 
         entity_merge_candidates = self._merge_candidates_for_folder(
             self.entities_dir,
@@ -964,6 +1019,7 @@ class LLMWikiEngine:
             "stale_pages": [{"page": p, "age_days": d} for p, d in stale],
             "broken_links": graph.get("broken", []),
             "missing_concepts": missing_concepts,
+            "semantic_missing_concepts": semantic_missing_concepts,
             "low_coverage_sources": sorted(set(low_coverage_sources)),
             "total_pages": len(pages),
             "graphify_insights": graphify_insights,
@@ -977,6 +1033,7 @@ class LLMWikiEngine:
             f"- Stale pages: {len(stale)}\n"
             f"- Broken links: {len(report['broken_links'])}\n"
             f"- Missing concepts: {len(missing_concepts)}\n"
+            f"- Missing concept filter: {semantic_missing_concepts.get('status', 'unknown')}\n"
             f"- Low-coverage sources: {len(report['low_coverage_sources'])}\n"
             f"- Entity merge candidates: {len(entity_merge_candidates)}\n"
             f"- Concept merge candidates: {len(concept_merge_candidates)}\n"
@@ -991,6 +1048,8 @@ class LLMWikiEngine:
         include_concepts: bool = True,
         similarity_threshold: float = 0.75,
         max_merges: int = _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES,
+        semantic_concept_merge: bool = True,
+        semantic_merge_writeback: bool = True,
         compact_knowledge_pages: bool = False,
         max_incremental_updates: Optional[int] = None,
     ) -> Dict[str, Any]:
@@ -1000,6 +1059,8 @@ class LLMWikiEngine:
         candidate_pool: List[Dict[str, Any]] = []
         entity_candidates = 0
         concept_candidates = 0
+        semantic_concept_candidates = 0
+        semantic_merge_errors: List[str] = []
 
         if include_entities:
             entity_items = self._merge_candidates_for_folder(
@@ -1014,11 +1075,28 @@ class LLMWikiEngine:
                 candidate_pool.append(enriched)
 
         if include_concepts:
-            concept_items = self._merge_candidates_for_folder(
+            concept_items_lexical = self._lexical_merge_candidates_for_folder(
                 self.concepts_dir,
                 "concepts",
                 similarity_threshold = threshold,
             )
+            concept_items = list(concept_items_lexical)
+
+            if semantic_concept_merge:
+                semantic_items, semantic_error = self._semantic_merge_candidates_for_folder(
+                    self.concepts_dir,
+                    "concepts",
+                    similarity_threshold = threshold,
+                    max_pairs = max(32, merge_limit * 4),
+                )
+                semantic_concept_candidates = len(semantic_items)
+                if semantic_error:
+                    semantic_merge_errors.append(semantic_error)
+                concept_items = self._combine_merge_candidates(
+                    concept_items_lexical,
+                    semantic_items,
+                )
+
             concept_candidates = len(concept_items)
             for item in concept_items:
                 enriched = dict(item)
@@ -1094,15 +1172,19 @@ class LLMWikiEngine:
             canonical_rel = str(item.get("canonical", "")).strip().replace("\\", "/")
             duplicate_rel = str(item.get("duplicate", "")).strip().replace("\\", "/")
             similarity = float(item.get("similarity", 0.0))
+            merge_reason = str(item.get("reason", "")).strip()
+            kind = str(item.get("kind", "unknown")).strip() or "unknown"
 
             canonical_path = self.wiki_dir / canonical_rel
             duplicate_path = self.wiki_dir / duplicate_rel
             merge_record: Dict[str, Any] = {
-                "kind": str(item.get("kind", "unknown")),
+                "kind": kind,
                 "canonical": canonical_rel,
                 "duplicate": duplicate_rel,
                 "similarity": round(similarity, 3),
             }
+            if merge_reason:
+                merge_record["reason"] = merge_reason
 
             if not canonical_path.exists() or not duplicate_path.exists():
                 missing = []
@@ -1120,6 +1202,23 @@ class LLMWikiEngine:
             canonical_text = canonical_path.read_text(encoding = "utf-8", errors = "ignore")
             duplicate_text = duplicate_path.read_text(encoding = "utf-8", errors = "ignore")
 
+            semantic_merge: Optional[Dict[str, Any]] = None
+            if kind == "concept" and semantic_merge_writeback:
+                semantic_merge = self._llm_synthesize_concept_merge_content(
+                    canonical_rel = canonical_rel,
+                    duplicate_rel = duplicate_rel,
+                    canonical_text = canonical_text,
+                    duplicate_text = duplicate_text,
+                )
+                if semantic_merge:
+                    merge_record["semantic_confidence"] = round(
+                        float(semantic_merge.get("confidence", 0.0)),
+                        3,
+                    )
+                    rationale = str(semantic_merge.get("rationale", "")).strip()
+                    if rationale:
+                        merge_record["semantic_rationale"] = rationale
+
             archive_target, archive_rel = self._archive_target_for_page(duplicate_rel)
             merged_canonical = self._merge_canonical_with_duplicate(
                 canonical_text,
@@ -1127,6 +1226,7 @@ class LLMWikiEngine:
                 duplicate_rel = duplicate_rel,
                 archived_rel = archive_rel,
                 similarity = similarity,
+                semantic_merge = semantic_merge,
             )
 
             merge_record["archived_to"] = archive_rel
@@ -1192,6 +1292,9 @@ class LLMWikiEngine:
             "dry_run": bool(dry_run),
             "entity_candidates": entity_candidates,
             "concept_candidates": concept_candidates,
+            "semantic_concept_merge_enabled": bool(semantic_concept_merge),
+            "semantic_merge_writeback_enabled": bool(semantic_merge_writeback),
+            "semantic_concept_candidates": semantic_concept_candidates,
             "scanned_candidates": len(candidate_pool),
             "planned_merges": len(merges),
             "applied_merges": applied_merges,
@@ -1200,7 +1303,7 @@ class LLMWikiEngine:
             "archived_pages": archived_pages,
             "skipped": skipped,
             "merges": merges,
-            "errors": errors,
+            "errors": errors + semantic_merge_errors,
             "knowledge_compaction": knowledge_compaction,
         }
 
@@ -2055,6 +2158,625 @@ class LLMWikiEngine:
                 break
         return out
 
+    def _normalize_web_result(
+        self,
+        item: Dict[str, Any],
+        fallback_title: str = "",
+    ) -> Optional[Dict[str, str]]:
+        if not isinstance(item, dict):
+            return None
+
+        url = str(item.get("url", item.get("href", ""))).strip()
+        if not url:
+            return None
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+
+        title = self._normalize_web_text(
+            str(item.get("title", "")).strip() or fallback_title or url,
+            160,
+        )
+        snippet = self._normalize_web_text(
+            str(item.get("snippet", item.get("body", ""))).strip(),
+            self.cfg.enrichment_web_gap_max_snippet_chars,
+        )
+        return {
+            "title": title or url,
+            "url": url,
+            "snippet": snippet,
+        }
+
+    def _llm_plan_web_gap_queries(
+        self,
+        concept_slug: str,
+        concept_title: str,
+        max_queries: int,
+        max_results: int,
+    ) -> Dict[str, Any]:
+        query_limit = max(1, min(8, int(max_queries)))
+        result_limit = max(1, min(10, int(max_results)))
+        fallback_query = f"{concept_slug.replace('-', ' ')} concept overview"
+
+        if not self.cfg.enrichment_web_gap_llm_planner_enabled:
+            return {
+                "status": "fallback_lexical",
+                "reason": "llm_web_planner_disabled",
+                "queries": [fallback_query],
+                "direct_results": [],
+            }
+
+        prompt = (
+            "You are a web research planner for wiki gap-filling.\n"
+            f"Missing concept slug: {concept_slug}\n"
+            f"Concept title: {concept_title}\n\n"
+            "Return strict JSON only with this schema:\n"
+            '{"queries":["query"],"direct_results":[{"title":"string","url":"https://...","snippet":"string"}],"reason":"string"}\n\n'
+            "Rules:\n"
+            f"- Return at most {query_limit} queries and at most {result_limit} direct_results.\n"
+            "- Queries should be specific, technical, and high precision.\n"
+            "- direct_results is optional. Use it only if your runtime already resolved good URLs via external web tools.\n"
+            "- direct_results URLs must be absolute http/https.\n"
+            "- No markdown fences and no text outside JSON.\n"
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return {
+                "status": "fallback_lexical",
+                "reason": "llm_web_planner_invalid_json",
+                "queries": [fallback_query],
+                "direct_results": [],
+            }
+
+        queries: List[str] = []
+        seen_queries: Set[str] = set()
+        raw_queries = parsed.get("queries", parsed.get("search_queries", []))
+        if isinstance(raw_queries, list):
+            for item in raw_queries:
+                query = self._normalize_web_text(str(item).strip(), 180)
+                if len(query) < 6:
+                    continue
+                key = query.lower()
+                if key in seen_queries:
+                    continue
+                seen_queries.add(key)
+                queries.append(query)
+                if len(queries) >= query_limit:
+                    break
+
+        direct_results: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
+        raw_direct = parsed.get("direct_results", parsed.get("results", []))
+        if isinstance(raw_direct, list):
+            for item in raw_direct:
+                normalized = self._normalize_web_result(
+                    item if isinstance(item, dict) else {},
+                    fallback_title = concept_title,
+                )
+                if normalized is None:
+                    continue
+                if normalized["url"] in seen_urls:
+                    continue
+                seen_urls.add(normalized["url"])
+                direct_results.append(normalized)
+                if len(direct_results) >= result_limit:
+                    break
+
+        if not queries and not direct_results:
+            return {
+                "status": "fallback_lexical",
+                "reason": "llm_web_planner_empty",
+                "queries": [fallback_query],
+                "direct_results": [],
+            }
+
+        return {
+            "status": "ok",
+            "reason": "llm_web_planner_ok",
+            "queries": queries,
+            "direct_results": direct_results,
+        }
+
+    def _llm_select_web_gap_results(
+        self,
+        concept_slug: str,
+        concept_title: str,
+        candidates: List[Dict[str, str]],
+        max_results: int,
+    ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+        result_limit = max(1, int(max_results))
+        if not candidates:
+            return [], {
+                "status": "fallback_top",
+                "reason": "no_candidates",
+            }
+
+        deduped: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
+        for item in candidates:
+            normalized = self._normalize_web_result(item, fallback_title = concept_title)
+            if normalized is None:
+                continue
+            if normalized["url"] in seen_urls:
+                continue
+            seen_urls.add(normalized["url"])
+            deduped.append(normalized)
+
+        if not deduped:
+            return [], {
+                "status": "fallback_top",
+                "reason": "no_normalized_candidates",
+            }
+
+        if not self.cfg.enrichment_web_gap_llm_selector_enabled:
+            return deduped[:result_limit], {
+                "status": "fallback_top",
+                "reason": "llm_web_selector_disabled",
+            }
+
+        limited_candidates = deduped[: min(24, len(deduped))]
+        id_to_item: Dict[str, Dict[str, str]] = {}
+        lines: List[str] = []
+        for idx, item in enumerate(limited_candidates, start = 1):
+            cid = f"R{idx:03d}"
+            id_to_item[cid] = item
+            lines.append(
+                f"{cid} | title: {item['title']} | url: {item['url']} | snippet: {item['snippet']}"
+            )
+
+        prompt = (
+            "You are selecting the best external sources for wiki concept gap fill.\n"
+            f"Concept slug: {concept_slug}\n"
+            f"Concept title: {concept_title}\n\n"
+            "Return strict JSON only with this schema:\n"
+            '{"selected_ids":["R001"],"selected_urls":["https://..."],"reason":"string"}\n\n'
+            "Rules:\n"
+            "- Use only IDs/URLs from CANDIDATES.\n"
+            f"- Select at most {result_limit} sources.\n"
+            "- Prefer sources with substantive technical detail and broad usefulness.\n"
+            "- Reject generic, thin, or likely noisy pages.\n"
+            "- No markdown fences and no text outside JSON.\n\n"
+            "CANDIDATES:\n"
+            + "\n".join(lines)
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return deduped[:result_limit], {
+                "status": "fallback_top",
+                "reason": "llm_web_selector_invalid_json",
+            }
+
+        selected: List[Dict[str, str]] = []
+        selected_urls: Set[str] = set()
+
+        raw_ids = parsed.get("selected_ids", [])
+        if isinstance(raw_ids, list):
+            for item in raw_ids:
+                cid = str(item).strip()
+                resolved = id_to_item.get(cid)
+                if resolved is None:
+                    continue
+                if resolved["url"] in selected_urls:
+                    continue
+                selected_urls.add(resolved["url"])
+                selected.append(resolved)
+                if len(selected) >= result_limit:
+                    break
+
+        if len(selected) < result_limit:
+            raw_urls = parsed.get("selected_urls", [])
+            if isinstance(raw_urls, list):
+                by_url = {item["url"]: item for item in limited_candidates}
+                for item in raw_urls:
+                    url = str(item).strip()
+                    resolved = by_url.get(url)
+                    if resolved is None:
+                        continue
+                    if resolved["url"] in selected_urls:
+                        continue
+                    selected_urls.add(resolved["url"])
+                    selected.append(resolved)
+                    if len(selected) >= result_limit:
+                        break
+
+        if not selected:
+            return deduped[:result_limit], {
+                "status": "fallback_top",
+                "reason": "llm_web_selector_empty",
+            }
+
+        return selected[:result_limit], {
+            "status": "ok",
+            "reason": "llm_web_selector_ok",
+        }
+
+    def _llm_web_discover_results_for_concept(
+        self,
+        concept_slug: str,
+        query_budget: int,
+        max_results: int,
+    ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+        concept_slug = self._slug(concept_slug)
+        concept_title = concept_slug.replace("-", " ").title()
+        budget = max(0, int(query_budget))
+        result_limit = max(1, int(max_results))
+
+        plan = self._llm_plan_web_gap_queries(
+            concept_slug = concept_slug,
+            concept_title = concept_title,
+            max_queries = max(1, budget) if budget > 0 else 1,
+            max_results = result_limit,
+        )
+
+        direct_results = [
+            item
+            for item in plan.get("direct_results", [])
+            if isinstance(item, dict)
+        ]
+        if direct_results:
+            selected, selected_meta = self._llm_select_web_gap_results(
+                concept_slug = concept_slug,
+                concept_title = concept_title,
+                candidates = direct_results,
+                max_results = result_limit,
+            )
+            return selected, {
+                "status": "ok_direct",
+                "plan_status": plan.get("status"),
+                "plan_reason": plan.get("reason"),
+                "selector_status": selected_meta.get("status"),
+                "selector_reason": selected_meta.get("reason"),
+                "queries_consumed": 0,
+                "direct_results": len(direct_results),
+            }
+
+        if budget <= 0:
+            return [], {
+                "status": "empty",
+                "plan_status": plan.get("status"),
+                "plan_reason": plan.get("reason"),
+                "selector_status": "skipped",
+                "selector_reason": "query_budget_exhausted",
+                "queries_consumed": 0,
+                "direct_results": 0,
+            }
+
+        planned_queries = [
+            self._normalize_web_text(str(item).strip(), 180)
+            for item in plan.get("queries", [])
+            if str(item).strip()
+        ]
+        planned_queries = [q for q in planned_queries if len(q) >= 6]
+        if not planned_queries:
+            planned_queries = [f"{concept_slug.replace('-', ' ')} concept overview"]
+
+        queries_used = 0
+        harvested: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
+        per_query_limit = max(result_limit, self.cfg.enrichment_web_gap_max_results)
+
+        for query in planned_queries:
+            if queries_used >= budget:
+                break
+
+            results = self._web_search_results(query, per_query_limit)
+            queries_used += 1
+
+            for item in results:
+                normalized = self._normalize_web_result(
+                    item,
+                    fallback_title = concept_title,
+                )
+                if normalized is None:
+                    continue
+                if normalized["url"] in seen_urls:
+                    continue
+                seen_urls.add(normalized["url"])
+                harvested.append(normalized)
+
+        if not harvested:
+            return [], {
+                "status": "empty",
+                "plan_status": plan.get("status"),
+                "plan_reason": plan.get("reason"),
+                "selector_status": "skipped",
+                "selector_reason": "no_search_results",
+                "queries_consumed": queries_used,
+                "direct_results": 0,
+            }
+
+        selected, selected_meta = self._llm_select_web_gap_results(
+            concept_slug = concept_slug,
+            concept_title = concept_title,
+            candidates = harvested,
+            max_results = result_limit,
+        )
+
+        return selected, {
+            "status": "ok",
+            "plan_status": plan.get("status"),
+            "plan_reason": plan.get("reason"),
+            "selector_status": selected_meta.get("status"),
+            "selector_reason": selected_meta.get("reason"),
+            "queries_consumed": queries_used,
+            "direct_results": 0,
+        }
+
+    def _semantic_filter_missing_or_related_concepts(
+        self,
+        missing_candidates: List[str],
+        candidate_counts: Dict[str, int],
+        known_concepts: Set[str],
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        lexical_missing = [
+            str(slug).strip().replace("\\", "/")
+            for slug in missing_candidates
+            if str(slug).strip()
+        ]
+        lexical_missing = list(dict.fromkeys(lexical_missing))
+        if not lexical_missing:
+            return [], {
+                "status": "skipped",
+                "reason": "no_missing_candidates",
+                "kept_missing": 0,
+                "rejected_candidates": 0,
+                "related_to_existing": 0,
+            }
+
+        lexical_set = set(lexical_missing)
+        known_sorted = sorted(
+            {
+                str(item).strip().replace("\\", "/")
+                for item in known_concepts
+                if str(item).strip()
+            }
+        )
+
+        candidate_lines = [
+            f"- {slug} (frequency: {int(candidate_counts.get(slug, 0))})"
+            for slug in lexical_missing[:120]
+        ]
+        known_lines = [f"- {slug}" for slug in known_sorted[:220]]
+
+        prompt = (
+            "You are a semantic filter for wiki concept maintenance.\n"
+            "Classify lexical candidate concepts into:\n"
+            "1) real missing concepts that should be created\n"
+            "2) related-to-existing concepts (aliases or near-duplicates of known concepts)\n"
+            "3) noise (generic words, verbs, adjectives, irrelevant tokens).\n"
+            "Return strict JSON only with this schema:\n"
+            '{"keep_missing":["slug"],"related_to_existing":[{"slug":"candidate-slug","existing":"known-concept-slug","reason":"string"}],"reject":[{"slug":"candidate-slug","reason":"string"}]}\n\n'
+            "Rules:\n"
+            "- Use only slugs from MISSING_CANDIDATES and KNOWN_CONCEPTS.\n"
+            "- keep_missing must include only candidates that are genuinely conceptual and worth adding.\n"
+            "- Prefer rejecting broad generic terms (for example: information, system, external, review, history).\n"
+            "- If uncertain, reject.\n"
+            "- No markdown fences and no extra commentary.\n\n"
+            "MISSING_CANDIDATES:\n"
+            + "\n".join(candidate_lines)
+            + "\n\nKNOWN_CONCEPTS:\n"
+            + ("\n".join(known_lines) if known_lines else "- none")
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return lexical_missing, {
+                "status": "fallback_lexical",
+                "reason": "semantic_missing_invalid_json",
+                "kept_missing": len(lexical_missing),
+                "rejected_candidates": 0,
+                "related_to_existing": 0,
+            }
+
+        keep_raw = parsed.get("keep_missing")
+        related_raw = parsed.get("related_to_existing", [])
+        reject_raw = parsed.get("reject", [])
+        if not isinstance(keep_raw, list):
+            return lexical_missing, {
+                "status": "fallback_lexical",
+                "reason": "semantic_missing_schema_invalid",
+                "kept_missing": len(lexical_missing),
+                "rejected_candidates": 0,
+                "related_to_existing": 0,
+            }
+
+        keep_set: Set[str] = set()
+        for item in keep_raw:
+            normalized = self._slug(str(item).strip())
+            if normalized in lexical_set:
+                keep_set.add(normalized)
+
+        filtered_missing = [slug for slug in lexical_missing if slug in keep_set]
+
+        related_items: List[Dict[str, str]] = []
+        if isinstance(related_raw, list):
+            for item in related_raw:
+                if not isinstance(item, dict):
+                    continue
+                slug = self._slug(str(item.get("slug", "")).strip())
+                existing = self._slug(str(item.get("existing", "")).strip())
+                if slug not in lexical_set:
+                    continue
+                if existing and existing not in set(known_sorted):
+                    continue
+                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+                related_items.append(
+                    {
+                        "slug": slug,
+                        "existing": existing,
+                        "reason": reason,
+                    }
+                )
+
+        rejected_items: List[Dict[str, str]] = []
+        if isinstance(reject_raw, list):
+            for item in reject_raw:
+                if not isinstance(item, dict):
+                    continue
+                slug = self._slug(str(item.get("slug", "")).strip())
+                if slug not in lexical_set:
+                    continue
+                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+                rejected_items.append(
+                    {
+                        "slug": slug,
+                        "reason": reason,
+                    }
+                )
+
+        return filtered_missing, {
+            "status": "ok",
+            "reason": "semantic_missing_ok",
+            "kept_missing": len(filtered_missing),
+            "rejected_candidates": len(rejected_items),
+            "related_to_existing": len(related_items),
+            "related": related_items[:64],
+            "rejected": rejected_items[:64],
+        }
+
+    def _external_source_title(self, source_title: str, source_url: str) -> str:
+        cleaned_title = self._normalize_web_text(source_title or source_url, 140)
+        parsed = urlparse(str(source_url or "").strip())
+        host = (parsed.netloc or "external").strip().lower()
+        digest = hashlib.sha1(str(source_url or "").encode("utf-8")).hexdigest()[:8]
+        return f"External Source: {cleaned_title} [{host}#{digest}]"
+
+    def _fetch_external_page_text(self, source_url: str, max_chars: int) -> str:
+        normalized_url = str(source_url or "").strip()
+        if not normalized_url:
+            return ""
+
+        try:
+            req = Request(
+                normalized_url,
+                headers = {
+                    "User-Agent": "UnslothWikiBot/1.0 (+https://github.com/unslothai/unsloth)",
+                    "Accept": "text/html, text/plain;q=0.9, */*;q=0.5",
+                },
+            )
+            with urlopen(req, timeout = 20) as response:
+                raw = response.read(750_000)
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+                charset = response.headers.get_content_charset() or "utf-8"
+        except Exception as exc:
+            logger.warning("External source fetch failed for %r: %s", normalized_url, exc)
+            return ""
+
+        try:
+            text = raw.decode(charset, errors = "ignore")
+        except Exception:
+            text = raw.decode("utf-8", errors = "ignore")
+
+        looks_html = "html" in content_type or bool(
+            re.search(r"(?is)<html|<body|<article", text[:4000])
+        )
+        if looks_html:
+            text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+            text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+            text = re.sub(r"(?is)<!--.*?-->", " ", text)
+            text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+            text = re.sub(
+                r"(?i)</(p|div|li|h1|h2|h3|h4|h5|h6|section|article|tr)>",
+                "\n",
+                text,
+            )
+            text = re.sub(r"(?s)<[^>]+>", " ", text)
+            text = html.unescape(text)
+
+        return self._normalize_web_text(text, max_chars = max_chars)
+
+    def _ingest_and_summarize_external_source(
+        self,
+        concept_title: str,
+        search_result: Dict[str, str],
+    ) -> Dict[str, Any]:
+        source_url = str(search_result.get("url", "")).strip()
+        source_title = self._normalize_web_text(
+            str(search_result.get("title", "")).strip() or source_url,
+            160,
+        )
+        source_snippet = self._normalize_web_text(
+            str(search_result.get("snippet", "")).strip(),
+            self.cfg.enrichment_web_gap_max_snippet_chars,
+        )
+
+        if not source_url:
+            return {
+                "status": "error",
+                "reason": "missing_url",
+            }
+
+        fetched_text = self._fetch_external_page_text(
+            source_url,
+            max_chars = self.cfg.extract_source_max_chars,
+        )
+        if not fetched_text and not source_snippet:
+            return {
+                "status": "error",
+                "reason": "fetch_empty",
+                "url": source_url,
+            }
+
+        ingest_title = self._external_source_title(source_title, source_url)
+        ingest_blocks = [
+            f"External Source Title: {source_title}",
+            f"External Source URL: {source_url}",
+        ]
+        if source_snippet:
+            ingest_blocks.append(f"Search Snippet: {source_snippet}")
+        if fetched_text:
+            ingest_blocks.append(f"Fetched Content:\n{fetched_text}")
+        else:
+            ingest_blocks.append(f"Fallback Content:\n{source_snippet}")
+
+        ingest_report = self.ingest_source(
+            source_title = ingest_title,
+            source_text = "\n\n".join(ingest_blocks).strip(),
+            source_ref = source_url,
+        )
+        source_page = str(ingest_report.get("source_page", "")).strip()
+        if not source_page:
+            return {
+                "status": "error",
+                "reason": "source_page_missing",
+                "url": source_url,
+            }
+
+        question = self._source_first_summary_question(
+            title = source_title,
+            source_slug = source_page,
+        )
+        summary_result = self.query(
+            question,
+            save_answer = True,
+            preferred_context_page = source_page,
+            keep_preferred_context_full = True,
+            preferred_context_only = True,
+        )
+
+        answer_page = str(summary_result.get("answer_page", "")).strip()
+        if not answer_page:
+            return {
+                "status": "error",
+                "reason": "summary_page_missing",
+                "source_page": source_page,
+                "url": source_url,
+            }
+
+        return {
+            "status": "ok",
+            "source_page": source_page,
+            "summary_page": answer_page,
+            "url": source_url,
+            "title": source_title,
+        }
+
     def _fill_gaps_from_lint_via_web(
         self,
         dry_run: bool,
@@ -2072,7 +2794,14 @@ class LLMWikiEngine:
         concepts_considered = 0
         concepts_created = 0
         created_pages: List[str] = []
+        external_sources_ingested = 0
+        external_summary_pages_created: List[str] = []
+        external_source_pages_created: List[str] = []
         failed_concepts: List[str] = []
+        failed_external_sources: List[str] = []
+        llm_plan_ok_concepts = 0
+        llm_selector_ok_concepts = 0
+        llm_direct_results_used = 0
 
         for slug in missing_concepts:
             if queries_used >= max_queries:
@@ -2083,12 +2812,20 @@ class LLMWikiEngine:
             if concept_page.exists():
                 continue
 
-            query = f"{slug.replace('-', ' ')} concept overview"
-            search_results = self._web_search_results(
-                query,
-                self.cfg.enrichment_web_gap_max_results,
+            remaining_query_budget = max(0, max_queries - queries_used)
+            search_results, search_meta = self._llm_web_discover_results_for_concept(
+                concept_slug = slug,
+                query_budget = remaining_query_budget,
+                max_results = self.cfg.enrichment_web_gap_max_results,
             )
-            queries_used += 1
+
+            queries_used += max(0, int(search_meta.get("queries_consumed", 0)))
+            if str(search_meta.get("plan_status", "")).strip() == "ok":
+                llm_plan_ok_concepts += 1
+            if str(search_meta.get("selector_status", "")).strip() == "ok":
+                llm_selector_ok_concepts += 1
+            llm_direct_results_used += max(0, int(search_meta.get("direct_results", 0)))
+
             if not search_results:
                 failed_concepts.append(slug)
                 continue
@@ -2118,6 +2855,55 @@ class LLMWikiEngine:
                 failed_concepts.append(slug)
                 continue
 
+            external_summary_refs: List[str] = []
+            if not dry_run:
+                for item in search_results:
+                    source_url = str(item.get("url", "")).strip()
+                    if not source_url:
+                        continue
+
+                    try:
+                        summary_report = self._ingest_and_summarize_external_source(
+                            concept_title = concept_title,
+                            search_result = item,
+                        )
+                    except Exception as exc:
+                        failed_external_sources.append(
+                            f"{slug}: {source_url} ({exc})"
+                        )
+                        continue
+
+                    if summary_report.get("status") != "ok":
+                        reason = str(summary_report.get("reason", "unknown_error")).strip()
+                        failed_external_sources.append(
+                            f"{slug}: {source_url} ({reason})"
+                        )
+                        continue
+
+                    source_page = str(summary_report.get("source_page", "")).strip()
+                    summary_page = str(summary_report.get("summary_page", "")).strip()
+
+                    if source_page:
+                        source_page_md = (
+                            f"{source_page}.md"
+                            if not source_page.endswith(".md")
+                            else source_page
+                        )
+                        external_source_pages_created.append(source_page_md)
+
+                    external_sources_ingested += 1
+                    if summary_page:
+                        external_summary_refs.append(summary_page)
+                        external_summary_pages_created.append(summary_page)
+
+            summary_refs_md = [
+                f"- [[{ref[:-3] if ref.endswith('.md') else ref}]]"
+                for ref in external_summary_refs
+                if str(ref).strip()
+            ]
+            if not summary_refs_md:
+                summary_refs_md = ["- none"]
+
             page_md = (
                 "---\n"
                 f"title: {concept_title}\n"
@@ -2137,6 +2923,9 @@ class LLMWikiEngine:
                 + "\n\n"
                 + "## External Sources\n"
                 + "\n".join(external_refs)
+                + "\n\n"
+                + "## External Source Summaries\n"
+                + "\n".join(summary_refs_md)
                 + "\n"
             )
 
@@ -2152,6 +2941,11 @@ class LLMWikiEngine:
                 f"- Missing concepts in lint report: {len(missing_concepts)}\n"
                 f"- Web queries used: {queries_used}\n"
                 f"- Concept pages created: {concepts_created}\n"
+                f"- External sources ingested: {external_sources_ingested}\n"
+                f"- External summary pages created: {len(external_summary_pages_created)}\n"
+                f"- LLM web planner ok concepts: {llm_plan_ok_concepts}\n"
+                f"- LLM web selector ok concepts: {llm_selector_ok_concepts}\n"
+                f"- LLM direct results used: {llm_direct_results_used}\n"
             )
 
         return {
@@ -2161,7 +2955,15 @@ class LLMWikiEngine:
             "queries_used": queries_used,
             "concepts_created": concepts_created,
             "created_pages": created_pages,
+            "external_sources_ingested": external_sources_ingested,
+            "external_source_pages": sorted(set(external_source_pages_created)),
+            "external_summary_pages_created": len(external_summary_pages_created),
+            "created_summary_pages": sorted(set(external_summary_pages_created)),
+            "llm_web_planner_ok_concepts": llm_plan_ok_concepts,
+            "llm_web_selector_ok_concepts": llm_selector_ok_concepts,
+            "llm_web_direct_results_used": llm_direct_results_used,
             "failed_concepts": failed_concepts,
+            "failed_external_sources": failed_external_sources,
         }
 
     def _extract_from_source(self, title: str, text: str) -> Dict:
@@ -2615,7 +3417,7 @@ class LLMWikiEngine:
 
         return fallback_slug.replace("-", " ").strip()
 
-    def _merge_candidates_for_folder(
+    def _lexical_merge_candidates_for_folder(
         self,
         folder: Path,
         prefix: str,
@@ -2707,6 +3509,513 @@ class LLMWikiEngine:
             )
         )
         return candidates[:64]
+
+    def _merge_candidates_for_folder(
+        self,
+        folder: Path,
+        prefix: str,
+        similarity_threshold: float = 0.75,
+    ) -> List[Dict[str, Any]]:
+        lexical_candidates = self._lexical_merge_candidates_for_folder(
+            folder,
+            prefix,
+            similarity_threshold = similarity_threshold,
+        )
+
+        if not self.cfg.merge_llm_candidate_planner_enabled:
+            return lexical_candidates
+
+        if prefix == "concepts":
+            semantic_candidates, _semantic_error = self._semantic_merge_candidates_for_folder(
+                folder,
+                prefix,
+                similarity_threshold = similarity_threshold,
+                max_pairs = 128,
+            )
+        else:
+            semantic_candidates, _semantic_error = self._llm_merge_candidates_for_folder(
+                folder,
+                prefix,
+                similarity_threshold = similarity_threshold,
+                max_pairs = 128,
+            )
+
+        if semantic_candidates:
+            return semantic_candidates[:64]
+
+        return lexical_candidates
+
+    def _combine_merge_candidates(
+        self,
+        lexical_candidates: List[Dict[str, Any]],
+        semantic_candidates: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        best_by_pair: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        for item in [*lexical_candidates, *semantic_candidates]:
+            canonical = str(item.get("canonical", "")).strip().replace("\\", "/")
+            duplicate = str(item.get("duplicate", "")).strip().replace("\\", "/")
+            if not canonical or not duplicate or canonical == duplicate:
+                continue
+
+            pair_key = tuple(sorted([canonical, duplicate]))
+            existing = best_by_pair.get(pair_key)
+            similarity = float(item.get("similarity", 0.0))
+
+            if existing is None:
+                best_by_pair[pair_key] = dict(item)
+                continue
+
+            existing_similarity = float(existing.get("similarity", 0.0))
+            if similarity > existing_similarity:
+                best_by_pair[pair_key] = dict(item)
+
+        merged = list(best_by_pair.values())
+        merged.sort(
+            key = lambda item: (
+                -float(item.get("similarity", 0.0)),
+                str(item.get("canonical", "")),
+                str(item.get("duplicate", "")),
+            )
+        )
+        return merged
+
+    def _llm_merge_candidates_for_folder(
+        self,
+        folder: Path,
+        prefix: str,
+        similarity_threshold: float = 0.75,
+        max_pairs: int = 128,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        pages: List[Dict[str, Any]] = []
+        for page in sorted(folder.glob("*.md")):
+            text = page.read_text(encoding = "utf-8", errors = "ignore")
+            rel = f"{prefix}/{page.name}"
+            title = self._merge_candidate_title(text, page.stem)
+
+            summary_raw = self._extract_markdown_section(text, "Summary")
+            if not summary_raw:
+                heading_match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
+                if heading_match:
+                    summary_raw = heading_match.group(1).strip()
+            summary = re.sub(r"\s+", " ", summary_raw or "").strip()
+            if len(summary) > 220:
+                summary = summary[:220].rstrip() + "..."
+
+            updated_at = self._extract_updated_at(text)
+            if updated_at is None:
+                updated_at = datetime.fromtimestamp(
+                    page.stat().st_mtime, tz = timezone.utc
+                )
+
+            pages.append(
+                {
+                    "page": rel,
+                    "title": title,
+                    "summary": summary,
+                    "updated_at": updated_at,
+                }
+            )
+
+        if len(pages) < 2:
+            return [], None
+
+        pages.sort(
+            key = lambda item: (
+                -float(item["updated_at"].timestamp()),
+                str(item["page"]),
+            )
+        )
+        pages = pages[:96]
+
+        page_by_id: Dict[str, Dict[str, Any]] = {}
+        page_by_rel: Dict[str, Dict[str, Any]] = {}
+        lines: List[str] = []
+
+        for idx, item in enumerate(pages, start = 1):
+            page_id = f"M{idx:03d}"
+            page_by_id[page_id] = item
+            page_by_rel[str(item["page"])] = item
+            summary = str(item.get("summary", "")).strip() or "(no summary)"
+            lines.append(
+                f"{page_id} | {item['page']} | title: {item['title']} | brief: {summary}"
+            )
+
+        max_pairs = max(1, min(512, int(max_pairs)))
+        threshold = max(0.0, min(1.0, float(similarity_threshold)))
+        index_excerpt = self._planner_index_text([str(item["page"]) for item in pages])
+
+        prompt = (
+            "You are a semantic duplicate merge planner for wiki maintenance.\n"
+            f"Page kind: {prefix}\n"
+            "Identify which pages represent near-duplicate concepts/entities and should be merged.\n"
+            "Return strict JSON only with this schema:\n"
+            '{"merges":[{"canonical_id":"M001","duplicate_id":"M002","canonical_page":"entities/x.md","duplicate_page":"entities/y.md","confidence":0.0,"reason":"string"}]}\n\n'
+            "Rules:\n"
+            "- Use only IDs or paths from PAGES.\n"
+            f"- Return at most {max_pairs} merges.\n"
+            f"- Only include merges with confidence >= {round(threshold, 3)}.\n"
+            "- Do not merge merely related but distinct pages.\n"
+            "- Prefer keeping the more complete or more recent page as canonical.\n"
+            "- Use INDEX_CONTEXT only as supporting signal; PAGES remain the source of truth.\n"
+            "- No markdown fences and no explanatory text outside JSON.\n\n"
+            "PAGES:\n"
+            + "\n".join(lines)
+            + "\n\nINDEX_CONTEXT:\n"
+            + index_excerpt
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        if not raw:
+            return [], "semantic_merge_empty_llm_output"
+
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return [], "semantic_merge_invalid_json"
+
+        merges_raw = parsed.get("merges", [])
+        if not isinstance(merges_raw, list):
+            return [], "semantic_merge_missing_merges"
+
+        def _resolve(token: Any) -> Optional[Dict[str, Any]]:
+            raw_token = str(token or "").strip()
+            if not raw_token:
+                return None
+            if raw_token in page_by_id:
+                return page_by_id[raw_token]
+
+            rel_token = raw_token.replace("\\", "/")
+            if rel_token in page_by_rel:
+                return page_by_rel[rel_token]
+
+            if not rel_token.endswith(".md"):
+                rel_md = f"{rel_token}.md"
+                if rel_md in page_by_rel:
+                    return page_by_rel[rel_md]
+            return None
+
+        candidates: List[Dict[str, Any]] = []
+        for item in merges_raw:
+            if not isinstance(item, dict):
+                continue
+
+            canonical = _resolve(item.get("canonical_id")) or _resolve(
+                item.get("canonical_page")
+            )
+            duplicate = _resolve(item.get("duplicate_id")) or _resolve(
+                item.get("duplicate_page")
+            )
+            if canonical is None or duplicate is None:
+                continue
+
+            canonical_page = str(canonical.get("page", "")).strip()
+            duplicate_page = str(duplicate.get("page", "")).strip()
+            if not canonical_page or not duplicate_page or canonical_page == duplicate_page:
+                continue
+
+            confidence_raw = item.get("confidence", item.get("similarity", 0.0))
+            try:
+                confidence = float(confidence_raw)
+            except Exception:
+                confidence = 0.0
+            confidence = max(0.0, min(1.0, confidence))
+            if confidence < threshold:
+                continue
+
+            reason = re.sub(r"\s+", " ", str(item.get("reason", "")).strip())
+            if len(reason) > 180:
+                reason = reason[:180].rstrip() + "..."
+
+            candidates.append(
+                {
+                    "canonical": canonical_page,
+                    "canonical_title": str(canonical.get("title", "")).strip(),
+                    "duplicate": duplicate_page,
+                    "duplicate_title": str(duplicate.get("title", "")).strip(),
+                    "similarity": round(confidence, 3),
+                    "reason": (
+                        f"semantic-llm: {reason}" if reason else "semantic-llm"
+                    ),
+                }
+            )
+
+        combined = self._combine_merge_candidates([], candidates)
+        return combined[:max_pairs], None
+
+    def _semantic_merge_candidates_for_folder(
+        self,
+        folder: Path,
+        prefix: str,
+        similarity_threshold: float = 0.75,
+        max_pairs: int = 128,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        pages: List[Dict[str, Any]] = []
+        for page in sorted(folder.glob("*.md")):
+            text = page.read_text(encoding = "utf-8", errors = "ignore")
+            rel = f"{prefix}/{page.name}"
+            title = self._merge_candidate_title(text, page.stem)
+
+            summary_raw = self._extract_markdown_section(text, "Summary")
+            if not summary_raw:
+                heading_match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
+                if heading_match:
+                    summary_raw = heading_match.group(1).strip()
+            summary = re.sub(r"\s+", " ", summary_raw or "").strip()
+            if len(summary) > 220:
+                summary = summary[:220].rstrip() + "..."
+
+            updated_at = self._extract_updated_at(text)
+            if updated_at is None:
+                updated_at = datetime.fromtimestamp(
+                    page.stat().st_mtime, tz = timezone.utc
+                )
+
+            pages.append(
+                {
+                    "page": rel,
+                    "title": title,
+                    "summary": summary,
+                    "updated_at": updated_at,
+                }
+            )
+
+        if len(pages) < 2:
+            return [], None
+
+        pages.sort(
+            key = lambda item: (
+                -float(item["updated_at"].timestamp()),
+                str(item["page"]),
+            )
+        )
+        pages = pages[:80]
+
+        page_by_id: Dict[str, Dict[str, Any]] = {}
+        page_by_rel: Dict[str, Dict[str, Any]] = {}
+        lines: List[str] = []
+
+        for idx, item in enumerate(pages, start = 1):
+            page_id = f"C{idx:03d}"
+            page_by_id[page_id] = item
+            page_by_rel[str(item["page"])] = item
+            summary = str(item.get("summary", "")).strip() or "(no summary)"
+            lines.append(
+                f"{page_id} | {item['page']} | title: {item['title']} | brief: {summary}"
+            )
+
+        max_pairs = max(1, min(512, int(max_pairs)))
+        threshold = max(0.0, min(1.0, float(similarity_threshold)))
+
+        prompt = (
+            "You are a semantic concept merge planner for wiki maintenance.\n"
+            "Identify which concept pages should be merged because they represent the same concept (including aliases and acronym/expanded-name variants).\n"
+            "Return strict JSON only with this schema:\n"
+            '{"merges":[{"canonical_id":"C001","duplicate_id":"C002","canonical_page":"concepts/x.md","duplicate_page":"concepts/y.md","confidence":0.0,"reason":"string"}]}\n\n'
+            "Rules:\n"
+            "- Use only IDs or paths from CONCEPT_PAGES.\n"
+            f"- Return at most {max_pairs} merges.\n"
+            f"- Only include merges with confidence >= {round(threshold, 3)}.\n"
+            "- Do not merge merely related but distinct concepts (parent-child, adjacent topics, implementation detail).\n"
+            "- Prefer keeping the more complete or more recent page as canonical.\n"
+            "- No markdown fences and no explanatory text outside JSON.\n\n"
+            "CONCEPT_PAGES:\n"
+            + "\n".join(lines)
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        if not raw:
+            return [], "semantic_concept_merge_empty_llm_output"
+
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return [], "semantic_concept_merge_invalid_json"
+
+        merges_raw = parsed.get("merges", [])
+        if not isinstance(merges_raw, list):
+            return [], "semantic_concept_merge_missing_merges"
+
+        def _resolve(token: Any) -> Optional[Dict[str, Any]]:
+            raw_token = str(token or "").strip()
+            if not raw_token:
+                return None
+            if raw_token in page_by_id:
+                return page_by_id[raw_token]
+
+            rel_token = raw_token.replace("\\", "/")
+            if rel_token in page_by_rel:
+                return page_by_rel[rel_token]
+
+            if not rel_token.endswith(".md"):
+                rel_md = f"{rel_token}.md"
+                if rel_md in page_by_rel:
+                    return page_by_rel[rel_md]
+            return None
+
+        candidates: List[Dict[str, Any]] = []
+        for item in merges_raw:
+            if not isinstance(item, dict):
+                continue
+
+            canonical = _resolve(item.get("canonical_id")) or _resolve(
+                item.get("canonical_page")
+            )
+            duplicate = _resolve(item.get("duplicate_id")) or _resolve(
+                item.get("duplicate_page")
+            )
+            if canonical is None or duplicate is None:
+                continue
+
+            canonical_page = str(canonical.get("page", "")).strip()
+            duplicate_page = str(duplicate.get("page", "")).strip()
+            if not canonical_page or not duplicate_page or canonical_page == duplicate_page:
+                continue
+
+            confidence_raw = item.get("confidence", item.get("similarity", 0.0))
+            try:
+                confidence = float(confidence_raw)
+            except Exception:
+                confidence = 0.0
+            confidence = max(0.0, min(1.0, confidence))
+            if confidence < threshold:
+                continue
+
+            reason = re.sub(r"\s+", " ", str(item.get("reason", "")).strip())
+            if len(reason) > 180:
+                reason = reason[:180].rstrip() + "..."
+
+            candidates.append(
+                {
+                    "canonical": canonical_page,
+                    "canonical_title": str(canonical.get("title", "")).strip(),
+                    "duplicate": duplicate_page,
+                    "duplicate_title": str(duplicate.get("title", "")).strip(),
+                    "similarity": round(confidence, 3),
+                    "reason": (
+                        f"semantic-llm: {reason}" if reason else "semantic-llm"
+                    ),
+                }
+            )
+
+        combined = self._combine_merge_candidates([], candidates)
+        return combined[:max_pairs], None
+
+    def _coerce_string_list(self, value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        out: List[str] = []
+        for item in value:
+            text = re.sub(r"\s+", " ", str(item or "").strip())
+            if not text:
+                continue
+            if text.startswith("- "):
+                text = text[2:].strip()
+            if text:
+                out.append(text)
+        return out
+
+    def _dedupe_bullet_items(self, items: List[str], limit: int = 128) -> List[str]:
+        out: List[str] = []
+        seen: Set[str] = set()
+
+        for raw_item in items:
+            item = re.sub(r"\s+", " ", str(raw_item or "").strip())
+            if not item:
+                continue
+            if item.startswith("- "):
+                item = item[2:].strip()
+            if not item:
+                continue
+
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+
+            if len(out) >= max(1, int(limit)):
+                break
+
+        return out
+
+    def _render_bullet_section(self, items: List[str]) -> str:
+        cleaned = self._dedupe_bullet_items(items, limit = 256)
+        if not cleaned:
+            return "- none"
+        return "\n".join([f"- {item}" for item in cleaned])
+
+    def _llm_synthesize_concept_merge_content(
+        self,
+        canonical_rel: str,
+        duplicate_rel: str,
+        canonical_text: str,
+        duplicate_text: str,
+    ) -> Optional[Dict[str, Any]]:
+        prompt = (
+            "You are a semantic concept merge writer for wiki maintenance.\n"
+            "Draft merged concept content for the canonical page using both pages.\n"
+            "Return strict JSON only with this schema:\n"
+            '{"merged_summary":"string","merged_facts":["string"],"merged_contradictions":["string"],"merged_sources":["string"],"confidence":0.0,"rationale":"string"}\n\n'
+            "Rules:\n"
+            "- Keep output source-grounded to the provided page content.\n"
+            "- Keep merged_summary to 1-3 sentences.\n"
+            "- Keep bullet lists concise, deduplicated, and factual.\n"
+            "- If uncertain, keep confidence low and keep lists conservative.\n"
+            "- No markdown fences and no text outside JSON.\n\n"
+            f"CANONICAL_PAGE: {canonical_rel}\n"
+            f"DUPLICATE_PAGE: {duplicate_rel}\n\n"
+            "CANONICAL_TEXT:\n"
+            + canonical_text[:5000]
+            + "\n\nDUPLICATE_TEXT:\n"
+            + duplicate_text[:5000]
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return None
+
+        summary = re.sub(
+            r"\s+",
+            " ",
+            str(parsed.get("merged_summary", "")).strip(),
+        )
+        if len(summary) > 1200:
+            summary = summary[:1200].rstrip() + "..."
+
+        facts = self._dedupe_bullet_items(
+            self._coerce_string_list(parsed.get("merged_facts", [])),
+            limit = 48,
+        )
+        contradictions = self._dedupe_bullet_items(
+            self._coerce_string_list(parsed.get("merged_contradictions", [])),
+            limit = 48,
+        )
+        sources = self._dedupe_bullet_items(
+            self._coerce_string_list(parsed.get("merged_sources", [])),
+            limit = 48,
+        )
+
+        try:
+            confidence = float(parsed.get("confidence", 0.0))
+        except Exception:
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        rationale = re.sub(r"\s+", " ", str(parsed.get("rationale", "")).strip())
+        if len(rationale) > 240:
+            rationale = rationale[:240].rstrip() + "..."
+
+        if not summary and not facts and not contradictions and not sources:
+            return None
+
+        return {
+            "summary": summary,
+            "facts": facts,
+            "contradictions": contradictions,
+            "sources": sources,
+            "confidence": confidence,
+            "rationale": rationale,
+        }
 
     def _extract_markdown_section(self, text: str, section_title: str) -> str:
         m = re.search(
@@ -2817,6 +4126,7 @@ class LLMWikiEngine:
         duplicate_rel: str,
         archived_rel: str,
         similarity: float,
+        semantic_merge: Optional[Dict[str, Any]] = None,
     ) -> str:
         now_iso = self._now_iso()
 
@@ -2840,6 +4150,98 @@ class LLMWikiEngine:
             limit = 8,
         )
 
+        semantic_summary = ""
+        semantic_facts: List[str] = []
+        semantic_contradictions: List[str] = []
+        semantic_sources: List[str] = []
+        semantic_rationale = ""
+        semantic_confidence = 0.0
+
+        if semantic_merge:
+            semantic_summary = re.sub(
+                r"\s+",
+                " ",
+                str(semantic_merge.get("summary", "")).strip(),
+            )
+            semantic_facts = self._dedupe_bullet_items(
+                self._coerce_string_list(semantic_merge.get("facts", [])),
+                limit = 64,
+            )
+            semantic_contradictions = self._dedupe_bullet_items(
+                self._coerce_string_list(semantic_merge.get("contradictions", [])),
+                limit = 64,
+            )
+            semantic_sources = self._dedupe_bullet_items(
+                self._coerce_string_list(semantic_merge.get("sources", [])),
+                limit = 64,
+            )
+
+            try:
+                semantic_confidence = float(semantic_merge.get("confidence", 0.0))
+            except Exception:
+                semantic_confidence = 0.0
+            semantic_confidence = max(0.0, min(1.0, semantic_confidence))
+
+            semantic_rationale = re.sub(
+                r"\s+",
+                " ",
+                str(semantic_merge.get("rationale", "")).strip(),
+            )
+            if len(semantic_rationale) > 260:
+                semantic_rationale = semantic_rationale[:260].rstrip() + "..."
+
+            if semantic_summary:
+                canonical_text = self._replace_markdown_section(
+                    canonical_text,
+                    section_title = "Summary",
+                    section_body = semantic_summary,
+                )
+
+            canonical_facts = self._extract_markdown_bullets(
+                self._extract_markdown_section(canonical_text, "Facts"),
+                limit = 256,
+            )
+            merged_facts = self._dedupe_bullet_items(
+                canonical_facts + semantic_facts + facts,
+                limit = 192,
+            )
+            if merged_facts:
+                canonical_text = self._replace_markdown_section(
+                    canonical_text,
+                    section_title = "Facts",
+                    section_body = self._render_bullet_section(merged_facts),
+                )
+
+            canonical_contradictions = self._extract_markdown_bullets(
+                self._extract_markdown_section(canonical_text, "Contradictions"),
+                limit = 256,
+            )
+            merged_contradictions = self._dedupe_bullet_items(
+                canonical_contradictions + semantic_contradictions + contradictions,
+                limit = 192,
+            )
+            if merged_contradictions:
+                canonical_text = self._replace_markdown_section(
+                    canonical_text,
+                    section_title = "Contradictions",
+                    section_body = self._render_bullet_section(merged_contradictions),
+                )
+
+            canonical_sources = self._extract_markdown_bullets(
+                self._extract_markdown_section(canonical_text, "Sources"),
+                limit = 256,
+            )
+            merged_sources = self._dedupe_bullet_items(
+                canonical_sources + semantic_sources + sources,
+                limit = 192,
+            )
+            if merged_sources:
+                canonical_text = self._replace_markdown_section(
+                    canonical_text,
+                    section_title = "Sources",
+                    section_body = self._render_bullet_section(merged_sources),
+                )
+
         entry_lines = [
             f"### {now_iso} merged {duplicate_rel}",
             f"- similarity: {round(float(similarity), 3)}",
@@ -2856,6 +4258,14 @@ class LLMWikiEngine:
         if sources:
             entry_lines.append("- sources:")
             entry_lines.extend([f"  - {item}" for item in sources])
+        if semantic_summary:
+            entry_lines.append("- semantic_summary_applied: true")
+        if semantic_confidence > 0:
+            entry_lines.append(
+                f"- semantic_confidence: {round(float(semantic_confidence), 3)}"
+            )
+        if semantic_rationale:
+            entry_lines.append(f"- semantic_rationale: {semantic_rationale}")
 
         entry = "\n".join(entry_lines).rstrip()
         existing_history = self._extract_markdown_section(
@@ -3004,9 +4414,15 @@ class LLMWikiEngine:
 
     def _normalize_wikilink(self, link: str) -> str:
         normalized = str(link or "").strip().replace("\\", "/")
-        if normalized.endswith(".md"):
+        if "|" in normalized:
+            normalized = normalized.split("|", 1)[0].strip()
+        if "#" in normalized:
+            normalized = normalized.split("#", 1)[0].strip()
+
+        while normalized.endswith(".md"):
             normalized = normalized[:-3]
-        return normalized
+
+        return normalized.strip()
 
     def _extract_analysis_primary_source_link(self, text: str) -> Optional[str]:
         context_match = re.search(r"(?ms)^## Context Pages\n(.+?)(?=\n## |\Z)", text)
@@ -3862,16 +5278,28 @@ class LLMWikiEngine:
         inbound: Dict[str, List[str]] = {p: [] for p in pages}
         outbound: Dict[str, List[str]] = {p: [] for p in pages}
         broken: List[Dict[str, str]] = []
+        broken_pairs: Set[Tuple[str, str]] = set()
 
         for rel in pages:
+            if rel == "log.md":
+                continue
+
             txt = (self.wiki_dir / rel).read_text(encoding = "utf-8", errors = "ignore")
             links = re.findall(r"\[\[([^\]]+)\]\]", txt)
             for l in links:
-                target_rel = f"{l}.md"
-                if l in page_set and target_rel in inbound:
+                normalized_target = self._normalize_wikilink(l)
+                if not normalized_target:
+                    continue
+
+                target_rel = f"{normalized_target}.md"
+                if normalized_target in page_set and target_rel in inbound:
                     outbound[rel].append(target_rel)
                     inbound[target_rel].append(rel)
                 else:
+                    pair = (rel, target_rel)
+                    if pair in broken_pairs:
+                        continue
+                    broken_pairs.add(pair)
                     broken.append({"source": rel, "target": target_rel})
         return {"inbound": inbound, "outbound": outbound, "broken": broken}
 
@@ -3891,7 +5319,7 @@ class LLMWikiEngine:
         scored.sort(key = lambda item: item[1], reverse = True)
         return [(rel, 1.0 / (1.0 + idx)) for idx, (rel, _mtime) in enumerate(scored)]
 
-    def _entity_query_focus(self, query: str) -> Tuple[Set[str], str]:
+    def _entity_query_focus_lexical(self, query: str) -> Tuple[Set[str], str]:
         lowered = query.strip().lower()
         patterns = (
             r"^\s*(?:who|what)\s+is\s+(.+?)\s*\??$",
@@ -3914,6 +5342,55 @@ class LLMWikiEngine:
             return set(), ""
         return set(self._tokenize_terms(target)), self._slug(target)
 
+    def _entity_query_focus(self, query: str) -> Tuple[Set[str], str]:
+        if not self.cfg.entity_query_focus_llm_enabled:
+            return self._entity_query_focus_lexical(query)
+
+        query_text = self._normalize_web_text(str(query or "").strip(), 260)
+        if len(query_text) < 3:
+            return set(), ""
+
+        prompt = (
+            "You are an entity intent parser for wiki retrieval.\n"
+            "Decide whether the query is primarily asking about a specific entity/person/company/project, and if yes extract the target name.\n"
+            "Return strict JSON only with this schema:\n"
+            '{"is_entity_lookup":true,"target":"Entity Name"}\n\n'
+            "Rules:\n"
+            "- If query is not primarily entity lookup, return is_entity_lookup=false and target=\"\".\n"
+            "- target should be the canonical mention phrase, not a slug.\n"
+            "- No markdown fences and no text outside JSON.\n\n"
+            f"QUERY:\n{query_text}"
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if isinstance(parsed, dict):
+            target = re.sub(r"\s+", " ", str(parsed.get("target", "")).strip())
+            is_lookup_raw = parsed.get("is_entity_lookup", parsed.get("entity_lookup"))
+            is_lookup: Optional[bool] = None
+            if isinstance(is_lookup_raw, str):
+                lowered = is_lookup_raw.strip().lower()
+                is_lookup = lowered in {"1", "true", "yes", "y", "on"}
+            elif isinstance(is_lookup_raw, bool):
+                is_lookup = is_lookup_raw
+
+            if is_lookup and target:
+                target = re.sub(r"\b(the|a|an)\b", " ", target, flags = re.I)
+                target = re.sub(r"\s+", " ", target).strip(" ?!.,:;")
+                if target:
+                    return set(self._tokenize_terms(target)), self._slug(target)
+
+            if is_lookup is None and target:
+                target = re.sub(r"\b(the|a|an)\b", " ", target, flags = re.I)
+                target = re.sub(r"\s+", " ", target).strip(" ?!.,:;")
+                if target:
+                    return set(self._tokenize_terms(target)), self._slug(target)
+
+            if is_lookup is False:
+                return set(), ""
+
+        return self._entity_query_focus_lexical(query)
+
     def _rank_pages(
         self,
         query: str,
@@ -3926,14 +5403,15 @@ class LLMWikiEngine:
         if not effective_include_sources:
             all_pages = [p for p in all_pages if not p.startswith("sources/")]
 
+        llm_seed_ranked = self._rank_pages_by_recency(all_pages)
+        if self.cfg.ranking_llm_rerank_enabled and len(llm_seed_ranked) > 1:
+            llm_ranked = self._llm_rerank_candidates(query, llm_seed_ranked)
+            if llm_ranked:
+                return llm_ranked
+
         q_terms = self._terms(query)
         if not q_terms:
-            ranked = self._rank_pages_by_recency(all_pages)
-            if self.cfg.ranking_llm_rerank_enabled and len(ranked) > 1:
-                reranked = self._llm_rerank_candidates(query, ranked)
-                if reranked:
-                    return reranked
-            return ranked
+            return llm_seed_ranked
 
         entity_focus_terms, entity_focus_slug = self._entity_query_focus(query)
 
@@ -4046,21 +5524,123 @@ class LLMWikiEngine:
             ranked = self._rank_pages_by_recency(all_pages)
         else:
             ranked = sorted(scores, key = lambda x: x[1], reverse = True)
-            ranked = self._expand_ranked_pages_by_links(ranked, query_terms = q_terms)
-
-        if self.cfg.ranking_llm_rerank_enabled and len(ranked) > 1:
-            reranked = self._llm_rerank_candidates(query, ranked)
-            if reranked:
-                return reranked
-            # Keep retrieval robust when planner output is invalid/empty.
-            return ranked
+            ranked = self._expand_ranked_pages_by_links(
+                ranked,
+                query_terms = q_terms,
+                query_text = query,
+            )
 
         return ranked
+
+    def _llm_select_link_expansion_targets(
+        self,
+        query: str,
+        source_page: str,
+        linked_pages: List[str],
+        ranked_map: Dict[str, float],
+        query_terms: Optional[Set[str]] = None,
+    ) -> List[str]:
+        if not self.cfg.ranking_link_llm_selector_enabled:
+            return []
+
+        query_text = self._normalize_web_text(str(query or "").strip(), 280)
+        if not query_text:
+            return []
+
+        fanout = max(1, int(self.cfg.ranking_link_fanout))
+        candidate_cap = max(
+            fanout,
+            int(self.cfg.ranking_link_llm_selector_max_candidates),
+        )
+
+        deduped: List[str] = []
+        seen_links: Set[str] = set()
+        for link in linked_pages:
+            normalized = str(link).strip().replace("\\", "/")
+            if not normalized:
+                continue
+            if normalized in seen_links:
+                continue
+            seen_links.add(normalized)
+            deduped.append(normalized)
+            if len(deduped) >= candidate_cap:
+                break
+
+        if len(deduped) <= 1:
+            return deduped[:fanout]
+
+        id_to_link: Dict[str, str] = {}
+        lines: List[str] = []
+        for idx, rel in enumerate(deduped, start = 1):
+            cid = f"L{idx:03d}"
+            id_to_link[cid] = rel
+            overlap = self._overlap_ratio(
+                query_terms or set(),
+                set(self._tokenize_terms(rel)),
+            )
+            rank_prior = float(ranked_map.get(rel, 0.0))
+            lines.append(
+                f"{cid} | {rel} | prior_rank_score: {round(rank_prior, 4)} | path_overlap: {round(overlap, 4)}"
+            )
+
+        prompt = (
+            "You are a link expansion selector for wiki retrieval planning.\n"
+            "Choose which outgoing links from the source page should be expanded for this query.\n"
+            "Return strict JSON only with this schema:\n"
+            '{"ordered_links":["L001"],"reason":"string"}\n\n'
+            "Rules:\n"
+            "- Use only IDs or page paths from CANDIDATE_LINKS.\n"
+            f"- Return at most {fanout} links.\n"
+            "- Prefer links that are directly useful for answering the query intent.\n"
+            "- Avoid generic/noisy links.\n"
+            "- No markdown fences and no text outside JSON.\n\n"
+            f"QUERY:\n{query_text}\n\n"
+            f"SOURCE_PAGE: {source_page}\n\n"
+            "CANDIDATE_LINKS:\n"
+            + "\n".join(lines)
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return []
+
+        selected: List[str] = []
+        selected_set: Set[str] = set()
+        raw_items = parsed.get("ordered_links", parsed.get("selected_links", []))
+        if not isinstance(raw_items, list):
+            return []
+
+        for item in raw_items:
+            token = str(item or "").strip().replace("\\", "/")
+            if not token:
+                continue
+
+            rel = ""
+            if token in id_to_link:
+                rel = id_to_link[token]
+            else:
+                rel = token
+                if rel and not rel.endswith(".md"):
+                    rel = f"{rel}.md"
+                if rel not in seen_links:
+                    rel = ""
+
+            if not rel or rel in selected_set:
+                continue
+
+            selected_set.add(rel)
+            selected.append(rel)
+            if len(selected) >= fanout:
+                break
+
+        return selected
 
     def _expand_ranked_pages_by_links(
         self,
         ranked: List[Tuple[str, float]],
         query_terms: Optional[Set[str]] = None,
+        query_text: str = "",
     ) -> List[Tuple[str, float]]:
         """Optionally expand ranked pages by traversing wiki links up to a depth."""
         depth_limit = self.cfg.ranking_link_depth
@@ -4080,6 +5660,7 @@ class LLMWikiEngine:
         queue: List[Tuple[str, float, int]] = [(rel, score, 0) for rel, score in seeds]
         seen_depth: Dict[str, int] = {rel: 0 for rel, _ in seeds}
         links_cache: Dict[str, List[str]] = {}
+        llm_selector_remaining = max(0, min(8, len(seeds)))
 
         while queue:
             rel, parent_score, current_depth = queue.pop(0)
@@ -4092,18 +5673,39 @@ class LLMWikiEngine:
                     encoding = "utf-8", errors = "ignore"
                 )
                 linked_pages = self._extract_existing_links(text, all_pages)
-                # Prefer links that are already ranked and/or path-relevant to query terms.
-                linked_pages.sort(
-                    key = lambda p: (
-                        ranked_map.get(p, 0.0),
-                        self._overlap_ratio(
-                            query_terms or set(),
-                            set(self._tokenize_terms(p)),
-                        ),
-                    ),
-                    reverse = True,
+
+                llm_selected: List[str] = []
+                use_llm_selector = (
+                    current_depth == 0
+                    and llm_selector_remaining > 0
+                    and bool(str(query_text or "").strip())
                 )
-                linked_pages = linked_pages[: self.cfg.ranking_link_fanout]
+                if use_llm_selector:
+                    llm_selector_remaining -= 1
+                    llm_selected = self._llm_select_link_expansion_targets(
+                        query = query_text,
+                        source_page = rel,
+                        linked_pages = linked_pages,
+                        ranked_map = ranked_map,
+                        query_terms = query_terms,
+                    )
+
+                if llm_selected:
+                    linked_pages = llm_selected[: self.cfg.ranking_link_fanout]
+                else:
+                    # Prefer links that are already ranked and/or path-relevant to query terms.
+                    linked_pages.sort(
+                        key = lambda p: (
+                            ranked_map.get(p, 0.0),
+                            self._overlap_ratio(
+                                query_terms or set(),
+                                set(self._tokenize_terms(p)),
+                            ),
+                        ),
+                        reverse = True,
+                    )
+                    linked_pages = linked_pages[: self.cfg.ranking_link_fanout]
+
                 links_cache[rel] = linked_pages
 
             for target in linked_pages:
@@ -4446,6 +6048,42 @@ class LLMWikiEngine:
         s = re.sub(r"[^a-z0-9]+", "-", s)
         return s.strip("-") or "untitled"
 
+    def _source_first_summary_question(self, title: str, source_slug: str) -> str:
+        title_text = re.sub(r"\s+", " ", str(title or "").strip()) or "Untitled"
+        normalized_slug = str(source_slug or "").strip().replace("\\", "/")
+        if normalized_slug.endswith(".md"):
+            normalized_slug = normalized_slug[:-3]
+        if normalized_slug.startswith("sources/"):
+            source_rel = normalized_slug
+        else:
+            source_rel = f"sources/{self._slug(normalized_slug or title_text)}"
+
+        return (
+            f"Summarize source '{title_text}' with a source-first lens.\n"
+            f"Primary page to ground on: [[{source_rel}]].\n\n"
+            "Focus on:\n"
+            "1. What this source is about (2-3 sentences)\n"
+            "2. 4-7 concrete key takeaways\n"
+            "3. What changed in the wiki after ingest (new or updated entities/concepts)\n"
+            "4. Any caveats, uncertainty, or possible extraction gaps\n\n"
+            "Output format:\n"
+            "- Title: Summary title (either from the document or rephrased for brevity)\n"
+            "- Section A: Brief summary paragraph\n"
+            "- Section B: Key takeaways (bullets)\n"
+            "- Section C: Wiki updates (bullets)\n"
+            "- Section D: Any important equations or formulas (bullets)\n"
+            "- Section E: Caveats (bullets)\n"
+            "- Section F: Any assumptions (bullets)\n"
+            "- Section G: Is this a source or a conversation?\n"
+            "- Section H: Any potential disputable claims?\n"
+            "- Section I: Is this information date/time sensitive? If yes, print timestamp.\n\n"
+            "Requirements:\n"
+            "- Cite claims inline with wiki links like [[sources/...]] [[entities/...]] [[concepts/...]]\n"
+            "- Keep the response specific and avoid generic filler\n"
+            "- Make sure you populate caveats and limitations by looking at the content critically, especially if it's technical. If the source is very clean and straightforward, say so but still include a caveats section with a note to that effect.\n"
+            f"- Prioritize [[{source_rel}]] over unrelated pages"
+        )
+
     def _compact_saved_question(self, question: str) -> str:
         raw = str(question or "").strip()
         if not raw:
@@ -4569,12 +6207,11 @@ class LLMWikiEngine:
         term = token.lower().strip()
         if len(term) > 4 and term.endswith("ies"):
             term = term[:-3] + "y"
-        elif (
-            len(term) > 4
-            and term.endswith("es")
-            and not term.endswith(("aes", "ees", "oes"))
-        ):
-            term = term[:-2]
+        elif len(term) > 4 and term.endswith("es"):
+            if term.endswith(("ches", "shes", "xes", "zes", "sses", "oes")):
+                term = term[:-2]
+            elif not term.endswith(("aes", "ees")):
+                term = term[:-1]
         elif (
             len(term) > 3
             and term.endswith("s")

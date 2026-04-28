@@ -921,3 +921,31 @@ If you observe repetitive, incoherent, or obviously degenerate `analysis/*` outp
 
 4. Caveat:
   - Over-tightening can improve fluency but hurt factual recall. Balance with your model size and domain complexity.
+
+## April 2026 Addendum (LLM Link Expansion Selector)
+
+This pass adds an optional semantic selector for ranking-time link expansion so traversal can prioritize links by query intent rather than lexical path overlap alone.
+
+### Changed files
+- `studio/backend/core/wiki/engine.py`
+- `studio/backend/tests/test_wiki_rag_pipeline.py`
+- `updates.md`
+
+### Behavior changes
+1. Link expansion now supports an LLM selector stage.
+  - During `_expand_ranked_pages_by_links`, depth-0 seed pages can invoke a link-selection prompt.
+  - The selector chooses from concrete outgoing wikilinks only and is hard-bounded by fanout.
+2. Safety and fallback behavior are preserved.
+  - If selector output is invalid/empty, expansion falls back to existing lexical sort (`ranked_map` prior + path-overlap).
+  - Selector is budgeted to a small number of seed pages per query to avoid runaway LLM calls.
+3. Query diagnostics now include selector settings on saved analysis pages.
+
+### New env variables
+| Env var | What it controls | Default |
+|---|---|---|
+| `UNSLOTH_WIKI_ENGINE_RANKING_LINK_LLM_SELECTOR_ENABLED` | Enables semantic LLM link selection in expansion traversal | `true` |
+| `UNSLOTH_WIKI_ENGINE_RANKING_LINK_LLM_SELECTOR_MAX_CANDIDATES` | Max outgoing links exposed to selector prompt per source page | `24` |
+
+### Regression coverage added
+- `test_rank_pages_link_expansion_can_use_llm_selector`
+- `test_rank_pages_link_expansion_llm_selector_falls_back_to_lexical`
