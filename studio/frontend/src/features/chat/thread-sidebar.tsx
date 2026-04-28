@@ -9,21 +9,32 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   BookOpen02Icon,
   ColumnInsertIcon,
   Delete02Icon,
+  MoreHorizontalIcon,
   NewReleasesIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useRef, useState } from "react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
-import { deleteChatItem, useChatSidebarItems } from "./hooks/use-chat-sidebar-items";
+import {
+  deleteChatItem,
+  renameChatItem,
+  useChatSidebarItems,
+} from "./hooks/use-chat-sidebar-items";
 import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
 
 export function ThreadSidebar({
@@ -43,6 +54,20 @@ export function ThreadSidebar({
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeId =
     view.mode === "single" ? (view.threadId ?? storeThreadId) : view.pairId;
+  const [editingTarget, setEditingTarget] = useState<SidebarItem | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [optimisticTitles, setOptimisticTitles] = useState<Record<string, string>>({});
+  const [renaming, setRenaming] = useState(false);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+  const skipMenuAutoFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (!editingTarget) return;
+    window.requestAnimationFrame(() => {
+      editInputRef.current?.focus();
+      editInputRef.current?.select();
+    });
+  }, [editingTarget]);
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
@@ -55,6 +80,52 @@ export function ThreadSidebar({
     // onNewThread(), which may return early if the guard sees no
     // threadId and no activeThreadId (after we just cleared it).
     await deleteChatItem(item, activeId ?? undefined, onSelect);
+  }
+
+  function startRename(item: SidebarItem) {
+    skipMenuAutoFocusRef.current = true;
+    setEditingTarget(item);
+    setEditingTitle(optimisticTitles[item.id] ?? item.title);
+  }
+
+  function cancelRename() {
+    setEditingTarget(null);
+    setEditingTitle("");
+  }
+
+  function clearOptimisticTitle(id: string, title: string) {
+    window.setTimeout(() => {
+      setOptimisticTitles((current) => {
+        if (current[id] !== title) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }, 1200);
+  }
+
+  async function commitRename() {
+    if (!editingTarget || renaming) return;
+
+    const nextTitle = editingTitle.trim();
+    if (!nextTitle || nextTitle === editingTarget.title) {
+      cancelRename();
+      return;
+    }
+
+    setRenaming(true);
+    const targetId = editingTarget.id;
+    setOptimisticTitles((current) => ({
+      ...current,
+      [targetId]: nextTitle,
+    }));
+    cancelRename();
+    try {
+      await renameChatItem(editingTarget, nextTitle);
+    } finally {
+      setRenaming(false);
+      clearOptimisticTitle(targetId, nextTitle);
+    }
   }
 
   return (
@@ -88,20 +159,76 @@ export function ThreadSidebar({
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => (
-                <SidebarMenuItem key={item.id}>
-                  <SidebarMenuButton
-                    isActive={activeId === item.id}
-                    onClick={() => onSelect(viewForItem(item))}
-                  >
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                  <SidebarMenuAction
-                    showOnHover={true}
-                    onClick={() => handleDelete(item)}
-                    title="Delete"
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} />
-                  </SidebarMenuAction>
+                <SidebarMenuItem key={item.id} className="group/thread-item relative">
+                  {(() => {
+                    const displayTitle = optimisticTitles[item.id] ?? item.title;
+                    return editingTarget?.id === item.id ? (
+                    <div className="flex h-8 items-center rounded-md bg-accent px-2 pr-8">
+                      <input
+                        ref={editInputRef}
+                        value={editingTitle}
+                        onChange={(event) => setEditingTitle(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void commitRename();
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelRename();
+                          }
+                        }}
+                        disabled={renaming}
+                        maxLength={80}
+                        aria-label="Chat title"
+                        className="h-full min-w-0 flex-1 bg-transparent p-0 text-sm text-foreground outline-none selection:bg-sky-200 dark:selection:bg-sky-500/45"
+                      />
+                    </div>
+                  ) : (
+                    <SidebarMenuButton
+                      isActive={activeId === item.id}
+                      onClick={() => onSelect(viewForItem(item))}
+                      className="pr-8"
+                    >
+                      <span>{displayTitle}</span>
+                    </SidebarMenuButton>
+                  );
+                  })()}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`Open options for ${optimisticTitles[item.id] ?? item.title}`}
+                        className="absolute right-1 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center text-sidebar-foreground/45 opacity-0 transition-colors duration-150 hover:text-sidebar-foreground/80 focus-visible:opacity-100 focus-visible:text-sidebar-foreground/80 focus-visible:outline-none data-[state=open]:text-sidebar-foreground/80 data-[state=open]:opacity-100 group-hover/thread-item:opacity-100"
+                      >
+                        <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2.15} className="size-[18px]" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="end"
+                      sideOffset={6}
+                      onCloseAutoFocus={(event) => {
+                        if (!skipMenuAutoFocusRef.current) return;
+                        event.preventDefault();
+                        skipMenuAutoFocusRef.current = false;
+                      }}
+                      className="w-40"
+                    >
+                      <DropdownMenuItem onSelect={() => startRename(item)}>
+                        <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
+                        <span>Rename</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={() => {
+                          void handleDelete(item);
+                        }}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                        <span>Delete</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>

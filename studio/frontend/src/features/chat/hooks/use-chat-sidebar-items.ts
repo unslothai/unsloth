@@ -93,3 +93,23 @@ export async function deleteChatItem(
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
 }
+
+export async function renameChatItem(
+  item: SidebarItem,
+  title: string,
+): Promise<void> {
+  const nextTitle = title.trim();
+  if (!nextTitle) return;
+
+  if (item.type === "single") {
+    await db.threads.update(item.id, { title: nextTitle });
+    return;
+  }
+
+  const threads = await db.threads.where("pairId").equals(item.id).toArray();
+  await db.transaction("rw", db.threads, async () => {
+    for (const thread of threads) {
+      await db.threads.update(thread.id, { title: nextTitle });
+    }
+  });
+}

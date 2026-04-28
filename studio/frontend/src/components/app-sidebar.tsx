@@ -39,6 +39,7 @@ import {
   Download03Icon,
   GemIcon,
   MessageSearch01Icon,
+  MoreHorizontalIcon,
   Search01Icon,
   NewReleasesIcon,
   PowerIcon,
@@ -61,17 +62,22 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { usePlatformStore } from "@/config/env";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
-  useChatSidebarItems,
+  ChatSearchDialog,
   deleteChatItem,
-} from "@/features/chat/hooks/use-chat-sidebar-items";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
-import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
-import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
+  renameChatItem,
+  useChatSearchStore,
+  useChatRuntimeStore,
+  useChatSidebarItems,
+  type SidebarItem,
+} from "@/features/chat";
+import {
+  deleteTrainingRun,
+  removeTrainingUnloadGuard,
+  useTrainingHistorySidebarItems,
+} from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
@@ -204,6 +210,20 @@ export function AppSidebar() {
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
   const chatDisabled = isTrainingRunning;
+  const [editingTarget, setEditingTarget] = useState<SidebarItem | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [optimisticTitles, setOptimisticTitles] = useState<Record<string, string>>({});
+  const [renaming, setRenaming] = useState(false);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+  const skipMenuAutoFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (!editingTarget) return;
+    window.requestAnimationFrame(() => {
+      editInputRef.current?.focus();
+      editInputRef.current?.select();
+    });
+  }, [editingTarget]);
 
   async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
     await deleteChatItem(item, activeThreadId, (view) => {
@@ -212,6 +232,52 @@ export function AppSidebar() {
         search: { new: view.newThreadNonce },
       });
     });
+  }
+
+  function startRename(item: SidebarItem) {
+    skipMenuAutoFocusRef.current = true;
+    setEditingTarget(item);
+    setEditingTitle(optimisticTitles[item.id] ?? item.title);
+  }
+
+  function cancelRename() {
+    setEditingTarget(null);
+    setEditingTitle("");
+  }
+
+  function clearOptimisticTitle(id: string, title: string) {
+    window.setTimeout(() => {
+      setOptimisticTitles((current) => {
+        if (current[id] !== title) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }, 1200);
+  }
+
+  async function commitRename() {
+    if (!editingTarget || renaming) return;
+
+    const nextTitle = editingTitle.trim();
+    if (!nextTitle || nextTitle === editingTarget.title) {
+      cancelRename();
+      return;
+    }
+
+    setRenaming(true);
+    const targetId = editingTarget.id;
+    setOptimisticTitles((current) => ({
+      ...current,
+      [targetId]: nextTitle,
+    }));
+    cancelRename();
+    try {
+      await renameChatItem(editingTarget, nextTitle);
+    } finally {
+      setRenaming(false);
+      clearOptimisticTitle(targetId, nextTitle);
+    }
   }
 
   return (
@@ -395,33 +461,84 @@ export function AppSidebar() {
               <SidebarMenu>
                 {chatItems.map((item) => (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
-                    <SidebarMenuButton
-                      isActive={activeThreadId === item.id}
-                      className="h-[32px] rounded-[10px] pl-2.5 pr-7 text-[14px] leading-[18px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
-                      onClick={() => {
-                        navigate({
-                          to: "/chat",
-                          search:
-                            item.type === "single"
-                              ? { thread: item.id }
-                              : { compare: item.id },
-                        });
-                        closeMobileIfOpen();
-                      }}
-                    >
-                      <span className="truncate">{item.title}</span>
-                    </SidebarMenuButton>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteThread(item);
-                      }}
-                      title="Delete"
-                      className="absolute right-1 top-1/2 -translate-y-1/2 flex size-5 scale-90 items-center justify-center rounded-[10px] text-sidebar-foreground/55 opacity-0 transition-all duration-150 hover:bg-destructive/12 hover:text-destructive group-hover/recent-item:scale-100 group-hover/recent-item:opacity-100"
-                    >
-                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
-                    </button>
+                    {(() => {
+                      const displayTitle = optimisticTitles[item.id] ?? item.title;
+                      return editingTarget?.id === item.id ? (
+                      <div className="flex h-[32px] items-center rounded-[10px] bg-[#f0f0f0] pl-2.5 pr-7 dark:bg-[#2a2c2f]">
+                        <input
+                          ref={editInputRef}
+                          value={editingTitle}
+                          onChange={(event) => setEditingTitle(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void commitRename();
+                            } else if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelRename();
+                            }
+                          }}
+                          disabled={renaming}
+                          maxLength={80}
+                          aria-label="Chat title"
+                          className="h-full min-w-0 flex-1 bg-transparent p-0 text-[14px] font-medium leading-[18px] tracking-[0.01em] text-black outline-none selection:bg-sky-200 dark:text-white dark:selection:bg-sky-500/45"
+                        />
+                      </div>
+                    ) : (
+                      <SidebarMenuButton
+                        isActive={activeThreadId === item.id}
+                        className="h-[32px] rounded-[10px] pl-2.5 pr-7 text-[14px] leading-[18px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                        onClick={() => {
+                          navigate({
+                            to: "/chat",
+                            search:
+                              item.type === "single"
+                                ? { thread: item.id }
+                                : { compare: item.id },
+                          });
+                          closeMobileIfOpen();
+                        }}
+                      >
+                        <span className="truncate">{displayTitle}</span>
+                      </SidebarMenuButton>
+                    );
+                    })()}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`Open options for ${optimisticTitles[item.id] ?? item.title}`}
+                          className="absolute right-1 top-1/2 -translate-y-1/2 flex size-6 items-center justify-center text-sidebar-foreground/45 opacity-0 transition-colors duration-150 hover:text-sidebar-foreground/80 focus-visible:opacity-100 focus-visible:text-sidebar-foreground/80 focus-visible:outline-none data-[state=open]:text-sidebar-foreground/80 data-[state=open]:opacity-100 group-hover/recent-item:opacity-100"
+                        >
+                          <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2.15} className="size-[18px]" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="end"
+                        sideOffset={6}
+                        onCloseAutoFocus={(event) => {
+                          if (!skipMenuAutoFocusRef.current) return;
+                          event.preventDefault();
+                          skipMenuAutoFocusRef.current = false;
+                        }}
+                        className="w-40 py-1.5 font-heading [&_[data-slot=dropdown-menu-item]]:h-[32px] [&_[data-slot=dropdown-menu-item]]:gap-[8.5px]! [&_[data-slot=dropdown-menu-item]]:rounded-[10px] [&_[data-slot=dropdown-menu-item]]:px-2.5! [&_[data-slot=dropdown-menu-item]]:py-0! [&_[data-slot=dropdown-menu-item]]:text-[14px] [&_[data-slot=dropdown-menu-item]]:font-medium [&_[data-slot=dropdown-menu-item]]:leading-[18px] [&_[data-slot=dropdown-menu-item]_svg]:!size-[18px]"
+                      >
+                        <DropdownMenuItem onSelect={() => startRename(item)}>
+                          <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
+                          <span>Rename</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => {
+                            void handleDeleteThread(item);
+                          }}
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                          <span>Delete</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </SidebarMenuItem>
                 ))}
               </SidebarMenu>
