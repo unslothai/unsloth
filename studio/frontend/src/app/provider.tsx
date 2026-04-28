@@ -109,6 +109,7 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
         error={update.error}
         onRetry={update.retryUpdate}
         onSkipRestart={update.skipAndRestart}
+        onCopyDiagnostics={update.copyDiagnostics}
       />
     );
   }
@@ -118,9 +119,11 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
       status={update.status}
       info={update.info}
       dismissed={update.dismissed}
+      lastFailure={update.lastFailure}
       isExternalServer={isExternalServer}
       onInstall={update.installUpdate}
       onDismiss={update.dismiss}
+      onCopyDiagnostics={update.copyDiagnostics}
     />
   );
 }
@@ -137,7 +140,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const {
     status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
-    startInstall, retry, retryInstall, approveElevation,
+    startInstall, retry, retryInstall, approveElevation, copyDiagnostics,
   } = useTauriBackend();
 
   const hasResized = useRef(false);
@@ -222,6 +225,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       onRetryInstall={retryInstall}
       onApproveElevation={approveElevation}
       onStartServer={retry}
+      onCopyDiagnostics={copyDiagnostics}
     />
   );
 

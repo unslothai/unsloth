@@ -16,6 +16,56 @@ function Install-UnslothStudio {
         }
     }
 
+    function Format-TauriDiagBool {
+        param([bool]$Value)
+        if ($Value) { return "true" }
+        return "false"
+    }
+
+    function Get-TauriDiagArch {
+        $arch = [string]$env:PROCESSOR_ARCHITECTURE
+        if ([string]::IsNullOrWhiteSpace($arch)) {
+            try { $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $arch = "unknown" }
+        }
+        $arch = $arch.ToLowerInvariant()
+        switch ($arch) {
+            "amd64" { return "x86_64" }
+            "x64" { return "x86_64" }
+            "arm64" { return "arm64" }
+            "x86" { return "x86" }
+            default { return ($arch -replace '[^a-z0-9_.-]', '_') }
+        }
+    }
+
+    function Get-TauriTorchIndexFamily {
+        param([string]$TorchIndexUrl)
+        if ($SkipTorch) { return "none" }
+        if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return "none" }
+        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if (@("cpu", "cu118", "cu124", "cu126", "cu128", "cu130") -contains $leaf) { return $leaf }
+        if ($leaf -match '^rocm[0-9]+\.[0-9]+$') { return $leaf }
+        return "auto"
+    }
+
+    function Get-TauriGpuBranch {
+        param([string]$TorchIndexFamily)
+        if ($SkipTorch) { return "no_torch" }
+        if ($TorchIndexFamily -like "cu*") { return "cuda" }
+        if ($TorchIndexFamily -like "rocm*") { return "rocm" }
+        if ($TorchIndexFamily -eq "cpu") { return "cpu" }
+        return "unknown"
+    }
+
+    function Write-TauriDiag {
+        param(
+            [string]$GpuBranch = "unknown",
+            [string]$TorchIndexFamily = "none",
+            [string]$PythonVersionForDiag = $PythonVersion
+        )
+        if ([string]::IsNullOrWhiteSpace($PythonVersionForDiag)) { $PythonVersionForDiag = "unknown" }
+        Write-TauriLog "DIAG" "diag_schema=1 platform=windows arch=$(Get-TauriDiagArch) python_version=$($PythonVersionForDiag.ToLowerInvariant()) skip_torch=$(Format-TauriDiagBool $SkipTorch) mac_intel=false gpu_branch=$GpuBranch torch_index_family=$TorchIndexFamily"
+    }
+
     function Exit-InstallFailure {
         param(
             [Parameter(Mandatory = $true)][string]$Message,
@@ -767,6 +817,11 @@ shell.Run cmd, 0, False
             return (Exit-InstallFailure "Python installation failed")
         }
     }
+    $DiagPythonVersion = $PythonVersion
+    if ($DetectedPython) { $DiagPythonVersion = $DetectedPython.Version }
+    $InitialGpuBranch = "unknown"
+    if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
+    Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
 
     # ── Install uv if not present ──
     Write-TauriLog "STEP" "Installing uv package manager"
@@ -962,6 +1017,9 @@ shell.Run cmd, 0, False
         return "$baseUrl/cu126"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
+    $TorchIndexFamily = Get-TauriTorchIndexFamily $TorchIndexUrl
+    $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
+    Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
     # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {

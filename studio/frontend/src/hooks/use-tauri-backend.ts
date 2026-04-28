@@ -4,6 +4,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
 import {
+  copySupportDiagnostics,
+  type CopySupportDiagnosticsResult,
+} from "@/lib/tauri-diagnostics";
+import {
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
@@ -370,8 +374,16 @@ export function useTauriBackend() {
     checkInstallAndStart();
   }, []);
 
-  const retryInstall = useCallback(() => {
+  const retryInstall = useCallback(async () => {
     const resume = elevationResumeRef.current;
+    if (resume) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("cancel_pending_elevation");
+      } catch (error) {
+        console.warn("Failed to record elevation cancellation", error);
+      }
+    }
     elevationResumeRef.current = null;
     clearBackendError();
     setLogs([]);
@@ -401,6 +413,31 @@ export function useTauriBackend() {
       setBackendError(String(e), resume === "repair" ? "repair-error" : "install-error");
     }
   }, [elevationPackages]);
+
+  const copyDiagnostics = useCallback((): Promise<CopySupportDiagnosticsResult> => {
+    const currentStatus = statusRef.current;
+    const flow =
+      currentStatus === "repairing" ||
+      currentStatus === "repair-error" ||
+      (currentStatus === "needs-elevation" && elevationResumeRef.current === "repair")
+        ? "repair"
+        : currentStatus === "installing" ||
+            currentStatus === "install-error" ||
+            currentStatus === "not-installed" ||
+            currentStatus === "needs-elevation"
+          ? "install"
+          : "backend";
+
+    return copySupportDiagnostics({
+      status: currentStatus,
+      error,
+      currentStepIndex,
+      progressDetail,
+      elevationPackages,
+      lastUiLogLines: logs,
+      flow,
+    });
+  }, [currentStepIndex, elevationPackages, error, logs, progressDetail]);
 
   // Initial check on mount (guarded against Strict Mode double-mount)
   useEffect(() => {
@@ -537,6 +574,6 @@ export function useTauriBackend() {
     status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
     startServer, stopServer, startInstall,
-    retry, retryInstall, approveElevation,
+    retry, retryInstall, approveElevation, copyDiagnostics,
   };
 }

@@ -1,3 +1,4 @@
+use crate::diagnostics::{self, DiagnosticsState};
 use crate::preflight::{DesktopPreflightDisposition, DesktopPreflightResult};
 use crate::process::BackendState;
 use log::{info, warn};
@@ -276,9 +277,25 @@ async fn authenticate_with_stale_port_retry(
 #[tauri::command]
 pub async fn desktop_auth(
     state: tauri::State<'_, BackendState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<DesktopAuthResponse, String> {
+    let result = desktop_auth_inner(&state, diagnostics.inner()).await;
+    if let Err(message) = &result {
+        let port = state.lock().ok().and_then(|proc| proc.port);
+        diagnostics::record_auth_failure(&diagnostics, "desktop_auth", port, message);
+    }
+    result
+}
+
+async fn desktop_auth_inner(
+    state: &tauri::State<'_, BackendState>,
+    diagnostics: &DiagnosticsState,
 ) -> Result<DesktopAuthResponse, String> {
     let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
-    let mut backend = current_backend_port(&state).await?;
+    let mut backend = current_backend_port(state).await?;
+    if backend.source == PortSource::Discovered {
+        diagnostics::record_attached_external_backend(diagnostics, backend.port);
+    }
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -297,8 +314,11 @@ pub async fn desktop_auth(
 
         info!("Desktop auth: exchanging desktop secret");
         let (tokens, resolved_backend) =
-            authenticate_with_stale_port_retry(&client, &state, backend, &secret).await?;
+            authenticate_with_stale_port_retry(&client, state, backend, &secret).await?;
         backend = resolved_backend;
+        if backend.source == PortSource::Discovered {
+            diagnostics::record_attached_external_backend(diagnostics, backend.port);
+        }
         if let Some(tokens) = tokens {
             return Ok(tokens);
         }

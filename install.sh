@@ -162,6 +162,62 @@ tauri_log() {
     fi
 }
 
+tauri_diag_marker() {
+    _diag_gpu_branch="${1:-unknown}"
+    _diag_torch_index_family="${2:-none}"
+    tauri_log "DIAG" "diag_schema=1 platform=${OS:-unknown} arch=${_ARCH:-unknown} python_version=${PYTHON_VERSION:-unknown} skip_torch=${SKIP_TORCH:-false} mac_intel=${MAC_INTEL:-false} gpu_branch=${_diag_gpu_branch} torch_index_family=${_diag_torch_index_family}"
+}
+
+_tauri_torch_index_family() {
+    if [ "${SKIP_TORCH:-false}" = true ]; then
+        echo "none"
+        return
+    fi
+    _diag_url="${1:-}"
+    case "$_diag_url" in
+        */cu118) echo "cu118" ;;
+        */cu124) echo "cu124" ;;
+        */cu126) echo "cu126" ;;
+        */cu128) echo "cu128" ;;
+        */cu130) echo "cu130" ;;
+        */cpu) echo "cpu" ;;
+        */rocm[0-9]*.[0-9]*)
+            _diag_family=${_diag_url##*/}
+            case "$_diag_family" in
+                rocm[0-9]*.[0-9]*) echo "$_diag_family" ;;
+                *) echo "auto" ;;
+            esac ;;
+        "") echo "none" ;;
+        *) echo "auto" ;;
+    esac
+}
+
+_tauri_gpu_branch() {
+    _diag_family="${1:-unknown}"
+    _diag_radeon="${2:-false}"
+    if [ "${SKIP_TORCH:-false}" = true ]; then
+        echo "no_torch"
+        return
+    fi
+    if [ "${OS:-}" = "macos" ]; then
+        echo "mac"
+        return
+    fi
+    case "$_diag_family" in
+        cu*) echo "cuda" ;;
+        rocm*)
+            if [ "$_diag_radeon" = true ]; then
+                echo "rocm_radeon"
+            else
+                echo "rocm"
+            fi ;;
+        radeon) echo "rocm_radeon" ;;
+        cpu) echo "cpu" ;;
+        none) echo "no_torch" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
 PYTHON_VERSION=""  # resolved after platform detection
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -882,6 +938,14 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+_TAURI_INITIAL_GPU_BRANCH="unknown"
+if [ "$SKIP_TORCH" = true ]; then
+    _TAURI_INITIAL_GPU_BRANCH="no_torch"
+elif [ "$OS" = "macos" ]; then
+    _TAURI_INITIAL_GPU_BRANCH="mac"
+fi
+tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
+
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
@@ -1379,6 +1443,12 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+_TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
+if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
+    _TAURI_TORCH_INDEX_FAMILY="radeon"
+fi
+_TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
+tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
 # ── Print CPU-only hint when no GPU detected ──
 case "$TORCH_INDEX_URL" in

@@ -24,6 +24,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
     },
-    "updater:default"
+    "updater:default",
+    "clipboard-manager:allow-write-text"
   ]
 }

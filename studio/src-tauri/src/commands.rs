@@ -1,3 +1,4 @@
+use crate::diagnostics::{self, DiagnosticsState};
 use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
@@ -22,8 +23,12 @@ fn should_emit_repair_failed(msg: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn desktop_preflight() -> crate::preflight::DesktopPreflightResult {
-    crate::preflight::desktop_preflight_result().await
+pub async fn desktop_preflight(
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<crate::preflight::DesktopPreflightResult, String> {
+    let result = crate::preflight::desktop_preflight_result().await;
+    diagnostics::record_preflight(&diagnostics, &result);
+    Ok(result)
 }
 
 /// Check if unsloth is installed AND functional.
@@ -91,11 +96,13 @@ pub async fn start_server(
     app: AppHandle,
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
     port: u16,
 ) -> Result<(), String> {
     info!("start_server command called with port {}", port);
 
-    let generation = process::start_backend(&app, &state, port, &shutdown)?;
+    let diagnostics_state = diagnostics.inner().clone();
+    let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
 
     // Spawn health watchdog for the owned backend — detects
     // deadlocks and hangs that stdout-based crash detection misses.
@@ -103,7 +110,14 @@ pub async fn start_server(
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
     tokio::spawn(async move {
-        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown, generation).await;
+        health_watchdog(
+            watchdog_app,
+            watchdog_state,
+            watchdog_shutdown,
+            diagnostics_state,
+            generation,
+        )
+        .await;
     });
 
     Ok(())
@@ -115,16 +129,25 @@ pub async fn start_managed_server(
     app: AppHandle,
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
     port: u16,
 ) -> Result<(), String> {
     info!("start_managed_server command called with port {}", port);
-    let generation = process::start_backend(&app, &state, port, &shutdown)?;
+    let diagnostics_state = diagnostics.inner().clone();
+    let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
 
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
     tokio::spawn(async move {
-        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown, generation).await;
+        health_watchdog(
+            watchdog_app,
+            watchdog_state,
+            watchdog_shutdown,
+            diagnostics_state,
+            generation,
+        )
+        .await;
     });
 
     Ok(())
@@ -137,9 +160,10 @@ pub async fn start_managed_server(
 pub fn stop_server(
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     info!("stop_server command called");
-    process::stop_backend(&state, &shutdown)
+    process::stop_backend(&state, &shutdown, Some(diagnostics.inner()))
 }
 
 /// Check if a healthy Unsloth backend is running on the given port.
@@ -210,11 +234,23 @@ pub fn open_logs_dir() -> Result<(), String> {
 pub async fn start_install(
     app: AppHandle,
     state: tauri::State<'_, install::InstallState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || install::run_install(app, state))
+    let diagnostics_state = diagnostics.inner().clone();
+    tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))
         .await
         .map_err(|e| format!("Install task panicked: {e}"))?
+}
+
+/// Record that the user canceled a pending system-package elevation flow.
+#[tauri::command]
+pub fn cancel_pending_elevation(
+    state: tauri::State<'_, install::InstallState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<(), String> {
+    let _ = install::record_pending_elevation_canceled(&state, diagnostics.inner());
+    Ok(())
 }
 
 /// Install system packages with elevated permissions (Linux only).
@@ -225,6 +261,7 @@ pub async fn start_install(
 pub fn install_system_packages(
     packages: Vec<String>,
     state: tauri::State<'_, install::InstallState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     // Cross-check against the packages the install script actually reported
     let allowed = state
@@ -239,7 +276,7 @@ pub fn install_system_packages(
             ));
         }
     }
-    install::install_system_packages(&packages)
+    install::install_system_packages(&packages, &state, diagnostics.inner())
 }
 
 /// Stub for non-Linux platforms — elevation is handled by the scripts themselves.
@@ -248,6 +285,7 @@ pub fn install_system_packages(
 pub fn install_system_packages(
     _packages: Vec<String>,
     _state: tauri::State<'_, install::InstallState>,
+    _diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
 }
@@ -261,6 +299,7 @@ pub async fn start_backend_update(
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
     install_state: tauri::State<'_, install::InstallState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     info!("start_backend_update command called");
 
@@ -294,12 +333,13 @@ pub async fn start_backend_update(
         .unwrap_or(false)
     {
         info!("Stopping backend before update...");
-        process::stop_backend(&backend_state, &shutdown)?;
+        process::stop_backend(&backend_state, &shutdown, Some(diagnostics.inner()))?;
     }
 
     // Run update in a blocking thread
     let state = update_state.inner().clone();
-    tokio::task::spawn_blocking(move || update::run_backend_update(app, state))
+    let diagnostics_state = diagnostics.inner().clone();
+    tokio::task::spawn_blocking(move || update::run_backend_update(app, state, diagnostics_state))
         .await
         .map_err(|e| format!("Update task panicked: {e}"))?
 }
@@ -312,6 +352,7 @@ pub async fn start_managed_repair(
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
     install_state: tauri::State<'_, install::InstallState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     info!("start_managed_repair command called");
 
@@ -331,6 +372,10 @@ pub async fn start_managed_repair(
         return Err("Repair is already running.".to_string());
     }
 
+    let diagnostics_state = diagnostics.inner().clone();
+    let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
+        .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
+
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 
     if backend_state
@@ -339,14 +384,21 @@ pub async fn start_managed_repair(
         .unwrap_or(false)
     {
         info!("Stopping backend before repair...");
-        process::stop_backend(&backend_state, &shutdown)?;
+        process::stop_backend(&backend_state, &shutdown, Some(&diagnostics_state))?;
     }
 
     let _ = app.emit("repair-progress", "Updating existing Studio install...");
     let update_app = app.clone();
     let update_state = update_state.inner().clone();
+    let update_diagnostics = diagnostics_state.clone();
+    let update_repair_group_id = repair_group_id.clone();
     let update_result = tokio::task::spawn_blocking(move || {
-        update::run_backend_update_for_repair(update_app, update_state)
+        update::run_backend_update_for_repair(
+            update_app,
+            update_state,
+            update_diagnostics,
+            update_repair_group_id,
+        )
     })
     .await
     .map_err(|e| format!("Repair update task panicked: {e}"))?;
@@ -354,6 +406,7 @@ pub async fn start_managed_repair(
     match update_result {
         Ok(()) if managed_install_ready_after_repair().await => {
             info!("Managed repair complete after update");
+            diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
             let _ = app.emit("repair-complete", ());
             return Ok(());
         }
@@ -367,6 +420,12 @@ pub async fn start_managed_repair(
         Err(msg) => {
             if msg.to_ascii_lowercase().contains("already running") {
                 error!("Managed repair update conflict: {}", msg);
+                diagnostics::finish_repair_group(
+                    &diagnostics_state,
+                    &repair_group_id,
+                    "failed",
+                    Some(msg.clone()),
+                );
                 let _ = app.emit("repair-failed", &msg);
                 return Err(msg);
             }
@@ -384,13 +443,30 @@ pub async fn start_managed_repair(
 
     let install_app = app.clone();
     let install_state = install_state.inner().clone();
+    let install_diagnostics = diagnostics_state.clone();
+    let install_repair_group_id = repair_group_id.clone();
     let install_result = tokio::task::spawn_blocking(move || {
-        install::run_install_for_repair(install_app, install_state)
+        install::run_install_for_repair(
+            install_app,
+            install_state,
+            install_diagnostics,
+            install_repair_group_id,
+        )
     })
     .await
     .map_err(|e| format!("Repair install task panicked: {e}"))?;
 
     if let Err(msg) = install_result {
+        diagnostics::finish_repair_group(
+            &diagnostics_state,
+            &repair_group_id,
+            if msg == "NEEDS_ELEVATION" {
+                "needs_elevation"
+            } else {
+                "failed"
+            },
+            Some(msg.clone()),
+        );
         if should_emit_repair_failed(&msg) {
             error!("Managed repair installer failed: {}", msg);
             let _ = app.emit("repair-failed", &msg);
@@ -400,12 +476,19 @@ pub async fn start_managed_repair(
 
     if managed_install_ready_after_repair().await {
         info!("Managed repair complete after installer");
+        diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
         let _ = app.emit("repair-complete", ());
         return Ok(());
     }
 
     let msg = "Repair finished, but Studio install is still not desktop-ready.".to_string();
     error!("{}", msg);
+    diagnostics::finish_repair_group(
+        &diagnostics_state,
+        &repair_group_id,
+        "failed",
+        Some(msg.clone()),
+    );
     let _ = app.emit("repair-failed", &msg);
     Err(msg)
 }
@@ -456,6 +539,7 @@ async fn health_watchdog(
     app: AppHandle,
     state: BackendState,
     shutdown: ShutdownFlag,
+    diagnostics: DiagnosticsState,
     generation: u64,
 ) {
     use std::sync::atomic::Ordering;
@@ -507,7 +591,12 @@ async fn health_watchdog(
                 error!(
                     "Health watchdog: backend never reported a port, killing and declaring dead"
                 );
-                let _ = process::stop_backend(&state, &shutdown);
+                diagnostics::record_backend_watchdog(
+                    &diagnostics,
+                    generation,
+                    "no_port_after_grace",
+                );
+                let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
                 let _ = app.emit("server-crashed", ());
                 break;
             }
@@ -534,8 +623,13 @@ async fn health_watchdog(
                 );
                 if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
                     error!("Health watchdog: backend unresponsive, killing and declaring dead");
+                    diagnostics::record_backend_watchdog(
+                        &diagnostics,
+                        generation,
+                        "unresponsive_health_check",
+                    );
                     // Kill the zombie process so retry can start fresh
-                    let _ = process::stop_backend(&state, &shutdown);
+                    let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
                     let _ = app.emit("server-crashed", ());
                     break;
                 }

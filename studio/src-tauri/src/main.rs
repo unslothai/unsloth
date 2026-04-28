@@ -2,6 +2,7 @@
 
 mod commands;
 mod desktop_auth;
+mod diagnostics;
 mod install;
 mod preflight;
 mod process;
@@ -68,17 +69,26 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
 }
 
 fn cleanup_child_processes(app: &tauri::AppHandle) {
+    let diagnostics_state = app
+        .try_state::<diagnostics::DiagnosticsState>()
+        .map(|state| state.inner().clone());
     if let Some(install_state) = app.try_state::<install::InstallState>() {
+        if let Some(diagnostics) = diagnostics_state.as_ref() {
+            install::record_install_intentional_stop(&install_state, diagnostics);
+        }
         let _ = install::stop_install(&install_state);
     }
     if let Some(update_state) = app.try_state::<update::UpdateState>() {
+        if let Some(diagnostics) = diagnostics_state.as_ref() {
+            update::record_update_intentional_stop(&update_state, diagnostics);
+        }
         let _ = update::stop_update(&update_state);
     }
     if let Some(backend_state) = app.try_state::<process::BackendState>() {
         let shutdown = app
             .try_state::<process::ShutdownFlag>()
             .expect("ShutdownFlag must be managed");
-        let _ = process::stop_backend(&backend_state, &shutdown);
+        let _ = process::stop_backend(&backend_state, &shutdown, diagnostics_state.as_ref());
     }
 }
 
@@ -155,6 +165,8 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
@@ -171,8 +183,10 @@ fn main() {
             commands::open_logs_dir,
             commands::start_backend_update,
             commands::start_managed_repair,
+            commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
+            diagnostics::collect_support_diagnostics,
         ])
         .setup(|app| {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
