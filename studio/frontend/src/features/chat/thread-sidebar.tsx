@@ -57,16 +57,25 @@ export function ThreadSidebar({
   const [editingTarget, setEditingTarget] = useState<SidebarItem | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [optimisticTitles, setOptimisticTitles] = useState<Record<string, string>>({});
-  const [renaming, setRenaming] = useState(false);
   const editInputRef = useRef<HTMLInputElement | null>(null);
-  const skipMenuAutoFocusRef = useRef(false);
+  const focusFrameRef = useRef<number | null>(null);
+  const skipBlurCommitRef = useRef(false);
+  const pendingRenameRef = useRef<SidebarItem | null>(null);
 
   useEffect(() => {
     if (!editingTarget) return;
-    window.requestAnimationFrame(() => {
-      editInputRef.current?.focus();
-      editInputRef.current?.select();
+    focusFrameRef.current = window.requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      const input = editInputRef.current;
+      if (!input) return;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(0, input.value.length);
     });
+    return () => {
+      if (focusFrameRef.current === null) return;
+      window.cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
+    };
   }, [editingTarget]);
 
   function viewForItem(item: SidebarItem): ChatView {
@@ -83,12 +92,17 @@ export function ThreadSidebar({
   }
 
   function startRename(item: SidebarItem) {
-    skipMenuAutoFocusRef.current = true;
+    skipBlurCommitRef.current = false;
+    const title = optimisticTitles[item.id] ?? item.title;
+    setEditingTitle(title);
     setEditingTarget(item);
-    setEditingTitle(optimisticTitles[item.id] ?? item.title);
   }
 
   function cancelRename() {
+    if (focusFrameRef.current !== null) {
+      window.cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
+    }
     setEditingTarget(null);
     setEditingTitle("");
   }
@@ -104,28 +118,26 @@ export function ThreadSidebar({
     }, 1200);
   }
 
-  async function commitRename() {
-    if (!editingTarget || renaming) return;
+  function commitRename() {
+    const target = editingTarget;
+    if (!target) return;
 
     const nextTitle = editingTitle.trim();
-    if (!nextTitle || nextTitle === editingTarget.title) {
-      cancelRename();
+    const currentTitle = optimisticTitles[target.id] ?? target.title;
+    cancelRename();
+
+    if (!nextTitle || nextTitle === currentTitle) {
       return;
     }
 
-    setRenaming(true);
-    const targetId = editingTarget.id;
+    const targetId = target.id;
     setOptimisticTitles((current) => ({
       ...current,
       [targetId]: nextTitle,
     }));
-    cancelRename();
-    try {
-      await renameChatItem(editingTarget, nextTitle);
-    } finally {
-      setRenaming(false);
+    void renameChatItem(target, nextTitle).finally(() => {
       clearOptimisticTitle(targetId, nextTitle);
-    }
+    });
   }
 
   return (
@@ -171,13 +183,20 @@ export function ThreadSidebar({
                         onKeyDown={(event) => {
                           if (event.key === "Enter") {
                             event.preventDefault();
-                            void commitRename();
+                            event.currentTarget.blur();
                           } else if (event.key === "Escape") {
                             event.preventDefault();
+                            skipBlurCommitRef.current = true;
                             cancelRename();
                           }
                         }}
-                        disabled={renaming}
+                        onBlur={() => {
+                          if (skipBlurCommitRef.current) {
+                            skipBlurCommitRef.current = false;
+                            return;
+                          }
+                          commitRename();
+                        }}
                         maxLength={80}
                         aria-label="Chat title"
                         className="h-full min-w-0 flex-1 bg-transparent p-0 text-sm text-foreground outline-none selection:bg-sky-200 dark:selection:bg-sky-500/45"
@@ -208,13 +227,21 @@ export function ThreadSidebar({
                       align="end"
                       sideOffset={6}
                       onCloseAutoFocus={(event) => {
-                        if (!skipMenuAutoFocusRef.current) return;
+                        const pendingRename = pendingRenameRef.current;
+                        if (!pendingRename) return;
                         event.preventDefault();
-                        skipMenuAutoFocusRef.current = false;
+                        pendingRenameRef.current = null;
+                        window.requestAnimationFrame(() => {
+                          startRename(pendingRename);
+                        });
                       }}
                       className="w-40"
                     >
-                      <DropdownMenuItem onSelect={() => startRename(item)}>
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          pendingRenameRef.current = item;
+                        }}
+                      >
                         <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
                         <span>Rename</span>
                       </DropdownMenuItem>

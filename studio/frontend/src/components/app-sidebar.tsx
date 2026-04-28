@@ -185,8 +185,16 @@ export function AppSidebar() {
   const [chatOpen, setChatOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
-  useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
-  useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
+  useEffect(() => {
+    if (!isChatRoute) return;
+    const frame = window.requestAnimationFrame(() => setChatOpen(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [isChatRoute]);
+  useEffect(() => {
+    if (!isStudioRoute) return;
+    const frame = window.requestAnimationFrame(() => setRunsOpen(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [isStudioRoute]);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
@@ -213,16 +221,25 @@ export function AppSidebar() {
   const [editingTarget, setEditingTarget] = useState<SidebarItem | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [optimisticTitles, setOptimisticTitles] = useState<Record<string, string>>({});
-  const [renaming, setRenaming] = useState(false);
   const editInputRef = useRef<HTMLInputElement | null>(null);
-  const skipMenuAutoFocusRef = useRef(false);
+  const focusFrameRef = useRef<number | null>(null);
+  const skipBlurCommitRef = useRef(false);
+  const pendingRenameRef = useRef<SidebarItem | null>(null);
 
   useEffect(() => {
     if (!editingTarget) return;
-    window.requestAnimationFrame(() => {
-      editInputRef.current?.focus();
-      editInputRef.current?.select();
+    focusFrameRef.current = window.requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      const input = editInputRef.current;
+      if (!input) return;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(0, input.value.length);
     });
+    return () => {
+      if (focusFrameRef.current === null) return;
+      window.cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
+    };
   }, [editingTarget]);
 
   async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
@@ -235,12 +252,17 @@ export function AppSidebar() {
   }
 
   function startRename(item: SidebarItem) {
-    skipMenuAutoFocusRef.current = true;
+    skipBlurCommitRef.current = false;
+    const title = optimisticTitles[item.id] ?? item.title;
+    setEditingTitle(title);
     setEditingTarget(item);
-    setEditingTitle(optimisticTitles[item.id] ?? item.title);
   }
 
   function cancelRename() {
+    if (focusFrameRef.current !== null) {
+      window.cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
+    }
     setEditingTarget(null);
     setEditingTitle("");
   }
@@ -256,28 +278,26 @@ export function AppSidebar() {
     }, 1200);
   }
 
-  async function commitRename() {
-    if (!editingTarget || renaming) return;
+  function commitRename() {
+    const target = editingTarget;
+    if (!target) return;
 
     const nextTitle = editingTitle.trim();
-    if (!nextTitle || nextTitle === editingTarget.title) {
-      cancelRename();
+    const currentTitle = optimisticTitles[target.id] ?? target.title;
+    cancelRename();
+
+    if (!nextTitle || nextTitle === currentTitle) {
       return;
     }
 
-    setRenaming(true);
-    const targetId = editingTarget.id;
+    const targetId = target.id;
     setOptimisticTitles((current) => ({
       ...current,
       [targetId]: nextTitle,
     }));
-    cancelRename();
-    try {
-      await renameChatItem(editingTarget, nextTitle);
-    } finally {
-      setRenaming(false);
+    void renameChatItem(target, nextTitle).finally(() => {
       clearOptimisticTitle(targetId, nextTitle);
-    }
+    });
   }
 
   return (
@@ -472,13 +492,20 @@ export function AppSidebar() {
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
-                              void commitRename();
+                              event.currentTarget.blur();
                             } else if (event.key === "Escape") {
                               event.preventDefault();
+                              skipBlurCommitRef.current = true;
                               cancelRename();
                             }
                           }}
-                          disabled={renaming}
+                          onBlur={() => {
+                            if (skipBlurCommitRef.current) {
+                              skipBlurCommitRef.current = false;
+                              return;
+                            }
+                            commitRename();
+                          }}
                           maxLength={80}
                           aria-label="Chat title"
                           className="h-full min-w-0 flex-1 bg-transparent p-0 text-[14px] font-medium leading-[18px] tracking-[0.01em] text-black outline-none selection:bg-sky-200 dark:text-white dark:selection:bg-sky-500/45"
@@ -518,13 +545,21 @@ export function AppSidebar() {
                         align="end"
                         sideOffset={6}
                         onCloseAutoFocus={(event) => {
-                          if (!skipMenuAutoFocusRef.current) return;
+                          const pendingRename = pendingRenameRef.current;
+                          if (!pendingRename) return;
                           event.preventDefault();
-                          skipMenuAutoFocusRef.current = false;
+                          pendingRenameRef.current = null;
+                          window.requestAnimationFrame(() => {
+                            startRename(pendingRename);
+                          });
                         }}
                         className="w-40 py-1.5 font-heading [&_[data-slot=dropdown-menu-item]]:h-[32px] [&_[data-slot=dropdown-menu-item]]:gap-[8.5px]! [&_[data-slot=dropdown-menu-item]]:rounded-[10px] [&_[data-slot=dropdown-menu-item]]:px-2.5! [&_[data-slot=dropdown-menu-item]]:py-0! [&_[data-slot=dropdown-menu-item]]:text-[14px] [&_[data-slot=dropdown-menu-item]]:font-medium [&_[data-slot=dropdown-menu-item]]:leading-[18px] [&_[data-slot=dropdown-menu-item]_svg]:!size-[18px]"
                       >
-                        <DropdownMenuItem onSelect={() => startRename(item)}>
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            pendingRenameRef.current = item;
+                          }}
+                        >
                           <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
                           <span>Rename</span>
                         </DropdownMenuItem>
