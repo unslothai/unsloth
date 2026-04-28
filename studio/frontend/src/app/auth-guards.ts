@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { redirect } from "@tanstack/react-router";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
   refreshSession,
+  tauriAutoAuth,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -16,55 +18,64 @@ async function hasActiveSession(): Promise<boolean> {
   return refreshSession();
 }
 
-async function checkAuthInitialized(): Promise<boolean> {
+interface AuthStatus {
+  initialized: boolean;
+  requires_password_change: boolean;
+}
+
+async function fetchAuthStatus(): Promise<AuthStatus> {
   try {
-    const res = await fetch("/api/auth/status");
-    if (!res.ok) return true; // fallback to login on error
-    const data = (await res.json()) as { initialized: boolean };
-    return data.initialized;
+    const res = await fetch(apiUrl("/api/auth/status"));
+    if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
+    return (await res.json()) as AuthStatus;
   } catch {
-    return true; // fallback to login on error
+    return { initialized: true, requires_password_change: mustChangePassword() };
   }
 }
 
-async function checkPasswordChangeRequired(): Promise<boolean> {
-  try {
-    const res = await fetch("/api/auth/status");
-    if (!res.ok) return mustChangePassword();
-    const data = (await res.json()) as { requires_password_change: boolean };
-    return data.requires_password_change || mustChangePassword();
-  } catch {
-    return mustChangePassword();
-  }
+function authRedirect(to: "/login" | "/change-password"): never {
+  throw redirect({ to });
 }
 
 export async function requireAuth(): Promise<void> {
+  if (isTauri) {
+    await tauriAutoAuth();
+    return;
+  }
+
   if (await hasActiveSession()) {
-    if (await checkPasswordChangeRequired()) {
-      throw redirect({ to: "/change-password" });
+    const { requires_password_change } = await fetchAuthStatus();
+    if (requires_password_change || mustChangePassword()) {
+      authRedirect("/change-password");
     }
     return;
   }
-  const requiresPasswordChange = await checkPasswordChangeRequired();
-  if (requiresPasswordChange) throw redirect({ to: "/change-password" });
-  const initialized = await checkAuthInitialized();
-  throw redirect({ to: initialized ? "/login" : "/change-password" });
+  const status = await fetchAuthStatus();
+  if (status.requires_password_change || mustChangePassword()) {
+    authRedirect("/change-password");
+  }
+  authRedirect(status.initialized ? "/login" : "/change-password");
 }
 
 export async function requireGuest(): Promise<void> {
+  if (isTauri) {
+    await tauriAutoAuth();
+    throw redirect({ to: "/chat" });
+  }
   if (!(await hasActiveSession())) return;
   throw redirect({ to: getPostAuthRoute() });
 }
 
 export async function requirePasswordChangeFlow(): Promise<void> {
-  const requiresPasswordChange = await checkPasswordChangeRequired();
+  if (isTauri) {
+    await tauriAutoAuth();
+    throw redirect({ to: "/chat" });
+  }
 
-  if (requiresPasswordChange) return;
-
+  const status = await fetchAuthStatus();
+  if (status.requires_password_change || mustChangePassword()) return;
   if (await hasActiveSession()) {
     throw redirect({ to: getPostAuthRoute() });
   }
-
-  const initialized = await checkAuthInitialized();
-  throw redirect({ to: initialized ? "/login" : "/change-password" });
+  authRedirect(status.initialized ? "/login" : "/change-password");
 }

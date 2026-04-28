@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { apiUrl } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 
 export interface GpuInfo {
@@ -27,7 +28,7 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
 
   fetchPromise = (async () => {
     try {
-      const res = await fetch("/api/system");
+      const res = await fetch(apiUrl("/api/system"));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const gpuData = data?.gpu;

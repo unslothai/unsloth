@@ -12,11 +12,13 @@ function Install-UnslothStudio {
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
     $RepoRoot = ""
+    $TauriMode = $false
     $SkipTorch = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
             "--local"    { $StudioLocalInstall = $true }
+            "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
@@ -41,6 +43,20 @@ function Install-UnslothStudio {
         if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
             Write-Host "[ERROR] --local must be run from the unsloth repo root (pyproject.toml not found at $RepoRoot)" -ForegroundColor Red
             return
+        }
+    }
+
+    # Validate --package to prevent injection into shell/Python commands
+    if ($PackageName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
+        Write-Host "[ERROR] --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" -ForegroundColor Red
+        return
+    }
+
+    # ── Tauri structured output ──
+    function Write-TauriLog {
+        param([string]$Tag, [string]$Message)
+        if ($TauriMode) {
+            Write-Host "[TAURI:$Tag] $Message"
         }
     }
 
@@ -609,6 +625,7 @@ shell.Run cmd, 0, False
     }
 
     # ── Check winget ──
+    Write-TauriLog "STEP" "Checking system dependencies"
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         step "winget" "not available" "Red"
         substep "Install it from https://aka.ms/getwinget" "Yellow"
@@ -688,6 +705,7 @@ shell.Run cmd, 0, False
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
+    Write-TauriLog "STEP" "Installing Python"
     $DetectedPython = Find-CompatiblePython
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
@@ -736,6 +754,7 @@ shell.Run cmd, 0, False
     }
 
     # ── Install uv if not present ──
+    Write-TauriLog "STEP" "Installing uv package manager"
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         substep "installing uv package manager..."
         $prevEAP = $ErrorActionPreference
@@ -746,7 +765,7 @@ shell.Run cmd, 0, False
         # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
             substep "trying alternative uv installer..." "Yellow"
-            powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+            Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
     }
@@ -760,6 +779,7 @@ shell.Run cmd, 0, False
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
     # Pass the resolved executable path to uv so it does not re-resolve
     # a version string back to a conda interpreter.
+    Write-TauriLog "STEP" "Creating virtual environment"
     if (-not (Test-Path $StudioHome)) {
         New-Item -ItemType Directory -Path $StudioHome -Force | Out-Null
     }
@@ -806,6 +826,7 @@ shell.Run cmd, 0, False
         substep "$VenvDir"
         $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
+            Write-TauriLog "ERROR" "Failed to create virtual environment (exit code $venvExit)"
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return
         }
@@ -908,11 +929,12 @@ shell.Run cmd, 0, False
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
         # in the new venv location, while preserving existing torch/CUDA
+        Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.8" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -920,7 +942,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.8" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -938,19 +960,22 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } else {
+            Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."
             $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
+                Write-TauriLog "ERROR" "Failed to install PyTorch (exit code $torchInstallExit)"
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return
             }
         }
 
+        Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.4.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.4.8" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -958,11 +983,12 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
+            Write-TauriLog "ERROR" "Failed to install unsloth (exit code $baseInstallExit)"
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
             return
         }
@@ -977,9 +1003,10 @@ shell.Run cmd, 0, False
         }
     } else {
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+        Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.4.7" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.4.8" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return
@@ -991,10 +1018,54 @@ shell.Run cmd, 0, False
                 return
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "$PackageName" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
+                Write-TauriLog "ERROR" "Failed to install unsloth (exit code $baseInstallExit)"
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return
+            }
+        }
+    }
+
+    # Overlay Tauri-bundled studio fixes that may be ahead of PyPI. Skipped
+    # for --local: the editable install above already makes _PACKAGE_ROOT in
+    # unsloth_cli/commands/studio.py resolve to the repo (PEP 660 __file__).
+    # Source paths match the Tauri bundle layout in studio/src-tauri/tauri.conf.json,
+    # which bundles install_python_stack.py at the bundle root next to install.ps1.
+    if ($TauriMode) {
+        $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
+        if ($rawPath) {
+            # Strip leading \\?\ extended-length prefix if the launcher passed one.
+            $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
+            $overlayMap = [ordered]@{
+                "install_python_stack.py" = "Lib\site-packages\studio\install_python_stack.py"
+            }
+            foreach ($rel in $overlayMap.Keys) {
+                $src = Join-Path $scriptDir $rel
+                $dst = Join-Path $VenvDir $overlayMap[$rel]
+                if (-not (Test-Path $src)) { continue }
+                $dstParent = Split-Path -Parent $dst
+                if (-not (Test-Path $dstParent)) {
+                    Write-Host "[WARN] Overlay target dir missing: $dstParent; studio setup may use stale bundled file" -ForegroundColor Yellow
+                    continue
+                }
+                try {
+                    if (-not (Test-Path $dst)) {
+                        # Backfill: target file missing but parent dir exists.
+                        Copy-Item $src $dst -Force
+                        substep ("backfilled bundled " + (Split-Path -Leaf $rel))
+                    } else {
+                        # Hash-compare so re-runs are no-ops when files already match.
+                        $srcHash = (Get-FileHash $src -Algorithm SHA256).Hash
+                        $dstHash = (Get-FileHash $dst -Algorithm SHA256).Hash
+                        if ($srcHash -ne $dstHash) {
+                            Copy-Item $src $dst -Force
+                            substep ("applied bundled " + (Split-Path -Leaf $rel))
+                        }
+                    }
+                } catch {
+                    Write-Host "[WARN] Could not overlay $($rel): $($_.Exception.Message); studio setup may use stale bundled file" -ForegroundColor Yellow
+                }
             }
         }
     }
@@ -1002,9 +1073,11 @@ shell.Run cmd, 0, False
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
+    Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
+        Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
         Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
@@ -1015,6 +1088,8 @@ shell.Run cmd, 0, False
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+    # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+    $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
     # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
     # a previous --local run in the same PowerShell session.
     if ($StudioLocalInstall) {
@@ -1032,11 +1107,10 @@ shell.Run cmd, 0, False
     & $UnslothExe @studioArgs
     $setupExit = $LASTEXITCODE
     if ($setupExit -ne 0) {
+        Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
         return
     }
-
-    New-StudioShortcuts -UnslothExePath $UnslothExe
 
     # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──
     # We do NOT add the venv Scripts dir to PATH (it also holds python.exe
@@ -1108,6 +1182,14 @@ shell.Run cmd, 0, False
         step "path" "added unsloth launcher to PATH"
     }
     Refresh-SessionPath  # sync current session with registry
+
+    # ── Tauri mode: done, skip shortcuts and auto-launch ──
+    if ($TauriMode) {
+        Write-TauriLog "DONE" ""
+        return
+    }
+
+    New-StudioShortcuts -UnslothExePath $UnslothExe
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.

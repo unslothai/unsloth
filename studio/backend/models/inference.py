@@ -157,11 +157,19 @@ class LoadResponse(BaseModel):
     )
     supports_reasoning: bool = Field(
         False,
-        description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+        description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
+    )
+    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
+        "enable_thinking",
+        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
     )
     reasoning_always_on: bool = Field(
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
+    )
+    supports_preserve_thinking: bool = Field(
+        False,
+        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
     )
     supports_tools: bool = Field(
         False,
@@ -261,8 +269,16 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
+    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
+        "enable_thinking",
+        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
+    )
+    supports_preserve_thinking: bool = Field(
+        False,
+        description = "Whether the active model's template understands the optional preserve_thinking kwarg",
     )
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
@@ -481,6 +497,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -506,6 +530,10 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    cancel_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
     )
 
 
@@ -968,6 +996,7 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    cancel_id: Optional[str] = None
     model_config = {"extra": "allow"}
 
 
