@@ -1006,11 +1006,12 @@ async def get_status(
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
-        chat_template = None
-        try:
-            chat_template = model_info.get("chat_template_info", {}).get("template")
-        except Exception:
-            chat_template = None
+        chat_template_info = model_info.get("chat_template_info", {})
+        chat_template = (
+            chat_template_info.get("template")
+            if isinstance(chat_template_info, dict)
+            else None
+        )
 
         # Non-GGUF: only gpt-oss Harmony is wired through the transformers
         # generation path. Other template-level reasoning / tool kwargs
