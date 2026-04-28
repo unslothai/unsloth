@@ -2573,6 +2573,39 @@ def test_merge_duplicate_knowledge_pages_apply_archives_and_rewrites_links(
     assert f"[[{canonical_link}]]" in index_text
 
 
+def test_replace_wikilinks_with_map_preserves_alias_and_heading_fragments(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    original = (
+        "See [[entities/retrieval-pipeline]].\n"
+        "See [[entities/retrieval-pipeline#timeline]].\n"
+        "See [[entities/retrieval-pipeline#timeline|legacy profile]].\n"
+        "See [[entities/retrieval-pipeline.md#details|legacy details]].\n"
+    )
+    updated, rewritten = engine._replace_wikilinks_with_map(
+        original,
+        {
+            "entities/retrieval-pipeline": "entities/retrieval-pipeline-system",
+        },
+    )
+
+    assert rewritten == 4
+    assert "[[entities/retrieval-pipeline-system]]" in updated
+    assert "[[entities/retrieval-pipeline-system#timeline]]" in updated
+    assert (
+        "[[entities/retrieval-pipeline-system#timeline|legacy profile]]" in updated
+    )
+    assert (
+        "[[entities/retrieval-pipeline-system#details|legacy details]]" in updated
+    )
+    assert "[[entities/retrieval-pipeline#timeline|legacy profile]]" not in updated
+
+
 def test_merge_candidates_handle_instance_pluralization(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),

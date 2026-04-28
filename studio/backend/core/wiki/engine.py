@@ -4298,9 +4298,9 @@ class LLMWikiEngine:
         replacements: Dict[str, str],
     ) -> Tuple[str, int]:
         normalized_map = {
-            str(old).strip().replace("\\", "/"): str(new).strip().replace("\\", "/")
+            self._normalize_wikilink(str(old)): self._normalize_wikilink(str(new))
             for old, new in replacements.items()
-            if str(old).strip() and str(new).strip()
+            if self._normalize_wikilink(str(old)) and self._normalize_wikilink(str(new))
         }
         if not normalized_map:
             return text, 0
@@ -4310,14 +4310,29 @@ class LLMWikiEngine:
         def _rewrite(match: re.Match[str]) -> str:
             nonlocal replaced_count
             raw_target = str(match.group(1) or "").strip().replace("\\", "/")
-            normalized_target = (
-                raw_target[:-3] if raw_target.endswith(".md") else raw_target
-            )
+            if not raw_target:
+                return match.group(0)
+
+            target_part = raw_target
+            alias_suffix = ""
+            if "|" in raw_target:
+                target_part, alias = raw_target.split("|", 1)
+                alias_suffix = f"|{alias}"
+
+            target_part = target_part.strip()
+            fragment_suffix = ""
+            if "#" in target_part:
+                base_target, fragment = target_part.split("#", 1)
+                target_part = base_target
+                fragment_suffix = f"#{fragment}"
+
+            normalized_target = self._normalize_wikilink(target_part)
             new_target = normalized_map.get(normalized_target)
             if not new_target:
                 return match.group(0)
+
             replaced_count += 1
-            return f"[[{new_target}]]"
+            return f"[[{new_target}{fragment_suffix}{alias_suffix}]]"
 
         rewritten = re.sub(r"\[\[([^\]]+)\]\]", _rewrite, text)
         return rewritten, replaced_count
