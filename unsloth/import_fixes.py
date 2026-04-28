@@ -967,6 +967,39 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def fix_rocm_triton_key_error():
+    """
+    ROCm + torch.compile can fail if Triton lacks `triton_key`.
+    Disable Inductor/compile only on ROCm when that symbol is missing.
+    """
+    try:
+        import torch
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    if not getattr(torch.version, "hip", None):
+        return
+
+    try:
+        import triton
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        from triton.runtime import triton_key  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
+    os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    logger.info(
+        "Unsloth: ROCm detected and Triton lacks triton_key; "
+        "disabling torch.compile/Inductor to avoid backend crash."
+    )
+
+
 def patch_trunc_normal_precision_issue():
     """
     Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
@@ -1847,3 +1880,66 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+
+
+def patch_transformers_cfg():
+    """
+    Fix for Unsloth Issue #3092: Tool Calling Compatibility.
+    Monkey-patches transformers-cfg to support more models (Llama 3.2, Phi-4, Mistral).
+    """
+    if importlib.util.find_spec("transformers_cfg") is None:
+        return
+
+    try:
+        from transformers_cfg.tokenization.mapping.token2byte import (
+            Token2ByteMapping,
+            GPT2Token2ByteMapping,
+        )
+        from transformers import PreTrainedTokenizerFast
+    except ImportError:
+        return
+
+    # Store original method
+    _original_from_hf_tokenizer = Token2ByteMapping.from_hf_tokenizer
+
+    @classmethod
+    def _patched_from_hf_tokenizer(cls, hf_tokenizer):
+        """Patched version with better model support"""
+        # Try the original method first
+        try:
+            return _original_from_hf_tokenizer(hf_tokenizer)
+        except (NotImplementedError, AssertionError):
+            # Original method failed, try fallbacks
+            if not isinstance(hf_tokenizer, PreTrainedTokenizerFast):
+                # If it's not a fast tokenizer, we can't help
+                raise
+
+            model_path_lower = hf_tokenizer.name_or_path.lower()
+
+            # Check for Phi models (Phi-3, Phi-4)
+            if "phi" in model_path_lower:
+                return GPT2Token2ByteMapping(hf_tokenizer)
+
+            # Check for Llama 3.x variants (more flexible matching than original)
+            if "llama" in model_path_lower and any(
+                v in model_path_lower for v in ["3.1", "3.2", "3.3", "3-", "3_"]
+            ):
+                return GPT2Token2ByteMapping(hf_tokenizer)
+
+            # Check for Mistral/Mixtral models
+            if "mistral" in model_path_lower or "mixtral" in model_path_lower:
+                return GPT2Token2ByteMapping(hf_tokenizer)
+
+            # Try auto-inference as last resort
+            try:
+                return Token2ByteMapping.auto_infer(hf_tokenizer)
+            except:
+                raise NotImplementedError(
+                    f"Tokenizer not supported: {hf_tokenizer.__class__.__name__} "
+                    f"for model: {hf_tokenizer.name_or_path}. "
+                    "Auto-inference also failed."
+                )
+
+    # Apply the patch
+    Token2ByteMapping.from_hf_tokenizer = _patched_from_hf_tokenizer
+    logger.info("Unsloth: Patched transformers-cfg for enhanced model compatibility")
