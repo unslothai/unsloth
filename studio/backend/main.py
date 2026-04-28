@@ -187,6 +187,8 @@ if _api_only:
         "tauri://localhost",  # Linux/macOS Tauri webview
         "http://tauri.localhost",  # Windows Tauri webview
         "http://localhost",  # dev fallback
+        "http://localhost:5173",  # Tauri dev/Vite
+        "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
     ]
     _cors_origin_regex = None
 else:
