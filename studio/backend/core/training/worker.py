@@ -405,9 +405,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # has vision capabilities (e.g. Qwen3.5-VL trained on plain alpaca text).
     _send("status", status_message=f"Loading {model_name}...")
     is_dataset_image = bool(config.get("is_dataset_image", False))
+    training_type = config.get("training_type", "LoRA/QLoRA")
+    use_lora = training_type == "LoRA/QLoRA"
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit=config.get("load_in_4bit", True),
+        full_finetuning=not use_lora,
         text_only=None if is_dataset_image else True,
         trust_remote_code=bool(config.get("trust_remote_code", False)),
     )
@@ -416,9 +419,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     model._is_vlm_model = is_vlm
 
     # ── 2. Apply LoRA / full FT ──
-    training_type = config.get("training_type", "LoRA/QLoRA")
-    use_lora = training_type == "LoRA/QLoRA"
-
     # Pass gradient_checkpointing as string ("mlx"/"unsloth"/"none"/etc.)
     # get_peft_model and MLXTrainer both accept strings and handle them.
     gc_setting = config.get("gradient_checkpointing", "mlx")
