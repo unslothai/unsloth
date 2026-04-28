@@ -708,6 +708,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             num_tokens=num_tokens,
             eval_loss=None,
             status_message=None,
+            peak_memory_gb=peak_gb,
         )
         if wandb_run is not None:
             try:

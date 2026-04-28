@@ -521,6 +521,18 @@ def get_gpu_utilization() -> Dict[str, Any]:
         vram_used_gb = mem.get("allocated_gb", 0)
         total_gb = mem.get("total_gb", 0)
 
+        try:
+            from core.training import get_training_backend
+
+            tb = get_training_backend()
+            tb_progress = getattr(tb, "_progress", None)
+            if tb_progress is not None and getattr(tb_progress, "is_training", False):
+                tb_peak = getattr(tb_progress, "peak_memory_gb", None)
+                if tb_peak is not None and tb_peak > 0:
+                    vram_used_gb = float(tb_peak)
+        except Exception:
+            pass
+
         return {
             "available": True,
             "backend": device.value,

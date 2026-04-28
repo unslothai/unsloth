@@ -58,6 +58,7 @@ class TrainingProgress:
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
 
 
 class TrainingBackend:
@@ -510,6 +511,12 @@ class TrainingBackend:
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
+                _peak = event.get("peak_memory_gb")
+                if _peak is not None:
+                    try:
+                        self._progress.peak_memory_gb = float(_peak)
+                    except (TypeError, ValueError):
+                        pass
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:
