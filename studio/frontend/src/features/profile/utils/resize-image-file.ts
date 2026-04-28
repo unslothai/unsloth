@@ -3,6 +3,7 @@
 
 const MAX_EDGE = 256;
 const MAX_BYTES = 380_000;
+const MAX_DATA_URL_LENGTH = Math.floor(MAX_BYTES * 1.35);
 const JPEG_QUALITY_START = 0.88;
 const WEBP_QUALITY_START = 0.9;
 const MIN_QUALITY = 0.45;
@@ -39,13 +40,14 @@ function encodeCanvasWithinLimit(
 ): string | null {
   let quality = startQuality;
   let dataUrl = canvas.toDataURL(mimeType, quality);
+  if (!dataUrl.startsWith(`data:${mimeType}`)) return null;
 
-  while (dataUrl.length > MAX_BYTES * 1.35 && quality > MIN_QUALITY) {
+  while (dataUrl.length > MAX_DATA_URL_LENGTH && quality > MIN_QUALITY) {
     quality -= QUALITY_STEP;
     dataUrl = canvas.toDataURL(mimeType, quality);
   }
 
-  return dataUrl.length <= MAX_BYTES * 1.35 ? dataUrl : null;
+  return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
 }
 
 /**
