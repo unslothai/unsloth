@@ -34,7 +34,7 @@ from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
 from unsloth_zoo.vision_utils import (
-    UnslothVisionDataCollator,
+    UnslothVisionDataCollator as _UnslothVisionDataCollatorBase,
 )
 from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
@@ -50,6 +50,49 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
+    """
+    Drop-in replacement for the zoo's UnslothVisionDataCollator that automatically
+    validates local video file paths on every batch.  Paths already seen are
+    deduplicated across batches so the per-batch cost stays proportional to the
+    number of newly referenced paths.  When the base collator has a
+    formatting_func, we apply it before validation so video paths produced by the
+    formatter are also checked.
+
+    If any referenced video files are missing from disk, a FileNotFoundError is
+    raised before any model weights are updated - preventing silent training on
+    empty video tensors (issue #5085).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._checked_video_paths = set()
+
+    def __call__(self, examples):
+        from unsloth.models.vision import check_dataset_for_missing_videos
+
+        formatting_func = self.formatting_func
+        if formatting_func is not None:
+            examples = [formatting_func(example) for example in examples]
+
+        check_dataset_for_missing_videos(
+            examples,
+            raise_error = True,
+            checked = self._checked_video_paths,
+        )
+
+        if formatting_func is None:
+            return super().__call__(examples)
+
+        # why: base __call__ reapplies self.formatting_func; we already did so above.
+        self.formatting_func = None
+        try:
+            return super().__call__(examples)
+        finally:
+            self.formatting_func = formatting_func
+
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""

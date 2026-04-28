@@ -29,3 +29,4 @@ except:
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
+from .vision import check_dataset_for_missing_videos
