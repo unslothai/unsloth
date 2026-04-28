@@ -5242,7 +5242,9 @@ class LLMWikiEngine:
         summary_by_page = self._index_summary_by_page()
         id_to_link: Dict[str, str] = {}
         lines: List[str] = []
-        for idx, (_score, rel, overlap, phrase_match) in enumerate(candidate_pool, start = 1):
+        for idx, (_score, rel, overlap, phrase_match) in enumerate(
+            candidate_pool, start = 1
+        ):
             cid = f"E{idx:03d}"
             id_to_link[cid] = rel
             summary = str(summary_by_page.get(f"{rel}.md", "")).strip()
@@ -5278,8 +5280,7 @@ class LLMWikiEngine:
             f"GROUP: {group_label}\n\n"
             "ANALYSIS_PAGE_EXCERPT:\n"
             f"{analysis_preview}\n\n"
-            "CANDIDATES:\n"
-            + "\n".join(lines)
+            "CANDIDATES:\n" + "\n".join(lines)
         )
 
         raw = str(self.llm_fn(prompt) or "").strip()
@@ -6538,14 +6539,18 @@ class LLMWikiEngine:
             match = re.match(r"(?i)^\*{0,2}title\*{0,2}\s*:\s*(.+)$", plain)
             if match:
                 cleaned = _clean_title(match.group(1))
-                if cleaned and not self._looks_like_source_first_template_title(cleaned):
+                if cleaned and not self._looks_like_source_first_template_title(
+                    cleaned
+                ):
                     return cleaned
 
         for line in lines:
             match = re.match(r"^#{1,3}\s+(.+)$", line)
             if match:
                 cleaned = _clean_title(match.group(1))
-                if cleaned and not self._looks_like_source_first_template_title(cleaned):
+                if cleaned and not self._looks_like_source_first_template_title(
+                    cleaned
+                ):
                     return cleaned
 
         return None
