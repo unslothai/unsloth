@@ -252,16 +252,19 @@ pub fn start_backend(
 
     shutdown.store(false, Ordering::SeqCst);
 
-    // Reset state
-    {
+    // Reset state and invalidate any readers from an older backend generation
+    // before we release the lock and spawn a new child.
+    let generation = {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
         if proc.child.is_some() {
             return Err("Backend is already running.".to_string());
         }
+        proc.generation = proc.generation.wrapping_add(1);
         proc.port = None;
         proc.logs.clear();
         proc.intentional_stop = false;
-    }
+        proc.generation
+    };
 
     let args = backend_args(port);
     info!("Starting backend: {:?} {}", bin, args.join(" "));
@@ -309,13 +312,11 @@ pub fn start_backend(
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
 
-    // Store child in state
-    let generation = {
+    // Store child in state for the already-selected generation.
+    {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
         proc.child = Some(child);
-        proc.generation = proc.generation.wrapping_add(1);
-        proc.generation
-    };
+    }
 
     // Spawn stdout reader thread
     if let Some(stdout) = stdout {
