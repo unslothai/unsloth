@@ -25,9 +25,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENjJENDYxMTQ1QTYyOEIKUldTTFlsb1VZZFJpTFY1aHgyRkRqZUdjWGg0Sm1BVEZoMDVWME5PdE42bjZiekFRc1Fsb0JNbmIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2RDhGMDMzNDNEMTlGMkQKUldRdG45RkRNL0RZMXZsaVo2TElUQlVHb1hVNWEyajhUOGFXeTdNVDFZTFdBVUtlZUh5L2wwWVYK",
       "endpoints": [
-        "https://github.com/danielhanchen/unsloth-staging-2/releases/latest/download/latest.json"
+        "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
