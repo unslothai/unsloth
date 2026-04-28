@@ -106,10 +106,5 @@ export async function renameChatItem(
     return;
   }
 
-  const threads = await db.threads.where("pairId").equals(item.id).toArray();
-  await db.transaction("rw", db.threads, async () => {
-    for (const thread of threads) {
-      await db.threads.update(thread.id, { title: nextTitle });
-    }
-  });
+  await db.threads.where("pairId").equals(item.id).modify({ title: nextTitle });
 }
