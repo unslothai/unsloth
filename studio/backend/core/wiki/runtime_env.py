@@ -201,6 +201,19 @@ WIKI_ENV_SPECS: tuple[WikiEnvSpec, ...] = (
         minimum = 0,
     ),
     WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_RANKING_LINK_LLM_SELECTOR_ENABLED",
+        kind = "bool",
+        default = "true",
+        description = "Enable LLM-based link selection during ranking expansion.",
+    ),
+    WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_RANKING_LINK_LLM_SELECTOR_MAX_CANDIDATES",
+        kind = "int",
+        default = "24",
+        description = "Max outgoing links exposed to LLM link selector per source page.",
+        minimum = 4,
+    ),
+    WikiEnvSpec(
         name = "UNSLOTH_WIKI_ENGINE_LLM_RERANK_ENABLED",
         kind = "bool",
         default = "true",
@@ -354,6 +367,18 @@ WIKI_ENV_SPECS: tuple[WikiEnvSpec, ...] = (
         minimum = 80,
     ),
     WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_LLM_PLANNER_ENABLED",
+        kind = "bool",
+        default = "true",
+        description = "Enable LLM planner for web gap-fill query planning.",
+    ),
+    WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_ENRICH_WEB_GAP_LLM_SELECTOR_ENABLED",
+        kind = "bool",
+        default = "true",
+        description = "Enable LLM selector for semantic web result selection in gap fill.",
+    ),
+    WikiEnvSpec(
         name = "UNSLOTH_WIKI_ENGINE_ENRICH_REFRESH_OLDEST_NON_FALLBACK_PAGES",
         kind = "int",
         default = "0",
@@ -365,6 +390,18 @@ WIKI_ENV_SPECS: tuple[WikiEnvSpec, ...] = (
         kind = "bool",
         default = "false",
         description = "Repair unresolved wiki links inside analysis Answer sections during enrichment.",
+    ),
+    WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_MERGE_LLM_CANDIDATE_PLANNER_ENABLED",
+        kind = "bool",
+        default = "true",
+        description = "Enable LLM semantic candidate planning for merge maintenance.",
+    ),
+    WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_ENTITY_QUERY_FOCUS_LLM_ENABLED",
+        kind = "bool",
+        default = "true",
+        description = "Enable LLM entity-intent parsing during retrieval ranking.",
     ),
 )
 
