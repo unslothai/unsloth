@@ -415,9 +415,7 @@ class ChatMessage(BaseModel):
                 )
         else:  # "user" | "system"
             if self.content is None or self.content == []:
-                raise ValueError(
-                    f'role="{self.role}" messages require "content".'
-                )
+                raise ValueError(f'role="{self.role}" messages require "content".')
         return self
 
 
