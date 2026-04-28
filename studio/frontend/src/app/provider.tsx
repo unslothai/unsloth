@@ -8,8 +8,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
-import { ThemeProvider } from "next-themes";
-import { useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 interface AppProviderProps {
   children: ReactNode;
@@ -28,8 +27,12 @@ function easeOutQuart(t: number): number {
   return 1 - (1 - t) ** 4;
 }
 
-async function animateToGoldenRatio(abortRef: { current: boolean }): Promise<void> {
-  const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
+async function animateToGoldenRatio(abortRef: {
+  current: boolean;
+}): Promise<void> {
+  const { getCurrentWindow, currentMonitor, LogicalSize } = await import(
+    "@tauri-apps/api/window"
+  );
   const win = getCurrentWindow();
 
   // Ensure window is visible before resizing
@@ -51,7 +54,9 @@ async function animateToGoldenRatio(abortRef: { current: boolean }): Promise<voi
   const finalW = targetW;
 
   // Check reduced motion preference
-  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const prefersReducedMotion = window.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches;
 
   if (prefersReducedMotion) {
     await win.setSize(new LogicalSize(finalW, finalH));
@@ -121,9 +126,17 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const {
-    status, logs, error, isExternalServer,
-    currentStepIndex, progressDetail, elevationPackages,
-    startInstall, retry, retryInstall, approveElevation,
+    status,
+    logs,
+    error,
+    isExternalServer,
+    currentStepIndex,
+    progressDetail,
+    elevationPackages,
+    startInstall,
+    retry,
+    retryInstall,
+    approveElevation,
   } = useTauriBackend();
 
   const hasResized = useRef(false);
@@ -144,14 +157,24 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         try {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
           await getCurrentWindow().setResizable(true);
-        } catch { /* swallow — window may still be functional */ }
+        } catch {
+          /* swallow — window may still be functional */
+        }
       });
     }
-    return () => { abortRef.current = true; };
+    return () => {
+      abortRef.current = true;
+    };
   }, [status]);
 
   if (!isTauri) return <>{children}</>;
-  if (status === "running") return <><TauriUpdateLayer isExternalServer={isExternalServer} />{children}</>;
+  if (status === "running")
+    return (
+      <>
+        <TauriUpdateLayer isExternalServer={isExternalServer} />
+        {children}
+      </>
+    );
 
   return (
     <StartupScreen
@@ -172,11 +195,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
 export function AppProvider({ children }: AppProviderProps) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="light">
-      <TauriWrapper>
-        {children}
-      </TauriWrapper>
+    <>
+      <TauriWrapper>{children}</TauriWrapper>
       <Toaster position="top-right" visibleToasts={2} expand={true} />
-    </ThemeProvider>
+    </>
   );
 }

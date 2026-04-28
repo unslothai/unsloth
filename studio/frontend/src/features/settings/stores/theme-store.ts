@@ -9,20 +9,21 @@ export type ResolvedTheme = "light" | "dark";
 const STORAGE_KEY = "theme";
 
 function readStoredTheme(): Theme {
-  if (typeof window === "undefined") return "system";
+  if (typeof globalThis === "undefined") return "system";
   let stored: string | null = null;
   try {
-    stored = window.localStorage.getItem(STORAGE_KEY);
+    stored = globalThis.localStorage.getItem(STORAGE_KEY);
   } catch {
     return "system";
   }
-  if (stored === "light" || stored === "dark" || stored === "system") return stored;
+  if (stored === "light" || stored === "dark" || stored === "system")
+    return stored;
   return "system";
 }
 
 function systemPrefersDark(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  if (typeof globalThis === "undefined") return false;
+  return globalThis.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
 function resolveTheme(theme: Theme): ResolvedTheme {
@@ -38,10 +39,10 @@ function applyToDocument(resolved: ResolvedTheme) {
 const listeners = new Set<() => void>();
 function subscribe(cb: () => void) {
   listeners.add(cb);
-  if (typeof window === "undefined") {
+  if (typeof globalThis === "undefined") {
     return () => listeners.delete(cb);
   }
-  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const mq = globalThis.matchMedia("(prefers-color-scheme: dark)");
   const syncTheme = () => {
     applyToDocument(resolveTheme(readStoredTheme()));
     cb();
@@ -50,11 +51,11 @@ function subscribe(cb: () => void) {
     if (e.key === STORAGE_KEY || e.key === null) syncTheme();
   };
   mq.addEventListener("change", syncTheme);
-  window.addEventListener("storage", onStorage);
+  globalThis.addEventListener("storage", onStorage);
   return () => {
     listeners.delete(cb);
     mq.removeEventListener("change", syncTheme);
-    window.removeEventListener("storage", onStorage);
+    globalThis.removeEventListener("storage", onStorage);
   };
 }
 
@@ -67,22 +68,19 @@ function getServerSnapshot(): Theme {
 }
 
 /**
- * Single source of truth for setting the theme. All writers (the Settings
- * dialog's segmented control AND the sidebar dropdown's animated toggler)
- * must route through this so the DOM class, localStorage, and React
- * subscribers stay in sync.
+ * Single source of truth for setting the theme. The initial DOM class is
+ * applied by an inline script in index.html (to avoid FOUC); this function
+ * keeps the class, localStorage, and React subscribers in sync after that.
  */
 export function setTheme(next: Theme): void {
-  if (typeof window === "undefined") return;
-  // Persist "system" explicitly so next-themes (mounted with
-  // defaultTheme="light") doesn't clobber the choice on reload.
+  if (typeof globalThis === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, next);
+    globalThis.localStorage.setItem(STORAGE_KEY, next);
   } catch {
     // ignore storage failures
   }
   applyToDocument(resolveTheme(next));
-  listeners.forEach((cb) => cb());
+  for (const cb of listeners) cb();
 }
 
 export function useTheme(): {

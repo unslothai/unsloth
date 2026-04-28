@@ -4,3 +4,5 @@
 export { SettingsDialog } from "./settings-dialog";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
+export { setTheme, useTheme } from "./stores/theme-store";
+export type { ResolvedTheme, Theme } from "./stores/theme-store";

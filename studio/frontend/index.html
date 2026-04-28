@@ -8,6 +8,20 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Unsloth Studio</title>
+    <script>
+      // Apply theme class before the bundle loads to avoid a flash of the
+      // wrong theme. Mirrors the resolution logic in features/settings/stores/theme-store.ts.
+      (() => {
+        try {
+          const stored = localStorage.getItem("theme");
+          const isDark =
+            stored === "dark" ||
+            (stored !== "light" &&
+              globalThis.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (isDark) document.documentElement.classList.add("dark");
+        } catch {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
