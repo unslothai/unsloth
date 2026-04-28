@@ -485,10 +485,6 @@ export function ChatPage(): ReactElement {
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
 
   useEffect(() => {
-    return () => setSettingsOpen(false);
-  }, [setSettingsOpen]);
-
-  useEffect(() => {
     const threadId = search.thread;
     if (!threadId) return;
 
