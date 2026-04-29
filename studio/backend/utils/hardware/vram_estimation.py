@@ -94,6 +94,7 @@ class ModelArchConfig:
     quantization_skip_modules: list = field(default_factory = list)
     quant_4bit_factor: float = QUANT_4BIT_FACTOR
     moe_has_dense_mlp: bool = False
+    dense_layer_indices: tuple = ()
 
 
 @dataclass
@@ -117,8 +118,9 @@ class VramBreakdown:
     gradients: int
     activations: int
     cuda_overhead: int
-    # The computed (formula-based) activation cost before floors.
-    # This is the true per-layer cost that doesn't shard across GPUs.
+    # The computed (formula-based) activation cost. Equal to `activations`
+    # since the activation floor was removed; retained for backward
+    # compatibility with consumers that read this field.
     activations_computed: int = 0
 
     @property
@@ -159,24 +161,22 @@ class VramBreakdown:
         }
 
 
-def _compute_num_dense_layers(text_config, total_layers: int) -> int:
-    """Count how many layers use dense MLP instead of MoE."""
+def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
+    """Layer indices that use dense MLP instead of MoE. Position matters."""
     first_k = getattr(text_config, "first_k_dense_replace", None)
     if first_k is not None:
-        return min(int(first_k), total_layers)
+        return tuple(range(min(int(first_k), total_layers)))
 
     sparse_step = getattr(text_config, "decoder_sparse_step", None)
     mlp_only = getattr(text_config, "mlp_only_layers", None) or []
     if sparse_step is not None and sparse_step > 0:
-        mlp_only_set = set(mlp_only)
-        moe_count = sum(
-            1
+        mlp_only_set = {int(i) for i in mlp_only}
+        return tuple(
+            i
             for i in range(total_layers)
-            if i not in mlp_only_set and (i + 1) % sparse_step == 0
+            if i in mlp_only_set or (i + 1) % sparse_step != 0
         )
-        return total_layers - moe_count
-
-    return 0
+    return ()
 
 
 def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
@@ -220,9 +220,10 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     moe_intermediate = getattr(text_config, "moe_intermediate_size", None)
     n_shared_experts = getattr(text_config, "n_shared_experts", None) or 0
 
-    num_dense_layers = 0
+    dense_layer_indices: tuple = ()
     if num_experts is not None and num_experts > 1:
-        num_dense_layers = _compute_num_dense_layers(text_config, num_layers)
+        dense_layer_indices = _compute_dense_layer_indices(text_config, num_layers)
+    num_dense_layers = len(dense_layer_indices)
 
     q_lora_rank = getattr(text_config, "q_lora_rank", None)
     kv_lora_rank = getattr(text_config, "kv_lora_rank", None)
@@ -275,6 +276,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         ),
         quant_4bit_factor = quant_4bit_factor,
         moe_has_dense_mlp = bool(getattr(text_config, "enable_moe_block", False)),
+        dense_layer_indices = dense_layer_indices,
     )
 
 
@@ -314,7 +316,13 @@ def _is_kv_shared_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
     if arch.num_kv_shared_layers <= 0:
         return False
     first_shared = arch.num_hidden_layers - arch.num_kv_shared_layers
-    return layer_idx >= first_shared > 0
+    return layer_idx >= first_shared
+
+
+def _is_dense_mlp_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
+    if arch.dense_layer_indices:
+        return layer_idx in arch.dense_layer_indices
+    return layer_idx < arch.num_dense_layers
 
 
 def _layer_attention_dims(arch: ModelArchConfig, layer_idx: int) -> tuple:
@@ -445,7 +453,7 @@ def _build_text_module_elements(
                 layer_modules[f"self_attn.{name}"] = in_dim * out_dim
 
         if arch.num_experts and arch.num_experts > 1:
-            if layer_idx < arch.num_dense_layers:
+            if _is_dense_mlp_layer(arch, layer_idx):
                 layer_modules.update(
                     {
                         f"mlp.{name}": in_dim * out_dim
@@ -453,8 +461,16 @@ def _build_text_module_elements(
                     }
                 )
             else:
-                mlp_total = _compute_moe_mlp_elements(arch)
-                layer_modules["mlp"] = mlp_total
+                layer_modules["mlp.experts"] = _compute_moe_mlp_elements(arch)
+                if arch.moe_has_dense_mlp:
+                    # why: enable_moe_block runs the dense MLP and the
+                    # MoE experts in parallel; register both for skip matching.
+                    layer_modules.update(
+                        {
+                            f"mlp.{name}": in_dim * out_dim
+                            for name, (in_dim, out_dim) in mlp_dims.items()
+                        }
+                    )
         else:
             layer_modules.update(
                 {
@@ -567,7 +583,6 @@ def _compute_layer_elements(arch: ModelArchConfig):
 
     if _uses_structured_layer_shapes(arch):
         attn_total = 0
-        structured_dense_mlp_total = 0
         per_layer_dense_mlp = []
         for layer_idx in range(n_layers):
             layer_dense_mlp = 0
@@ -581,20 +596,23 @@ def _compute_layer_elements(arch: ModelArchConfig):
                 elif name in MLP_TARGET_MODULES:
                     layer_dense_mlp += elements
             per_layer_dense_mlp.append(layer_dense_mlp)
-            structured_dense_mlp_total += layer_dense_mlp
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
             moe_mlp_total = _compute_moe_mlp_elements(arch) * n_moe
             if arch.moe_has_dense_mlp:
-                # why: Gemma4 enable_moe_block runs the dense MLP and the
-                # MoE experts in parallel on every MoE layer; count both.
-                mlp_total = structured_dense_mlp_total + moe_mlp_total
+                # why: enable_moe_block runs dense MLP and MoE experts in
+                # parallel; count dense for every layer alongside MoE.
+                mlp_total = sum(per_layer_dense_mlp) + moe_mlp_total
             else:
-                dense_only_total = sum(per_layer_dense_mlp[:n_dense])
+                dense_only_total = sum(
+                    value
+                    for i, value in enumerate(per_layer_dense_mlp)
+                    if _is_dense_mlp_layer(arch, i)
+                )
                 mlp_total = moe_mlp_total + dense_only_total
         else:
-            mlp_total = structured_dense_mlp_total
+            mlp_total = sum(per_layer_dense_mlp)
     elif n_experts > 1:
         attn_total = _compute_attn_elements(arch) * n_layers
         n_dense = arch.num_dense_layers
@@ -745,7 +763,11 @@ def compute_lora_params(
                 # why: parallel dense MLP coexists with MoE on every layer.
                 mlp_total = structured_dense_mlp + moe_mlp * n_moe
             else:
-                dense_only = sum(per_layer_dense_mlp[:n_dense])
+                dense_only = sum(
+                    value
+                    for i, value in enumerate(per_layer_dense_mlp)
+                    if _is_dense_mlp_layer(arch, i)
+                )
                 mlp_total = moe_mlp * n_moe + dense_only
         else:
             mlp_total = structured_dense_mlp
@@ -821,16 +843,23 @@ def _compute_non_flash_attention_bytes(
 
 
 def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
+    n_experts = _get_num_experts(arch)
+    is_moe_layer = n_experts > 1 and not _is_dense_mlp_layer(arch, layer_idx)
     if _uses_structured_layer_shapes(arch):
         q_size, kv_size, has_k, has_v = _layer_attention_dims(arch, layer_idx)
         qkv_size = q_size + (kv_size if has_k else 0) + (kv_size if has_v else 0)
-        if _get_num_experts(arch) > 1 and layer_idx >= arch.num_dense_layers:
+        if is_moe_layer:
             mlp_size = _get_mlp_size(arch)
+            if arch.moe_has_dense_mlp:
+                mlp_size += _layer_mlp_size(arch, layer_idx)
         else:
             mlp_size = _layer_mlp_size(arch, layer_idx)
         return qkv_size, mlp_size
     kv_size = _get_kv_size(arch)
-    return arch.hidden_size + kv_size + kv_size, _get_mlp_size(arch)
+    mlp_size = _get_mlp_size(arch)
+    if is_moe_layer and arch.moe_has_dense_mlp:
+        mlp_size += arch.intermediate_size
+    return arch.hidden_size + kv_size + kv_size, mlp_size
 
 
 def _per_layer_activation_bytes(
