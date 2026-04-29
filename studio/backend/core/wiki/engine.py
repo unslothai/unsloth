@@ -4716,14 +4716,18 @@ class LLMWikiEngine:
                     source_title
                 ) or self._looks_like_low_information_source_title(source_title)
                 if needs_informative and primary_source:
-                    informative = self._analysis_index_title_from_source_page(primary_source)
+                    informative = self._analysis_index_title_from_source_page(
+                        primary_source
+                    )
                     title = (
                         informative
                         or self._analysis_title_from_answer_excerpt(answer)
                         or source_title
                     )
                 elif needs_informative:
-                    title = self._analysis_title_from_answer_excerpt(answer) or source_title
+                    title = (
+                        self._analysis_title_from_answer_excerpt(answer) or source_title
+                    )
                 else:
                     title = source_title
             else:
@@ -5315,7 +5319,9 @@ class LLMWikiEngine:
                 "(strict LLM mode, no lexical fallback)"
             )
         else:
-            strategy = "enrichment LLM selector disabled (strict mode: no links selected)"
+            strategy = (
+                "enrichment LLM selector disabled (strict mode: no links selected)"
+            )
 
         lines = [
             f"- generated_at: {self._now_iso()}",
@@ -6573,7 +6579,9 @@ class LLMWikiEngine:
         )
         fallback = self._normalize_web_text(str(fallback_title or "").strip(), 160)
         source_link = self._normalize_wikilink(
-            primary_source or self._extract_analysis_primary_source_link(analysis_text) or ""
+            primary_source
+            or self._extract_analysis_primary_source_link(analysis_text)
+            or ""
         )
         source_hint = self._analysis_index_title_from_source_page(source_link)
         source_hint = self._normalize_web_text(source_hint or "", 180)
@@ -6657,7 +6665,9 @@ class LLMWikiEngine:
             if (
                 normalized_summary
                 and not self._looks_like_identifier_title(normalized_summary)
-                and not self._looks_like_low_information_source_title(normalized_summary)
+                and not self._looks_like_low_information_source_title(
+                    normalized_summary
+                )
             ):
                 return normalized_summary
 
@@ -6697,7 +6707,9 @@ class LLMWikiEngine:
         if any(normalized.startswith(prefix) for prefix in generic_prefixes):
             return True
 
-        if "chat history" in normalized and re.search(r"\b(session|log|transcript)\b", normalized):
+        if "chat history" in normalized and re.search(
+            r"\b(session|log|transcript)\b", normalized
+        ):
             return True
 
         dated_chat_pattern = re.compile(

@@ -2562,7 +2562,9 @@ def test_index_analysis_summary_replaces_identifier_source_title_with_source_pag
     )
 
     assert "2508.20330v4 | primary" not in line
-    assert "FORGE: Foundational Optimization with Representation Graph Engineering" in line
+    assert (
+        "FORGE: Foundational Optimization with Representation Graph Engineering" in line
+    )
     assert "[[sources/2508-20330v4]]" in line
     assert "[fallback-resolved:" in line
 
@@ -2575,7 +2577,9 @@ def test_index_analysis_summary_replaces_generic_chat_history_title_with_source_
         llm_fn = lambda _: "{}",
     )
 
-    source_page = tmp_path / "wiki" / "sources" / "chat-history-20260420-184704-930406.md"
+    source_page = (
+        tmp_path / "wiki" / "sources" / "chat-history-20260420-184704-930406.md"
+    )
     source_page.write_text(
         "---\n"
         "title: Chat History Log from April 20 2026 Session 184704\n"
@@ -2626,7 +2630,9 @@ def test_index_analysis_summary_uses_answer_excerpt_when_chat_title_is_generic(
         llm_fn = lambda _: "{}",
     )
 
-    source_page = tmp_path / "wiki" / "sources" / "chat-history-20260422-153443-261090.md"
+    source_page = (
+        tmp_path / "wiki" / "sources" / "chat-history-20260422-153443-261090.md"
+    )
     source_page.write_text(
         "---\n"
         "title: Chat History Log from April 22 2026 Session 153443\n"
@@ -2759,7 +2765,9 @@ def test_index_analysis_summary_llm_title_invalid_falls_back_when_flag_enabled(
         if "[[analysis/forge-llm-index-fallback]]" in item
     )
 
-    assert "FORGE: Foundational Optimization with Representation Graph Engineering" in line
+    assert (
+        "FORGE: Foundational Optimization with Representation Graph Engineering" in line
+    )
     assert "[[sources/2508-20330v4]]" in line
 
 
