@@ -16,9 +16,20 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 QUANT_4BIT_FACTOR = 16 / 5
-DOUBLE_QUANT_4BIT_FACTOR = 3.6
+DOUBLE_QUANT_4BIT_FACTOR = 3.6  # bnb_4bit_use_double_quant; see VRAM_ESTIMATION.md section 1
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
-NON_FLASH_ATTENTION_FACTOR = 12.0
+NON_FLASH_ATTENTION_FACTOR = 12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
+
+LINEAR_ATTENTION_IMPLS = frozenset({"flash_attention_2", "sdpa"})
+
+_SKIP_MODULE_TEXT_PREFIXES = frozenset({
+    "model",
+    "model.model",
+    "language_model",
+    "language_model.model",
+    "model.language_model",
+    "model.language_model.model",
+})
 
 DEFAULT_TARGET_MODULES = [
     "q_proj",
@@ -82,6 +93,7 @@ class ModelArchConfig:
     hidden_size_per_layer_input: int = 0
     quantization_skip_modules: list = field(default_factory = list)
     quant_4bit_factor: float = QUANT_4BIT_FACTOR
+    moe_has_dense_mlp: bool = False
 
 
 @dataclass
@@ -124,17 +136,15 @@ class VramBreakdown:
         """Minimum VRAM a single GPU needs: its shard + non-shardable costs.
 
         Weights/LoRA/optimizer/gradients shard across GPUs.
-        The computed activation cost does NOT shard (one GPU runs the layer).
-        The floor portion (activations - computed) is overhead that shards.
+        Activations do NOT shard (the GPU running a layer holds them).
         """
         shardable = (
             self.model_weights
             + self.lora_adapters
             + self.optimizer_states
             + self.gradients
-            + (self.activations - self.activations_computed)  # floor overhead shards
         )
-        per_gpu_fixed = self.activations_computed + self.cuda_overhead
+        per_gpu_fixed = self.activations + self.cuda_overhead
         return shardable // max(n_gpus, 1) + per_gpu_fixed
 
     def to_gb_dict(self) -> Dict[str, float]:
@@ -264,6 +274,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
             quantization_config.get("llm_int8_skip_modules", []) or []
         ),
         quant_4bit_factor = quant_4bit_factor,
+        moe_has_dense_mlp = bool(getattr(text_config, "enable_moe_block", False)),
     )
 
 
@@ -283,6 +294,11 @@ def _layer_types(arch: ModelArchConfig) -> list:
 
 
 def _uses_structured_layer_shapes(arch: ModelArchConfig) -> bool:
+    # MLA configs have their own q/kv low-rank projection shape formulas in
+    # _compute_attn_elements / _lora_attn_elements; do not let head_dim or
+    # other structured fields override that path.
+    if arch.q_lora_rank is not None:
+        return False
     return bool(
         arch.layer_types
         or arch.head_dim is not None
@@ -370,10 +386,17 @@ def _module_path_matches(skip_module: str, alias: str) -> bool:
         return False
     if alias_parts[0] == "layers":
         return skip_parts == alias_parts
-    return (
-        len(skip_parts) >= len(alias_parts)
-        and skip_parts[-len(alias_parts) :] == alias_parts
-    )
+    if len(skip_parts) < len(alias_parts):
+        return False
+    if skip_parts[-len(alias_parts) :] != alias_parts:
+        return False
+    prefix_parts = skip_parts[: len(skip_parts) - len(alias_parts)]
+    if not prefix_parts:
+        return True
+    # why: bound the prefix to known text-tower roots so VLM skip names like
+    # vision_tower.model.layers.<i>.self_attn.q_proj do not shadow the text
+    # alias model.layers.<i>.self_attn.q_proj.
+    return ".".join(prefix_parts) in _SKIP_MODULE_TEXT_PREFIXES
 
 
 def _add_module_aliases(
@@ -400,6 +423,8 @@ def _build_text_module_elements(
     elements: Dict[str, int] = {}
     aliases: Dict[str, str] = {}
 
+    is_mla = arch.q_lora_rank is not None and not _uses_structured_layer_shapes(arch)
+
     for layer_idx in range(arch.num_hidden_layers):
         layer_modules: Dict[str, int] = {}
         dims = _text_linear_dims(arch, layer_idx)
@@ -410,8 +435,14 @@ def _build_text_module_elements(
             name: dim for name, dim in dims.items() if name in MLP_TARGET_MODULES
         }
 
-        for name, (in_dim, out_dim) in attn_dims.items():
-            layer_modules[f"self_attn.{name}"] = in_dim * out_dim
+        if is_mla:
+            # why: _text_linear_dims uses (hd, hd) for q/o; MLA actually splits
+            # into q_a/q_b/kv_a/kv_b, so emit a single self_attn aggregate at
+            # the authoritative MLA per-layer total.
+            layer_modules["self_attn"] = _compute_attn_elements(arch)
+        else:
+            for name, (in_dim, out_dim) in attn_dims.items():
+                layer_modules[f"self_attn.{name}"] = in_dim * out_dim
 
         if arch.num_experts and arch.num_experts > 1:
             if layer_idx < arch.num_dense_layers:
@@ -435,7 +466,7 @@ def _build_text_module_elements(
         attn_total = sum(
             value
             for name, value in layer_modules.items()
-            if name.startswith("self_attn.")
+            if name == "self_attn" or name.startswith("self_attn.")
         )
         mlp_total = sum(
             value
@@ -536,7 +567,10 @@ def _compute_layer_elements(arch: ModelArchConfig):
 
     if _uses_structured_layer_shapes(arch):
         attn_total = 0
+        structured_dense_mlp_total = 0
+        per_layer_dense_mlp = []
         for layer_idx in range(n_layers):
+            layer_dense_mlp = 0
             for name, (in_dim, out_dim) in _text_linear_dims(
                 arch,
                 layer_idx,
@@ -544,30 +578,32 @@ def _compute_layer_elements(arch: ModelArchConfig):
                 elements = in_dim * out_dim
                 if name in ATTENTION_TARGET_MODULES:
                     attn_total += elements
+                elif name in MLP_TARGET_MODULES:
+                    layer_dense_mlp += elements
+            per_layer_dense_mlp.append(layer_dense_mlp)
+            structured_dense_mlp_total += layer_dense_mlp
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
-            mlp_total = (
-                _compute_moe_mlp_elements(arch) * n_moe
-                + _compute_dense_mlp_elements(arch) * n_dense
-            )
+            moe_mlp_total = _compute_moe_mlp_elements(arch) * n_moe
+            if arch.moe_has_dense_mlp:
+                # why: Gemma4 enable_moe_block runs the dense MLP and the
+                # MoE experts in parallel on every MoE layer; count both.
+                mlp_total = structured_dense_mlp_total + moe_mlp_total
+            else:
+                dense_only_total = sum(per_layer_dense_mlp[:n_dense])
+                mlp_total = moe_mlp_total + dense_only_total
         else:
-            mlp_total = 0
-            for layer_idx in range(n_layers):
-                for name, (in_dim, out_dim) in _text_linear_dims(
-                    arch,
-                    layer_idx,
-                ).items():
-                    if name in MLP_TARGET_MODULES:
-                        mlp_total += in_dim * out_dim
+            mlp_total = structured_dense_mlp_total
     elif n_experts > 1:
         attn_total = _compute_attn_elements(arch) * n_layers
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
-        mlp_total = (
-            _compute_moe_mlp_elements(arch) * n_moe
-            + _compute_dense_mlp_elements(arch) * n_dense
-        )
+        moe_mlp_total = _compute_moe_mlp_elements(arch) * n_moe
+        if arch.moe_has_dense_mlp:
+            mlp_total = _compute_dense_mlp_elements(arch) * n_layers + moe_mlp_total
+        else:
+            mlp_total = moe_mlp_total + _compute_dense_mlp_elements(arch) * n_dense
     else:
         attn_total = _compute_attn_elements(arch) * n_layers
         mlp_total = _compute_dense_mlp_elements(arch) * n_layers
@@ -678,8 +714,10 @@ def compute_lora_params(
     use_structured_shapes = _uses_structured_layer_shapes(arch)
     if use_structured_shapes:
         attn_total = 0
-        mlp_total = 0
+        structured_dense_mlp = 0
+        per_layer_dense_mlp = []
         for layer_idx in range(n_layers):
+            layer_dense = 0
             for name, (in_dim, out_dim) in _text_linear_dims(
                 arch,
                 layer_idx,
@@ -688,8 +726,10 @@ def compute_lora_params(
                     continue
                 if name in ATTENTION_TARGET_MODULES:
                     attn_total += in_dim * r + r * out_dim
-                elif name in MLP_TARGET_MODULES and n_experts <= 1:
-                    mlp_total += in_dim * r + r * out_dim
+                elif name in MLP_TARGET_MODULES:
+                    layer_dense += in_dim * r + r * out_dim
+            per_layer_dense_mlp.append(layer_dense)
+            structured_dense_mlp += layer_dense
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
@@ -701,14 +741,14 @@ def compute_lora_params(
                 selected_modules,
                 moe_expert_mult,
             )
-            dense_mlp = _lora_mlp_elements(
-                hd,
-                arch.intermediate_size,
-                r,
-                selected_modules,
-                1,
-            )
-            mlp_total = moe_mlp * n_moe + dense_mlp * n_dense
+            if arch.moe_has_dense_mlp:
+                # why: parallel dense MLP coexists with MoE on every layer.
+                mlp_total = structured_dense_mlp + moe_mlp * n_moe
+            else:
+                dense_only = sum(per_layer_dense_mlp[:n_dense])
+                mlp_total = moe_mlp * n_moe + dense_only
+        else:
+            mlp_total = structured_dense_mlp
         return attn_total + mlp_total
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
@@ -730,7 +770,10 @@ def compute_lora_params(
             selected_modules,
             1,
         )
-        mlp_total = moe_mlp * n_moe + dense_mlp * n_dense
+        if arch.moe_has_dense_mlp:
+            mlp_total = moe_mlp * n_moe + dense_mlp * n_layers
+        else:
+            mlp_total = moe_mlp * n_moe + dense_mlp * n_dense
     else:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         mlp_total = (
@@ -761,8 +804,10 @@ def compute_gradient_bytes(trainable_params: int) -> int:
     return trainable_params * 2
 
 
-def _is_flash_attention(attention_implementation: str) -> bool:
-    return attention_implementation == "flash_attention_2"
+def _is_linear_attention(attention_implementation: Optional[str]) -> bool:
+    # why: PyTorch SDPA dispatches to flash/memory-efficient O(n) backends; only
+    # eager (and other non-flash impls) need the quadratic correction.
+    return attention_implementation in LINEAR_ATTENTION_IMPLS
 
 
 def _compute_non_flash_attention_bytes(
@@ -775,26 +820,41 @@ def _compute_non_flash_attention_bytes(
     return int(score_elements * 2 * NON_FLASH_ATTENTION_FACTOR * effective_layers)
 
 
+def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
+    if _uses_structured_layer_shapes(arch):
+        q_size, kv_size, has_k, has_v = _layer_attention_dims(arch, layer_idx)
+        qkv_size = q_size + (kv_size if has_k else 0) + (kv_size if has_v else 0)
+        if _get_num_experts(arch) > 1 and layer_idx >= arch.num_dense_layers:
+            mlp_size = _get_mlp_size(arch)
+        else:
+            mlp_size = _layer_mlp_size(arch, layer_idx)
+        return qkv_size, mlp_size
+    kv_size = _get_kv_size(arch)
+    return arch.hidden_size + kv_size + kv_size, _get_mlp_size(arch)
+
+
+def _per_layer_activation_bytes(
+    arch: ModelArchConfig,
+    layer_idx: int,
+    batch_size: int,
+    seq_len: int,
+) -> int:
+    qkv_size, mlp_size = _layer_qkv_mlp_sizes(arch, layer_idx)
+    activation_qkv = seq_len * batch_size * qkv_size
+    residual_memory = (seq_len * batch_size) * 2
+    activation_mlp = seq_len * batch_size * (mlp_size + mlp_size)
+    return int((activation_qkv + residual_memory + activation_mlp) * 2 * 1.25)
+
+
 def compute_activation_bytes(
     arch: ModelArchConfig,
     batch_size: int,
     seq_len: int,
     gradient_checkpointing: str,
     is_lora: bool = False,
-    attention_implementation: str = "flash_attention_2",
+    attention_implementation: Optional[str] = "flash_attention_2",
 ) -> int:
-    hd = arch.hidden_size
-    kv_size = _get_kv_size(arch)
-    mlp_size = _get_mlp_size(arch)
-    bsz = batch_size
     n_layers = arch.num_hidden_layers
-
-    activation_qkv = seq_len * bsz * (hd + kv_size + kv_size)
-    residual_memory = (seq_len * bsz) * 2
-    activation_mlp = seq_len * bsz * (mlp_size + mlp_size)
-
-    per_layer_bytes = (activation_qkv + residual_memory + activation_mlp) * 2
-    per_layer_bytes = int(per_layer_bytes * 1.25)
 
     gc_key = gradient_checkpointing.lower()
     gc_entry = GC_LAYER_MULTIPLIERS.get(gc_key, (None, None))
@@ -803,21 +863,29 @@ def compute_activation_bytes(
 
     if gc_multiplier is None:
         effective_layers = n_layers
+        linear_bytes = sum(
+            _per_layer_activation_bytes(arch, i, batch_size, seq_len)
+            for i in range(n_layers)
+        )
     else:
         effective_layers = gc_multiplier
-
-    linear_bytes = int(per_layer_bytes * effective_layers)
-    if not _is_flash_attention(attention_implementation):
-        return max(
-            linear_bytes,
-            _compute_non_flash_attention_bytes(
-                arch,
-                batch_size,
-                seq_len,
-                effective_layers,
-            ),
+        max_layer_bytes = max(
+            _per_layer_activation_bytes(arch, i, batch_size, seq_len)
+            for i in range(n_layers)
         )
-    return linear_bytes
+        linear_bytes = int(max_layer_bytes * effective_layers)
+
+    if _is_linear_attention(attention_implementation):
+        return linear_bytes
+    return max(
+        linear_bytes,
+        _compute_non_flash_attention_bytes(
+            arch,
+            batch_size,
+            seq_len,
+            effective_layers,
+        ),
+    )
 
 
 def estimate_training_vram(

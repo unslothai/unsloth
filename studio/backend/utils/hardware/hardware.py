@@ -775,16 +775,29 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
 
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
+    import copy as _copy
+
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
 
+    # why: resolve_attention_implementation calls _set_attn_impl which writes
+    # _attn_implementation onto the config; work on a shallow copy so the
+    # cached config returned by _load_config_for_gpu_estimate stays untouched.
+    config_copy = _copy.copy(config)
+
     model_class = None
     for auto_model in (AutoModelForCausalLM, AutoModel):
-        if config.__class__ in auto_model._model_mapping:
-            model_class = auto_model._model_mapping[config.__class__]
-            break
+        mapping = getattr(auto_model, "_model_mapping", None)
+        if mapping is None:
+            continue
+        try:
+            if config_copy.__class__ in mapping:
+                model_class = mapping[config_copy.__class__]
+                break
+        except Exception:
+            continue
 
-    return resolve_attention_implementation(model_class, config)
+    return resolve_attention_implementation(model_class, config_copy)
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
@@ -950,6 +963,10 @@ def estimate_required_model_memory_gb(
                 estimate_model,
                 e,
             )
+            # why: if we cannot prove flash attention is usable, charge the
+            # quadratic non-flash activation path so GPU selection stays
+            # conservative.
+            vram_config.attention_implementation = "eager"
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:
