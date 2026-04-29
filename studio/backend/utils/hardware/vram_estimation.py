@@ -76,6 +76,7 @@ class ModelArchConfig:
     num_experts: Optional[int] = None
     moe_intermediate_size: Optional[int] = None
     n_shared_experts: int = 0
+    shared_expert_intermediate_size: Optional[int] = None
     num_dense_layers: int = 0
     q_lora_rank: Optional[int] = None
     kv_lora_rank: Optional[int] = None
@@ -163,6 +164,17 @@ class VramBreakdown:
 
 def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
     """Layer indices that use dense MLP instead of MoE. Position matters."""
+    # why: transformers Exaone-MoE / Laguna / Hy_v3 / GLM-MoE-DSA / GLM4-MoE-Lite /
+    # Ernie4_5_VL_MoE prefer per-position `mlp_layer_types` over the prefix-style
+    # `first_k_dense_replace` and may omit `decoder_sparse_step` entirely.
+    layer_types = getattr(text_config, "mlp_layer_types", None)
+    if layer_types:
+        return tuple(
+            i
+            for i, t in enumerate(layer_types[:total_layers])
+            if str(t).lower() == "dense"
+        )
+
     first_k = getattr(text_config, "first_k_dense_replace", None)
     if first_k is not None:
         return tuple(range(min(int(first_k), total_layers)))
@@ -218,7 +230,21 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
             break
 
     moe_intermediate = getattr(text_config, "moe_intermediate_size", None)
-    n_shared_experts = getattr(text_config, "n_shared_experts", None) or 0
+    # why: transformers Exaone-MoE uses `num_shared_experts`; Qwen3.5-MoE uses
+    # `shared_expert_intermediate_size` plus a single shared expert without an
+    # explicit count. Fall through to the canonical `n_shared_experts` last.
+    n_shared_experts = (
+        getattr(text_config, "n_shared_experts", None)
+        or getattr(text_config, "num_shared_experts", None)
+        or 0
+    )
+    shared_expert_intermediate_size = getattr(
+        text_config,
+        "shared_expert_intermediate_size",
+        None,
+    )
+    if shared_expert_intermediate_size and n_shared_experts == 0:
+        n_shared_experts = 1
 
     dense_layer_indices: tuple = ()
     if num_experts is not None and num_experts > 1:
@@ -242,6 +268,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         num_experts = num_experts,
         moe_intermediate_size = moe_intermediate,
         n_shared_experts = n_shared_experts,
+        shared_expert_intermediate_size = shared_expert_intermediate_size,
         num_dense_layers = num_dense_layers,
         q_lora_rank = q_lora_rank,
         kv_lora_rank = kv_lora_rank,
@@ -280,7 +307,11 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     )
 
 
-def _targets_all_linear(target_modules: list) -> bool:
+def _targets_all_linear(target_modules) -> bool:
+    # why: peft LoraConfig accepts target_modules="all-linear" as a bare
+    # string; iterating a string yields chars and never matches the set.
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
     normalized = {str(module).lower().replace("_", "-") for module in target_modules}
     return normalized == {"all-linear"}
 
@@ -479,6 +510,8 @@ def _build_text_module_elements(
     aliases: Dict[str, str] = {}
 
     is_mla = arch.q_lora_rank is not None and not _uses_structured_layer_shapes(arch)
+    pli = arch.hidden_size_per_layer_input
+    hd_global = arch.hidden_size
 
     for layer_idx in range(arch.num_hidden_layers):
         layer_modules: Dict[str, int] = {}
@@ -539,6 +572,14 @@ def _build_text_module_elements(
                 }
             )
 
+        if pli > 0:
+            # why: gemma4 PLE per-layer linears; their elements were added to
+            # total_quantizable in _compute_layer_elements but never registered
+            # for skip-module matching, so quantization_skip_modules entries
+            # like model.layers.0.per_layer_input_gate produced 0-byte delta.
+            layer_modules["per_layer_input_gate"] = hd_global * pli
+            layer_modules["per_layer_projection"] = pli * hd_global
+
         attn_total = sum(
             value
             for name, value in layer_modules.items()
@@ -549,9 +590,10 @@ def _build_text_module_elements(
             for name, value in layer_modules.items()
             if name == "mlp" or name.startswith("mlp.")
         )
+        layer_total = sum(layer_modules.values())
 
         aggregate_modules = {
-            f"text.layers.{layer_idx}": attn_total + mlp_total,
+            f"text.layers.{layer_idx}": layer_total,
             f"text.layers.{layer_idx}.self_attn": attn_total,
             f"text.layers.{layer_idx}.mlp": mlp_total,
         }
@@ -564,6 +606,11 @@ def _build_text_module_elements(
             canonical = f"text.layers.{layer_idx}.{name}"
             elements[canonical] = value
             _add_module_aliases(aliases, canonical, canonical.removeprefix("text."))
+
+    if pli > 0:
+        canonical = "text.per_layer_model_projection"
+        elements[canonical] = hd_global * (arch.num_hidden_layers * pli)
+        _add_module_aliases(aliases, canonical, canonical.removeprefix("text."))
 
     return elements, aliases
 
@@ -625,11 +672,23 @@ def _compute_dense_mlp_elements(arch: ModelArchConfig) -> int:
     return arch.hidden_size * arch.intermediate_size * 3
 
 
+def _shared_expert_size(arch: ModelArchConfig) -> int:
+    # why: Qwen3.5-MoE shared expert has its own intermediate_size (default 512)
+    # distinct from moe_intermediate_size; fall back to routed mlp_size for
+    # families that share it (deepseek-style configs).
+    return arch.shared_expert_intermediate_size or _get_mlp_size(arch)
+
+
 def _compute_moe_mlp_elements(arch: ModelArchConfig) -> int:
     hd = arch.hidden_size
     mlp_size = _get_mlp_size(arch)
     n_experts = _get_num_experts(arch)
-    return hd * mlp_size * 3 * (n_experts + arch.n_shared_experts) + n_experts * hd
+    routed = hd * mlp_size * 3 * n_experts + n_experts * hd
+    if arch.n_shared_experts:
+        shared_size = _shared_expert_size(arch)
+        # why: Qwen3.5-MoE shared_expert_gate is a hd→1 Linear per shared expert.
+        routed += hd * shared_size * 3 * arch.n_shared_experts + arch.n_shared_experts * hd
+    return routed
 
 
 def _compute_layer_elements(arch: ModelArchConfig):
@@ -813,13 +872,18 @@ def compute_lora_params(
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
-            moe_expert_mult = n_experts + arch.n_shared_experts
             moe_mlp = _lora_mlp_elements(
                 hd,
                 _get_mlp_size(arch),
                 r,
                 selected_modules,
-                moe_expert_mult,
+                n_experts,
+            ) + _lora_mlp_elements(
+                hd,
+                _shared_expert_size(arch),
+                r,
+                selected_modules,
+                arch.n_shared_experts,
             )
             if arch.moe_has_dense_mlp:
                 # why: parallel dense MLP coexists with MoE on every layer.
@@ -842,14 +906,20 @@ def compute_lora_params(
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
-        # Include shared experts alongside routed experts
-        moe_expert_mult = n_experts + arch.n_shared_experts
+        # why: routed and shared experts may use different intermediate sizes
+        # (Qwen3.5-MoE: routed mlp_size != shared_expert_intermediate_size).
         moe_mlp = _lora_mlp_elements(
             hd,
             _get_mlp_size(arch),
             r,
             selected_modules,
-            moe_expert_mult,
+            n_experts,
+        ) + _lora_mlp_elements(
+            hd,
+            _shared_expert_size(arch),
+            r,
+            selected_modules,
+            arch.n_shared_experts,
         )
         dense_mlp = _lora_mlp_elements(
             hd,

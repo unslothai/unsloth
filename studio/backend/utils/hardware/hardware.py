@@ -781,9 +781,11 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
     from transformers import AutoModel, AutoModelForCausalLM
 
     # why: resolve_attention_implementation calls _set_attn_impl which writes
-    # _attn_implementation onto the config; work on a shallow copy so the
-    # cached config returned by _load_config_for_gpu_estimate stays untouched.
-    config_copy = _copy.copy(config)
+    # _attn_implementation onto the config; PreTrainedConfig's setter walks
+    # `sub_configs` and propagates to nested text_config / sub-configs, so a
+    # shallow copy still mutates those shared inner objects on the cached
+    # config returned by _load_config_for_gpu_estimate. Deepcopy isolates them.
+    config_copy = _copy.deepcopy(config)
 
     model_class = None
     for auto_model in (AutoModelForCausalLM, AutoModel):
