@@ -41,6 +41,10 @@
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-router": "^1.159.10",
     "@tanstack/react-table": "^8.21.3",
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@toolwind/corner-shape": "^0.0.8-3",
     "@types/canvas-confetti": "^1.9.0",
     "@xyflow/react": "^12.10.0",
@@ -87,6 +91,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "playwright": "^1.59.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.55.0",
     "vite": "^8.0.1"

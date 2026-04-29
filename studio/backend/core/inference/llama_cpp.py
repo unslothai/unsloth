@@ -18,6 +18,7 @@ from loggers import get_logger
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -26,7 +27,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
+
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
 # Forward-looking intent signals that indicate the model is
@@ -47,6 +53,21 @@ _INTENT_SIGNAL = re.compile(
     r")"
 )
 _MAX_REPROMPTS = 3
+
+# Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
+# 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
+# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
+# but the llama.cpp README notes it ONLY fires after a newline has been
+# generated -- a model stuck in a long unbroken non-newline sequence is
+# unbounded by it. So we still want a token cap as the front-line limiter.
+#
+# The cap is the model's effective context length when we know it,
+# falling back to a generous floor when metadata is unavailable. 4096 was
+# too low: Qwen3 / gpt-oss reasoning traces routinely exceed it, and any
+# OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
+# curl) sees responses silently truncated mid-sentence.
+_DEFAULT_MAX_TOKENS_FLOOR = 32768
+_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -81,6 +102,84 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 
+_TOOL_TEMPLATE_MARKERS = (
+    "{%- if tools %}",
+    "{%- if tools -%}",
+    "{% if tools %}",
+    "{% if tools -%}",
+    '"role" == "tool"',
+    "'role' == 'tool'",
+    'message.role == "tool"',
+    "message.role == 'tool'",
+)
+
+
+def detect_reasoning_flags(
+    chat_template: Optional[str],
+    model_identifier: Optional[str] = None,
+    *,
+    log_source: Optional[str] = None,
+) -> dict:
+    """Classify a chat template's reasoning and tool-calling capabilities.
+
+    Returns a dict with the same five keys populated by the GGUF sniffer:
+    ``supports_reasoning``, ``reasoning_style``
+    (``"enable_thinking"`` | ``"reasoning_effort"``),
+    ``reasoning_always_on``, ``supports_preserve_thinking``, and
+    ``supports_tools``. Used by both the llama-server backend at load
+    time and the safetensors/transformers paths in ``routes/inference``
+    so the two agree on what the frontend will see.
+    """
+    flags = {
+        "supports_reasoning": False,
+        "reasoning_style": "enable_thinking",
+        "reasoning_always_on": False,
+        "supports_preserve_thinking": False,
+        "supports_tools": False,
+    }
+    if not chat_template:
+        return flags
+    tpl = chat_template
+    prefix = f"{log_source}: " if log_source else ""
+
+    if "enable_thinking" in tpl:
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking"
+        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+    elif "reasoning_effort" in tpl:
+        # gpt-oss / Harmony templates use reasoning_effort
+        # ("low" | "medium" | "high") instead of a boolean.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "reasoning_effort"
+        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+    elif "thinking" in tpl:
+        # DeepSeek uses 'thinking' instead of 'enable_thinking'
+        normalized_id = (model_identifier or "").lower()
+        if "deepseek" in normalized_id:
+            flags["supports_reasoning"] = True
+            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+
+    # Hardcoded <think> tags or reasoning_content in the template mean
+    # thinking is always on (no toggle to disable it).
+    if not flags["supports_reasoning"]:
+        if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
+            flags["supports_reasoning"] = True
+            flags["reasoning_always_on"] = True
+            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+
+    # preserve_thinking is an independent kwarg on some Qwen templates
+    # that keeps historical <think> blocks in prior assistant turns.
+    if "preserve_thinking" in tpl:
+        flags["supports_preserve_thinking"] = True
+        logger.info(f"{prefix}model supports preserve_thinking")
+
+    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+        flags["supports_tools"] = True
+        logger.info(f"{prefix}model supports tool calling")
+
+    return flags
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -106,6 +205,8 @@ class LlamaCppBackend:
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
+        self._reasoning_style: str = "enable_thinking"
+        self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
@@ -167,13 +268,113 @@ class LlamaCppBackend:
 
     @property
     def max_context_length(self) -> Optional[int]:
-        """Return the maximum context currently available on this hardware."""
+        """Return the largest context that fits on this hardware at load time.
+
+        This is the "safe zone" threshold the UI renders warnings
+        against. For a model whose weights fit on some GPU subset, it
+        is the binary-search cap from ``_fit_context_to_vram`` for that
+        subset. For a model whose weights exceed 90% of every GPU
+        subset, it is the 4096 fallback -- the spec's default when the
+        model will not fit. The UI slider ceiling is
+        ``native_context_length``; dragging above ``max_context_length``
+        triggers the "might be slower" warning.
+        """
         return self._max_context_length or self._context_length
 
     @property
     def native_context_length(self) -> Optional[int]:
         """Return the model's native context length from GGUF metadata."""
         return self._context_length
+
+    def load_progress(self) -> Optional[dict]:
+        """Return live model-load progress, or None if not loading.
+
+        While llama-server is warming up, its process is typically in
+        kernel state D (disk sleep) mmap'ing the weight shards into
+        page cache before pushing layers to VRAM. During that window
+        ``/api/inference/status`` only reports ``loading``, which gives
+        the UI nothing to display besides a spinner that looks stuck
+        for minutes on large MoE models.
+
+        This method samples ``/proc/<pid>/status VmRSS`` against the
+        sum of the GGUF shard sizes so the UI can render a real bar
+        and compute rate / ETA. Returns ``None`` when no load is in
+        flight (no process, or process already healthy).
+
+        Shape::
+
+            {
+                "phase": "mmap" | "ready",
+                "bytes_loaded": int,   # VmRSS of the llama-server
+                "bytes_total":  int,   # sum of shard file sizes
+                "fraction": float,     # bytes_loaded / bytes_total, 0..1
+            }
+
+        Linux-only in the current implementation. On macOS/Windows the
+        equivalent would be a different API; this returns ``None`` on
+        platforms where ``/proc/<pid>/status`` is unavailable.
+        """
+        proc = self._process
+        if proc is None:
+            return None
+        pid = proc.pid
+        if pid is None:
+            return None
+
+        # Sum up shard sizes (primary + any extras sitting alongside).
+        bytes_total = 0
+        gguf_path = self._gguf_path
+        if gguf_path:
+            primary = Path(gguf_path)
+            try:
+                if primary.is_file():
+                    bytes_total += primary.stat().st_size
+            except OSError:
+                pass
+            # Extra shards live alongside the primary with the same prefix
+            # before the shard index (e.g. ``-00001-of-00004.gguf``).
+            try:
+                parent = primary.parent
+                stem = primary.name
+                m = _SHARD_RE.match(stem)
+                prefix = m.group(1) if m else None
+                if prefix and parent.is_dir():
+                    for sibling in parent.iterdir():
+                        if (
+                            sibling.is_file()
+                            and sibling.name.startswith(prefix)
+                            and sibling.name != stem
+                            and sibling.suffix == ".gguf"
+                        ):
+                            try:
+                                bytes_total += sibling.stat().st_size
+                            except OSError:
+                                pass
+            except OSError:
+                pass
+
+        # Read VmRSS from /proc/<pid>/status. Kilobytes on Linux.
+        bytes_loaded = 0
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = int(line.split()[1])
+                        bytes_loaded = kb * 1024
+                        break
+        except (FileNotFoundError, PermissionError, ValueError, OSError):
+            return None
+
+        phase = "ready" if self._healthy else "mmap"
+        fraction = 0.0
+        if bytes_total > 0:
+            fraction = min(1.0, bytes_loaded / bytes_total)
+        return {
+            "phase": phase,
+            "bytes_loaded": bytes_loaded,
+            "bytes_total": bytes_total,
+            "fraction": round(fraction, 4),
+        }
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -188,8 +389,49 @@ class LlamaCppBackend:
         return self._reasoning_always_on
 
     @property
+    def reasoning_style(self) -> str:
+        return self._reasoning_style
+
+    @property
+    def supports_preserve_thinking(self) -> bool:
+        return self._supports_preserve_thinking
+
+    @property
     def reasoning_default(self) -> bool:
         return self._reasoning_default
+
+    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+        if self._reasoning_style == "reasoning_effort":
+            return {"reasoning_effort": "high" if enable_thinking else "low"}
+        return {"enable_thinking": enable_thinking}
+
+    def _request_reasoning_kwargs(
+        self,
+        enable_thinking: Optional[bool],
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+    ) -> Optional[dict]:
+        """Build chat_template_kwargs from per-request reasoning fields.
+
+        Produces a merged dict covering the active model's reasoning style
+        (``enable_thinking`` or ``reasoning_effort``) plus the independent
+        ``preserve_thinking`` kwarg when the template supports it.
+        """
+        kwargs: dict = {}
+        # Always-on reasoning models hardcode <think> tags in their template
+        # and do not consume enable_thinking / reasoning_effort -- skip.
+        if self._supports_reasoning and not self._reasoning_always_on:
+            if self._reasoning_style == "reasoning_effort":
+                if reasoning_effort in ("low", "medium", "high"):
+                    kwargs["reasoning_effort"] = reasoning_effort
+                elif enable_thinking is not None:
+                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+            else:
+                if enable_thinking is not None:
+                    kwargs["enable_thinking"] = enable_thinking
+        if self._supports_preserve_thinking and preserve_thinking is not None:
+            kwargs["preserve_thinking"] = preserve_thinking
+        return kwargs or None
 
     @property
     def supports_tools(self) -> bool:
@@ -322,14 +564,24 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per GPU.
 
-        Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Order:
+          1. ``nvidia-smi`` (NVIDIA CUDA hosts) -- respects
+             ``CUDA_VISIBLE_DEVICES``.
+          2. ``torch.cuda.mem_get_info`` -- universal fallback that
+             works on AMD ROCm too because the HIP runtime
+             reuses the entire ``torch.cuda.*`` namespace. Covers the
+             AMD case for issue #5106 (nvidia-smi-only probe silently
+             returned [] on AMD hosts) and also rescues NVIDIA hosts
+             where ``nvidia-smi`` is missing from PATH.
+
+        Returns list of (gpu_index, free_mib) sorted by index. Empty
+        list if no supported GPU is reachable.
         """
         import os
 
+        # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
                 [
@@ -340,31 +592,97 @@ class LlamaCppBackend:
                 capture_output = True,
                 text = True,
                 timeout = 10,
+                **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode != 0:
-                return []
-
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
-
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
-            return gpus
+            if result.returncode == 0:
+                allowed: Optional[set[int]] = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None:
+                    try:
+                        # `if x.strip()` filters trailing-comma masks like
+                        # "0,1," which would otherwise raise ValueError on
+                        # an empty token. An explicitly empty mask (CVD="")
+                        # yields an empty `allowed` set so all GPUs are
+                        # filtered out, matching the codebase convention.
+                        allowed = set(
+                            int(x.strip()) for x in cvd.split(",") if x.strip()
+                        )
+                    except ValueError:
+                        pass
+                gpus: list[tuple[int, int]] = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                # Match the docstring's sort-by-id guarantee. nvidia-smi
+                # almost always returns sorted output, but driver order
+                # is not formally guaranteed.
+                gpus.sort(key = lambda g: g[0])
+                if gpus:
+                    return gpus
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        try:
+            import torch
+
+            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
+                return []
+            if not hasattr(torch.cuda, "mem_get_info"):
+                return []
+            # torch.cuda enumerates GPUs RELATIVE to the visibility mask.
+            # On NVIDIA builds the mask is CUDA_VISIBLE_DEVICES; on AMD
+            # ROCm builds it is HIP_VISIBLE_DEVICES (or ROCR_VISIBLE_DEVICES
+            # if HIP is unset). Downstream we feed these IDs back into the
+            # llama-server subprocess as CVD, so we must translate visible
+            # ordinals back to physical indices first; otherwise launching
+            # with ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
+            # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
+            physical_ids: Optional[list[int]] = None
+            # Match the codebase convention in
+            # ``utils/hardware/hardware.py::_get_parent_visible_gpu_spec``:
+            # treat an explicitly empty mask (``HIP_VISIBLE_DEVICES=""``)
+            # as "set to no GPUs" rather than falling through to the next
+            # var. ``or`` would coerce empty string to falsy and silently
+            # promote the wrong source.
+            if getattr(torch.version, "hip", None) is not None:
+                hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+                rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+                cvd = (
+                    hip_v
+                    if hip_v is not None
+                    else rocr_v
+                    if rocr_v is not None
+                    else os.environ.get("CUDA_VISIBLE_DEVICES")
+                )
+            else:
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    # Empty mask (CVD="") yields an empty list so the
+                    # below loop produces no GPUs, consistent with the
+                    # nvidia-smi path and utils/hardware/hardware.py.
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+            gpus = []
+            for ordinal in range(torch.cuda.device_count()):
+                free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
+                idx = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                gpus.append((idx, free_bytes // (1024 * 1024)))
+            # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
+            return sorted(gpus, key = lambda g: g[0])
+        except Exception as e:
+            logger.debug(f"torch GPU probe failed: {e}")
             return []
 
     @staticmethod
@@ -711,6 +1029,9 @@ class LlamaCppBackend:
         self._chat_template = None
         self._supports_reasoning = False
         self._reasoning_always_on = False
+        self._reasoning_style = "enable_thinking"
+        self._reasoning_default = True
+        self._supports_preserve_thinking = False
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
@@ -791,48 +1112,16 @@ class LlamaCppBackend:
                     f"GGUF metadata: chat_template={len(self._chat_template)} chars"
                 )
                 # Detect thinking/reasoning support from chat template
-                tpl = self._chat_template
-                if "enable_thinking" in tpl:
-                    self._supports_reasoning = True
-                    logger.info(
-                        "GGUF metadata: model supports reasoning (enable_thinking)"
-                    )
-                elif "thinking" in tpl:
-                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
-                    normalized_id = (self._model_identifier or "").lower()
-                    if "deepseek" in normalized_id:
-                        self._supports_reasoning = True
-                        logger.info(
-                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
-                        )
-                # Models with hardcoded <think> tags or reasoning_content
-                # in their chat template always produce thinking output
-                # (no toggle to disable it).
-                if not self._supports_reasoning:
-                    if (
-                        "<think>" in tpl
-                        and "</think>" in tpl
-                        or "reasoning_content" in tpl
-                    ):
-                        self._supports_reasoning = True
-                        self._reasoning_always_on = True
-                        logger.info(
-                            "GGUF metadata: model always reasons (<think> tags in template)"
-                        )
-                # Detect tool calling support from chat template
-                tool_markers = [
-                    "{%- if tools %}",
-                    "{%- if tools -%}",
-                    "{% if tools %}",
-                    "{% if tools -%}",
-                    '"role" == "tool"',
-                    "'role' == 'tool'",
-                    'message.role == "tool"',
-                    "message.role == 'tool'",
-                ]
-                if any(marker in tpl for marker in tool_markers):
-                    self._supports_tools = True
-                    logger.info("GGUF metadata: model supports tool calling")
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF metadata",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -904,10 +1193,34 @@ class LlamaCppBackend:
         try:
             import os
 
-            from huggingface_hub import get_paths_info
+            from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
-            total_download_bytes = sum((p.size or 0) for p in path_infos)
+            total_bytes = sum((p.size or 0) for p in path_infos)
+
+            # Subtract bytes already present in the HF cache so we only
+            # preflight against what we actually have to download. Without
+            # this, re-loading a cached large model (e.g. MiniMax-M2.7-GGUF
+            # at 131 GB) fails cold whenever free disk is below the full
+            # weight footprint, even though nothing needs downloading.
+            already_cached_bytes = 0
+            for p in path_infos:
+                if not p.size:
+                    continue
+                try:
+                    cached_path = try_to_load_from_cache(hf_repo, p.path)
+                except Exception:
+                    cached_path = None
+                if isinstance(cached_path, str) and os.path.exists(cached_path):
+                    try:
+                        on_disk = os.path.getsize(cached_path)
+                    except OSError:
+                        on_disk = 0
+                    # Count as satisfied only when the full blob is present.
+                    if on_disk >= p.size:
+                        already_cached_bytes += p.size
+
+            total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
             if total_download_bytes > 0:
                 cache_dir = os.environ.get(
@@ -919,9 +1232,11 @@ class LlamaCppBackend:
 
                 total_gb = total_download_bytes / (1024**3)
                 free_gb = free_bytes / (1024**3)
+                cached_gb = already_cached_bytes / (1024**3)
 
                 logger.info(
-                    f"GGUF download: {total_gb:.1f} GB needed, "
+                    f"GGUF download: {total_gb:.1f} GB needed "
+                    f"({cached_gb:.1f} GB already cached), "
                     f"{free_gb:.1f} GB free on disk"
                 )
 
@@ -1024,7 +1339,7 @@ class LlamaCppBackend:
             # Prefer F16 variant
             target = None
             for f in mmproj_files:
-                if "f16" in f.lower():
+                if f.lower().endswith("-f16.gguf"):
                     target = f
                     break
             if target is None:
@@ -1063,6 +1378,7 @@ class LlamaCppBackend:
         speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
+        n_parallel: int = 1,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1192,36 +1508,28 @@ class LlamaCppBackend:
                                 best_cap = max(best_cap, capped)
                         if best_cap > 0:
                             max_available_ctx = best_cap
+                        else:
+                            # Weights exceed 90% of every GPU subset's free
+                            # memory, so there is no fitting context. Anchor
+                            # the UI's "safe zone" threshold at 4096 (the
+                            # spec's default when the model cannot fit) so
+                            # the ctx slider shows the "might be slower"
+                            # warning as soon as the user drags above the
+                            # fallback default instead of never.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
 
                     if explicit_ctx:
-                        # Try to honor the user's requested context exactly.
+                        # Honor the user's requested context verbatim. If it
+                        # fits, pin GPUs and skip --fit; if it doesn't, ship
+                        # -c <user_ctx> --fit on and let llama-server flex
+                        # -ngl (CPU layer offload). The UI is expected to
+                        # have surfaced the "might be slower" warning before
+                        # the user submitted a ctx above the fit ceiling.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
                             effective_ctx, cache_type_kv
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
-
-                        # Full context doesn't fit anywhere -- cap it on the
-                        # best GPU subset we can find (fewest GPUs first).
-                        if use_fit:
-                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                            for n_gpus in range(1, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
-                                pool_mib = sum(free for _, free in subset)
-                                capped = self._fit_context_to_vram(
-                                    effective_ctx,
-                                    pool_mib,
-                                    model_size,
-                                    cache_type_kv,
-                                )
-                                kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv
-                                )
-                                total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.90:
-                                    effective_ctx = capped
-                                    gpu_indices = sorted(idx for idx, _ in subset)
-                                    use_fit = False
-                                    break
+                        # No silent shrink: effective_ctx stays == n_ctx.
                     else:
                         # Auto context: prefer fewer GPUs, cap context to fit.
                         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -1241,6 +1549,13 @@ class LlamaCppBackend:
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
+                        else:
+                            # No subset can host the weights (weights alone
+                            # exceed 90% of every pool). Per spec, default
+                            # the UI-visible context to 4096 and let
+                            # --fit on flex -ngl so llama-server offloads
+                            # layers to CPU RAM.
+                            effective_ctx = min(4096, effective_ctx)
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check.
@@ -1251,6 +1566,13 @@ class LlamaCppBackend:
                         model_size_gb = round(model_size / (1024**3), 2),
                     )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                    if use_fit and not explicit_ctx:
+                        # Weights don't fit on any subset. Default the UI to
+                        # 4096 so the slider doesn't land on an unusable native
+                        # context. --fit on will flex -ngl at runtime.
+                        effective_ctx = (
+                            min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        )
 
                 if effective_ctx < original_ctx:
                     kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
@@ -1283,9 +1605,11 @@ class LlamaCppBackend:
                 "-c",
                 str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
-                "1",  # Single-user studio, saves VRAM
+                str(n_parallel),
                 "--flash-attn",
                 "on",  # Force flash attention for speed
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                "--no-context-shift",
             ]
 
             if use_fit:
@@ -1294,8 +1618,10 @@ class LlamaCppBackend:
                 # Model fits on selected GPU(s) -- offload all layers
                 cmd.extend(["-ngl", "-1"])
 
-            if n_threads is not None:
-                cmd.extend(["--threads", str(n_threads)])
+            # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
+            # do not inherit llama-server's internal default, which has historically
+            # varied (hardware concurrency incl. hyperthreads on some builds).
+            cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
 
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])
@@ -1327,7 +1653,7 @@ class LlamaCppBackend:
             # existing text (code refactoring, summarization, reasoning).
             # For general chat with low repetition, overhead is ~5 ms.
             #
-            # Benchmarks from llama.cpp PRs #18471, #19164:
+            # Benchmarks from upstream llama.cpp speculative-decoding PRs:
             #   Scenario                        | Without | With    | Speedup
             #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
             #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
@@ -1340,11 +1666,21 @@ class LlamaCppBackend:
             # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
             # ref: https://github.com/ggml-org/llama.cpp/pull/19164
             # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            # ``"default"`` -> let llama-server pick a sensible spec
+            # config via ``--spec-default``. Explicit type names are
+            # passed through with the manual draft tuning we've shipped
+            # historically so power users keep their overrides.
             _valid_spec_types = {"ngram-simple", "ngram-mod"}
-            if speculative_type and speculative_type in _valid_spec_types:
-                if not is_vision:  # spec decoding disabled for vision models
-                    cmd.extend(["--spec-type", speculative_type])
-                    if speculative_type == "ngram-mod":
+            normalized_spec = (
+                speculative_type.lower().strip() if speculative_type else None
+            )
+            if normalized_spec and normalized_spec != "off" and not is_vision:
+                if normalized_spec == "default":
+                    cmd.append("--spec-default")
+                    self._speculative_type = "default"
+                elif normalized_spec in _valid_spec_types:
+                    cmd.extend(["--spec-type", normalized_spec])
+                    if normalized_spec == "ngram-mod":
                         cmd.extend(
                             [
                                 "--spec-ngram-size-n",
@@ -1355,7 +1691,7 @@ class LlamaCppBackend:
                                 "64",
                             ]
                         )
-                    self._speculative_type = speculative_type
+                    self._speculative_type = normalized_spec
                 else:
                     self._speculative_type = None
             else:
@@ -1379,25 +1715,25 @@ class LlamaCppBackend:
                 )
 
             # For reasoning models, set default thinking mode.
-            # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
             # Only 9B and larger enable thinking.
-            if self._supports_reasoning:
+            # Always-on templates ignore the kwarg entirely, so skip.
+            if self._supports_reasoning and not self._reasoning_always_on:
                 thinking_default = True
                 mid = (model_identifier or "").lower()
-                if "qwen3.5" in mid:
+                if "qwen3.5" in mid or "qwen3.6" in mid:
                     size_val = _extract_model_size_b(mid)
                     if size_val is not None and size_val < 9:
                         thinking_default = False
                 self._reasoning_default = thinking_default
+                reasoning_kw = self._reasoning_kwargs(thinking_default)
                 cmd.extend(
                     [
                         "--chat-template-kwargs",
-                        json.dumps({"enable_thinking": thinking_default}),
+                        json.dumps(reasoning_kw),
                     ]
                 )
-                logger.info(
-                    f"Reasoning model: enable_thinking={thinking_default} by default"
-                )
+                logger.info(f"Reasoning model: {reasoning_kw} by default")
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -1512,9 +1848,29 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            # Pin to selected GPU(s). On ROCm, llama-server (and any torch
+            # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
+            # narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
+            # the full HIP/ROCR set the parent inherited.
             if gpu_indices is not None:
-                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                pinned = ",".join(str(i) for i in gpu_indices)
+                env["CUDA_VISIBLE_DEVICES"] = pinned
+                try:
+                    import torch as _torch
+
+                    if getattr(_torch.version, "hip", None) is not None:
+                        env["HIP_VISIBLE_DEVICES"] = pinned
+                        env["ROCR_VISIBLE_DEVICES"] = pinned
+                except Exception as e:
+                    logger.debug(
+                        "Failed to set ROCm visibility env vars for child: %s", e
+                    )
+
+            # Defensive kill: if a concurrent load slipped past Phase 1
+            # (because its `self._process` was None at the time) and
+            # already stored a Popen handle here, drop that orphan
+            # before we overwrite the reference. See issue #5161.
+            self._kill_process()
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -1523,6 +1879,7 @@ class LlamaCppBackend:
                 stderr = subprocess.STDOUT,
                 text = True,
                 env = env,
+                **_windows_hidden_subprocess_kwargs(),
             )
 
             # Start background thread to drain stdout and prevent pipe deadlock
@@ -1531,7 +1888,12 @@ class LlamaCppBackend:
             )
             self._stdout_thread.start()
 
-            self._gguf_path = gguf_path
+            # Store the resolved on-disk path, not the caller's kwarg. In
+            # HF mode the caller passes gguf_path=None and the real path
+            # (``model_path``) is what llama-server is actually mmap'ing.
+            # Downstream consumers (load_progress, log lines, etc.) need
+            # the path that exists on disk.
+            self._gguf_path = model_path
             self._hf_repo = hf_repo
             # For local GGUF files, extract variant from filename if not provided
             if hf_variant:
@@ -1563,6 +1925,28 @@ class LlamaCppBackend:
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
+                _gguf = gguf_path or ""
+                _is_ollama = (
+                    ".studio_links" in _gguf
+                    or os.sep + "ollama_links" + os.sep in _gguf
+                    or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
+                    or (self._model_identifier or "").startswith("ollama/")
+                )
+                # Only show the Ollama-specific message when the server
+                # output indicates a GGUF compatibility issue, not for
+                # unrelated failures like OOM or missing binaries.
+                if _is_ollama:
+                    _output = "\n".join(self._stdout_lines[-50:]).lower()
+                    _gguf_compat_hints = (
+                        "key not found",
+                        "unknown model architecture",
+                        "failed to load model",
+                    )
+                    if any(h in _output for h in _gguf_compat_hints):
+                        raise RuntimeError(
+                            "Some Ollama models do not work with llama.cpp. "
+                            "Try a different model, or use this model directly through Ollama instead."
+                        )
                 raise RuntimeError(
                     "llama-server failed to start. "
                     "Check that the GGUF file is valid and you have enough memory."
@@ -1597,6 +1981,9 @@ class LlamaCppBackend:
             self._chat_template = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
+            self._reasoning_style = "enable_thinking"
+            self._reasoning_default = True
+            self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
             self._speculative_type = None
@@ -2147,6 +2534,8 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -2171,11 +2560,21 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        # Pass enable_thinking per-request for reasoning models
-        if self._supports_reasoning and enable_thinking is not None:
-            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        # Pass enable_thinking / reasoning_effort / preserve_thinking per-request
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        if _reasoning_kw is not None:
+            payload["chat_template_kwargs"] = _reasoning_kw
+        # Default cap to the model's effective context length when known,
+        # otherwise the conservative floor. The wall-clock backstop below
+        # keeps a stuck model from running indefinitely either way.
+        payload["max_tokens"] = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -2195,7 +2594,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
@@ -2309,6 +2710,8 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
@@ -2387,10 +2790,17 @@ class LlamaCppBackend:
                 "tools": tools,
                 "tool_choice": "auto",
             }
-            if self._supports_reasoning and enable_thinking is not None:
-                payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-            if max_tokens is not None:
-                payload["max_tokens"] = max_tokens
+            _reasoning_kw = self._request_reasoning_kwargs(
+                enable_thinking, reasoning_effort, preserve_thinking
+            )
+            if _reasoning_kw is not None:
+                payload["chat_template_kwargs"] = _reasoning_kw
+            payload["max_tokens"] = (
+                max_tokens
+                if max_tokens is not None
+                else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+            )
+            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -2429,7 +2839,10 @@ class LlamaCppBackend:
                     write = 10,
                     pool = 10,
                 )
-                with httpx.Client(timeout = stream_timeout) as client:
+                with httpx.Client(
+                    timeout = stream_timeout,
+                    limits = httpx.Limits(max_keepalive_connections = 0),
+                ) as client:
                     with self._stream_with_retry(
                         client,
                         url,
@@ -3037,12 +3450,17 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        if self._supports_reasoning and enable_thinking is not None:
-            stream_payload["chat_template_kwargs"] = {
-                "enable_thinking": enable_thinking
-            }
-        if max_tokens is not None:
-            stream_payload["max_tokens"] = max_tokens
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        if _reasoning_kw is not None:
+            stream_payload["chat_template_kwargs"] = _reasoning_kw
+        stream_payload["max_tokens"] = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
@@ -3061,7 +3479,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,

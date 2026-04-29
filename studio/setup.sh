@@ -183,7 +183,13 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 if [ "$_LLAMA_ONLY" != "1" ]; then
-# ── Frontend ──
+# ── Detect whether frontend needs building ──
+# Skip if SKIP_STUDIO_FRONTEND=1 (Tauri desktop app bundles its own frontend),
+# or if dist/ exists AND no tracked input is newer than dist/.
+if [ "${SKIP_STUDIO_FRONTEND:-0}" = "1" ]; then
+    _NEED_FRONTEND_BUILD=false
+    step "frontend" "bundled (Tauri)"
+else
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
@@ -195,6 +201,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+fi  # end SKIP_STUDIO_FRONTEND guard
 
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     step "frontend" "up to date"
@@ -484,9 +491,9 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
-from importlib.metadata import version
-print(version('$_PKG_NAME'))
-" 2>/dev/null || echo "")
+import sys; from importlib.metadata import version
+print(version(sys.argv[1]))
+" "$_PKG_NAME" 2>/dev/null || echo "")
 
     LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
@@ -928,6 +935,20 @@ else
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
                         if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            # Drop bare family-level targets (gfx10, gfx11, gfx12, ...)
+                            # when a specific sibling is present in the same list.
+                            # rocminfo on ROCm 6.1+ emits both the specific GPU and
+                            # the LLVM generic family line (e.g. gfx1100 alongside
+                            # gfx11-generic), and the outer grep above captures the
+                            # bare family prefix from the generic line. Passing that
+                            # bare prefix to -DGPU_TARGETS breaks the HIP/llama.cpp
+                            # build because clang only accepts specific gfxNNN ids.
+                            # No real AMD GPU has a 2-digit gfx id, so this filter
+                            # can only ever drop family prefixes, never real targets.
+                            if [[ "$_gfx" =~ ^gfx[0-9]{2}$ ]] \
+                               && echo "$_gfx_list" | grep -qE "^${_gfx}[0-9][0-9a-z]?$"; then
+                                continue
+                            fi
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done

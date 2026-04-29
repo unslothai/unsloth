@@ -36,6 +36,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
 
 
@@ -52,6 +56,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "qwen3.5",  # Qwen3.5 family (35B-A3B, etc.)
     "qwen3-next",  # Qwen3-Next and variants
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
+    "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
 # Lowercase substrings for models that require transformers 5.5.0 (checked first).
@@ -498,6 +503,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
             return True
@@ -519,6 +525,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         logger.error("install failed:\n%s", result.stdout)

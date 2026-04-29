@@ -32,6 +32,10 @@ import threading
 import yaml
 
 
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
 
 # ── Model size extraction ────────────────────────────────────
@@ -579,6 +583,7 @@ def _is_vision_model_subprocess(
             capture_output = True,
             text = True,
             timeout = 60,
+            **_windows_hidden_subprocess_kwargs(),
         )
 
         if result.returncode != 0:
@@ -904,24 +909,99 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-def detect_mmproj_file(path: str) -> Optional[str]:
+def _is_gguf_filename(filename: str) -> bool:
+    return filename.lower().endswith(".gguf")
+
+
+def _iter_gguf_files(directory: Path, recursive: bool = False):
+    if not directory.is_dir():
+        return
+    iterator = directory.rglob("*") if recursive else directory.iterdir()
+    for f in iterator:
+        if f.is_file() and _is_gguf_filename(f.name):
+            yield f
+
+
+def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """
-    Find the mmproj (vision projection) GGUF file in a directory.
+    Find the mmproj (vision projection) GGUF file for a given model.
 
     Args:
-        path: Directory to search — or a .gguf file (uses its parent dir).
+        path: Directory to search — or a .gguf file (uses its parent dir
+            as the starting point).
+        search_root: Optional outer directory that should also be scanned
+            (and any directory between it and ``path``). This handles
+            local layouts where the model weights live in a quant-named
+            subdir (``snapshot/BF16/foo.gguf``) but the mmproj sits at
+            the snapshot root (``snapshot/mmproj-BF16.gguf``). When
+            ``None``, only the immediate parent dir is scanned, matching
+            the historical behavior.
 
     Returns:
         Full path to the mmproj .gguf file, or None if not found.
     """
     p = Path(path)
-    search_dir = p.parent if p.is_file() else p
-    if not search_dir.is_dir():
+    start_dir = p.parent if p.is_file() else p
+    if not start_dir.is_dir():
         return None
 
-    for f in search_dir.glob("*.gguf"):
-        if _is_mmproj(f.name):
-            return str(f.resolve())
+    # Build the list of dirs to scan: immediate dir first, then walk up
+    # to (and including) ``search_root`` if it is an ancestor. We walk
+    # incrementally rather than recursing into ``search_root`` so we
+    # don't accidentally pick up an mmproj from a sibling subdir
+    # belonging to a different model variant.
+    seen: set[Path] = set()
+    scan_order: list[Path] = []
+
+    def _add(d: Path) -> None:
+        try:
+            resolved = d.resolve()
+        except OSError:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        scan_order.append(resolved)
+
+    _add(start_dir)
+
+    # When ``path`` is a symlink (e.g. Ollama's ``.studio_links/...gguf``
+    # -> ``blobs/sha256-...``), the symlink's parent directory rarely
+    # contains the mmproj sibling; the real mmproj file lives next to
+    # the symlink target. Add the target's parent to the scan so vision
+    # GGUFs that are surfaced via symlinks are still recognised as
+    # vision models.
+    try:
+        if p.is_symlink() and p.is_file():
+            target_parent = p.resolve().parent
+            if target_parent.is_dir():
+                _add(target_parent)
+    except OSError:
+        pass
+    if search_root is not None:
+        try:
+            root_resolved = Path(search_root).resolve()
+            start_resolved = start_dir.resolve()
+            # Only walk if start_dir is inside (or equal to) search_root.
+            if root_resolved == start_resolved or (
+                start_resolved.is_relative_to(root_resolved)
+                if hasattr(start_resolved, "is_relative_to")
+                else str(start_resolved).startswith(str(root_resolved) + "/")
+            ):
+                cur = start_resolved
+                # Walk up from start_dir to (and including) root_resolved.
+                while cur != root_resolved and cur.parent != cur:
+                    cur = cur.parent
+                    _add(cur)
+                    if cur == root_resolved:
+                        break
+        except OSError:
+            pass
+
+    for d in scan_order:
+        for f in _iter_gguf_files(d):
+            if _is_mmproj(f.name):
+                return str(f.resolve())
     return None
 
 
@@ -942,15 +1022,18 @@ def detect_gguf_model(path: str) -> Optional[str]:
     p = Path(path)
 
     # Case 1: direct .gguf file
-    if p.suffix == ".gguf" and p.is_file():
+    if p.suffix.lower() == ".gguf" and p.is_file():
         if _is_mmproj(p.name):
             return None
-        return str(p.resolve())
+        # Use absolute (not resolve) to preserve symlink names -- e.g.
+        # Ollama .studio_links/model.gguf -> blobs/sha256-... should
+        # keep the readable symlink name, not the opaque blob hash.
+        return str(p.absolute())
 
     # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():
         gguf_files = sorted(
-            (f for f in p.glob("*.gguf") if not _is_mmproj(f.name)),
+            (f for f in _iter_gguf_files(p) if not _is_mmproj(f.name)),
             key = lambda f: f.stat().st_size,
             reverse = True,
         )
@@ -1015,7 +1098,7 @@ def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     Prefers quantization levels in _GGUF_QUANT_PREFERENCE order.
     Falls back to the first .gguf file found.
     """
-    gguf_files = [f for f in filenames if f.endswith(".gguf")]
+    gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
     if not gguf_files:
         return None
 
@@ -1100,7 +1183,7 @@ def list_gguf_variants(
 
     for sibling in info.siblings:
         fname = sibling.rfilename
-        if not fname.endswith(".gguf"):
+        if not fname.lower().endswith(".gguf"):
             continue
         size = sibling.size or 0
 
@@ -1171,7 +1254,11 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    for f in sorted(p.glob("*.gguf")):
+    # Recurse so variant-specific subdirectories (e.g. ``BF16/...gguf``
+    # used by some HF GGUF repos for the largest quants) are picked up.
+    # Filenames in the result preserve the relative subpath so that
+    # ``_find_local_gguf_by_variant`` can locate the file again.
+    for f in sorted(_iter_gguf_files(p, recursive = True)):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -1181,8 +1268,14 @@ def list_local_gguf_variants(
             size = 0
         quant = _extract_quant_label(f.name)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
+        # Only compute the (potentially expensive) relative path when this
+        # is the first file we've seen for this quant -- after that we'd
+        # discard the result anyway. Use posix-style separators so the
+        # filename matches what ``list_gguf_variants`` (the remote HF
+        # API path) returns on every platform; otherwise Windows would
+        # emit ``BF16\foo.gguf`` here.
         if quant not in quant_first_file:
-            quant_first_file[quant] = f.name
+            quant_first_file[quant] = f.relative_to(p).as_posix()
 
     variants = [
         GgufVariantInfo(
@@ -1208,9 +1301,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     if p is None:
         return None
 
+    # Recurse into subdirectories so variants stored under a quant-named
+    # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
     matches = sorted(
         f
-        for f in p.glob("*.gguf")
+        for f in _iter_gguf_files(p, recursive = True)
         if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
     )
     if matches:
@@ -1322,46 +1417,89 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return False
 
 
-def scan_trained_loras(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str]]:
+def _has_model_weight_files(model_dir: Path) -> bool:
+    """Return True when a directory contains loadable model weights."""
+    for item in model_dir.iterdir():
+        if not item.is_file():
+            continue
+
+        suffix = item.suffix.lower()
+        if suffix == ".safetensors":
+            return True
+        if suffix == ".gguf":
+            return "mmproj" not in item.name.lower()
+        if suffix == ".bin":
+            name = item.name.lower()
+            if (
+                name.startswith("pytorch_model")
+                or name.startswith("model")
+                or name.startswith("adapter_model")
+                or name.startswith("consolidated")
+            ):
+                return True
+    return False
+
+
+def _detect_training_output_type(model_dir: Path) -> Optional[str]:
+    """Classify a Studio training output as LoRA or full finetune."""
+    adapter_config = model_dir / "adapter_config.json"
+    adapter_model = model_dir / "adapter_model.safetensors"
+    if adapter_config.exists() or adapter_model.exists():
+        return "lora"
+
+    config_file = model_dir / "config.json"
+    if config_file.exists() and _has_model_weight_files(model_dir):
+        return "merged"
+
+    return None
+
+
+def _looks_like_lora_adapter(model_dir: Path) -> bool:
+    return model_dir.is_dir() and (
+        (model_dir / "adapter_config.json").exists()
+        or any(model_dir.glob("adapter_model*.safetensors"))
+        or any(model_dir.glob("adapter_model*.bin"))
+    )
+
+
+def scan_trained_models(
+    outputs_dir: str = str(outputs_root()),
+) -> List[Tuple[str, str, str]]:
     """
-    Scan outputs folder for trained LoRA adapters.
+    Scan outputs folder for trained Studio models.
 
     Returns:
-        List of tuples: [(display_name, adapter_path), ...]
-
-    Example:
-        [
-            ("unsloth_Meta-Llama-3.1_...", "./outputs/unsloth_Meta-Llama-3.1_.../"),
-            ("my_finetuned_model", "./outputs/my_finetuned_model/"),
-        ]
+        List of tuples: [(display_name, model_path, model_type), ...]
+        model_type is "lora" for adapter runs and "merged" for full finetunes.
     """
-    trained_loras = []
+    trained_models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
         logger.warning(f"Outputs directory not found: {outputs_dir}")
-        return trained_loras
+        return trained_models
 
     try:
         for item in outputs_path.iterdir():
             if item.is_dir():
-                # Check if this directory contains a LoRA adapter
-                adapter_config = item / "adapter_config.json"
-                adapter_model = item / "adapter_model.safetensors"
+                model_type = _detect_training_output_type(item)
+                if model_type is None:
+                    continue
 
-                if adapter_config.exists() or adapter_model.exists():
-                    display_name = item.name
-                    adapter_path = str(item)
-                    trained_loras.append((display_name, adapter_path))
-                    logger.debug(f"Found trained LoRA: {display_name}")
+                display_name = item.name
+                model_path = str(item)
+                trained_models.append((display_name, model_path, model_type))
+                logger.debug("Found trained model: %s (%s)", display_name, model_type)
 
         # Sort by modification time (newest first)
-        trained_loras.sort(key = lambda x: Path(x[1]).stat().st_mtime, reverse = True)
+        trained_models.sort(key = lambda x: Path(x[1]).stat().st_mtime, reverse = True)
 
         logger.info(
-            f"Found {len(trained_loras)} trained LoRA adapters in {outputs_dir}"
+            "Found %s trained models in %s",
+            len(trained_models),
+            outputs_dir,
         )
-        return trained_loras
+        return trained_models
 
     except Exception as e:
         logger.error(f"Error scanning outputs folder: {e}")
@@ -1395,7 +1533,9 @@ def scan_exported_models(
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
             # Filter out mmproj (vision projection) files — they aren't loadable as main models
-            gguf_files = [f for f in run_dir.glob("*.gguf") if not _is_mmproj(f.name)]
+            gguf_files = [
+                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -1422,7 +1562,7 @@ def scan_exported_models(
                 has_weights = any(checkpoint_dir.glob("*.safetensors")) or any(
                     checkpoint_dir.glob("*.bin")
                 )
-                has_gguf = any(checkpoint_dir.glob("*.gguf"))
+                has_gguf = any(_iter_gguf_files(checkpoint_dir))
 
                 base_model = None
                 export_type = None
@@ -1445,7 +1585,7 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    gguf_list = list(checkpoint_dir.glob("*.gguf"))
+                    gguf_list = list(_iter_gguf_files(checkpoint_dir))
                     # Check checkpoint_dir first, then fall back to parent run_dir
                     # (export.py writes metadata to the top-level export directory)
                     for meta_dir in (checkpoint_dir, run_dir):
@@ -1494,6 +1634,68 @@ def scan_exported_models(
         return []
 
 
+def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
+    """Read the base model name from a local training or checkpoint directory."""
+    try:
+        checkpoint_path_obj = Path(checkpoint_path)
+
+        adapter_config_path = checkpoint_path_obj / "adapter_config.json"
+        if adapter_config_path.exists():
+            with open(adapter_config_path, "r") as f:
+                config = json.load(f)
+                base_model = config.get("base_model_name_or_path")
+                if base_model:
+                    logger.info(
+                        "Detected base model from adapter_config.json: %s", base_model
+                    )
+                    return base_model
+
+        config_path = checkpoint_path_obj / "config.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                for key in ("model_name", "_name_or_path"):
+                    base_model = config.get(key)
+                    if base_model and str(base_model) != str(checkpoint_path_obj):
+                        logger.info(
+                            "Detected base model from config.json (%s): %s",
+                            key,
+                            base_model,
+                        )
+                        return base_model
+
+        training_args_path = checkpoint_path_obj / "training_args.bin"
+        if training_args_path.exists():
+            try:
+                import torch
+
+                training_args = torch.load(training_args_path)
+                if hasattr(training_args, "model_name_or_path"):
+                    base_model = training_args.model_name_or_path
+                    logger.info(
+                        "Detected base model from training_args.bin: %s", base_model
+                    )
+                    return base_model
+            except Exception as e:
+                logger.warning(f"Could not load training_args.bin: {e}")
+
+        dir_name = checkpoint_path_obj.name
+        if dir_name.startswith("unsloth_"):
+            parts = dir_name.split("_")
+            if len(parts) >= 2:
+                model_parts = parts[1:-1]
+                base_model = "unsloth/" + "_".join(model_parts)
+                logger.info("Detected base model from directory name: %s", base_model)
+                return base_model
+
+        logger.warning(f"Could not detect base model for checkpoint: {checkpoint_path}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error reading base model from checkpoint config: {e}")
+        return None
+
+
 def get_base_model_from_lora(lora_path: str) -> Optional[str]:
     """
     Read the base model name from a LoRA adapter's config.
@@ -1502,15 +1704,13 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         lora_path: Path to the LoRA adapter directory
 
     Returns:
-        Base model identifier (e.g., "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit")
-        or None if not found
-
-    Example:
-        >>> get_base_model_from_lora("./outputs/unsloth_Meta-Llama-3.1_.../")
-        "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+        Base model identifier or None if not found
     """
     try:
         lora_path_obj = Path(lora_path)
+
+        if not _looks_like_lora_adapter(lora_path_obj):
+            return None
 
         # Try adapter_config.json first
         adapter_config_path = lora_path_obj / "adapter_config.json"
@@ -1815,8 +2015,16 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
 
-                # If vision (or mmproj happens to exist), find the mmproj file
-                mmproj_file = detect_mmproj_file(gguf_file)
+                # If vision (or mmproj happens to exist), find the mmproj
+                # file. The recursive variant scan in
+                # ``_find_local_gguf_by_variant`` may have returned a
+                # weight file inside a quant-named subdir (e.g.
+                # ``.../BF16/foo.gguf``) while ``mmproj-*.gguf`` lives
+                # at the snapshot root. Pass ``search_root=path`` so
+                # ``detect_mmproj_file`` walks up to the snapshot root
+                # instead of seeing only the weight file's immediate
+                # parent.
+                mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
@@ -1884,7 +2092,11 @@ class ModelConfig:
 
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
         if not is_lora and is_local:
-            detected_base = get_base_model_from_lora(path)
+            detected_base = (
+                get_base_model_from_lora(path)
+                if _looks_like_lora_adapter(Path(path))
+                else None
+            )
             if detected_base:
                 is_lora = True
                 logger.info(

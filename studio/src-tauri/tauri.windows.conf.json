@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "windows": {
+      "signCommand": {
+        "cmd": "trusted-signing-cli",
+        "args": ["-e", "https://eus.codesigning.azure.net", "-d", "Unsloth Studio (Desktop)", "%1"]
+      },
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh",
+        "installerIcon": "./icons/icon.ico",
+        "headerImage": "./windows/branding/nsis-header.bmp",
+        "sidebarImage": "./windows/branding/nsis-sidebar.bmp"
+      }
+    }
+  }
+}

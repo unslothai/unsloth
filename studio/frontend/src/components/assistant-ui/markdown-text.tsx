@@ -5,10 +5,11 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
+import { openLink } from "@/lib/open-link";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { code } from "@streamdown/code";
+import { createCodePlugin } from "./code-plugin";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
@@ -16,8 +17,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
+const code = createCodePlugin({
+  themes: [unslothLightTheme, unslothDarkTheme],
+});
 const { withSmoothContextProvider } = INTERNAL;
 
 const STREAMDOWN_COMPONENTS = {
@@ -28,9 +33,13 @@ const STREAMDOWN_COMPONENTS = {
   }: React.ComponentProps<"a">) => (
     <a
       href={href}
-      target="_blank"
       rel="noopener noreferrer"
-      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors"
+      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer"
+      onClick={(e) => {
+        if (href && openLink(href)) {
+          e.preventDefault();
+        }
+      }}
       {...props}
     >
       {children}
@@ -41,7 +50,7 @@ const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
-  "pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur";
+  "pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur dark:border-white/10 dark:bg-code-block dark:supports-[backdrop-filter]:bg-code-block";
 const ACTION_BUTTON_CLASS =
   "cursor-pointer p-1 text-muted-foreground transition-all hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -272,8 +281,8 @@ function MermaidCopyButton({ source }: { source: string }) {
       type="button"
       className="absolute top-3.5 right-20 z-20 cursor-pointer text-muted-foreground transition-all hover:text-foreground"
       title="Copy Mermaid source"
-      onClick={() => {
-        if (!copyToClipboard(source)) {
+      onClick={async () => {
+        if (!(await copyToClipboard(source))) {
           return;
         }
         showCopied();
@@ -306,8 +315,8 @@ function CodeBlockActions({
           className={ACTION_BUTTON_CLASS}
           title="Copy code"
           disabled={disabled}
-          onClick={() => {
-            if (!copyToClipboard(source)) {
+          onClick={async () => {
+            if (!(await copyToClipboard(source))) {
               return;
             }
             showCopied();
@@ -425,7 +434,7 @@ const MarkdownTextImpl = () => {
             panZoom: true,
           },
         }}
-        shikiTheme={["github-light", "github-dark"]}
+        shikiTheme={[unslothLightTheme, unslothDarkTheme]}
         BlockComponent={StreamdownBlock}
       >
         {processedText}

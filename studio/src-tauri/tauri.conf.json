@@ -1,0 +1,66 @@
+{
+  "productName": "Unsloth Studio (Desktop)",
+  "identifier": "ai.unsloth.studio",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../frontend run dev -- --port 5173 --strictPort",
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Unsloth Studio (Desktop)",
+        "width": 690,
+        "height": 480,
+        "visible": false,
+        "resizable": false
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "id": "main",
+      "tooltip": "Unsloth Studio (Desktop)"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENjJENDYxMTQ1QTYyOEIKUldTTFlsb1VZZFJpTFY1aHgyRkRqZUdjWGg0Sm1BVEZoMDVWME5PdE42bjZiekFRc1Fsb0JNbmIK",
+      "endpoints": [
+        "https://github.com/danielhanchen/unsloth-staging-2/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["app", "appimage", "deb", "dmg", "nsis"],
+    "resources": {
+      "../../install.sh": "install.sh",
+      "../../install.ps1": "install.ps1",
+      "../install_python_stack.py": "install_python_stack.py"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "linux": {
+      "deb": {
+        "postRemoveScript": "./linux/postremove.sh"
+      },
+      "rpm": {
+        "postRemoveScript": "./linux/postremove.sh"
+      }
+    }
+  }
+}
