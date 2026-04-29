@@ -665,11 +665,9 @@ else
 fi
 LAUNCHER_EOF
 
-    # Default / HOME-redirect installs replace the placeholder line with the
-    # legacy literal (DATA_DIR="$HOME/.local/share/unsloth") so a later shell
-    # with a different $HOME still resolves correctly -- byte-identical to
-    # pre-PR. Env-mode installs bake the resolved absolute path because their
-    # root is fixed at install time.
+    # Env-mode bakes an absolute DATA_DIR (root fixed at install time);
+    # default / HOME-redirect keeps the literal $HOME/.local/share/unsloth
+    # so behavior is byte-identical to pre-override.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
         # Two-stage escape: (1) `'` -> `'\''` for shell single-quote embedding,
         # (2) backslash/&/| escape so the value survives the s|...|VALUE| sed

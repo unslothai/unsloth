@@ -1342,8 +1342,9 @@ shell.Run cmd, 0, False
         if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
             # New-Item -ItemType HardLink does NOT accept -LiteralPath in any
-            # PowerShell version, so use -Path. Bracket characters in $ShimExe
-            # are guarded by the directory-collision preflight earlier.
+            # PowerShell version, so use -Path. Wildcards in $ShimExe (e.g.
+            # brackets in custom roots) glob-expand here and fall through to
+            # the Copy-Item -LiteralPath fallback below.
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
             Copy-Item -LiteralPath $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
