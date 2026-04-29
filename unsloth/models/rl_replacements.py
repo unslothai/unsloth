@@ -163,9 +163,10 @@ def dpo_trainer_vision_process_row(
         vision_token is not None
         and isinstance(text, str)
         and len(images) > 0
-        and vision_token not in text
     ):
-        text = f"{vision_token} " + text
+        missing_vision_tokens = len(images) - text.count(vision_token)
+        if missing_vision_tokens > 0:
+            text = (vision_token + " ") * missing_vision_tokens + text
     processor, tokenizer = processing_class, processing_class.tokenizer
     processed_features = processor(
         images = images,
@@ -334,7 +335,7 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "            _padding_side = 'right' if _is_position_key else 'left'\n"
         "            _values = [_unsloth_torch.as_tensor(example[_k]) for example in examples]\n"
         "            try:\n"
-        "                if _unsloth_trl_pad is not None and _values[0].dim() <= 2:\n"
+        "                if _unsloth_trl_pad is not None:\n"
         "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side=_padding_side)\n"
         "                else:\n"
         "                    from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
