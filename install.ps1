@@ -1158,6 +1158,49 @@ shell.Run cmd, 0, False
         }
     }
 
+    # Overlay Tauri-bundled studio fixes that may be ahead of PyPI. Skipped
+    # for --local: the editable install above already makes _PACKAGE_ROOT in
+    # unsloth_cli/commands/studio.py resolve to the repo (PEP 660 __file__).
+    # Source paths match the Tauri bundle layout in studio/src-tauri/tauri.conf.json,
+    # which bundles install_python_stack.py at the bundle root next to install.ps1.
+    if ($TauriMode) {
+        $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
+        if ($rawPath) {
+            # Strip leading \\?\ extended-length prefix if the launcher passed one.
+            $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
+            $overlayMap = [ordered]@{
+                "install_python_stack.py" = "Lib\site-packages\studio\install_python_stack.py"
+            }
+            foreach ($rel in $overlayMap.Keys) {
+                $src = Join-Path $scriptDir $rel
+                $dst = Join-Path $VenvDir $overlayMap[$rel]
+                if (-not (Test-Path $src)) { continue }
+                $dstParent = Split-Path -Parent $dst
+                if (-not (Test-Path $dstParent)) {
+                    Write-Host "[WARN] Overlay target dir missing: $dstParent; studio setup may use stale bundled file" -ForegroundColor Yellow
+                    continue
+                }
+                try {
+                    if (-not (Test-Path $dst)) {
+                        # Backfill: target file missing but parent dir exists.
+                        Copy-Item $src $dst -Force
+                        substep ("backfilled bundled " + (Split-Path -Leaf $rel))
+                    } else {
+                        # Hash-compare so re-runs are no-ops when files already match.
+                        $srcHash = (Get-FileHash $src -Algorithm SHA256).Hash
+                        $dstHash = (Get-FileHash $dst -Algorithm SHA256).Hash
+                        if ($srcHash -ne $dstHash) {
+                            Copy-Item $src $dst -Force
+                            substep ("applied bundled " + (Split-Path -Leaf $rel))
+                        }
+                    }
+                } catch {
+                    Write-Host "[WARN] Could not overlay $($rel): $($_.Exception.Message); studio setup may use stale bundled file" -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
