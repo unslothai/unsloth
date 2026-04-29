@@ -723,42 +723,55 @@ pub fn install_system_packages(
 
     let mut update_cmd = StdCommand::new("apt-get");
     update_cmd.args(["update", "-y"]);
-    let elevated_update = match elevated_command::Command::new(update_cmd).output() {
-        Ok(output) => output,
-        Err(error) => {
-            let msg = format!("Elevated apt update failed: {}", error);
-            finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
-            clear_current_attempt(state);
-            return Err(msg);
+    match elevated_command::Command::new(update_cmd).output() {
+        Ok(elevated_update) => {
+            if let Some(attempt) = elevation_attempt.as_ref() {
+                diagnostics::append_phase_line(
+                    &attempt.handle,
+                    "apt-update-status",
+                    &elevated_update.status.to_string(),
+                );
+                append_capped_output(
+                    &attempt.handle,
+                    "apt-update-stdout",
+                    &elevated_update.stdout,
+                );
+                append_capped_output(
+                    &attempt.handle,
+                    "apt-update-stderr",
+                    &elevated_update.stderr,
+                );
+            }
+            if !elevated_update.status.success() {
+                let stderr = capped_output_text(&elevated_update.stderr);
+                warn!(
+                    "[install] apt-get update failed before elevated install; continuing with cached package metadata: {}",
+                    stderr
+                );
+                if let Some(attempt) = elevation_attempt.as_ref() {
+                    diagnostics::append_phase_line(
+                        &attempt.handle,
+                        "apt-update-warning",
+                        "apt-get update failed; continuing with apt-get install",
+                    );
+                }
+            }
         }
-    };
-    if let Some(attempt) = elevation_attempt.as_ref() {
-        diagnostics::append_phase_line(
-            &attempt.handle,
-            "apt-update-status",
-            &elevated_update.status.to_string(),
-        );
-        append_capped_output(
-            &attempt.handle,
-            "apt-update-stdout",
-            &elevated_update.stdout,
-        );
-        append_capped_output(
-            &attempt.handle,
-            "apt-update-stderr",
-            &elevated_update.stderr,
-        );
-    }
-    if !elevated_update.status.success() {
-        let stderr = capped_output_text(&elevated_update.stderr);
-        finish_elevation_failure(
-            diagnostics,
-            elevation_attempt.as_ref(),
-            Some(elevated_update.status.to_string()),
-            format!("Package index update failed: {stderr}"),
-        );
-        clear_current_attempt(state);
-        return Err(format!("Package index update failed: {}", stderr));
+        Err(error) => {
+            warn!(
+                "[install] Elevated apt update could not run before install; continuing with apt-get install: {}",
+                error
+            );
+            if let Some(attempt) = elevation_attempt.as_ref() {
+                diagnostics::append_phase_line(
+                    &attempt.handle,
+                    "apt-update-error",
+                    &format!(
+                        "apt-get update could not run; continuing with apt-get install: {error}"
+                    ),
+                );
+            }
+        }
     }
 
     let mut install_cmd = StdCommand::new("apt-get");
