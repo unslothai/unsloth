@@ -156,26 +156,8 @@ def dpo_trainer_vision_process_row(
     add_special_tokens = True,
     is_chat = False,
 ):
-    vision_token = getattr(processing_class, "image_token", None)
     text = features.get("prompt", "")
-    raw_images = features.get("images")
-    if raw_images is None:
-        images = None
-        num_images = 0
-    elif isinstance(raw_images, (list, tuple)):
-        images = raw_images
-        num_images = len(raw_images)
-    else:
-        images = raw_images
-        num_images = 1
-    if (
-        vision_token is not None
-        and isinstance(text, str)
-        and num_images > 0
-    ):
-        missing_vision_tokens = num_images - text.count(vision_token)
-        if missing_vision_tokens > 0:
-            text = (vision_token + " ") * missing_vision_tokens + text
+    images = features.get("images")
     processor, tokenizer = processing_class, processing_class.tokenizer
     processed_features = processor(
         images = images,
