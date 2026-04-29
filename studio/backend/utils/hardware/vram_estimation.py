@@ -20,7 +20,7 @@ DOUBLE_QUANT_4BIT_FACTOR = 3.6  # bnb_4bit_use_double_quant; see VRAM_ESTIMATION
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
 NON_FLASH_ATTENTION_FACTOR = 12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
 
-LINEAR_ATTENTION_IMPLS = frozenset({"flash_attention_2", "sdpa"})
+LINEAR_ATTENTION_IMPLS = frozenset({"flash_attention_2", "sdpa", "flex_attention"})
 
 _SKIP_MODULE_TEXT_PREFIXES = frozenset({
     "model",
@@ -316,13 +316,60 @@ def _is_kv_shared_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
     if arch.num_kv_shared_layers <= 0:
         return False
     first_shared = arch.num_hidden_layers - arch.num_kv_shared_layers
-    return layer_idx >= first_shared
+    # why: transformers Gemma4 (modeling_gemma4.py:1031, modular_gemma4.py:863)
+    # uses the same `> 0` guard so a fully-shared config raises during model
+    # construction; matching upstream avoids producing a detailed estimate
+    # for a shape the actual model code rejects.
+    return layer_idx >= first_shared > 0
 
 
 def _is_dense_mlp_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
     if arch.dense_layer_indices:
         return layer_idx in arch.dense_layer_indices
     return layer_idx < arch.num_dense_layers
+
+
+def _per_layer_input_quantizable(arch: ModelArchConfig) -> int:
+    # why: Gemma4 PLE block adds per_layer_model_projection (single Linear),
+    # per_layer_input_gate (per layer), and per_layer_projection (per layer);
+    # see transformers gemma4/modular_gemma4.py:1077-1083 and :1247-1253.
+    pli = arch.hidden_size_per_layer_input
+    if pli <= 0:
+        return 0
+    n_layers = arch.num_hidden_layers
+    hd = arch.hidden_size
+    return (
+        hd * (n_layers * pli)
+        + (hd * pli) * n_layers
+        + (pli * hd) * n_layers
+    )
+
+
+def _per_layer_input_norm_elements(arch: ModelArchConfig) -> int:
+    pli = arch.hidden_size_per_layer_input
+    if pli <= 0:
+        return 0
+    n_layers = arch.num_hidden_layers
+    hd = arch.hidden_size
+    return hd * n_layers + pli
+
+
+def _per_layer_input_lora_params(
+    arch: ModelArchConfig,
+    r: int,
+    all_linear: bool,
+) -> int:
+    if not all_linear:
+        return 0
+    pli = arch.hidden_size_per_layer_input
+    if pli <= 0:
+        return 0
+    n_layers = arch.num_hidden_layers
+    hd = arch.hidden_size
+    total = hd * r + r * (n_layers * pli)
+    total += (hd * r + r * pli) * n_layers
+    total += (pli * r + r * hd) * n_layers
+    return total
 
 
 def _layer_attention_dims(arch: ModelArchConfig, layer_idx: int) -> tuple:
@@ -463,12 +510,25 @@ def _build_text_module_elements(
             else:
                 layer_modules["mlp.experts"] = _compute_moe_mlp_elements(arch)
                 if arch.moe_has_dense_mlp:
-                    # why: enable_moe_block runs the dense MLP and the
-                    # MoE experts in parallel; register both for skip matching.
+                    # why: enable_moe_block runs the dense MLP and the MoE
+                    # experts in parallel; register both for skip matching.
+                    # Non-structured _text_linear_dims returns mlp_size from
+                    # _get_mlp_size which prefers moe_intermediate_size, so
+                    # rebuild dense dims from arch.intermediate_size directly.
+                    if _uses_structured_layer_shapes(arch):
+                        dense_dims = mlp_dims
+                    else:
+                        hd = arch.hidden_size
+                        inter = arch.intermediate_size
+                        dense_dims = {
+                            "gate_proj": (hd, inter),
+                            "up_proj": (hd, inter),
+                            "down_proj": (inter, hd),
+                        }
                     layer_modules.update(
                         {
                             f"mlp.{name}": in_dim * out_dim
-                            for name, (in_dim, out_dim) in mlp_dims.items()
+                            for name, (in_dim, out_dim) in dense_dims.items()
                         }
                     )
         else:
@@ -630,9 +690,11 @@ def _compute_layer_elements(arch: ModelArchConfig):
     per_layer_embed = (
         arch.vocab_size_per_layer_input * arch.hidden_size_per_layer_input * n_layers
     )
-    embed_tokens = arch.vocab_size * hd + per_layer_embed
+    ple_text_linear = _per_layer_input_quantizable(arch)
+    ple_norms = _per_layer_input_norm_elements(arch)
+    embed_tokens = arch.vocab_size * hd + per_layer_embed + ple_norms
     lm_head = 0 if arch.tie_word_embeddings else arch.vocab_size * hd
-    return attn_total + mlp_total, layernorms, embed_tokens, lm_head
+    return attn_total + mlp_total + ple_text_linear, layernorms, embed_tokens, lm_head
 
 
 def compute_model_weights_bytes(
@@ -771,7 +833,11 @@ def compute_lora_params(
                 mlp_total = moe_mlp * n_moe + dense_only
         else:
             mlp_total = structured_dense_mlp
-        return attn_total + mlp_total
+        return (
+            attn_total
+            + mlp_total
+            + _per_layer_input_lora_params(arch, r, all_linear)
+        )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
@@ -809,7 +875,7 @@ def compute_lora_params(
             * n_layers
         )
 
-    return attn_total + mlp_total
+    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, all_linear)
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:

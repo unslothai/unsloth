@@ -95,10 +95,11 @@ Per-layer (from `unsloth_zoo/vllm_utils.py`):
 Per_layer = (S*B*(H+K+K) + S*B*2 + S*B*(M+M)) * 2 * 1.25
 ```
 
-When the resolved attention implementation is neither `flash_attention_2`
-nor `sdpa` (PyTorch SDPA dispatches to flash or memory-efficient kernels,
-both of which are O(n) in memory), activation memory also includes a
-quadratic attention-score/workspace estimate:
+When the resolved attention implementation is none of `flash_attention_2`,
+`sdpa`, or `flex_attention` (PyTorch SDPA dispatches to flash or
+memory-efficient kernels and FlexAttention is also a memory-efficient
+kernel, all of which are O(n) in memory), activation memory also includes
+a quadratic attention-score/workspace estimate:
 
 ```
 Non_flash_attention = B * num_attention_heads * S^2 * 2 * 12.0 * effective_layers
