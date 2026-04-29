@@ -85,12 +85,21 @@ function TooltipTrigger({
   );
 }
 
+type TooltipVariant = "default" | "rich" | "none";
+
+// `default` applies the compact black-pill styling shared with the
+// sidebar/chat icon labels. `rich` opts into the larger multi-row
+// popover surface used for timing/context breakdowns. `none` is an
+// escape hatch for tooltips that need to bring their own surface.
 function TooltipContent({
+  variant = "default",
   className,
   sideOffset = 0,
   children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content> & {
+  variant?: TooltipVariant;
+}) {
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
@@ -98,6 +107,8 @@ function TooltipContent({
         sideOffset={sideOffset}
         className={cn(
           "z-[999999] w-fit max-w-xs",
+          variant === "default" && "tooltip-compact",
+          variant === "rich" && "tooltip-rich",
           className,
         )}
         {...props}

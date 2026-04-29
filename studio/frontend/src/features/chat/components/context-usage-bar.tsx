@@ -64,7 +64,8 @@ export const ContextUsageBar: FC<{
       <TooltipContent
         side="bottom"
         sideOffset={8}
-        className="tooltip-rich [&_span>svg]:hidden!"
+        variant="rich"
+        className="[&_span>svg]:hidden!"
       >
         <div className="grid min-w-44 gap-1.5 text-xs">
           <div className="flex items-center justify-between gap-4">
