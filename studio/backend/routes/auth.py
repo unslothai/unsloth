@@ -17,6 +17,7 @@ from models.auth import (
     ChangePasswordRequest,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
+    DesktopLoginRequest,
     RefreshTokenRequest,
 )
 from models.users import Token
@@ -80,6 +81,24 @@ async def login(payload: AuthLoginRequest) -> Token:
     )
 
 
+@router.post("/desktop-login", response_model = Token)
+async def desktop_login(payload: DesktopLoginRequest) -> Token:
+    """Exchange a local desktop secret for normal admin-subject tokens."""
+    username = storage.validate_desktop_secret(payload.secret)
+    if username is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Desktop authentication failed",
+        )
+
+    return Token(
+        access_token = create_access_token(subject = username, desktop = True),
+        refresh_token = create_refresh_token(subject = username, desktop = True),
+        token_type = "bearer",
+        must_change_password = False,
+    )
+
+
 @router.post("/refresh", response_model = Token)
 async def refresh(payload: RefreshTokenRequest) -> Token:
     """
@@ -87,7 +106,7 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
 
     The refresh token itself is reusable until it expires (7 days).
     """
-    new_access_token, username = refresh_access_token(payload.refresh_token)
+    new_access_token, username, is_desktop = refresh_access_token(payload.refresh_token)
     if new_access_token is None or username is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -98,7 +117,9 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
         access_token = new_access_token,
         refresh_token = payload.refresh_token,
         token_type = "bearer",
-        must_change_password = storage.requires_password_change(username),
+        must_change_password = False
+        if is_desktop
+        else storage.requires_password_change(username),
     )
 
 

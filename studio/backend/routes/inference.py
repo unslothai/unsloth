@@ -113,7 +113,7 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend, detect_reasoning_flags
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -122,7 +122,7 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend, detect_reasoning_flags
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -273,7 +273,9 @@ async def load_model(
                     max_context_length = llama_backend.max_context_length,
                     native_context_length = llama_backend.native_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
+                    reasoning_style = llama_backend.reasoning_style,
                     reasoning_always_on = llama_backend.reasoning_always_on,
+                    supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.speculative_type,
                 )
@@ -295,6 +297,21 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
+                # Non-GGUF: only advertise reasoning for gpt-oss Harmony,
+                # which emits reasoning via channels at the tokenizer level.
+                # Template-level chat_template_kwargs (enable_thinking /
+                # preserve_thinking / tools) are not yet forwarded through
+                # the transformers generation path, so avoid advertising
+                # controls the server cannot honour outside GGUF.
+                _sf_supports_reasoning = False
+                _sf_reasoning_style = "enable_thinking"
+                if hasattr(backend, "_is_gpt_oss_model"):
+                    try:
+                        if backend._is_gpt_oss_model():
+                            _sf_supports_reasoning = True
+                            _sf_reasoning_style = "reasoning_effort"
+                    except Exception:
+                        pass
                 return LoadResponse(
                     status = "already_loaded",
                     model = backend.active_model_name,
@@ -309,6 +326,11 @@ async def load_model(
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
                     ),
+                    supports_reasoning = _sf_supports_reasoning,
+                    reasoning_style = _sf_reasoning_style,
+                    reasoning_always_on = False,
+                    supports_preserve_thinking = False,
+                    supports_tools = False,
                     chat_template = _chat_template,
                 )
 
@@ -422,7 +444,9 @@ async def load_model(
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_style = llama_backend.reasoning_style,
                 reasoning_always_on = llama_backend.reasoning_always_on,
+                supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
@@ -545,6 +569,20 @@ async def load_model(
         except Exception:
             pass
 
+        # Non-GGUF: gpt-oss Harmony surfaces reasoning via tokenizer-level
+        # channels; other safetensors reasoning/tools/preserve-thinking
+        # knobs are not forwarded to tokenizer.apply_chat_template yet, so
+        # we only advertise support for the Harmony case here.
+        _sf_supports_reasoning = False
+        _sf_reasoning_style = "enable_thinking"
+        if hasattr(backend, "_is_gpt_oss_model"):
+            try:
+                if backend._is_gpt_oss_model():
+                    _sf_supports_reasoning = True
+                    _sf_reasoning_style = "reasoning_effort"
+            except Exception:
+                pass
+
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -559,6 +597,11 @@ async def load_model(
             requires_trust_remote_code = bool(
                 inference_config.get("trust_remote_code", False)
             ),
+            supports_reasoning = _sf_supports_reasoning,
+            reasoning_style = _sf_reasoning_style,
+            reasoning_always_on = False,
+            supports_preserve_thinking = False,
+            supports_tools = False,
             chat_template = _chat_template,
         )
 
@@ -766,7 +809,9 @@ async def get_status(
                     (_inference_cfg or {}).get("trust_remote_code", False)
                 ),
                 supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_style = llama_backend.reasoning_style,
                 reasoning_always_on = llama_backend.reasoning_always_on,
+                supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
@@ -791,10 +836,18 @@ async def get_status(
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
 
-        # gpt-oss safetensors models support reasoning via harmony channels
+        # Non-GGUF: only gpt-oss Harmony is wired through the transformers
+        # generation path. Other template-level reasoning / tool kwargs
+        # are not yet forwarded, so we do not advertise them here.
         supports_reasoning = False
+        reasoning_style = "enable_thinking"
         if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
-            supports_reasoning = backend._is_gpt_oss_model()
+            try:
+                if backend._is_gpt_oss_model():
+                    supports_reasoning = True
+                    reasoning_style = "reasoning_effort"
+            except Exception:
+                pass
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -815,6 +868,10 @@ async def get_status(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
             supports_reasoning = supports_reasoning,
+            reasoning_style = reasoning_style,
+            reasoning_always_on = False,
+            supports_preserve_thinking = False,
+            supports_tools = False,
         )
 
     except Exception as e:
@@ -1396,6 +1453,8 @@ async def openai_chat_completions(
                     presence_penalty = payload.presence_penalty,
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
+                    reasoning_effort = payload.reasoning_effort,
+                    preserve_thinking = payload.preserve_thinking,
                     auto_heal_tool_calls = payload.auto_heal_tool_calls
                     if payload.auto_heal_tool_calls is not None
                     else True,
@@ -1565,6 +1624,8 @@ async def openai_chat_completions(
                 presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
+                reasoning_effort = payload.reasoning_effort,
+                preserve_thinking = payload.preserve_thinking,
             )
 
         _gguf_sentinel = object()
