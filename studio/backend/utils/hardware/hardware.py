@@ -906,6 +906,8 @@ def estimate_required_model_memory_gb(
         extract_arch_config,
         estimate_training_vram,
         compute_total_params,
+        compute_optimizer_bytes,
+        compute_gradient_bytes,
         CUDA_OVERHEAD_BYTES,
         QUANT_4BIT_FACTOR,
         DEFAULT_TARGET_MODULES,
@@ -982,6 +984,16 @@ def estimate_required_model_memory_gb(
         extra_bytes = max(0, int(model_size_bytes) - arch_fp16_bytes)
         if extra_bytes > 0:
             breakdown.model_weights += extra_bytes
+            if training_method == "full":
+                # why: under full fine-tuning the extra (vision/audio tower)
+                # params are trainable, so optimizer + gradient bytes scale
+                # with them too.
+                extra_params = extra_bytes // 2
+                breakdown.optimizer_states += compute_optimizer_bytes(
+                    extra_params,
+                    vram_config.optimizer,
+                )
+                breakdown.gradients += compute_gradient_bytes(extra_params)
         required_gb = breakdown.total / (1024**3)
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"

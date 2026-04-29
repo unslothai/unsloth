@@ -184,6 +184,22 @@ def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
             if str(t).lower() == "dense"
         )
 
+    # why: transformers ERNIE 4.5 MoE / ERNIE 4.5 VL MoE declare MoE layers
+    # via moe_layer_start_index / moe_layer_end_index / moe_layer_interval;
+    # moe_layer_end_index == -1 means "last layer" (configuration_ernie4_5_moe.py:239).
+    moe_start = getattr(text_config, "moe_layer_start_index", None)
+    moe_interval = getattr(text_config, "moe_layer_interval", None)
+    if moe_start is not None and moe_interval is not None and int(moe_interval) > 0:
+        moe_end_raw = getattr(text_config, "moe_layer_end_index", None)
+        end = (
+            total_layers
+            if moe_end_raw is None or int(moe_end_raw) == -1
+            else min(int(moe_end_raw) + 1, total_layers)
+        )
+        start = max(0, int(moe_start))
+        moe_indices = set(range(start, end, int(moe_interval)))
+        return tuple(i for i in range(total_layers) if i not in moe_indices)
+
     first_k = getattr(text_config, "first_k_dense_replace", None)
     if first_k is not None:
         return tuple(range(min(int(first_k), total_layers)))
@@ -271,9 +287,14 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         shared_expert_intermediate_size = moe_intermediate_raw[1]
     if shared_expert_intermediate_size and n_shared_experts == 0:
         n_shared_experts = 1
+    # why: DBRX exposes moe_top_k, Hunyuan-V1-MoE exposes moe_topk; ERNIE
+    # families already alias num_experts_per_tok→moe_k via attribute_map so
+    # the canonical name picks them up.
     num_experts_per_tok = (
         getattr(text_config, "num_experts_per_tok", None)
         or getattr(text_config, "top_k_experts", None)
+        or _first_scalar(getattr(text_config, "moe_top_k", None))
+        or _first_scalar(getattr(text_config, "moe_topk", None))
         or 1
     )
 
@@ -638,10 +659,24 @@ def _build_text_module_elements(
             for name, value in layer_modules.items()
             if name == "self_attn" or name.startswith("self_attn.")
         )
+        # why: gemma4 enable_moe_block puts routed experts at the sibling
+        # layers.<i>.experts attribute, not under self.mlp; the layer's "mlp"
+        # aggregate must reflect only the dense MLP path so a skip module
+        # `model.layers.0.mlp` does not over-skip into the experts block.
+        is_sibling_experts = bool(arch.moe_has_dense_mlp)
         mlp_total = sum(
             value
             for name, value in layer_modules.items()
-            if name == "mlp" or name.startswith("mlp.")
+            if (
+                name == "mlp"
+                or (
+                    name.startswith("mlp.")
+                    and not (is_sibling_experts and name == "mlp.experts")
+                )
+            )
+        )
+        experts_total = (
+            layer_modules.get("mlp.experts", 0) if is_sibling_experts else 0
         )
         layer_total = sum(layer_modules.values())
 
@@ -650,6 +685,8 @@ def _build_text_module_elements(
             f"text.layers.{layer_idx}.self_attn": attn_total,
             f"text.layers.{layer_idx}.mlp": mlp_total,
         }
+        if experts_total:
+            aggregate_modules[f"text.layers.{layer_idx}.experts"] = experts_total
         elements.update(aggregate_modules)
         for canonical in aggregate_modules:
             suffix = canonical.removeprefix("text.")
