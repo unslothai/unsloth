@@ -4,6 +4,7 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
