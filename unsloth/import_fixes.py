@@ -1434,7 +1434,9 @@ def patch_peft_weight_converter_compatibility():
 
     @functools.wraps(original_build)
     def _build_peft_weight_mapping_compat(
-        weight_conversions, adapter_name, peft_config = None,
+        weight_conversions,
+        adapter_name,
+        peft_config = None,
     ):
         if not weight_conversions:
             return original_build(weight_conversions, adapter_name, peft_config)
