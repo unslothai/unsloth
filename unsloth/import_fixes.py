@@ -1382,10 +1382,12 @@ def patch_peft_weight_converter_compatibility():
     if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
         return
 
-    original_build = twc.build_peft_weight_mapping
+    import threading
 
-    def _patch_weight_converter_ctors(weight_conversions):
-        patched = []
+    original_build = twc.build_peft_weight_mapping
+    patch_lock = threading.RLock()
+
+    def _patch_weight_converter_ctors(weight_conversions, patched):
         seen_classes = set()
 
         for conversion in weight_conversions:
@@ -1429,20 +1431,22 @@ def patch_peft_weight_converter_compatibility():
 
             conversion_cls.__init__ = _compat_init
             patched.append((conversion_cls, original_init))
-        return patched
 
+    @functools.wraps(original_build)
     def _build_peft_weight_mapping_compat(
-        weight_conversions, adapter_name, peft_config
+        weight_conversions, adapter_name, peft_config = None,
     ):
         if not weight_conversions:
             return original_build(weight_conversions, adapter_name, peft_config)
 
-        patched_classes = _patch_weight_converter_ctors(weight_conversions)
-        try:
-            return original_build(weight_conversions, adapter_name, peft_config)
-        finally:
-            for conversion_cls, original_init in patched_classes:
-                conversion_cls.__init__ = original_init
+        patched_classes = []
+        with patch_lock:
+            try:
+                _patch_weight_converter_ctors(weight_conversions, patched_classes)
+                return original_build(weight_conversions, adapter_name, peft_config)
+            finally:
+                for conversion_cls, original_init in patched_classes:
+                    conversion_cls.__init__ = original_init
 
     twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
     twc._unsloth_weight_converter_compat_patch = True
