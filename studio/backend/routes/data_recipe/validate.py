@@ -151,6 +151,12 @@ def validate(payload: RecipePayload) -> ValidateResponse:
             return ValidateResponse(valid = False, errors = static_errors)
         try:
             build_config_builder(recipe)
+        except ImportError:
+            # data_designer is an optional runtime dep. Static validation already
+            # passed; live access + full config validation are deferred to run
+            # start (per _GITHUB_VALIDATE_NOTE), so a missing optional import
+            # at validate time should not block the recipe.
+            pass
         except Exception as exc:
             detail = str(exc).strip() or "Validation failed."
             return ValidateResponse(
