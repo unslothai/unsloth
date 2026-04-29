@@ -64,7 +64,6 @@ import {
 } from "lucide-react";
 import { Copy01Icon, Delete02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { motion } from "motion/react";
 import {
   type FC,
   type FormEvent,
@@ -112,7 +111,7 @@ export const Thread: FC<{
           scrollToBottomOnInitialize={false}
           scrollToBottomOnThreadSwitch={false}
           className={cn(
-            "aui-thread-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+            "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
             hideComposer ? "pt-4" : "pt-[48px]",
           )}
         >
@@ -164,8 +163,8 @@ export const Thread: FC<{
                 <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
                   <ComposerAnimated disabled={isComposerAttachPending} />
                 </div>
-                <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-                  LLMs can make mistakes. Double-check all responses.
+                <p className="composer-footer-note">
+                  LLMs can make mistakes. Double-check responses.
                 </p>
               </div>
             </div>
@@ -244,14 +243,9 @@ const GeneratingSpinner: FC = () => {
 const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
-      <motion.div
-        layout={true}
-        layoutId="composer"
-        transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
-        className="relative z-10 w-full"
-      >
+      <div className="relative z-10 w-full">
         <Composer disabled={disabled} />
-      </motion.div>
+      </div>
     </div>
   );
 };
@@ -296,13 +290,13 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-[24px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <PendingAudioChip />
         <ToolStatusDisplay />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
-          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+          className="aui-composer-input composer-input"
           minRows={1}
           maxRows={6}
           autoFocus={!disabled}
@@ -403,14 +397,8 @@ const ReasoningToggle: FC = () => {
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
       }}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : reasoningEnabled
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-      )}
+      className="composer-pill-btn"
+      data-active={reasoningEnabled && !disabled ? "true" : "false"}
       aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
     >
       {reasoningEnabled && !disabled ? (
@@ -437,14 +425,8 @@ const WebSearchToggle: FC = () => {
       type="button"
       disabled={disabled}
       onClick={() => setToolsEnabled(!toolsEnabled)}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : toolsEnabled
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-      )}
+      className="composer-pill-btn"
+      data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <GlobeIcon className="size-3.5" />
@@ -467,14 +449,8 @@ const CodeToolsToggle: FC = () => {
       type="button"
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : codeToolsEnabled
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-      )}
+      className="composer-pill-btn"
+      data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
       }
@@ -545,7 +521,7 @@ const ToolStatusDisplay: FC = () => {
 
 const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
-    <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
+    <div className="aui-composer-action-wrapper composer-action-wrapper">
       <div className="flex items-center gap-1">
         <ComposerAddAttachment />
         <ComposerAudioUpload />
@@ -634,7 +610,7 @@ const GeneratingIndicator: FC = () => {
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in pt-0.5 pb-4 text-[15.5px] font-[450] duration-150"
+      className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] font-[450]"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
@@ -660,7 +636,7 @@ const AssistantMessage: FC = () => {
         <MessageError />
       </div>
 
-      <div className="aui-assistant-message-footer mt-1 flex min-h-6">
+      <div className="aui-assistant-message-footer mt-2 flex min-h-8">
         <BranchPicker />
         <AssistantActionBar />
       </div>
@@ -698,7 +674,7 @@ const DeleteMessageButton: FC = () => {
       tooltip="Delete message"
       disabled={isRunning}
       onClick={handleDelete}
-      className="text-foreground hover:text-destructive"
+      className="text-chat-icon-fg hover:text-destructive"
     >
       <HugeiconsIcon
         icon={Delete02Icon}
@@ -743,7 +719,7 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-sidebar-foreground [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:rounded-md [&_button:hover]:bg-sidebar-accent [&_button:hover]:text-sidebar-accent-foreground"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-[#ededec] dark:[&_button:hover]:bg-[#2d2e32] [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
@@ -810,12 +786,11 @@ const UserMessage: FC = () => {
         <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
-        <div className="mt-2 flex min-h-8">
+        <div className="mt-2 flex min-h-8 items-center">
           <UserActionBar />
+          <BranchPicker className="aui-user-branch-picker ml-0.5 -mr-2" />
         </div>
       </div>
-
-      <BranchPicker className="aui-user-branch-picker -mr-1 justify-end" />
     </MessagePrimitive.Root>
   );
 };
@@ -824,7 +799,7 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-sidebar-foreground [&_button]:size-8 [&_button]:rounded-md [&_button:hover]:bg-sidebar-accent [&_button:hover]:text-sidebar-accent-foreground"
+      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-[#edeeed] dark:[&_button:hover]:bg-[#2d2e32] [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
@@ -897,23 +872,31 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch={true}
       className={cn(
-        "aui-branch-picker-root mr-2 -ml-2 inline-flex items-center text-muted-foreground text-xs",
+        "aui-branch-picker-root mr-0.5 -ml-2 inline-flex items-center text-chat-icon-fg text-[13px]",
         className,
       )}
       {...rest}
     >
       <BranchPickerPrimitive.Previous asChild={true}>
-        <TooltipIconButton tooltip="Previous">
-          <ChevronLeftIcon strokeWidth={1.75} className="size-[18px]" />
-        </TooltipIconButton>
+        <button
+          type="button"
+          aria-label="Previous"
+          className="inline-flex size-7 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-[#ecedee] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          <ChevronLeftIcon strokeWidth={1.25} className="size-[26px]" />
+        </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-medium">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+      <span className="aui-branch-picker-state font-mono text-[13px] tabular-nums">
+        <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
-        <TooltipIconButton tooltip="Next">
-          <ChevronRightIcon strokeWidth={1.75} className="size-[18px]" />
-        </TooltipIconButton>
+        <button
+          type="button"
+          aria-label="Next"
+          className="inline-flex size-7 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-[#ecedee] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          <ChevronRightIcon strokeWidth={1.25} className="size-[26px]" />
+        </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
   );

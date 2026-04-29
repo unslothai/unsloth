@@ -75,10 +75,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             output_dir TEXT,
             error_message TEXT,
             duration_seconds REAL,
-            loss_sparkline TEXT
+            loss_sparkline TEXT,
+            display_name TEXT
         )
         """
     )
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()
+    }
+    if "display_name" not in existing_cols:
+        conn.execute("ALTER TABLE training_runs ADD COLUMN display_name TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_metrics (
@@ -261,6 +267,18 @@ def insert_metrics_batch(run_id: str, metrics: list[dict]) -> None:
         conn.close()
 
 
+def update_run_display_name(id: str, display_name: Optional[str]) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE training_runs SET display_name = ? WHERE id = ?",
+            (display_name, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def list_runs(limit: int = 50, offset: int = 0) -> dict:
     conn = get_connection()
     try:
@@ -269,7 +287,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
             """
             SELECT id, status, model_name, dataset_name, started_at, ended_at,
                    total_steps, final_step, final_loss, output_dir,
-                   duration_seconds, error_message, loss_sparkline
+                   duration_seconds, error_message, loss_sparkline, display_name
             FROM training_runs
             ORDER BY started_at DESC
             LIMIT ? OFFSET ?

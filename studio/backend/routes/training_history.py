@@ -17,8 +17,15 @@ from models import (
     TrainingRunListResponse,
     TrainingRunMetrics,
     TrainingRunSummary,
+    TrainingRunUpdateRequest,
 )
-from storage.studio_db import delete_run, get_run, get_run_metrics, list_runs
+from storage.studio_db import (
+    delete_run,
+    get_run,
+    get_run_metrics,
+    list_runs,
+    update_run_display_name,
+)
 
 logger = get_logger(__name__)
 
@@ -61,6 +68,30 @@ async def get_training_run_detail(
         run = TrainingRunSummary(**{k: v for k, v in run.items() if k != "config_json"}),
         config = config,
         metrics = TrainingRunMetrics(**metrics_data),
+    )
+
+
+@router.patch("/runs/{run_id}", response_model = TrainingRunSummary)
+async def update_training_run(
+    run_id: str,
+    payload: TrainingRunUpdateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Update mutable fields on a training run (currently only display_name)."""
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
+
+    next_display = payload.display_name
+    if next_display is not None:
+        next_display = next_display.strip() or None
+    update_run_display_name(run_id, next_display)
+
+    refreshed = get_run(run_id)
+    if refreshed is None:
+        raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
+    return TrainingRunSummary(
+        **{k: v for k, v in refreshed.items() if k != "config_json"}
     )
 
 

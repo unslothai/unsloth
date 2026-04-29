@@ -6,6 +6,7 @@ export interface TrainingRunSummary {
   status: "running" | "completed" | "stopped" | "error";
   model_name: string;
   dataset_name: string;
+  display_name: string | null;
   started_at: string;
   ended_at: string | null;
   total_steps: number | null;

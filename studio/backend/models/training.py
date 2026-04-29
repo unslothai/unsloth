@@ -211,6 +211,7 @@ class TrainingRunSummary(BaseModel):
     status: Literal["running", "completed", "stopped", "error"]
     model_name: str
     dataset_name: str
+    display_name: Optional[str] = None
     started_at: str
     ended_at: Optional[str] = None
     total_steps: Optional[int] = None
@@ -220,6 +221,12 @@ class TrainingRunSummary(BaseModel):
     duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
+
+
+class TrainingRunUpdateRequest(BaseModel):
+    """Mutable fields on a training run."""
+
+    display_name: Optional[str] = None
 
 
 class TrainingRunListResponse(BaseModel):

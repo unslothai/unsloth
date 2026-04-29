@@ -47,7 +47,7 @@ const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
-  "flex size-8 cursor-pointer items-center justify-center rounded-md text-foreground/70 dark:text-white/75 transition-all hover:bg-sidebar-accent hover:text-sidebar-accent-foreground dark:hover:bg-[#2d2f33] dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-50";
+  "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-[#edeeec] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 type CodeFence = {
   language: string | null;

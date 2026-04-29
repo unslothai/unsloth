@@ -278,6 +278,16 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
     )
+    cache_type_kv: Optional[str] = Field(
+        None, description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default"
+    )
+    chat_template: Optional[str] = Field(
+        None, description = "Model's default chat template (Jinja2 source), if any"
+    )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Active chat template override applied at load time, or None if model is using its default",
+    )
     speculative_type: Optional[str] = Field(
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",

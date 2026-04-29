@@ -17,7 +17,11 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
+import {
+  isMultimodalResponse,
+  type InferenceStatusResponse,
+  type LoadModelResponse,
+} from "../types/api";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -276,6 +280,13 @@ export function useChatModelRuntime() {
           ? (statusRes.native_context_length ?? null)
           : null;
         const currentSpecType = statusRes.speculative_type ?? null;
+        // Refresh runs both on F5 (fresh store needs hydration) AND right
+        // after a fresh load (store was already set by the load path). For
+        // the user-configurable model params we only hydrate when the shadow
+        // `loaded*` field is still null -- that signals "not yet hydrated".
+        // Otherwise we'd clobber the values the load path just applied and
+        // the UI would appear to revert the user's changes.
+        const prevState = useChatRuntimeStore.getState();
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
@@ -285,8 +296,25 @@ export function useChatModelRuntime() {
           ggufNativeContextLength,
           modelRequiresTrustRemoteCode:
             statusRes.requires_trust_remote_code ?? false,
-          speculativeType: currentSpecType,
-          loadedSpeculativeType: currentSpecType,
+          loadedIsMultimodal: isMultimodalResponse(statusRes),
+          ...(prevState.loadedSpeculativeType === null && {
+            speculativeType: currentSpecType,
+            loadedSpeculativeType: currentSpecType,
+          }),
+          ...(statusRes.cache_type_kv !== undefined &&
+            prevState.loadedKvCacheDtype === null && {
+              kvCacheDtype: statusRes.cache_type_kv,
+              loadedKvCacheDtype: statusRes.cache_type_kv,
+            }),
+          ...(statusRes.chat_template !== undefined && {
+            defaultChatTemplate: statusRes.chat_template,
+          }),
+          ...(statusRes.chat_template_override !== undefined &&
+            prevState.loadedChatTemplateOverride === null &&
+            prevState.chatTemplateOverride === null && {
+              chatTemplateOverride: statusRes.chat_template_override,
+              loadedChatTemplateOverride: statusRes.chat_template_override,
+            }),
         });
 
         // Set reasoning default for Qwen3.5/3.6 small models
@@ -304,6 +332,7 @@ export function useChatModelRuntime() {
       } else {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
+          loadedIsMultimodal: false,
         });
       }
     } catch (error) {
@@ -507,7 +536,9 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
-              chatTemplateOverride: null,
+              chatTemplateOverride: chatTemplateOverride,
+              loadedChatTemplateOverride: chatTemplateOverride,
+              loadedIsMultimodal: isMultimodalResponse(loadResponse),
             });
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {

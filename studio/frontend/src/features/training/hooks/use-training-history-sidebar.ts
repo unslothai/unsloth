@@ -7,9 +7,47 @@ import type { TrainingRunSummary } from "../types/history";
 
 const SIDEBAR_LIMIT = 20;
 const RUNNING_POLL_MS = 5000;
+const RUNS_CACHE_KEY = "unsloth_training_runs_sidebar_cache";
+
+function isValidCachedRun(value: unknown): value is TrainingRunSummary {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.id === "string" &&
+    r.id.length > 0 &&
+    typeof r.status === "string" &&
+    typeof r.model_name === "string" &&
+    typeof r.dataset_name === "string" &&
+    typeof r.started_at === "string"
+  );
+}
+
+function loadCachedRuns(): TrainingRunSummary[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(RUNS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isValidCachedRun);
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedRuns(runs: TrainingRunSummary[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(RUNS_CACHE_KEY, JSON.stringify(runs));
+  } catch {
+    /* empty */
+  }
+}
 
 export function useTrainingHistorySidebarItems(enabled: boolean) {
-  const [items, setItems] = useState<TrainingRunSummary[]>([]);
+  const [items, setItems] = useState<TrainingRunSummary[]>(() =>
+    loadCachedRuns(),
+  );
   const [loaded, setLoaded] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const inFlightRef = useRef(false);
@@ -24,6 +62,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     try {
       const result = await listTrainingRuns(SIDEBAR_LIMIT, 0, controller.signal);
       setItems(result.runs);
+      saveCachedRuns(result.runs);
       setLoaded(true);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
@@ -52,5 +91,23 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     return () => clearInterval(timer);
   }, [enabled, hasRunning, fetchRuns]);
 
-  return { items, loaded, refresh: fetchRuns };
+  const applyRunUpdate = useCallback((updated: TrainingRunSummary) => {
+    setItems((prev) => {
+      const next = prev.map((run) =>
+        run.id === updated.id ? updated : run,
+      );
+      saveCachedRuns(next);
+      return next;
+    });
+  }, []);
+
+  const removeRun = useCallback((runId: string) => {
+    setItems((prev) => {
+      const next = prev.filter((run) => run.id !== runId);
+      saveCachedRuns(next);
+      return next;
+    });
+  }, []);
+
+  return { items, loaded, refresh: fetchRuns, applyRunUpdate, removeRun };
 }

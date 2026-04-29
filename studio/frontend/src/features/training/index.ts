@@ -23,6 +23,11 @@ export type {
   TrainingRunDetailResponse,
   TrainingRunDeleteResponse,
 } from "./types/history";
-export { listTrainingRuns, getTrainingRun, deleteTrainingRun } from "./api/history-api";
+export {
+  listTrainingRuns,
+  getTrainingRun,
+  deleteTrainingRun,
+  renameTrainingRun,
+} from "./api/history-api";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export { validateTrainingConfig } from "./lib/validation";

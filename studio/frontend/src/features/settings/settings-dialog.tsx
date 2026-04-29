@@ -93,7 +93,7 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-[32px] items-center gap-2.5 rounded-[8px] px-2.5 text-[14.5px] leading-[19px] tracking-[0.015em] dark:tracking-[0.03em] font-medium transition-colors",
+                      "relative flex h-[32px] items-center gap-2.5 rounded-[8px] px-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"

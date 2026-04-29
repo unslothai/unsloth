@@ -49,8 +49,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
-  Delete02Icon,
-  FloppyDiskIcon,
+  ArrowTurnBackwardIcon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
@@ -62,9 +61,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
@@ -87,28 +85,6 @@ interface LegacySystemPromptTemplate {
 
 const BUILTIN_PRESETS: Preset[] = [
   { name: "Default", params: { ...defaultInferenceParams } },
-  {
-    name: "Creative",
-    params: {
-      ...defaultInferenceParams,
-      temperature: 1.5,
-      topP: 1.0,
-      topK: 0,
-      minP: 0.1,
-      repetitionPenalty: 1.0,
-    },
-  },
-  {
-    name: "Precise",
-    params: {
-      ...defaultInferenceParams,
-      temperature: 0.1,
-      topP: 0.95,
-      topK: 80,
-      minP: 0.01,
-      repetitionPenalty: 1.0,
-    },
-  },
 ];
 
 const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
@@ -347,7 +323,7 @@ function getPresetSaveState({
 
 function InfoHint({ children }: { children: ReactNode }) {
   return (
-    <Tooltip delayDuration={0}>
+    <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -364,11 +340,91 @@ function InfoHint({ children }: { children: ReactNode }) {
       <TooltipContent
         side="left"
         sideOffset={8}
-        className="[&_span>svg]:hidden! duration-0 max-w-64 rounded-2xl border-transparent bg-black px-2 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md"
+        className="tooltip-compact [&_span>svg]:hidden! duration-0 max-w-64"
       >
         {children}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * Editable numeric value display.
+ *
+ * Renders as a single <input> that *looks* like text by default —
+ * transparent background, no border, no ring — and only shows a faint
+ * surface tint on hover/focus to signal editability. When unfocused,
+ * the input shows the formatted display string (`displayValue ?? value`,
+ * so labels like "Off" / "Max" still render); on focus, it switches to
+ * the raw numeric value, selects it, and accepts free text input.
+ * Commit happens on blur or Enter; Escape reverts. The clamp-to-range
+ * happens on commit so users can type intermediate values without the
+ * input fighting them mid-keystroke. Single component shared by every
+ * slider value and the Context Length input so the click-to-edit
+ * affordance is consistent across the panel.
+ */
+function NumericValueInput({
+  value,
+  min,
+  max,
+  onChange,
+  displayValue,
+  className,
+  ariaLabel,
+  size: sizeAttr,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  onChange: (v: number) => void;
+  displayValue?: string;
+  className?: string;
+  ariaLabel?: string;
+  size?: number;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const commit = (raw: string) => {
+    const parsed = Number.parseFloat(raw);
+    if (Number.isNaN(parsed)) return;
+    const lo = min ?? Number.NEGATIVE_INFINITY;
+    const hi = max ?? Number.POSITIVE_INFINITY;
+    const clamped = Math.min(Math.max(parsed, lo), hi);
+    if (clamped !== value) {
+      onChange(clamped);
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      size={sizeAttr}
+      value={focused ? draft : (displayValue ?? String(value))}
+      aria-label={ariaLabel}
+      onFocus={(e) => {
+        setDraft(String(value));
+        setFocused(true);
+        // Defer the select() so it runs after the value swap above.
+        const target = e.currentTarget;
+        requestAnimationFrame(() => target.select());
+      }}
+      onBlur={() => {
+        commit(draft);
+        setFocused(false);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.currentTarget.blur();
+        } else if (e.key === "Escape") {
+          setDraft(String(value));
+          e.currentTarget.blur();
+        }
+      }}
+      className={cn("panel-number-input", className)}
+    />
   );
 }
 
@@ -380,6 +436,7 @@ function ParamSlider({
   step,
   onChange,
   displayValue,
+  info,
 }: {
   label: string;
   value: number;
@@ -388,16 +445,26 @@ function ParamSlider({
   step: number;
   onChange: (v: number) => void;
   displayValue?: string;
+  info?: ReactNode;
 }) {
   return (
-    <div className="space-y-2">
+    <div className="space-y-3.5">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
-          {label}
-        </span>
-        <span className="text-[13px] font-medium tabular-nums text-[#383835] dark:text-[#9a9a9d]">
-          {displayValue ?? value}
-        </span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+            {label}
+          </span>
+          {info && <InfoHint>{info}</InfoHint>}
+        </div>
+        <NumericValueInput
+          value={value}
+          min={min}
+          max={max}
+          onChange={onChange}
+          displayValue={displayValue}
+          ariaLabel={label}
+          size={6}
+        />
       </div>
       <Slider
         min={min}
@@ -405,7 +472,7 @@ function ParamSlider({
         step={step}
         value={[value]}
         onValueChange={([v]) => onChange(v)}
-        className="[&_[data-slot=slider-track]]:!h-1 [&_[data-slot=slider-track]]:!bg-black/10 dark:[&_[data-slot=slider-track]]:!bg-white/[0.08] [&_.bg-primary]:!bg-[#8a8a8c] dark:[&_.bg-primary]:!bg-[#8d8d90] [&_[data-slot=slider-thumb]]:!size-3.5 [&_[data-slot=slider-thumb]]:!bg-[#8a8a8c] [&_[data-slot=slider-thumb]]:!shadow-none dark:[&_[data-slot=slider-thumb]]:!bg-[#8d8d90]"
+        className="panel-slider"
       />
     </div>
   );
@@ -479,32 +546,18 @@ function CollapsibleSection({
           saveCollapsibleOpen(label, next);
         }}
         className={cn(
-          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-[#74726a] dark:text-[#808185] transition-colors hover:text-[#4f4d48] dark:hover:text-[#b0b1b4] focus-visible:outline-none focus-visible:ring-0",
-          first ? "pt-2.5 pb-4" : "py-4",
+          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors hover:text-nav-fg focus-visible:outline-none focus-visible:ring-0",
+          first ? "pt-4 pb-5" : "py-5",
         )}
       >
         <span className="leading-none">{label}</span>
-        <motion.span
-          animate={{ rotate: open ? 0 : -90 }}
-          transition={{ duration: 0.2 }}
-          className="flex shrink-0 items-center leading-none"
-        >
-          <ChevronDown className="size-3.5" />
-        </motion.span>
+        <span className="flex shrink-0 items-center leading-none">
+          <ChevronDown
+            className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+          />
+        </span>
       </button>
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: "easeInOut" }}
-            className="overflow-hidden"
-          >
-            <div className="pt-2 pb-4">{children}</div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {open && <div className="pb-7">{children}</div>}
     </div>
   );
 }
@@ -526,18 +579,21 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const hasModelContent = isGguf || Boolean(params.checkpoint);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
   const loadedSpeculativeType = useChatRuntimeStore(
     (s) => s.loadedSpeculativeType,
   );
-  const currentModels = useChatRuntimeStore((s) => s.models);
   const modelRequiresTrustRemoteCode = useChatRuntimeStore(
     (s) => s.modelRequiresTrustRemoteCode,
   );
   const currentCheckpoint = params.checkpoint;
-  const currentModelIsVision =
-    currentModels.find((m) => m.id === currentCheckpoint)?.isVision ?? false;
+  const currentModelIsMultimodal = useChatRuntimeStore((s) => {
+    if (s.loadedIsMultimodal) return true;
+    const m = s.models.find((m) => m.id === currentCheckpoint);
+    return Boolean(m?.isVision) || Boolean(m?.isAudio);
+  });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
@@ -559,6 +615,16 @@ export function ChatSettingsPanel({
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const modelSettingsDirty = kvDirty || ctxDirty || specDirty;
+  const chatTemplateOverride = useChatRuntimeStore(
+    (s) => s.chatTemplateOverride,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
+  const setChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.setChatTemplateOverride,
+  );
+  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
@@ -568,10 +634,6 @@ export function ChatSettingsPanel({
   const [presetNameInput, setPresetNameInput] = useState(() =>
     loadSavedActivePreset(),
   );
-  const presetControlRowRef = useRef<HTMLDivElement>(null);
-  const [presetMenuWidthPx, setPresetMenuWidthPx] = useState<
-    number | undefined
-  >(undefined);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const presets = useMemo(() => {
@@ -763,29 +825,17 @@ export function ChatSettingsPanel({
     }
   }, [open]);
 
-  useLayoutEffect(() => {
-    const el = presetControlRowRef.current;
-    if (!el || !open) return;
-    const measure = () => {
-      setPresetMenuWidthPx(el.getBoundingClientRect().width);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [open]);
-
   const settingsContent = (
     <>
       <div className="aui-thread-viewport relative h-full overflow-y-auto">
-      <div className="sticky top-0 z-10 flex h-[48px] items-center gap-2 pl-[18px] pr-[14px] backdrop-blur">
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[14px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-[#383835] dark:text-[#9a9a9d]">
+          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
             Configuration
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-[#383835] dark:text-[#9a9a9d]">
+            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
               Configuration
             </span>
             <Tooltip>
@@ -793,7 +843,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[10px] text-[#8f8f8f] dark:text-[#5c5c5c] transition-colors hover:bg-[#ebebeb] dark:hover:bg-[#3a3c42] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close configuration"
                 >
                   <HugeiconsIcon
@@ -803,7 +853,11 @@ export function ChatSettingsPanel({
                   />
                 </button>
               </TooltipPrimitive.Trigger>
-              <TooltipContent side="bottom" sideOffset={6}>
+              <TooltipContent
+                side="bottom"
+                sideOffset={6}
+                className="tooltip-compact"
+              >
                 Close configuration
               </TooltipContent>
             </Tooltip>
@@ -812,45 +866,31 @@ export function ChatSettingsPanel({
       </div>
 
       <div className="px-[18px] pt-3">
+        {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
           <div className="flex flex-col gap-4 pt-1">
             {isGguf && (
               <>
-                <div className="space-y-2">
+                <div className="space-y-3.5">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
                       Context Length
                     </span>
-                    <Input
-                      type="number"
+                    <NumericValueInput
                       value={
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? "")
+                          : (ggufContextLength ?? 0)
                       }
-                      placeholder="..."
                       min={128}
                       max={ctxMaxValue ?? undefined}
-                      step={1024}
-                      className="h-7 w-[86px] rounded-full px-2.5 text-right text-[13px]! font-medium tabular-nums text-[#383835] focus-visible:ring-[1px] md:text-[13px]! dark:text-[#9a9a9d] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
-                          setCustomContextLength(null);
-                          return;
-                        }
-                        const v = Number.parseInt(raw, 10);
-                        if (!Number.isNaN(v) && v >= 0) {
-                          const maxCtx =
-                            ctxMaxValue ?? Number.POSITIVE_INFINITY;
-                          const clamped = Math.min(v, maxCtx);
-                          setCustomContextLength(
-                            clamped === (ggufContextLength ?? 0)
-                              ? null
-                              : clamped,
-                          );
-                        }
+                      onChange={(v) => {
+                        setCustomContextLength(
+                          v === (ggufContextLength ?? 0) ? null : v,
+                        );
                       }}
+                      ariaLabel="Context Length"
+                      size={8}
                     />
                   </div>
                   <Slider
@@ -870,7 +910,7 @@ export function ChatSettingsPanel({
                         v === (ggufContextLength ?? 0) ? null : v,
                       );
                     }}
-                    className="[&_[data-slot=slider-track]]:!h-1 [&_[data-slot=slider-track]]:!bg-black/10 dark:[&_[data-slot=slider-track]]:!bg-white/[0.08] [&_.bg-primary]:!bg-[#8a8a8c] dark:[&_.bg-primary]:!bg-[#8d8d90] [&_[data-slot=slider-thumb]]:!size-3.5 [&_[data-slot=slider-thumb]]:!bg-[#8a8a8c] [&_[data-slot=slider-thumb]]:!shadow-none dark:[&_[data-slot=slider-thumb]]:!bg-[#8d8d90]"
+                    className="panel-slider"
                   />
                   {ggufMaxContextLength != null &&
                     typeof ctxDisplayValue === "number" &&
@@ -883,21 +923,32 @@ export function ChatSettingsPanel({
                     )}
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
-                    KV Cache Dtype
-                  </span>
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      KV Cache Dtype
+                    </span>
+                    <InfoHint>
+                      Lower KV cache precision to save VRAM at the cost of some
+                      quality. f16/bf16 are full precision; q8_0/q5_1/q4_1 are
+                      quantized.
+                    </InfoHint>
+                  </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <InfoHint>Quantize KV cache to reduce VRAM.</InfoHint>
                     <Select
                       value={kvCacheDtype ?? "f16"}
                       onValueChange={(v) => {
                         setKvCacheDtype(v === "f16" ? null : v);
                       }}
                     >
-                      <SelectTrigger className="grid h-7 w-[72px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full px-2.5 py-0 text-[13px]! font-medium text-[#383835] focus-visible:ring-[1px] dark:text-[#9a9a9d] [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0">
+                      <SelectTrigger
+                        animateRadius={false}
+                        icon={ArrowDown01Icon}
+                        iconClassName="size-3.5"
+                        className="grid h-7 w-[60px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                      >
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
                         <SelectItem value="f16">f16</SelectItem>
                         <SelectItem value="bf16">bf16</SelectItem>
                         <SelectItem value="q8_0">q8_0</SelectItem>
@@ -907,45 +958,24 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
-                {!currentModelIsVision && (
+                {!currentModelIsMultimodal && (
                   <div className="flex items-center justify-between gap-3">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
-                      Speculative Decoding
-                    </span>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <InfoHint>Speed up generation with no VRAM cost.</InfoHint>
-                      <Switch
-                        checked={speculativeType != null}
-                        onCheckedChange={(checked) => {
-                          setSpeculativeType(checked ? "ngram-mod" : null);
-                        }}
-                      />
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        Speculative Decoding
+                      </span>
+                      <InfoHint>
+                        N-gram speculation; faster generation with negligible
+                        VRAM overhead. Text-only models.
+                      </InfoHint>
                     </div>
-                  </div>
-                )}
-                {modelSettingsDirty && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    <Button
-                      type="button"
-                      onClick={() => onReloadModel?.()}
-                      size="sm"
-                      className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] bg-primary/92 text-primary-foreground hover:bg-primary"
-                    >
-                      Apply
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setCustomContextLength(null);
-                        setKvCacheDtype(loadedKvCacheDtype);
-                        setSpeculativeType(loadedSpeculativeType);
+                    <Switch
+                      className="panel-switch shrink-0"
+                      checked={speculativeType != null}
+                      onCheckedChange={(checked) => {
+                        setSpeculativeType(checked ? "ngram-mod" : null);
                       }}
-                      className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground"
-                    >
-                      Reset
-                    </Button>
+                    />
                   </div>
                 )}
               </>
@@ -953,19 +983,20 @@ export function ChatSettingsPanel({
             {!isGguf && params.checkpoint && (
               <>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
-                    Enable custom code
-                  </span>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Enable custom code
+                    </span>
                     <InfoHint>
-                      Allow models with custom code (e.g. Nemotron). Only
-                      enable if sure.
+                      Run custom Python from the model repo (e.g. Nemotron).
+                      Only enable for trusted sources.
                     </InfoHint>
-                    <Switch
-                      checked={params.trustRemoteCode ?? false}
-                      onCheckedChange={set("trustRemoteCode")}
-                    />
                   </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={params.trustRemoteCode ?? false}
+                    onCheckedChange={set("trustRemoteCode")}
+                  />
                 </div>
                 {trustRemoteCodeMissing && (
                   <Alert className="rounded-[14px] border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
@@ -981,80 +1012,108 @@ export function ChatSettingsPanel({
                 )}
               </>
             )}
+            <ChatTemplateFields />
+            {(modelSettingsDirty || templateDirty) && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <Button
+                  type="button"
+                  onClick={() => onReloadModel?.()}
+                  size="sm"
+                  className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                >
+                  Apply
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setCustomContextLength(null);
+                    setKvCacheDtype(loadedKvCacheDtype);
+                    setSpeculativeType(loadedSpeculativeType);
+                    setChatTemplateOverride(loadedChatTemplateOverride);
+                  }}
+                  className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
+                >
+                  Reset
+                </Button>
+              </div>
+            )}
           </div>
         </CollapsibleSection>
+        )}
 
-        <CollapsibleSection label="Preset" defaultOpen={true}>
-          <div className="flex flex-col gap-2 pt-1">
-            <div ref={presetControlRowRef} className="w-full min-w-0">
-              <DropdownMenu>
-                <InputGroup className="!h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full border-input bg-input/30 pr-0 transition-colors focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-ring has-[[data-slot=input-group-control]:focus-visible]:ring-ring/40 has-[[data-slot=input-group-control]:focus-visible]:ring-[1px] has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
-                  <InputGroupInput
-                    id="inference-preset-name"
-                    value={presetNameInput}
-                    onChange={(e) => setPresetNameInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && presetSaveState.canSubmit) {
-                        e.preventDefault();
-                        savePresetWithName(presetNameInput);
-                      }
-                    }}
-                    placeholder="Preset name"
-                    maxLength={80}
-                    autoComplete="off"
-                    className={cn(
-                      "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 text-[13px] font-medium leading-none text-[#383835] dark:text-[#9a9a9d] md:text-[13px]",
-                      presetSaveState.isSaveReady &&
-                        "placeholder:text-primary/50",
-                    )}
-                    aria-label="Inference preset name"
-                  />
-                  <InputGroupAddon
-                    align="inline-end"
-                    className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0"
-                  >
-                    <DropdownMenuTrigger asChild={true}>
-                      <InputGroupButton
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center rounded-full border-0 px-0 text-[#a0a097] dark:text-[#9a9a9d] transition-colors hover:bg-[#ebebeb] hover:text-black dark:hover:bg-[#3a3c42] dark:hover:text-white data-[state=open]:bg-[#ebebeb] data-[state=open]:text-black dark:data-[state=open]:bg-[#3a3c42] dark:data-[state=open]:text-white"
-                        title="Choose a preset"
-                        aria-label="Open preset list"
+        <CollapsibleSection
+          label="Preset"
+          defaultOpen={true}
+          first={!hasModelContent}
+        >
+          <div className="flex flex-col gap-3 pt-1">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <div
+                  className="w-full min-w-0 cursor-pointer outline-none focus-visible:outline-none"
+                  aria-label="Open preset list"
+                >
+                  <InputGroup className="panel-input-group">
+                    <InputGroupInput
+                      id="inference-preset-name"
+                      value={presetNameInput}
+                      onChange={(e) => setPresetNameInput(e.target.value)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && presetSaveState.canSubmit) {
+                          e.preventDefault();
+                          savePresetWithName(presetNameInput);
+                        }
+                        e.stopPropagation();
+                      }}
+                      placeholder="Preset name"
+                      maxLength={80}
+                      autoComplete="off"
+                      className={cn(
+                        "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-[13px] font-medium leading-9 text-nav-fg md:text-[13px]",
+                        presetSaveState.isSaveReady &&
+                          "placeholder:text-primary/50",
+                      )}
+                      aria-label="Inference preset name"
+                    />
+                    <InputGroupAddon
+                      align="inline-end"
+                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0"
+                    >
+                      <span
+                        className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
+                        aria-hidden="true"
                       >
                         <HugeiconsIcon
                           icon={ArrowDown01Icon}
                           className="size-3.5"
                           strokeWidth={2}
                         />
-                      </InputGroupButton>
-                    </DropdownMenuTrigger>
-                  </InputGroupAddon>
-                </InputGroup>
-                <DropdownMenuContent
-                  align="end"
-                  className="min-w-40 max-w-none"
-                  style={
-                    presetMenuWidthPx != null
-                      ? {
-                          width: presetMenuWidthPx,
-                          minWidth: presetMenuWidthPx,
-                        }
-                      : undefined
-                  }
-                >
-                  {presets.map((p) => (
-                    <DropdownMenuItem
-                      key={p.name}
-                      onSelect={() => applyPreset(p.name)}
-                    >
-                      {p.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5">
+                      </span>
+                    </InputGroupAddon>
+                  </InputGroup>
+                </div>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                sideOffset={6}
+                className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
+              >
+                {presets.map((p) => (
+                  <DropdownMenuItem
+                    key={p.name}
+                    onSelect={() => applyPreset(p.name)}
+                    className="flex min-h-9 items-center px-3 py-0 text-[13px] font-medium leading-[1.4] tracking-nav"
+                  >
+                    {p.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <div className="grid grid-cols-2 gap-3">
               <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
@@ -1062,18 +1121,13 @@ export function ChatSettingsPanel({
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
-                  "h-9 w-full text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em]",
+                  "h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary/92 text-primary-foreground hover:bg-primary",
                 )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
               >
-                <HugeiconsIcon
-                  icon={FloppyDiskIcon}
-                  strokeWidth={1.75}
-                  className="mr-1 size-[15px] shrink-0"
-                />
                 {presetSaveState.buttonLabel}
               </Button>
               <Button
@@ -1082,7 +1136,7 @@ export function ChatSettingsPanel({
                 disabled={!activeCustomPreset}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full text-[13px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground"
+                className="h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1091,11 +1145,6 @@ export function ChatSettingsPanel({
                     : "No saved override to delete"
                 }
               >
-                <HugeiconsIcon
-                  icon={Delete02Icon}
-                  strokeWidth={1.75}
-                  className="mr-1 size-[15px] shrink-0"
-                />
                 Delete
               </Button>
             </div>
@@ -1106,12 +1155,11 @@ export function ChatSettingsPanel({
           <button
             type="button"
             onClick={openSystemPromptEditor}
-            title="Edit system prompt"
             aria-label="Edit system prompt"
             className={cn(
-              "mt-1 flex w-full min-h-20 cursor-pointer items-start rounded-[14px] border border-input bg-input/30 px-3 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle transition-colors hover:bg-input/50 focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
+              "panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40",
               params.systemPrompt
-                ? "text-[#383835] dark:text-[#9a9a9d]"
+                ? "text-nav-fg"
                 : "text-muted-foreground",
             )}
           >
@@ -1129,8 +1177,9 @@ export function ChatSettingsPanel({
               value={params.temperature}
               min={0}
               max={2}
-              step={0.1}
+              step={0.01}
               onChange={set("temperature")}
+              info="Controls randomness. Lower values make output focused and deterministic; higher values increase variety and creativity."
             />
             <ParamSlider
               label="Top P"
@@ -1140,6 +1189,7 @@ export function ChatSettingsPanel({
               step={0.05}
               onChange={set("topP")}
               displayValue={params.topP === 1 ? "Off" : undefined}
+              info="Nucleus sampling. Restricts choices to the smallest set of tokens whose cumulative probability reaches this threshold. 1.0 = off."
             />
             <ParamSlider
               label="Top K"
@@ -1149,6 +1199,7 @@ export function ChatSettingsPanel({
               step={1}
               onChange={set("topK")}
               displayValue={params.topK === 0 ? "Off" : undefined}
+              info="Limits sampling to the K most likely tokens at each step. 0 = off."
             />
             <ParamSlider
               label="Min P"
@@ -1157,6 +1208,7 @@ export function ChatSettingsPanel({
               max={1}
               step={0.01}
               onChange={set("minP")}
+              info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
             />
             <ParamSlider
               label="Repetition Penalty"
@@ -1166,6 +1218,7 @@ export function ChatSettingsPanel({
               step={0.05}
               onChange={set("repetitionPenalty")}
               displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
+              info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off; higher values penalize more strongly."
             />
             <ParamSlider
               label="Presence Penalty"
@@ -1175,6 +1228,7 @@ export function ChatSettingsPanel({
               step={0.1}
               onChange={set("presencePenalty")}
               displayValue={params.presencePenalty === 0 ? "Off" : undefined}
+              info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
             />
             {!isGguf && (
               <ParamSlider
@@ -1184,6 +1238,7 @@ export function ChatSettingsPanel({
                 max={32768}
                 step={128}
                 onChange={set("maxSeqLength")}
+                info="Maximum context window size in tokens — input prompt plus generated output combined. Capped by the model's trained limit."
               />
             )}
             <ParamSlider
@@ -1200,19 +1255,18 @@ export function ChatSettingsPanel({
                   ? "Max"
                   : undefined
               }
+              info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
           </div>
         </CollapsibleSection>
 
         <CollapsibleSection label="Tools">
-          <div className="flex flex-col gap-4 pt-1">
+          <div className="flex flex-col gap-5 pt-1">
             <AutoHealToolCallsToggle />
             <MaxToolCallsSlider />
             <ToolCallTimeoutSlider />
           </div>
         </CollapsibleSection>
-
-        <ChatTemplateSection onReloadModel={onReloadModel} />
       </div>
       </div>
       <Dialog
@@ -1245,7 +1299,7 @@ export function ChatSettingsPanel({
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle focus-visible:border-input focus-visible:ring-0"
               rows={14}
             />
           </div>
@@ -1289,9 +1343,9 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-background font-heading ${open ? "w-[17rem]" : "w-0"}`}
+      className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
     >
-      <div className="h-full w-[17rem]">{settingsContent}</div>
+      <div className="h-full w-full">{settingsContent}</div>
     </aside>
   );
 }
@@ -1316,6 +1370,7 @@ function MaxToolCallsSlider() {
       displayValue={
         sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined
       }
+      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
     />
   );
 }
@@ -1343,6 +1398,7 @@ function ToolCallTimeoutSlider() {
       step={1}
       onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
       displayValue={displayValue}
+      info="Per-call wall-clock limit. Long-running tool executions are terminated when this elapses; the model continues with what completed."
     />
   );
 }
@@ -1355,70 +1411,132 @@ function AutoHealToolCallsToggle() {
 
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-[0.015em] dark:tracking-[0.03em] text-[#383835] dark:text-[#9a9a9d]">
-        Auto Heal Tool Calls 🦥
-      </span>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Auto-Healing Tool Calls
+        </span>
         <InfoHint>
-          Fix malformed tool calls from the model automatically.
+          Unsloth auto-fixes broken tool calls so inference output is never
+          broken.
         </InfoHint>
-        <Switch
-          checked={autoHealToolCalls}
-          onCheckedChange={setAutoHealToolCalls}
-        />
       </div>
+      <Switch
+        className="panel-switch"
+        checked={autoHealToolCalls}
+        onCheckedChange={setAutoHealToolCalls}
+      />
     </div>
   );
 }
 
-function ChatTemplateSection({
-  onReloadModel,
-}: {
-  onReloadModel?: () => void;
-}) {
+function ChatTemplateFields() {
   const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
   const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
   const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [draft, setDraft] = useState("");
 
   if (!defaultTemplate) return null;
 
   const displayValue = override ?? defaultTemplate;
   const isModified = override !== null;
+  const draftDirty = draft !== displayValue;
+
+  const openEditor = () => {
+    setDraft(displayValue);
+    setEditorOpen(true);
+  };
+  const saveEditor = () => {
+    setOverride(draft === defaultTemplate ? null : draft);
+    setEditorOpen(false);
+  };
 
   return (
-    <CollapsibleSection label="Chat Template">
-      <div className="flex flex-col gap-2 pt-1">
-        <Textarea
-          value={displayValue}
-          onChange={(e) => setOverride(e.target.value)}
-          className="min-h-32 max-h-64 overflow-y-auto rounded-[14px] border-input bg-input/30 px-3 py-2.5 font-mono text-[10.5px] font-medium leading-relaxed md:text-[10.5px] corner-squircle focus-visible:ring-[1px]"
-          rows={6}
-          spellCheck={false}
-        />
-        {isModified && (
-          <div className="flex flex-wrap gap-1.5 pt-0.5">
-            <Button
-              type="button"
-              onClick={() => {
-                onReloadModel?.();
-              }}
-              size="sm"
-              className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] bg-primary/92 text-primary-foreground hover:bg-primary"
-            >
-              Apply & Reload
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setOverride(null)}
-              className="h-7 px-3 text-[12px] font-medium tracking-[0.015em] dark:tracking-[0.03em] text-muted-foreground"
-            >
-              Revert changes
-            </Button>
-          </div>
-        )}
+    <>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[13px] font-medium tracking-nav text-nav-fg">
+            Chat Template
+          </span>
+          {isModified && (
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={() => setOverride(null)}
+                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  aria-label="Revert chat template"
+                >
+                  <HugeiconsIcon
+                    icon={ArrowTurnBackwardIcon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent
+                side="top"
+                sideOffset={6}
+                className="tooltip-compact"
+              >
+                Revert changes
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={openEditor}
+          aria-label="Edit chat template"
+          className="panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40"
+        >
+          <span className="block line-clamp-3 whitespace-pre-wrap break-words">
+            {displayValue}
+          </span>
+        </button>
       </div>
-    </CollapsibleSection>
+      <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
+        <DialogContent
+          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
+          <DialogHeader>
+            <DialogTitle>Edit Chat Template</DialogTitle>
+            <DialogDescription>
+              Override the model's chat template. The change applies on the
+              next model reload.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <div className="space-y-0.5 px-0.5">
+              <div className="text-[11px] font-medium">Template editor</div>
+              <p className="text-[11px] text-muted-foreground">
+                Jinja syntax. Save matching the default clears the override.
+              </p>
+            </div>
+            <Textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              fieldSizing="fixed"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto font-mono text-xs leading-5 corner-squircle focus-visible:border-input focus-visible:ring-0"
+              rows={14}
+              spellCheck={false}
+            />
+          </div>
+          <DialogFooter className="flex-wrap gap-2 sm:justify-between">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setEditorOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
