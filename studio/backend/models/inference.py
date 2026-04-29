@@ -396,7 +396,10 @@ class ChatMessage(BaseModel):
         if self.name is not None and self.role != "tool":
             raise ValueError('"name" is only valid on role="tool" messages.')
 
-        # Per-role content requirements.
+        # Per-role content requirements. OpenAI-compatible clients may send
+        # ``content=""`` for image-only turns when the image travels in a
+        # companion field such as Studio's ``image_base64`` extension, so treat
+        # empty strings as present content for user/system messages.
         if self.role == "tool":
             if not self.tool_call_id:
                 raise ValueError(
@@ -411,10 +414,8 @@ class ChatMessage(BaseModel):
                     'role="assistant" messages require either "content" or "tool_calls".'
                 )
         else:  # "user" | "system"
-            if not self.content:
-                raise ValueError(
-                    f'role="{self.role}" messages require non-empty "content".'
-                )
+            if self.content is None or self.content == []:
+                raise ValueError(f'role="{self.role}" messages require "content".')
         return self
 
 
