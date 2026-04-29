@@ -6,12 +6,6 @@
 # Usage (no-torch): ./install.sh --no-torch  (skip PyTorch, GGUF-only mode)
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 # Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
-#
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
-#   UNSLOTH_STUDIO_HOME=/abs/path  -> install under that path
-#   STUDIO_HOME=/abs/path          -> alias, same effect (UNSLOTH_STUDIO_HOME wins)
-#   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append.)
-# Default ($HOME/.unsloth/studio) is preserved when no env var is set.
 set -e
 
 # ── Output style (aligned with studio/setup.sh) ──
@@ -70,56 +64,6 @@ done
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
-fi
-
-# Custom Studio roots are not supported with --tauri (desktop app still
-# resolves ~/.unsloth/studio). Pass through if the override == legacy default.
-if [ "$TAURI_MODE" = true ]; then
-    _tauri_override_var=""
-    _tauri_override="${UNSLOTH_STUDIO_HOME:-}"
-    if [ -n "$_tauri_override" ]; then
-        _tauri_override_var="UNSLOTH_STUDIO_HOME"
-    else
-        _tauri_override="${STUDIO_HOME:-}"
-        [ -n "$_tauri_override" ] && _tauri_override_var="STUDIO_HOME"
-    fi
-    # Strip whitespace so " " is treated as unset (matches Python .strip()).
-    _tauri_override=$(printf '%s' "$_tauri_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    if [ -n "$_tauri_override" ]; then
-        case "$_tauri_override" in
-            "~") _tauri_override="$HOME" ;;
-            "~/"*) _tauri_override="$HOME/${_tauri_override#'~/'}" ;;
-        esac
-        # Canonicalize both sides (CDPATH=, -P) so a CDPATH-set env or
-        # symlinked $HOME doesn't break the legacy-equality comparison.
-        if [ -d "$_tauri_override" ]; then
-            _tauri_override_abs=$(CDPATH= cd -P -- "$_tauri_override" 2>/dev/null && pwd -P) \
-                || _tauri_override_abs="$_tauri_override"
-        else
-            _tauri_override_abs="$_tauri_override"
-        fi
-        # Strip trailing separators so ".../studio/" matches ".../studio".
-        while [ "$_tauri_override_abs" != "/" ] \
-            && [ "${_tauri_override_abs%/}" != "$_tauri_override_abs" ]; do
-            _tauri_override_abs=${_tauri_override_abs%/}
-        done
-        _tauri_legacy_root="$HOME/.unsloth/studio"
-        if [ -d "$_tauri_legacy_root" ]; then
-            _tauri_legacy_root=$(CDPATH= cd -P -- "$_tauri_legacy_root" 2>/dev/null && pwd -P) \
-                || _tauri_legacy_root="$HOME/.unsloth/studio"
-        fi
-        while [ "$_tauri_legacy_root" != "/" ] \
-            && [ "${_tauri_legacy_root%/}" != "$_tauri_legacy_root" ]; do
-            _tauri_legacy_root=${_tauri_legacy_root%/}
-        done
-        if [ "$_tauri_override_abs" != "$_tauri_legacy_root" ]; then
-            echo "ERROR: $_tauri_override_var is not supported with --tauri." >&2
-            echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
-            echo "       Run install.sh without --tauri for custom-root shell installs," >&2
-            echo "       or unset the env var for default desktop installs." >&2
-            exit 1
-        fi
-    fi
 fi
 
 _is_verbose() {
@@ -218,179 +162,9 @@ tauri_log() {
     fi
 }
 
-tauri_diag_marker() {
-    _diag_gpu_branch="${1:-unknown}"
-    _diag_torch_index_family="${2:-none}"
-    tauri_log "DIAG" "diag_schema=1 platform=${OS:-unknown} arch=${_ARCH:-unknown} python_version=${PYTHON_VERSION:-unknown} skip_torch=${SKIP_TORCH:-false} mac_intel=${MAC_INTEL:-false} gpu_branch=${_diag_gpu_branch} torch_index_family=${_diag_torch_index_family}"
-}
-
-_tauri_torch_index_family() {
-    if [ "${SKIP_TORCH:-false}" = true ]; then
-        echo "none"
-        return
-    fi
-    _diag_url="${1:-}"
-    case "$_diag_url" in
-        */cu118) echo "cu118" ;;
-        */cu124) echo "cu124" ;;
-        */cu126) echo "cu126" ;;
-        */cu128) echo "cu128" ;;
-        */cu130) echo "cu130" ;;
-        */cpu) echo "cpu" ;;
-        */rocm[0-9]*.[0-9]*)
-            _diag_family=${_diag_url##*/}
-            case "$_diag_family" in
-                rocm[0-9]*.[0-9]*) echo "$_diag_family" ;;
-                *) echo "auto" ;;
-            esac ;;
-        "") echo "none" ;;
-        *) echo "auto" ;;
-    esac
-}
-
-_tauri_gpu_branch() {
-    _diag_family="${1:-unknown}"
-    _diag_radeon="${2:-false}"
-    if [ "${SKIP_TORCH:-false}" = true ]; then
-        echo "no_torch"
-        return
-    fi
-    if [ "${OS:-}" = "macos" ]; then
-        echo "mac"
-        return
-    fi
-    case "$_diag_family" in
-        cu*) echo "cuda" ;;
-        rocm*)
-            if [ "$_diag_radeon" = true ]; then
-                echo "rocm_radeon"
-            else
-                echo "rocm"
-            fi ;;
-        radeon) echo "rocm_radeon" ;;
-        cpu) echo "cpu" ;;
-        none) echo "no_torch" ;;
-        *) echo "unknown" ;;
-    esac
-}
-
 PYTHON_VERSION=""  # resolved after platform detection
-
-# Resolve install destinations: env override, HOME-redirect (best-effort
-# via getent/dscl), or default. Env-var priority: UNSLOTH_STUDIO_HOME wins
-# over STUDIO_HOME (the more specific signal beats the generic alias).
-_resolve_studio_destinations() {
-    _override_var=""
-    _override="${UNSLOTH_STUDIO_HOME:-}"
-    if [ -n "$_override" ]; then
-        _override_var="UNSLOTH_STUDIO_HOME"
-    else
-        _override="${STUDIO_HOME:-}"
-        [ -n "$_override" ] && _override_var="STUDIO_HOME"
-    fi
-    # Strip surrounding whitespace so " " is treated as unset (matches the
-    # Python resolvers' .strip()), preventing install/runtime layout drift.
-    _override=$(printf '%s' "$_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    # Tilde expansion: env vars are not subject to it when quoted on assignment.
-    case "$_override" in
-        "~") _override="$HOME" ;;
-        "~/"*) _override="$HOME/${_override#'~/'}" ;;
-    esac
-    if [ -n "$_override" ]; then
-        mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: $_override_var=$_override cannot be created." >&2; exit 1; }
-        [ -w "$_override" ] || { echo "ERROR: $_override_var=$_override is not writable." >&2; exit 1; }
-        STUDIO_HOME="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
-        DATA_DIR="$STUDIO_HOME/share"
-        _LOCAL_BIN="$STUDIO_HOME/bin"
-        _STUDIO_HOME_REDIRECT=env
-        substep "custom $_override_var=$STUDIO_HOME"
-        return 0
-    fi
-    _default_home=""
-    if command -v getent >/dev/null 2>&1; then
-        _default_home=$(getent passwd "${USER:-$(whoami)}" 2>/dev/null | cut -d: -f6)
-    elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
-        _default_home=$(dscl . -read "/Users/${USER:-$(whoami)}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
-    fi
-    # Canonicalize both sides so a trailing slash on $HOME (or symlink mismatch
-    # with passwd-DB output) doesn't misfire the redirection branch.
-    _home_canon="$HOME"
-    if [ -d "$_home_canon" ]; then
-        _home_canon=$(CDPATH= cd -P -- "$_home_canon" 2>/dev/null && pwd -P) || _home_canon="$HOME"
-    fi
-    _default_home_canon="$_default_home"
-    if [ -n "$_default_home_canon" ] && [ -d "$_default_home_canon" ]; then
-        _default_home_canon=$(CDPATH= cd -P -- "$_default_home_canon" 2>/dev/null && pwd -P) || _default_home_canon="$_default_home"
-    fi
-    if [ -n "$_default_home_canon" ] && [ "$_home_canon" != "$_default_home_canon" ]; then
-        STUDIO_HOME="$HOME/.unsloth/studio"
-        DATA_DIR="$HOME/.local/share/unsloth"
-        _LOCAL_BIN="$HOME/.local/bin"
-        _STUDIO_HOME_REDIRECT=home
-        substep "HOME redirected ($HOME); install follows \$HOME"
-        return 0
-    fi
-    STUDIO_HOME="$HOME/.unsloth/studio"
-    DATA_DIR="$HOME/.local/share/unsloth"
-    _LOCAL_BIN="$HOME/.local/bin"
-    _STUDIO_HOME_REDIRECT=default
-}
-_resolve_studio_destinations
+STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
-_VENV_ROLLBACK_DIR=""
-_VENV_ROLLBACK_TARGET="$VENV_DIR"
-_VENV_ROLLBACK_ACTIVE=false
-
-_start_studio_venv_replacement() {
-    _existing_dir="$1"
-    _stamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo "time")
-    _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$"
-    _suffix=0
-    while [ -e "$_candidate" ]; do
-        _suffix=$((_suffix + 1))
-        _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$.$_suffix"
-    done
-    mv "$_existing_dir" "$_candidate"
-    _VENV_ROLLBACK_DIR="$_candidate"
-    _VENV_ROLLBACK_TARGET="$_existing_dir"
-    _VENV_ROLLBACK_ACTIVE=true
-    substep "previous environment preserved for rollback"
-}
-
-_restore_studio_venv_replacement() {
-    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
-    [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ] || {
-        _VENV_ROLLBACK_ACTIVE=false
-        return 0
-    }
-    substep "restoring previous environment after failed install..." "$C_WARN"
-    rm -rf "$_VENV_ROLLBACK_TARGET"
-    if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
-        substep "restored previous environment"
-        _VENV_ROLLBACK_ACTIVE=false
-        _VENV_ROLLBACK_DIR=""
-    else
-        echo "⚠️  Could not restore previous environment from $_VENV_ROLLBACK_DIR to $_VENV_ROLLBACK_TARGET" >&2
-    fi
-}
-
-_commit_studio_venv_replacement() {
-    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
-    if [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ]; then
-        rm -rf "$_VENV_ROLLBACK_DIR" || true
-    fi
-    _VENV_ROLLBACK_ACTIVE=false
-    _VENV_ROLLBACK_DIR=""
-}
-
-_on_install_exit() {
-    _status=$?
-    if [ "$_status" -ne 0 ]; then
-        _restore_studio_venv_replacement
-    fi
-    exit "$_status"
-}
-trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -499,65 +273,23 @@ create_studio_shortcuts() {
     _css_exe_dir=$(cd "$(dirname "$_css_exe")" && pwd)
     _css_exe="$_css_exe_dir/$(basename "$_css_exe")"
 
-    _css_data_dir="$DATA_DIR"
+    _css_data_dir="$HOME/.local/share/unsloth"
     _css_launcher="$_css_data_dir/launch-studio.sh"
     _css_icon_png="$_css_data_dir/unsloth-studio.png"
     _css_gem_png="$_css_data_dir/unsloth-gem.png"
 
     mkdir -p "$_css_data_dir"
 
-    # Same-install discriminator: per-install opaque id written once at install
-    # time and read by both this launcher and the backend (/api/health). Replaces
-    # the older sha256(canonical $STUDIO_HOME) scheme to (a) avoid leaking the
-    # install path on -H 0.0.0.0 deployments and (b) sidestep launcher/backend
-    # canonicalization drift (cd -P vs Path.resolve() symlink/junction handling).
-    # Lives at $STUDIO_HOME/share/ (not $DATA_DIR) so the backend can find it
-    # via _STUDIO_ROOT_RESOLVED / "share" / "studio_install_id" regardless of
-    # mode (in env-mode $STUDIO_HOME/share == $DATA_DIR; in default mode they
-    # diverge but the backend only knows the studio_root). 32 bytes of urandom
-    # -> 64 hex chars, byte-compatible with the prior digest so launcher
-    # placeholder, _check_health, and tests stay length-agnostic.
-    _css_id_dir="$STUDIO_HOME/share"
-    mkdir -p "$_css_id_dir"
-    _css_id_file="$_css_id_dir/studio_install_id"
-    if [ ! -s "$_css_id_file" ]; then
-        if [ -r /dev/urandom ]; then
-            _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
-        fi
-        if [ -z "${_css_new_id:-}" ] && command -v python3 >/dev/null 2>&1; then
-            _css_new_id=$(python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null)
-        fi
-        if [ -z "${_css_new_id:-}" ]; then
-            echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
-            return 1
-        fi
-        # Atomic write so a partial install can't leave a half-written id.
-        _css_id_tmp="$_css_id_file.$$.tmp"
-        printf '%s' "$_css_new_id" > "$_css_id_tmp" \
-            && mv "$_css_id_tmp" "$_css_id_file"
-        chmod 600 "$_css_id_file" 2>/dev/null || true
-        unset _css_new_id _css_id_tmp
-    fi
-    _css_studio_root_id=$(cat "$_css_id_file" 2>/dev/null)
-    if [ -z "$_css_studio_root_id" ]; then
-        echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2
-        return 1
-    fi
-    _css_is_env_mode=false
-    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _css_is_env_mode=true
-
     # ── Write launcher script ──
-    # Single-quoted heredoc; @@DATA_DIR@@, @@STUDIO_ROOT_ID@@, and
-    # @@INSTALLED_IS_ENV_MODE@@ are substituted via sed below.
+    # The launcher is Bash (not POSIX sh).
+    # We write it with a placeholder and substitute the exe path via sed.
     cat > "$_css_launcher" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
 # Unsloth Studio Launcher
 # Auto-generated by install.sh -- do not edit manually.
 set -euo pipefail
 
-DATA_DIR='@@DATA_DIR@@'
-_EXPECTED_STUDIO_ROOT_ID='@@STUDIO_ROOT_ID@@'
-_INSTALLED_IS_ENV_MODE='@@INSTALLED_IS_ENV_MODE@@'
+DATA_DIR="$HOME/.local/share/unsloth"
 
 # Read exe path from config written at install time.
 # Sourcing is safe: the config file is written by install.sh, not user input.
@@ -574,23 +306,7 @@ MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
 POLL_INTERVAL_SEC=1
 LOG_FILE="$DATA_DIR/studio.log"
-# why: in env-override mode multiple installs share an OS user; namespace the
-# lock and remember our own healthy port so we never attach to an unrelated
-# Studio listening on the global 8888..8908 range.
 LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"
-PORT_FILE=""
-# why: gate on the install-time mode (baked above) instead of the runtime env
-# var; sourcing a custom-root studio.conf in shell must not flip a default-mode
-# launcher into env-mode behavior with stale state.
-if [ "$_INSTALLED_IS_ENV_MODE" = "true" ]; then
-    if command -v cksum >/dev/null 2>&1; then
-        _LOCK_KEY=$(printf '%s' "$DATA_DIR" | cksum | awk '{print $1}')
-    else
-        _LOCK_KEY=""
-    fi
-    [ -n "$_LOCK_KEY" ] && LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u)-${_LOCK_KEY}.lock"
-    PORT_FILE="$DATA_DIR/studio.port"
-fi
 
 # ── HTTP GET helper (supports curl and wget) ──
 _http_get() {
@@ -609,20 +325,10 @@ _check_health() {
     _port=$1
     _resp=$(_http_get "http://127.0.0.1:$_port/api/health") || return 1
     case "$_resp" in
-        *'"status"'*'"healthy"'*'"service"'*'"Unsloth UI Backend"'*) ;;
-        *'"service"'*'"Unsloth UI Backend"'*'"status"'*'"healthy"'*) ;;
-        *) return 1 ;;
+        *'"status"'*'"healthy"'*'"service"'*'"Unsloth UI Backend"'*) return 0 ;;
+        *'"service"'*'"Unsloth UI Backend"'*'"status"'*'"healthy"'*) return 0 ;;
     esac
-    # why: verify the backend belongs to THIS install. Baked hex digest avoids
-    # JSON-escape mismatches on paths with `\`/`"` and avoids leaking the raw
-    # install path to unauthenticated callers.
-    if [ -n "$_EXPECTED_STUDIO_ROOT_ID" ]; then
-        case "$_resp" in
-            *"\"studio_root_id\":\"$_EXPECTED_STUDIO_ROOT_ID\""*|*"\"studio_root_id\": \"$_EXPECTED_STUDIO_ROOT_ID\""*) return 0 ;;
-            *) return 1 ;;
-        esac
-    fi
-    return 0
+    return 1
 }
 
 # ── Port scanning ──
@@ -645,25 +351,6 @@ _candidate_ports() {
 }
 
 _find_healthy_port() {
-    if [ -n "$PORT_FILE" ] && [ -f "$PORT_FILE" ]; then
-        # why: env-mode installs only attach to a port we previously launched
-        # ourselves; never to a sibling Studio that happens to be healthy.
-        _p=$(cat "$PORT_FILE" 2>/dev/null || true)
-        case "$_p" in
-            ''|*[!0-9]*) ;;
-            *)
-                if _check_health "$_p"; then
-                    echo "$_p"
-                    return 0
-                fi
-                rm -f "$PORT_FILE"
-                ;;
-        esac
-        return 1
-    fi
-    if [ -n "$PORT_FILE" ]; then
-        return 1
-    fi
     for _p in $(_candidate_ports | sort -un); do
         if _check_health "$_p"; then
             echo "$_p"
@@ -814,7 +501,6 @@ if [ -t 1 ]; then
         _obwr_deadline=$(($(date +%s) + TIMEOUT_SEC))
         while [ "$(date +%s)" -lt "$_obwr_deadline" ]; do
             if _check_health "$_launch_port"; then
-                [ -n "$PORT_FILE" ] && printf '%s\n' "$_launch_port" > "$PORT_FILE" 2>/dev/null || true
                 _release_lock
                 _open_browser "http://localhost:$_launch_port"
                 exit 0
@@ -826,11 +512,11 @@ if [ -t 1 ]; then
     ) &
     # Clear traps so exec does not trigger _release_lock (the subshell owns it)
     trap - EXIT INT TERM
-    exec "$UNSLOTH_EXE" studio -p "$_launch_port"
+    exec "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port"
 else
     # ── Background mode (no TTY) ──
     # Used by macOS .app and headless invocations.
-    _launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -p "$_launch_port")
+    _launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port")
     _launch_cmd=${_launch_cmd% }
     _spawn_terminal "$_launch_cmd"
 
@@ -838,7 +524,6 @@ else
     _deadline=$(($(date +%s) + TIMEOUT_SEC))
     while [ "$(date +%s)" -lt "$_deadline" ]; do
         if _check_health "$_launch_port"; then
-            [ -n "$PORT_FILE" ] && printf '%s\n' "$_launch_port" > "$PORT_FILE" 2>/dev/null || true
             _open_browser "http://localhost:$_launch_port"
             exit 0
         fi
@@ -851,62 +536,13 @@ else
 fi
 LAUNCHER_EOF
 
-    # why: bake non-user-controlled placeholders FIRST so a literal
-    # `@@STUDIO_ROOT_ID@@` inside $DATA_DIR cannot be rewritten below.
-    sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" \
-        -e "s|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g" \
-        "$_css_launcher" > "$_css_launcher.tmp" \
-        && mv "$_css_launcher.tmp" "$_css_launcher"
-
-    # Env-mode bakes an absolute DATA_DIR (root fixed at install time);
-    # default / HOME-redirect keeps the literal $HOME/.local/share/unsloth
-    # so behavior is byte-identical to pre-override.
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        # Two-stage escape: (1) `'` -> `'\''` for shell single-quote embedding,
-        # (2) backslash/&/| escape so the value survives the s|...|VALUE| sed
-        # below. Verified end-to-end with apostrophes, spaces, &, |, $.
-        _sq_escaped=$(printf '%s' "$DATA_DIR" | sed "s/'/'\\\\''/g")
-        _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\&|]/\\&/g')
-        sed "s|@@DATA_DIR@@|$_sed_safe|g" "$_css_launcher" > "$_css_launcher.tmp" \
-            && mv "$_css_launcher.tmp" "$_css_launcher"
-    else
-        sed "s|DATA_DIR='@@DATA_DIR@@'|DATA_DIR=\"\$HOME/.local/share/unsloth\"|" \
-            "$_css_launcher" > "$_css_launcher.tmp" \
-            && mv "$_css_launcher.tmp" "$_css_launcher"
-    fi
-
     chmod +x "$_css_launcher"
 
-    # studio.conf: exe path + (env-mode only) persisted env vars so fresh
-    # shells launch the right install without re-exporting.
+    # Write the exe path to a separate conf file sourced by the launcher.
+    # Using single-quote wrapping with the standard '\'' escape for any
+    # embedded apostrophes. This avoids all sed metacharacter issues.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
-    {
-        printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
-        if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-            # When an override resolves to the legacy default, llama.cpp
-            # still lives at ~/.unsloth/llama.cpp (one shared build).
-            # Canonicalize the legacy side so a symlinked $HOME doesn't
-            # break the comparison.
-            _css_legacy_studio="$HOME/.unsloth/studio"
-            if [ -d "$_css_legacy_studio" ]; then
-                _css_legacy_studio=$(CDPATH= cd -P -- "$_css_legacy_studio" 2>/dev/null && pwd -P) \
-                    || _css_legacy_studio="$HOME/.unsloth/studio"
-            fi
-            if [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
-                _css_llama_path="$HOME/.unsloth/llama.cpp"
-            else
-                _css_llama_path="$STUDIO_HOME/llama.cpp"
-            fi
-            _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
-            _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
-            printf '%s\n' "export UNSLOTH_STUDIO_HOME='$_css_quoted_home'"
-            # UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled
-            # llama.cpp dir override; only default it if unset.
-            printf '%s\n' 'if [ -z "${UNSLOTH_LLAMA_CPP_PATH:-}" ]; then'
-            printf '%s\n' "    export UNSLOTH_LLAMA_CPP_PATH='$_css_quoted_llama'"
-            printf '%s\n' 'fi'
-        fi
-    } > "$_css_data_dir/studio.conf"
+    printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'" > "$_css_data_dir/studio.conf"
 
     # ── Icon: try bundled, then download ──
     # rounded-512.png used for both Linux and macOS icons
@@ -952,14 +588,6 @@ LAUNCHER_EOF
     fi
 
     # ── Platform-specific shortcuts ──
-    # Env-mode installs are workspace-scoped: skip persistent desktop /
-    # Start-Menu / dock launchers that may point at a deleted workspace.
-    # Runtime launcher + studio.conf + icon are still written above.
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        substep "wrote launcher at $_css_launcher (persistent shortcuts skipped in env-override mode)"
-        return 0
-    fi
-
     _css_created=0
 
     if [ "$_css_os" = "linux" ]; then
@@ -1037,18 +665,11 @@ DESKTOP_EOF
 </plist>
 PLIST_EOF
 
-        # Executable stub: same single-quoted-heredoc + sed-substitute
-        # pattern as launch-studio.sh so $-vars in $_css_data_dir don't
-        # expand at .app launch time.
-        _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
-        _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
-        cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
+        # Executable stub
+        cat > "$_css_macos_dir/launch-studio" << STUB_EOF
 #!/bin/sh
-exec '@@DATA_DIR@@/launch-studio.sh' "$@"
+exec "$HOME/.local/share/unsloth/launch-studio.sh" "\$@"
 STUB_EOF
-        sed "s|@@DATA_DIR@@|$_css_sed_dir|g" "$_css_macos_dir/launch-studio" \
-            > "$_css_macos_dir/launch-studio.tmp" \
-            && mv "$_css_macos_dir/launch-studio.tmp" "$_css_macos_dir/launch-studio"
         chmod +x "$_css_macos_dir/launch-studio"
 
         # Build AppIcon.icns from unsloth-gem.png (2240x2240)
@@ -1207,14 +828,6 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
-_TAURI_INITIAL_GPU_BRANCH="unknown"
-if [ "$SKIP_TORCH" = true ]; then
-    _TAURI_INITIAL_GPU_BRANCH="no_torch"
-elif [ "$OS" = "macos" ]; then
-    _TAURI_INITIAL_GPU_BRANCH="mac"
-fi
-tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
-
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
@@ -1243,7 +856,9 @@ case "$OS" in
         fi
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
-        command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
+        if command -v dpkg >/dev/null 2>&1; then
+            dpkg -s libcurl4-openssl-dev >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
+        fi
         ;;
 esac
 
@@ -1268,15 +883,9 @@ if [ -n "$MISSING" ]; then
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
-                echo "    Automatic system package installation is supported on apt-based"
-                echo "    Linux distributions (Ubuntu/Debian) only. Please install the"
-                echo "    missing dependencies with your package manager, then re-run setup:"
+                echo "    apt-get is not available. Please install with your package manager:"
                 echo "    $MISSING"
-                echo ""
-                echo "    Examples:"
-                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel"
-                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl"
-                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
+                echo "    Then re-run Unsloth Studio setup."
                 exit 1
             fi
             ;;
@@ -1348,36 +957,12 @@ mkdir -p "$STUDIO_HOME"
 _MIGRATED=false
 
 if [ -x "$VENV_DIR/bin/python" ]; then
-    # why: matching guard to the .venv branch below -- in env-mode
-    # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
-    # existing $STUDIO_HOME/unsloth_studio that lacks Studio sentinels.
-    # Accept the in-VENV ownership marker so partial-install retries are
-    # not blocked. Sentinels must be regular files: -f follows symlinks
-    # to files (the legitimate ln -s shim shape) but rejects directories
-    # and broken/dir-targeted symlinks.
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
-       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
-       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
-        echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
-        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
-        exit 1
-    fi
-    # New layout already exists — replace only after preserving rollback copy.
-    substep "preserving existing environment for rollback..."
-    _start_studio_venv_replacement "$VENV_DIR"
-elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
-    # Old layout exists — validate before migrating.
-    # Skip in env-mode so we don't rm -rf an unrelated .venv at the
-    # workspace root (e.g. user's existing project Python venv).
-    # In no-torch mode, a missing torch package is expected; validate Python only.
+    # New layout already exists — nuke for fresh install
+    rm -rf "$VENV_DIR"
+elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
+    # Old layout exists — validate before migrating
     substep "found legacy Studio environment, validating..."
-    _legacy_ok=false
-    if [ "$SKIP_TORCH" = true ]; then
-        if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
-            _legacy_ok=true
-        fi
-    elif "$STUDIO_HOME/.venv/bin/python" -c "
+    if "$STUDIO_HOME/.venv/bin/python" -c "
 import torch
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 A = torch.ones((10, 10), device=device)
@@ -1387,17 +972,13 @@ D = A + B
 E = D @ C
 torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
 " >/dev/null 2>&1; then
-        _legacy_ok=true
-    fi
-    if [ "$_legacy_ok" = true ]; then
         echo "✅ Legacy environment is healthy — migrating..."
         mv "$STUDIO_HOME/.venv" "$VENV_DIR"
         echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
         _MIGRATED=true
     else
         echo "⚠️  Legacy environment failed validation — creating fresh environment"
-        _invalid_venv="$STUDIO_HOME/.venv.invalid.$(date +%Y%m%d%H%M%S 2>/dev/null || echo time).$$"
-        mv "$STUDIO_HOME/.venv" "$_invalid_venv" 2>/dev/null || true
+        rm -rf "$STUDIO_HOME/.venv"
     fi
 fi
 
@@ -1418,13 +999,6 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
 fi
 
-# Mark the freshly-created venv as Studio-owned so a partial install can be
-# repaired by re-running install.sh; the env-mode deletion guard above accepts
-# this marker as the primary sentinel.
-if [ -x "$VENV_DIR/bin/python" ]; then
-    : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
-fi
-
 # Guard against Python 3.13.8 torch import bug on Apple Silicon
 # (skip when the user explicitly chose a version via --python)
 if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
@@ -1436,9 +1010,6 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         rm -rf "$VENV_DIR"
         PYTHON_VERSION="3.12"
         run_install_cmd "recreate venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
-        if [ -x "$VENV_DIR/bin/python" ]; then
-            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
-        fi
     fi
 fi
 
@@ -1737,12 +1308,6 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-_TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
-if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
-    _TAURI_TORCH_INDEX_FAMILY="radeon"
-fi
-_TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
-tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
 # ── Print CPU-only hint when no GPU detected ──
 case "$TORCH_INDEX_URL" in
@@ -1782,7 +1347,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.2" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1790,15 +1355,11 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.2" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
-            --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     fi
     # AMD ROCm: install bitsandbytes even in migrated environments so
     # existing ROCm installs gain the AMD bitsandbytes build without a
@@ -1958,7 +1519,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.5.2" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1966,20 +1527,12 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-            substep "overlaying unsloth-zoo from git main..."
-            run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
-                --no-deps --reinstall-package unsloth-zoo \
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.5.2" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
-            --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
@@ -2005,22 +1558,12 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.2" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.8" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
-            --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
-fi
-
-# ── Install mlx-vlm on Apple Silicon (optional, for VLM training) ──
-if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    substep "installing mlx-vlm (VLM training support)..."
-    run_install_cmd "install mlx-vlm" uv pip install --python "$_VENV_PY" mlx-vlm
 fi
 
 # ── Run studio setup ──
@@ -2070,17 +1613,7 @@ _SKIP_FRONTEND=0
 if [ "$TAURI_MODE" = true ]; then
     _SKIP_FRONTEND=1
 fi
-# Prepend UNSLOTH_STUDIO_HOME=$STUDIO_HOME to "$@" for env-override installs
-# without word-splitting on whitespace paths.
-_run_setup_with_studio_home() {
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        UNSLOTH_STUDIO_HOME="$STUDIO_HOME" "$@"
-    else
-        "$@"
-    fi
-}
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
@@ -2094,7 +1627,6 @@ else
     # the same session) does not silently flip a normal install onto the
     # local-dev path in setup.sh and install_python_stack.py. Mirrors the
     # reset already done in install.ps1 for PowerShell.
-    _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
@@ -2104,53 +1636,36 @@ else
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
-# ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
-# Env-mode: $_LOCAL_BIN is $STUDIO_HOME/bin; skip shell-rc PATH append so we
-# don't pollute the user's profile with a workspace-scoped path.
-mkdir -p "$_LOCAL_BIN"
-# ln -sf into an existing dir creates link inside it. Refuse to delete a
-# real directory at the shim path -- that could destroy unrelated user data.
-_shim_path="$_LOCAL_BIN/unsloth"
-if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
-    echo "ERROR: $_shim_path is a directory; refusing to delete it." >&2
-    echo "       Move or remove it manually, then re-run the installer." >&2
-    exit 1
-fi
-# why: -sfn is atomic and -n prevents descent into a symlink-to-directory at
-# the shim path (the directory guard above already rejects a real directory).
-ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
+# ── Make 'unsloth' available globally via ~/.local/bin ──
+mkdir -p "$HOME/.local/bin"
+ln -sf "$VENV_DIR/bin/unsloth" "$HOME/.local/bin/unsloth"
 
+_LOCAL_BIN="$HOME/.local/bin"
 case ":$PATH:" in
     *":$_LOCAL_BIN:"*) ;;  # already on PATH
     *)
-        if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-            export PATH="$_LOCAL_BIN:$PATH"
-            step "path" "exported $_LOCAL_BIN for this session (no rc-file append in env-override mode)"
-        else
-            _SHELL_PROFILE=""
-            if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
-                _SHELL_PROFILE="$HOME/.zshrc"
-            elif [ -f "$HOME/.bashrc" ]; then
-                _SHELL_PROFILE="$HOME/.bashrc"
-            elif [ -f "$HOME/.profile" ]; then
-                _SHELL_PROFILE="$HOME/.profile"
-            fi
-            if [ -n "$_SHELL_PROFILE" ]; then
-                if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
-                    echo '' >> "$_SHELL_PROFILE"
-                    echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
-                    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
-                    step "path" "added ~/.local/bin to PATH in $_SHELL_PROFILE"
-                fi
-            fi
-            export PATH="$_LOCAL_BIN:$PATH"
+        _SHELL_PROFILE=""
+        if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+            _SHELL_PROFILE="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            _SHELL_PROFILE="$HOME/.bashrc"
+        elif [ -f "$HOME/.profile" ]; then
+            _SHELL_PROFILE="$HOME/.profile"
         fi
+
+        if [ -n "$_SHELL_PROFILE" ]; then
+            if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
+                echo '' >> "$_SHELL_PROFILE"
+                echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
+                step "path" "added ~/.local/bin to PATH in $_SHELL_PROFILE"
+            fi
+        fi
+        export PATH="$_LOCAL_BIN:$PATH"
         ;;
 esac
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
-# create_studio_shortcuts gates persistent menu shortcuts on env-mode;
-# launcher + studio.conf + icon are always written.
 if [ "$TAURI_MODE" != true ]; then
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
@@ -2164,8 +1679,6 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     exit "$_SETUP_EXIT"
 fi
 
-_commit_studio_venv_replacement
-
 # ── Tauri mode: done, skip shortcuts and auto-launch ──
 if [ "$TAURI_MODE" = true ]; then
     tauri_log "DONE" ""
@@ -2177,57 +1690,28 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# In interactive terminals, ask the user before starting Studio.
-# In non-interactive environments (Docker, CI, cloud-init) just print instructions.
+# Launch studio automatically in interactive terminals;
+# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ]; then
-    echo ""
-    printf "  Start Unsloth Studio now? [Y/n] "
-    if [ -r /dev/tty ]; then
-        read -r _reply </dev/tty || _reply="y"
-    else
-        _reply="y"
+    step "launch" "starting Unsloth Studio..."
+    "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
+    _LAUNCH_EXIT=$?
+    if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
+        echo ""
+        echo "⚠️  Unsloth Studio failed to start after migration."
+        echo "   Your migrated environment may be incompatible."
+        echo "   To fix, remove the environment and reinstall:"
+        echo ""
+        echo "   rm -rf $VENV_DIR"
+        echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
+        echo ""
     fi
-    case "${_reply:-y}" in
-        [Yy]*|"")
-            step "launch" "starting Unsloth Studio..."
-            "$VENV_DIR/bin/unsloth" studio -p 8888
-            _LAUNCH_EXIT=$?
-            if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
-                echo ""
-                echo "⚠️  Unsloth Studio failed to start after migration."
-                echo "   Your migrated environment may be incompatible."
-                echo "   To fix, remove the environment and reinstall:"
-                echo ""
-                echo "   rm -rf $VENV_DIR"
-                echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
-                echo ""
-            fi
-            exit "$_LAUNCH_EXIT"
-            ;;
-        *)
-            step "launch" "to start later, run:"
-            substep "unsloth studio -p 8888"
-            substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            echo ""
-            ;;
-    esac
+    exit "$_LAUNCH_EXIT"
 else
     step "launch" "manual commands:"
-    # Single-quote-escape so paths with spaces / apostrophes copy-paste cleanly.
-    _li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
-    _li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        # Env-mode skips the rc PATH append, so print the absolute shim path.
-        substep "$_li_shim_q studio -p 8888"
-        substep "or activate env first:"
-        substep "source $_li_act_q"
-        substep "unsloth studio -p 8888"
-    else
-        substep "unsloth studio -p 8888"
-        substep "or activate env first:"
-        substep "source $_li_act_q"
-        substep "unsloth studio -p 8888"
-    fi
-    substep "(add -H 0.0.0.0 to allow network / cloud access)"
+    substep "unsloth studio -H 0.0.0.0 -p 8888"
+    substep "or activate env first:"
+    substep "source ${VENV_DIR}/bin/activate"
+    substep "unsloth studio -H 0.0.0.0 -p 8888"
     echo ""
 fi

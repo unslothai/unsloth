@@ -22,8 +22,6 @@ from typing import Optional
 
 import structlog
 
-from loggers.handlers import filter_sensitive_data
-
 
 class LogConfig:
     """Structured logging configuration for the application.
@@ -60,8 +58,6 @@ class LogConfig:
                 structlog.processors.TimeStamper(fmt = "iso"),  # timestamp first
                 structlog.processors.add_log_level,  # level second
                 structlog.contextvars.merge_contextvars,
-                structlog.processors.format_exc_info,
-                filter_sensitive_data,
                 # Custom processor to flatten the extra field
                 lambda logger, method_name, event_dict: {
                     "timestamp": event_dict.get("timestamp"),

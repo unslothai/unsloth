@@ -63,7 +63,6 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
   { value: "alpaca", label: "Alpaca" },
   { value: "chatml", label: "ChatML" },
   { value: "sharegpt", label: "ShareGPT" },
-  { value: "raw", label: "Raw Text" },
 ];
 
 export function DatasetStep() {

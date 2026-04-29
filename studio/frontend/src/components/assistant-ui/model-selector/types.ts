@@ -25,8 +25,3 @@ export interface ModelSelectorChangeMeta {
   isDownloaded?: boolean;
   expectedBytes?: number;
 }
-
-export interface DeletedModelRef {
-  id: string;
-  ggufVariant?: string;
-}

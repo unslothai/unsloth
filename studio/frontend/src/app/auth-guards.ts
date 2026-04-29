@@ -9,6 +9,7 @@ import {
   hasRefreshToken,
   mustChangePassword,
   refreshSession,
+  tauriAutoAuth,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -38,7 +39,7 @@ function authRedirect(to: "/login" | "/change-password"): never {
 
 export async function requireAuth(): Promise<void> {
   if (isTauri) {
-    // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
+    await tauriAutoAuth();
     return;
   }
 
@@ -58,6 +59,7 @@ export async function requireAuth(): Promise<void> {
 
 export async function requireGuest(): Promise<void> {
   if (isTauri) {
+    await tauriAutoAuth();
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
@@ -66,6 +68,7 @@ export async function requireGuest(): Promise<void> {
 
 export async function requirePasswordChangeFlow(): Promise<void> {
   if (isTauri) {
+    await tauriAutoAuth();
     throw redirect({ to: "/chat" });
   }
 

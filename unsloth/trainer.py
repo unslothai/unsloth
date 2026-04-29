@@ -23,9 +23,7 @@ from functools import wraps
 import trl
 import inspect
 from trl import SFTTrainer
-
-# why: bypass partially-initialised unsloth ns during _gpu_init load
-from .models._utils import is_bfloat16_supported
+from . import is_bfloat16_supported
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,

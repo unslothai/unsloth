@@ -3,9 +3,7 @@
 
 import { ShimmerButton } from "@/components/ui/shimmer-button";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
-import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -19,63 +17,6 @@ interface StartupScreenProps {
   onRetryInstall: () => void;
   onApproveElevation: () => void;
   onStartServer: () => void;
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
-}
-
-function DiagnosticsCopyActions({
-  onCopyDiagnostics,
-  children,
-}: {
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
-  children: React.ReactNode;
-}) {
-  const [copying, setCopying] = useState(false);
-  const [manualReport, setManualReport] = useState<string | null>(null);
-  const [manualMessage, setManualMessage] = useState<string | null>(null);
-
-  async function handleCopyDiagnostics() {
-    setCopying(true);
-    try {
-      const result = await onCopyDiagnostics();
-      if (result.ok) {
-        setManualReport(null);
-        setManualMessage(null);
-      } else {
-        setManualReport(result.report);
-        setManualMessage(result.error ?? "Clipboard copy failed. Select and copy the diagnostics below.");
-      }
-    } catch (error) {
-      setManualReport(null);
-      setManualMessage(`Diagnostics copy failed: ${String(error)}`);
-    } finally {
-      setCopying(false);
-    }
-  }
-
-  return (
-    <div className="mt-4 flex w-full flex-col items-center gap-3">
-      <div className="flex gap-3">
-        <ActionButton
-          variant="secondary"
-          onClick={() => void handleCopyDiagnostics()}
-        >
-          {copying ? "Copying..." : "Copy Diagnostics"}
-        </ActionButton>
-        {children}
-      </div>
-      {manualMessage && (
-        <p className="max-w-md text-center text-xs text-destructive">{manualMessage}</p>
-      )}
-      {manualReport && (
-        <textarea
-          readOnly
-          value={manualReport}
-          onFocus={(event) => event.currentTarget.select()}
-          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
-        />
-      )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -239,12 +180,12 @@ function RepairingContent({
 
 function InstallErrorContent({
   error,
+  logs,
   onRetryInstall,
-  onCopyDiagnostics,
 }: {
   error: string | null;
+  logs: string[];
   onRetryInstall: () => void;
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
   return (
     <>
@@ -254,9 +195,15 @@ function InstallErrorContent({
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
-        <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
+        <div className="mt-4 flex gap-3">
+          <ActionButton
+            variant="secondary"
+            onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
+          >
+            Copy Logs
+          </ActionButton>
           <ActionButton onClick={onRetryInstall}>Try Again</ActionButton>
-        </DiagnosticsCopyActions>
+        </div>
       </div>
     </>
   );
@@ -264,12 +211,12 @@ function InstallErrorContent({
 
 function RepairErrorContent({
   error,
+  logs,
   onRetry,
-  onCopyDiagnostics,
 }: {
   error: string | null;
+  logs: string[];
   onRetry: () => void;
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
   return (
     <>
@@ -279,9 +226,15 @@ function RepairErrorContent({
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
-        <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
+        <div className="mt-4 flex gap-3">
+          <ActionButton
+            variant="secondary"
+            onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
+          >
+            Copy Logs
+          </ActionButton>
           <ActionButton onClick={onRetry}>Retry</ActionButton>
-        </DiagnosticsCopyActions>
+        </div>
       </div>
     </>
   );
@@ -348,12 +301,12 @@ function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
 
 function ErrorContent({
   error,
+  logs,
   onRetry,
-  onCopyDiagnostics,
 }: {
   error: string | null;
+  logs: string[];
   onRetry: () => void;
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
   return (
     <>
@@ -363,9 +316,15 @@ function ErrorContent({
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
-        <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
+        <div className="mt-4 flex gap-3">
+          <ActionButton
+            variant="secondary"
+            onClick={() => void navigator.clipboard.writeText(logs.join("\n"))}
+          >
+            Copy Logs
+          </ActionButton>
           <ActionButton onClick={onRetry}>Retry</ActionButton>
-        </DiagnosticsCopyActions>
+        </div>
       </div>
     </>
   );
@@ -387,7 +346,6 @@ export function StartupScreen({
   onRetryInstall,
   onApproveElevation,
   onStartServer,
-  onCopyDiagnostics,
 }: StartupScreenProps) {
   function renderContent() {
     switch (status) {
@@ -398,23 +356,11 @@ export function StartupScreen({
       case "installing":
         return <InstallingContent currentStepIndex={currentStepIndex} progressDetail={progressDetail} />;
       case "install-error":
-        return (
-          <InstallErrorContent
-            error={error}
-            onRetryInstall={onRetryInstall}
-            onCopyDiagnostics={onCopyDiagnostics}
-          />
-        );
+        return <InstallErrorContent error={error} logs={logs} onRetryInstall={onRetryInstall} />;
       case "repairing":
         return <RepairingContent logs={logs} progressDetail={progressDetail} />;
       case "repair-error":
-        return (
-          <RepairErrorContent
-            error={error}
-            onRetry={onRetry}
-            onCopyDiagnostics={onCopyDiagnostics}
-          />
-        );
+        return <RepairErrorContent error={error} logs={logs} onRetry={onRetry} />;
       case "needs-elevation":
         return (
           <NeedsElevationContent
@@ -430,18 +376,12 @@ export function StartupScreen({
       case "stopped":
         return <StoppedContent onStartServer={onStartServer} />;
       case "error":
-        return (
-          <ErrorContent
-            error={error}
-            onRetry={onRetry}
-            onCopyDiagnostics={onCopyDiagnostics}
-          />
-        );
+        return <ErrorContent error={error} logs={logs} onRetry={onRetry} />;
     }
   }
 
   return (
-    <div className="flex h-full w-full flex-col items-center bg-background">
+    <div className="flex h-screen w-full flex-col items-center bg-background">
       <div className="flex flex-1 w-full max-w-md items-center justify-center px-6">
         <AnimatePresence mode="wait">
           <motion.div

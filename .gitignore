@@ -24,8 +24,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-/lib/
-/lib64/
+lib/
+lib64/
 parts/
 sdist/
 var/
@@ -228,4 +228,3 @@ setup_leo.sh
 server.pid
 *.log
 package-lock.json
-llama.cpp/

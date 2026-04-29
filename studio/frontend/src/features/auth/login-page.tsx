@@ -7,7 +7,7 @@ import { AuthForm } from "./components/auth-form";
 
 export function LoginPage() {
   return (
-    <div className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] items-center justify-center overflow-hidden bg-background px-4 py-8 sm:px-6 sm:py-10 md:px-10">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-8 sm:px-6 sm:py-10 md:px-10">
       <LightRays
         count={6}
         color="rgba(34, 197, 94, 0.25)"

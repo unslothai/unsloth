@@ -18,32 +18,6 @@ type RefreshResponse = {
 
 let isRedirecting = false;
 
-const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchWithTauriNetworkRetry(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fetch(input, init);
-    } catch (error) {
-      if (
-        !isTauri ||
-        !(error instanceof TypeError) ||
-        attempt >= TAURI_FETCH_RETRY_DELAYS_MS.length
-      ) {
-        throw error;
-      }
-      await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
-    }
-  }
-}
-
 async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
   if (response.status !== 403) return false;
 
@@ -80,7 +54,7 @@ async function retryWithCurrentToken(
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  return fetch(input, { ...init, headers: retryHeaders });
 }
 
 async function retryWithTauriAutoAuth(
@@ -98,14 +72,11 @@ export async function refreshSession(): Promise<boolean> {
   if (!refreshToken) return false;
 
   try {
-    const response = await fetchWithTauriNetworkRetry(
-      apiUrl("/api/auth/refresh"),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      },
-    );
+    const response = await fetch(apiUrl("/api/auth/refresh"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
 
     if (!response.ok) {
       clearAuthTokens();
@@ -137,10 +108,7 @@ export async function authFetch(
 
   let response: Response;
   try {
-    response = await fetchWithTauriNetworkRetry(resolvedInput, {
-      ...init,
-      headers,
-    });
+    response = await fetch(resolvedInput, { ...init, headers });
   } catch (err) {
     if (err instanceof TypeError) {
       throw new Error("Studio isn't running -- please relaunch it.");

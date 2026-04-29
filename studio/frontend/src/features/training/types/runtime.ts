@@ -26,7 +26,6 @@ export interface TrainingStatusResponse {
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
-    output_dir?: string;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -81,9 +80,6 @@ export interface TrainingRuntimeState {
   hasHydrated: boolean;
   isStarting: boolean;
   startError: string | null;
-  startModelName: string | null;
-  startDatasetName: string | null;
-  startFromResume: boolean;
   sseConnected: boolean;
   firstStepReceived: boolean;
   lastEventId: number | null;
@@ -97,7 +93,6 @@ export interface TrainingRuntimeState {
   etaSeconds: number | null;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
-  outputDir: string | null;
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
@@ -113,11 +108,6 @@ export interface TrainingRuntimeActions {
   setHasHydrated: (value: boolean) => void;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
-  setStartResources: (
-    modelName: string | null,
-    datasetName: string | null,
-    fromResume?: boolean,
-  ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
   resetRuntime: () => void;
@@ -141,7 +131,6 @@ export interface TrainingViewData {
   currentGradNorm: number | null;
   currentEpoch: number | null;
   currentNumTokens: number | null;
-  outputDir: string | null;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;

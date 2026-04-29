@@ -4,13 +4,21 @@
 import type { TrainingViewData } from "@/features/training";
 import { getTrainingRun } from "@/features/training";
 import type { TrainingRunDetailResponse } from "@/features/training";
-import { parseBackendTrainingMethod } from "@/features/training/lib/training-methods";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
 
 interface HistoricalTrainingViewProps {
   runId: string;
+}
+
+function normalizeTrainingMethod(config: Record<string, unknown>): string {
+  const type = config?.training_type as string | undefined;
+  if (!type || type === "Full Finetuning") return "full";
+  if (type === "LoRA/QLoRA") {
+    return config?.load_in_4bit ? "qlora" : "lora";
+  }
+  return "full";
 }
 
 function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
@@ -52,7 +60,6 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     currentGradNorm: metrics.grad_norm_history.at(-1) ?? null,
     currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
-    outputDir: run.output_dir ?? null,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100
@@ -71,10 +78,7 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.model_name,
-    trainingMethod: parseBackendTrainingMethod(
-      detail.config?.training_type,
-      detail.config?.load_in_4bit,
-    ),
+    trainingMethod: normalizeTrainingMethod(detail.config),
     lossHistory,
     lrHistory,
     gradNormHistory,
@@ -138,11 +142,7 @@ export function HistoricalTrainingView({
         loraRank: detail.config.lora_r as number | undefined,
         loraAlpha: detail.config.lora_alpha as number | undefined,
         loraDropout: detail.config.lora_dropout as number | undefined,
-        loraVariant: detail.config.use_rslora
-          ? "rslora"
-          : detail.config.use_loftq
-            ? "loftq"
-            : "lora",
+        loraVariant: detail.config.use_rslora ? "rsLoRA" : undefined,
       }
     : undefined;
 

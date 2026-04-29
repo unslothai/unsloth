@@ -33,7 +33,6 @@ import {
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
-import { isTauri } from "@/lib/api-base";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -299,41 +298,27 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
     [disabled],
   );
 
-  const composerContent = (
-    <>
-      <ComposerAttachments />
-      <PendingAudioChip />
-      <ToolStatusDisplay />
-      <ComposerPrimitive.Input
-        placeholder="Send a message..."
-        className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
-        minRows={1}
-        maxRows={6}
-        autoFocus={!disabled}
-        disabled={disabled}
-        aria-label="Message input"
-      />
-      <ComposerAction disabled={disabled} />
-    </>
-  );
-
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
-      {isTauri ? (
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser
-        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
-        <div className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow">
-          {composerContent}
-        </div>
-      ) : (
-        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-          {composerContent}
-        </ComposerPrimitive.AttachmentDropzone>
-      )}
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+        <ComposerAttachments />
+        <PendingAudioChip />
+        <ToolStatusDisplay />
+        <ComposerPrimitive.Input
+          placeholder="Send a message..."
+          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+          minRows={1}
+          maxRows={6}
+          autoFocus={!disabled}
+          disabled={disabled}
+          aria-label="Message input"
+        />
+        <ComposerAction disabled={disabled} />
+      </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
@@ -500,7 +485,7 @@ const PreserveThinkingToggle: FC = () => {
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={
-        preserveThinking ? "Disable preserve think" : "Enable preserve think"
+        preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
       }
     >
       {preserveThinking && !disabled ? (
@@ -508,7 +493,7 @@ const PreserveThinkingToggle: FC = () => {
       ) : (
         <LightbulbOffIcon className="size-3.5" />
       )}
-      <span>Preserve Think</span>
+      <span>Preserve Thinking</span>
     </button>
   );
 };

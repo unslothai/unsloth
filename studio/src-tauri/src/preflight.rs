@@ -102,11 +102,6 @@ async fn run_cli_probe(bin: &std::path::Path, args: &[&str]) -> bool {
         cmd.env_remove("PYTHONPATH");
     }
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
-
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -139,11 +134,6 @@ async fn probe_cli_capability(bin: &std::path::Path) -> Option<DesktopCapability
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
-
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
 
     #[cfg(windows)]
     {

@@ -3,10 +3,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@/lib/api-base";
-import {
-  copySupportDiagnostics,
-  type CopySupportDiagnosticsResult,
-} from "@/lib/tauri-diagnostics";
 import { toast } from "sonner";
 
 export type UpdateStatus =
@@ -25,73 +21,18 @@ export interface UpdateInfo {
   date?: string;
 }
 
-export type UpdatePhase =
-  | "backend"
-  | "shell_download"
-  | "shell_install"
-  | "recovered_after_shell_failure";
-
-export interface RetainedUpdateFailure {
-  error: string;
-  phase: UpdatePhase;
-  progress: number;
-  logs: string[];
-}
-
 export function useTauriUpdate(isExternalServer = false) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [progress, setProgress] = useState(0);
-  const progressRef = useRef(0);
   const [logs, setLogs] = useState<string[]>([]);
-  const logsRef = useRef<string[]>([]);
-  const [phase, setPhase] = useState<UpdatePhase | null>(null);
-  const phaseRef = useRef<UpdatePhase | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
   const updateRef = useRef<Awaited<
     ReturnType<typeof import("@tauri-apps/plugin-updater").check>
   > | null>(null);
   const checkedRef = useRef(false);
   const updatingRef = useRef(false);
-
-  function replaceLogs(nextLogs: string[]) {
-    logsRef.current = nextLogs;
-    setLogs(nextLogs);
-  }
-
-  function appendLog(line: string) {
-    setLogs((prev) => {
-      const next = [...prev.slice(-499), line];
-      logsRef.current = next;
-      return next;
-    });
-  }
-
-  function setUpdateProgress(nextProgress: number) {
-    progressRef.current = nextProgress;
-    setProgress(nextProgress);
-  }
-
-  function setUpdatePhase(nextPhase: UpdatePhase | null) {
-    phaseRef.current = nextPhase;
-    setPhase(nextPhase);
-  }
-
-  function retainFailure(
-    nextError: string,
-    nextPhase: UpdatePhase = phaseRef.current ?? "backend",
-  ) {
-    const failure = {
-      error: nextError,
-      phase: nextPhase,
-      progress: progressRef.current,
-      logs: logsRef.current,
-    };
-    setLastFailure(failure);
-    return failure;
-  }
 
   useEffect(() => {
     if (!isTauri || checkedRef.current) return;
@@ -130,15 +71,13 @@ export function useTauriUpdate(isExternalServer = false) {
     updatingRef.current = true;
 
     const cleanups: (() => void)[] = [];
+    let phase: "backend" | "shell" = "backend";
 
     try {
       // ── Step 1: Backend update ──
-      setUpdatePhase("backend");
       setStatus("updating-backend");
-      replaceLogs([]);
-      setUpdateProgress(0);
+      setLogs([]);
       setError(null);
-      setLastFailure(null);
       setDismissed(false);
 
       const { listen } = await import("@tauri-apps/api/event");
@@ -148,7 +87,7 @@ export function useTauriUpdate(isExternalServer = false) {
       const unlistenProgress = await listen<string>(
         "update-progress",
         (e) => {
-          appendLog(e.payload);
+          setLogs((prev) => [...prev.slice(-499), e.payload]);
         },
       );
       cleanups.push(unlistenProgress);
@@ -168,7 +107,6 @@ export function useTauriUpdate(isExternalServer = false) {
       );
 
       if (backendResult !== "complete") {
-        retainFailure(backendResult, "backend");
         setError(backendResult);
         setStatus("error");
         updatingRef.current = false;
@@ -177,9 +115,9 @@ export function useTauriUpdate(isExternalServer = false) {
       }
 
       // ── Step 2: Shell update ──
-      setUpdatePhase("shell_download");
+      phase = "shell";
       setStatus("downloading");
-      setUpdateProgress(0);
+      setProgress(0);
 
       let downloaded = 0;
       let contentLength = 0;
@@ -191,11 +129,10 @@ export function useTauriUpdate(isExternalServer = false) {
           case "Progress":
             downloaded += event.data.chunkLength;
             if (contentLength > 0) {
-              setUpdateProgress(Math.round((downloaded / contentLength) * 100));
+              setProgress(Math.round((downloaded / contentLength) * 100));
             }
             break;
           case "Finished":
-            setUpdatePhase("shell_install");
             setStatus("installing");
             break;
         }
@@ -209,26 +146,21 @@ export function useTauriUpdate(isExternalServer = false) {
       const msg = String(e);
 
       // Shell update failed — restart backend on updated code
-      if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
+      if (phase === "shell") {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           await invoke("start_server", { port: 8888 });
-          retainFailure(msg, "recovered_after_shell_failure");
           toast.error("App update failed", {
             description:
-              "Backend was updated. Copy diagnostics from the update banner if you need support.",
+              "Backend was updated. The app update will be retried on next launch.",
           });
-          setError(null);
           setStatus("idle");
-          setDismissed(false);
-          setUpdatePhase("recovered_after_shell_failure");
+          setDismissed(true);
         } catch {
-          retainFailure(msg, phaseRef.current ?? "shell_install");
           setError(msg);
           setStatus("error");
         }
       } else {
-        retainFailure(msg, phaseRef.current ?? "backend");
         setError(msg);
         setStatus("error");
       }
@@ -244,41 +176,21 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   async function skipAndRestart() {
-    const skippedError = error;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });
-      if (skippedError) {
-        retainFailure(skippedError, phaseRef.current ?? "recovered_after_shell_failure");
-        setDismissed(false);
-      } else {
-        setDismissed(true);
-      }
       setStatus("idle");
       setError(null);
-      replaceLogs([]);
+      setLogs([]);
+      setDismissed(true);
     } catch (e) {
-      const msg = String(e);
-      retainFailure(msg, phaseRef.current ?? "backend");
-      setError(msg);
+      setError(String(e));
       setStatus("error");
     }
   }
 
   function dismiss() {
     setDismissed(true);
-  }
-
-  function copyDiagnostics(): Promise<CopySupportDiagnosticsResult> {
-    const failure = lastFailure;
-    return copySupportDiagnostics({
-      status: failure ? "error" : status,
-      error: failure?.error ?? error,
-      lastUiLogLines: failure?.logs ?? logs,
-      flow: "update",
-      updatePhase: failure?.phase ?? phase,
-      updateProgress: failure?.progress ?? progress,
-    });
   }
 
   return {
@@ -288,14 +200,11 @@ export function useTauriUpdate(isExternalServer = false) {
     logs,
     dismissed,
     error,
-    phase,
-    lastFailure,
     isExternalServer,
     installUpdate,
     retryUpdate,
     skipAndRestart,
     dismiss,
-    copyDiagnostics,
   };
 }
 

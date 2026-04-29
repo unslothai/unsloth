@@ -246,10 +246,7 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     assert [row["name"] for row in rows] == ["desktop"]
 
 
-def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
-    # _inject_local_providers mints an internal sk-unsloth-* API key (not a
-    # forwarded JWT). The unified API-key path validates as the real admin
-    # user regardless of whether the incoming session was desktop or web.
+def test_local_recipe_token_preserves_desktop_marker(loaded_local_model):
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -263,7 +260,13 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
     jobs_route._inject_local_providers(recipe, local_recipe_request(incoming_token))
 
     local_token = recipe["model_providers"][0]["api_key"]
-    assert local_token.startswith(storage.API_KEY_PREFIX)
+    payload = jwt.decode(
+        local_token,
+        storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
+        algorithms = ["HS256"],
+    )
+    assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
+    assert payload["desktop"] is True
     credentials = HTTPAuthorizationCredentials(
         scheme = "Bearer",
         credentials = local_token,
@@ -273,10 +276,8 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
     )
 
 
-def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for web
-    # and desktop incoming tokens; auth via get_current_subject works the same.
-    from auth.authentication import create_access_token, get_current_subject
+def test_local_recipe_token_keeps_web_marker_absent(loaded_local_model):
+    from auth.authentication import create_access_token
 
     seed_user(must_change_password = False)
     jobs_route = data_recipe_jobs_module()
@@ -286,14 +287,13 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
     jobs_route._inject_local_providers(recipe, local_recipe_request(incoming_token))
 
     local_token = recipe["model_providers"][0]["api_key"]
-    assert local_token.startswith(storage.API_KEY_PREFIX)
-    credentials = HTTPAuthorizationCredentials(
-        scheme = "Bearer",
-        credentials = local_token,
+    payload = jwt.decode(
+        local_token,
+        storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
+        algorithms = ["HS256"],
     )
-    assert (
-        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
-    )
+    assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
+    assert "desktop" not in payload
 
 
 def test_desktop_login_rejects_invalid_secret():
@@ -381,7 +381,6 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         datasets_router = APIRouter(),
         export_router = APIRouter(),
         inference_router = APIRouter(),
-        inference_studio_router = APIRouter(),
         models_router = APIRouter(),
         training_history_router = APIRouter(),
         training_router = APIRouter(),

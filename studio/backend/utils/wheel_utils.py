@@ -13,8 +13,6 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
-from utils.native_path_leases import child_env_without_native_path_secret
-
 _logger = logging.getLogger(__name__)
 
 FLASH_ATTN_RELEASE_BASE_URL = (
@@ -61,7 +59,6 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
             stderr = subprocess.PIPE,
             text = True,
             timeout = timeout,
-            env = child_env_without_native_path_secret(),
         )
     except subprocess.TimeoutExpired:
         return None
@@ -145,7 +142,6 @@ def install_wheel(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            env = child_env_without_native_path_secret(),
         )
         attempts.append(("uv", result))
         if result.returncode == 0:
@@ -157,7 +153,6 @@ def install_wheel(
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
-        env = child_env_without_native_path_secret(),
     )
     attempts.append(("pip", result))
     return attempts
