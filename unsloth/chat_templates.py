@@ -33,6 +33,7 @@ from transformers.models.llama.modeling_llama import logger
 from .save import patch_saving_functions
 import os
 import shutil
+import subprocess
 from .tokenizer_utils import *
 from .models._utils import patch_tokenizer
 import re
@@ -1845,7 +1846,8 @@ def get_chat_template(
     map_eos_token = True,
     system_message = None,
 ):
-    assert(type(map_eos_token) is bool)
+    if not isinstance(map_eos_token, bool):
+        raise TypeError("Unsloth: map_eos_token must be a bool")
     old_tokenizer = tokenizer
 
     IS_GEMMA = False
@@ -1876,8 +1878,10 @@ def get_chat_template(
         # Since it's not supported yet, we will raise an error first!
         type_chat_template = chat_template[0].lower()
         chat_template, stop_word = chat_template
-        assert(type(chat_template) is str)
-        assert(type(stop_word) is str)
+        if not isinstance(chat_template, str):
+            raise TypeError("Unsloth: chat_template must be a str")
+        if not isinstance(stop_word, str):
+            raise TypeError("Unsloth: stop_word must be a str")
         ollama_modelfile = None
 
     elif type(chat_template) is str:
@@ -1892,11 +1896,13 @@ def get_chat_template(
 
         if type(stop_word) in (list, tuple,):
             token_mapping, stop_word = stop_word
-            assert(type(token_mapping) is dict)
+            if not isinstance(token_mapping, dict):
+                raise TypeError("Unsloth: token_mapping must be a dict")
         else:
             token_mapping = None
 
-        assert(type(stop_word) is str)
+        if not isinstance(stop_word, str):
+            raise TypeError("Unsloth: stop_word must be a str")
 
         # Check fast tokenizer
         if not is_fast_tokenizer:
@@ -2112,7 +2118,8 @@ def _parse_combined_prompt(combined_prompt, dataset):
         final_optional_prompts.append(combined_prompt)
 
     check_combined = "".join(x if type(x) is str else x[1] for x in final_optional_prompts)
-    assert(combined_prompt == check_combined)
+    if combined_prompt != check_combined:
+        raise ValueError("Unsloth: combined_prompt does not match check_combined")
 
     return possible_columns, final_optional_prompts
 
@@ -2343,14 +2350,16 @@ extra_eos_tokens = None,
     # Strip only the left
     chat_template = chat_template.lstrip()
 
-    assert(tokenizer is not None)
+    if tokenizer is None:
+        raise ValueError("Unsloth: tokenizer cannot be None")
 
     if extra_eos_tokens is None: extra_eos_tokens = []
     elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
 
     vocab = tokenizer.get_vocab()
     for extra_eos in extra_eos_tokens:
-        assert(type(extra_eos) is str)
+        if not isinstance(extra_eos, str):
+            raise TypeError("Unsloth: extra_eos must be a str")
         if extra_eos not in vocab:
             raise ValueError(f"Unsloth: `{extra_eos}` is not a singular token in the tokenizer.")
 
@@ -2429,7 +2438,8 @@ extra_eos_tokens = None,
             find_end = ""
         find_end = r"\{INPUT\}[\s\n]{0,}" + find_end
         input_end = list(re.finditer(find_end, right))
-        assert(len(input_end) == 1)
+        if len(input_end) != 1:
+            raise ValueError("Unsloth: expected exactly one {INPUT} match in prompt template")
         input_end = input_end[0]
         input_end = input_end.span(0)[1]
         input_part = right[:input_end]
@@ -2644,7 +2654,8 @@ def test_construct_chat_template():
 
     tokenizer.chat_template = jinja_template
     new_output = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-    assert(correct_output == new_output)
+    if correct_output != new_output:
+        raise ValueError("Unsloth: Jinja template output does not match expected output")
 
 
 def apply_chat_template( \
@@ -2745,7 +2756,8 @@ def test_chat_templates():
     correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-    assert(correct_prompt == our_prompt)
+    if correct_prompt != our_prompt:
+        raise ValueError("Unsloth: Alpaca prompt template mismatch")
 
     # Chatml
     template = chatml_template
@@ -2753,7 +2765,8 @@ def test_chat_templates():
     correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-    assert(correct_prompt == our_prompt)
+    if correct_prompt != our_prompt:
+        raise ValueError("Unsloth: Chatml prompt template mismatch")
 
     # Mistral
     template = mistral_template
@@ -2761,7 +2774,8 @@ def test_chat_templates():
     correct_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
-    assert(correct_prompt == our_prompt)
+    if correct_prompt != our_prompt:
+        raise ValueError("Unsloth: Mistral prompt template mismatch")
 
     # Llama
     template = llama_template
@@ -2769,13 +2783,14 @@ def test_chat_templates():
     correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-    assert(correct_prompt == our_prompt)
+    if correct_prompt != our_prompt:
+        raise ValueError("Unsloth: Llama prompt template mismatch")
 
     # Vicuna
     try:
         from fastchat.conversation import get_conv_template
     except:
-        os.system("pip -qqq install git+https://github.com/lm-sys/FastChat.git")
+        subprocess.run(["pip", "-qqq", "install", "git+https://github.com/lm-sys/FastChat.git@v0.2.36"], check=False)
         from fastchat.conversation import get_conv_template
     correct_prompt = get_conv_template("vicuna_v1.1")
     for j in range(len(messages)-1):
@@ -2787,12 +2802,13 @@ def test_chat_templates():
     correct_tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.5")
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
-    assert(correct_prompt == our_prompt)
+    if correct_prompt != our_prompt:
+        raise ValueError("Unsloth: Vicuna prompt template mismatch")
 
     try:
         from fastchat.conversation import get_conv_template
     except:
-        os.system("pip -qqq install git+https://github.com/lm-sys/FastChat.git")
+        subprocess.run(["pip", "-qqq", "install", "git+https://github.com/lm-sys/FastChat.git@v0.2.36"], check=False)
         from fastchat.conversation import get_conv_template
     correct_prompt = get_conv_template("zero_shot")
     for j in range(len(messages)-1):
