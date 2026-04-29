@@ -174,7 +174,6 @@ def dpo_trainer_vision_process_row(
     )
 
     prompt_input_ids = processed_features["input_ids"][0]
-    pixel_values = processed_features["pixel_values"][0]
     chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)[
         "input_ids"
     ]
@@ -199,31 +198,23 @@ def dpo_trainer_vision_process_row(
 
     output = {
         "prompt_input_ids": prompt_input_ids,
-        "pixel_values": pixel_values,
         "chosen_input_ids": chosen_input_ids,
         "rejected_input_ids": rejected_input_ids,
     }
+    if "pixel_values" in processed_features:
+        output["pixel_values"] = processed_features["pixel_values"][0]
     if "pixel_attention_mask" in processed_features:
         output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
     if "image_sizes" in processed_features:
         output["image_sizes"] = processed_features["image_sizes"][0]
     if "token_type_ids" in processed_features:
         output["token_type_ids"] = processed_features["token_type_ids"][0]
-
-    pixel_position_ids = processed_features.get("pixel_position_ids")
-    _used_image_position_ids = False
-    if pixel_position_ids is None:
-        pixel_position_ids = processed_features.get("image_position_ids")
-        _used_image_position_ids = pixel_position_ids is not None
-
-    if pixel_position_ids is not None:
-        output["pixel_position_ids"] = pixel_position_ids[0]
-
-    for _k in ("image_position_ids", "mm_token_type_ids"):
-        if _k in processed_features:
-            if _k == "image_position_ids" and _used_image_position_ids:
-                continue
-            output[_k] = processed_features[_k][0]
+    if "pixel_position_ids" in processed_features:
+        output["pixel_position_ids"] = processed_features["pixel_position_ids"][0]
+    if "image_position_ids" in processed_features:
+        output["image_position_ids"] = processed_features["image_position_ids"][0]
+    if "mm_token_type_ids" in processed_features:
+        output["mm_token_type_ids"] = processed_features["mm_token_type_ids"][0]
 
     return output
 
@@ -338,11 +329,13 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "        for _k in " + _vision_keys + ":\n"
         "            if not all(_k in example for example in examples):\n"
         "                continue\n"
-        "            _padding_value = -1 if _k.endswith('position_ids') else 0\n"
+        "            _is_position_key = _k.endswith('position_ids')\n"
+        "            _padding_value = -1 if _is_position_key else 0\n"
+        "            _padding_side = 'right' if _is_position_key else 'left'\n"
         "            _values = [_unsloth_torch.as_tensor(example[_k]) for example in examples]\n"
         "            try:\n"
         "                if _unsloth_trl_pad is not None and _values[0].dim() <= 2:\n"
-        "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side='left')\n"
+        "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side=_padding_side)\n"
         "                else:\n"
         "                    from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
         "                    output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
