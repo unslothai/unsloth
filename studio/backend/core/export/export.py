@@ -348,10 +348,12 @@ class ExportBackend:
                 ensure_dir(Path(save_directory))
 
                 if _IS_MLX:
-                    # MLX: save_pretrained_merged fuses LoRA and saves HF-compatible
-                    # safetensors. format_type / save_method are GPU-only concepts.
+                    # MLX: UI's "Merged Model" option always means full
+                    # 16-bit. LoRA and GGUF go through separate export
+                    # functions (export_lora_adapter / export_gguf).
                     self.current_model.save_pretrained_merged(
                         save_directory, self.current_tokenizer,
+                        save_method = "merged_16bit",
                     )
                 else:
                     # GPU: determine save method from format_type
