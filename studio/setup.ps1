@@ -1501,6 +1501,17 @@ if ($_studioOverride) {
     }
     if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
         $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
+        # why: mirror setup.sh:417 and install.ps1:130 -- fail fast when the
+        # custom root is read-only instead of erroring later while creating
+        # sidecar venvs / installing packages.
+        $_setupWriteProbe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
+        try {
+            [System.IO.File]::WriteAllText($_setupWriteProbe, "")
+            Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
+            exit 1
+        }
     } else {
         Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$_studioOverride does not exist." -ForegroundColor Red
         Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red

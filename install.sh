@@ -1145,6 +1145,16 @@ mkdir -p "$STUDIO_HOME"
 _MIGRATED=false
 
 if [ -x "$VENV_DIR/bin/python" ]; then
+    # why: matching guard to the .venv branch below -- in env-mode
+    # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
+    # existing $STUDIO_HOME/unsloth_studio that lacks Studio sentinels.
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
+       && [ ! -e "$STUDIO_HOME/bin/unsloth" ]; then
+        echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
+        exit 1
+    fi
     # New layout already exists — nuke for fresh install
     rm -rf "$VENV_DIR"
 elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
