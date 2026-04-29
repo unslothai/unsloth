@@ -905,6 +905,7 @@ def estimate_required_model_memory_gb(
         TrainingVramConfig,
         extract_arch_config,
         estimate_training_vram,
+        compute_total_params,
         CUDA_OVERHEAD_BYTES,
         QUANT_4BIT_FACTOR,
         DEFAULT_TARGET_MODULES,
@@ -973,6 +974,14 @@ def estimate_required_model_memory_gb(
 
     if arch is not None:
         breakdown = estimate_training_vram(arch, vram_config)
+        # why: extract_arch_config only sees text_config, so multimodal models
+        # (VLMs) and partially-modeled families (Gemma3n AltUp/Laurel etc.)
+        # would otherwise lose vision/audio tower bytes that the safetensors
+        # total includes.
+        arch_fp16_bytes = compute_total_params(arch) * 2
+        extra_bytes = max(0, int(model_size_bytes) - arch_fp16_bytes)
+        if extra_bytes > 0:
+            breakdown.model_weights += extra_bytes
         required_gb = breakdown.total / (1024**3)
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"

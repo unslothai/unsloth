@@ -77,6 +77,7 @@ class ModelArchConfig:
     moe_intermediate_size: Optional[int] = None
     n_shared_experts: int = 0
     shared_expert_intermediate_size: Optional[int] = None
+    num_experts_per_tok: int = 1
     num_dense_layers: int = 0
     q_lora_rank: Optional[int] = None
     kv_lora_rank: Optional[int] = None
@@ -162,6 +163,14 @@ class VramBreakdown:
         }
 
 
+def _first_scalar(value):
+    # why: ERNIE MoE configs ship moe_intermediate_size / moe_num_experts as
+    # [routed, shared] lists; downstream arithmetic needs the routed scalar.
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else None
+    return value
+
+
 def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
     """Layer indices that use dense MLP instead of MoE. Position matters."""
     # why: transformers Exaone-MoE / Laguna / Hy_v3 / GLM-MoE-DSA / GLM4-MoE-Lite /
@@ -224,18 +233,26 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     num_kv_heads = getattr(text_config, "num_key_value_heads", num_heads)
 
     num_experts = None
-    for attr in ("num_local_experts", "num_experts", "n_routed_experts"):
-        num_experts = getattr(text_config, attr, None)
+    for attr in (
+        "num_local_experts",
+        "num_experts",
+        "n_routed_experts",
+        "moe_num_experts",
+    ):
+        num_experts = _first_scalar(getattr(text_config, attr, None))
         if num_experts is not None:
             break
 
-    moe_intermediate = getattr(text_config, "moe_intermediate_size", None)
-    # why: transformers Exaone-MoE uses `num_shared_experts`; Qwen3.5-MoE uses
-    # `shared_expert_intermediate_size` plus a single shared expert without an
-    # explicit count. Fall through to the canonical `n_shared_experts` last.
+    moe_intermediate_raw = getattr(text_config, "moe_intermediate_size", None)
+    moe_intermediate = _first_scalar(moe_intermediate_raw)
+    # why: transformers Exaone-MoE uses `num_shared_experts`; ERNIE MoE uses
+    # `moe_num_shared_experts`; Qwen3.5-MoE uses `shared_expert_intermediate_size`
+    # plus a single shared expert without an explicit count. Fall through to the
+    # canonical `n_shared_experts` last.
     n_shared_experts = (
-        getattr(text_config, "n_shared_experts", None)
-        or getattr(text_config, "num_shared_experts", None)
+        _first_scalar(getattr(text_config, "n_shared_experts", None))
+        or _first_scalar(getattr(text_config, "num_shared_experts", None))
+        or _first_scalar(getattr(text_config, "moe_num_shared_experts", None))
         or 0
     )
     shared_expert_intermediate_size = getattr(
@@ -243,8 +260,22 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         "shared_expert_intermediate_size",
         None,
     )
+    # why: ERNIE MoE encodes shared_expert intermediate as the second element of
+    # moe_intermediate_size when no explicit shared_expert_intermediate_size is
+    # set.
+    if (
+        shared_expert_intermediate_size is None
+        and isinstance(moe_intermediate_raw, (list, tuple))
+        and len(moe_intermediate_raw) > 1
+    ):
+        shared_expert_intermediate_size = moe_intermediate_raw[1]
     if shared_expert_intermediate_size and n_shared_experts == 0:
         n_shared_experts = 1
+    num_experts_per_tok = (
+        getattr(text_config, "num_experts_per_tok", None)
+        or getattr(text_config, "top_k_experts", None)
+        or 1
+    )
 
     dense_layer_indices: tuple = ()
     if num_experts is not None and num_experts > 1:
@@ -269,6 +300,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         moe_intermediate_size = moe_intermediate,
         n_shared_experts = n_shared_experts,
         shared_expert_intermediate_size = shared_expert_intermediate_size,
+        num_experts_per_tok = int(num_experts_per_tok),
         num_dense_layers = num_dense_layers,
         q_lora_rank = q_lora_rank,
         kv_lora_rank = kv_lora_rank,
@@ -389,8 +421,11 @@ def _per_layer_input_lora_params(
     arch: ModelArchConfig,
     r: int,
     target_modules,
-    all_linear: bool,
 ) -> int:
+    # why: Unsloth's get_peft_regex (unsloth_zoo/peft_utils.py) requires module
+    # names to contain a component tag (mlp/attn/...); PLE module names lack
+    # any tag, so all-linear training does NOT attach LoRA to them. Only count
+    # PLE LoRA when the user explicitly names PLE modules.
     pli = arch.hidden_size_per_layer_input
     if pli <= 0:
         return 0
@@ -402,11 +437,11 @@ def _per_layer_input_lora_params(
     n_layers = arch.num_hidden_layers
     hd = arch.hidden_size
     total = 0
-    if all_linear or "per_layer_model_projection" in targets:
+    if "per_layer_model_projection" in targets:
         total += hd * r + r * (n_layers * pli)
-    if all_linear or "per_layer_input_gate" in targets:
+    if "per_layer_input_gate" in targets:
         total += (hd * r + r * pli) * n_layers
-    if all_linear or "per_layer_projection" in targets:
+    if "per_layer_projection" in targets:
         total += (pli * r + r * hd) * n_layers
     return total
 
@@ -480,8 +515,11 @@ def _module_path_matches(skip_module: str, alias: str) -> bool:
         return False
     if alias_parts[0] == "layers":
         return skip_parts == alias_parts
-    if len(skip_parts) < len(alias_parts):
-        return False
+    if len(skip_parts) <= len(alias_parts):
+        # why: transformers BNB quantizer suffix-matches short skip entries
+        # like ["q_proj"] / ["lm_head"] against full module paths, so a skip
+        # shorter than the alias is a tail match.
+        return alias_parts[-len(skip_parts) :] == skip_parts
     if skip_parts[-len(alias_parts) :] != alias_parts:
         return False
     prefix_parts = skip_parts[: len(skip_parts) - len(alias_parts)]
@@ -916,21 +954,24 @@ def compute_lora_params(
             # only; Unsloth's get_moe_target_parameters (models/_utils.py:3253)
             # expands MoE expert nn.Parameter LoRA only when target_modules
             # contains explicit gate_proj/up_proj/down_proj/gate_up_proj names.
-            # Bare "all-linear" therefore does NOT enable expert/shared-expert
-            # LoRA in actual training.
-            moe_mlp = 0 if all_linear else _lora_mlp_elements(
+            # Bare "all-linear" therefore does NOT enable routed-expert
+            # LoRA, but shared experts ARE regular nn.Linear MLPs and get
+            # picked up by get_peft_regex.
+            routed_moe = 0 if all_linear else _lora_mlp_elements(
                 hd,
                 _get_mlp_size(arch),
                 r,
                 selected_modules,
                 n_experts,
-            ) + _lora_mlp_elements(
+            )
+            shared_moe = _lora_mlp_elements(
                 hd,
                 _shared_expert_size(arch),
                 r,
                 selected_modules,
                 arch.n_shared_experts,
             )
+            moe_mlp = routed_moe + shared_moe
             if arch.moe_has_dense_mlp:
                 # why: parallel dense MLP coexists with MoE on every layer.
                 mlp_total = structured_dense_mlp + moe_mlp * n_moe
@@ -946,7 +987,7 @@ def compute_lora_params(
         return (
             attn_total
             + mlp_total
-            + _per_layer_input_lora_params(arch, r, target_modules, all_linear)
+            + _per_layer_input_lora_params(arch, r, target_modules)
         )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
@@ -954,20 +995,23 @@ def compute_lora_params(
         n_moe = n_layers - n_dense
         # why: routed and shared experts may use different intermediate sizes
         # (Qwen3.5-MoE: routed mlp_size != shared_expert_intermediate_size).
-        # See structured branch for the all-linear exclusion rationale.
-        moe_mlp = 0 if all_linear else _lora_mlp_elements(
+        # See structured branch for the all-linear exclusion rationale; only
+        # routed (nn.Parameter) experts are excluded under all-linear.
+        routed_moe = 0 if all_linear else _lora_mlp_elements(
             hd,
             _get_mlp_size(arch),
             r,
             selected_modules,
             n_experts,
-        ) + _lora_mlp_elements(
+        )
+        shared_moe = _lora_mlp_elements(
             hd,
             _shared_expert_size(arch),
             r,
             selected_modules,
             arch.n_shared_experts,
         )
+        moe_mlp = routed_moe + shared_moe
         dense_mlp = _lora_mlp_elements(
             hd,
             arch.intermediate_size,
@@ -992,7 +1036,7 @@ def compute_lora_params(
             * n_layers
         )
 
-    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules, all_linear)
+    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:
@@ -1039,7 +1083,9 @@ def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
         kv_count = 1 if use_alt_attention else 2
         qkv_size = q_size + kv_size * kv_count
         if is_moe_layer:
-            mlp_size = _get_mlp_size(arch)
+            # why: each token routes through `num_experts_per_tok` experts; their
+            # gate/up/down intermediates are all live during MLP forward.
+            mlp_size = _get_mlp_size(arch) * arch.num_experts_per_tok
             if arch.n_shared_experts:
                 mlp_size += _shared_expert_size(arch) * arch.n_shared_experts
             if arch.moe_has_dense_mlp:
@@ -1048,12 +1094,14 @@ def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
             mlp_size = _layer_mlp_size(arch, layer_idx)
         return qkv_size, mlp_size
     kv_size = _get_kv_size(arch)
-    mlp_size = _get_mlp_size(arch)
     if is_moe_layer:
+        mlp_size = _get_mlp_size(arch) * arch.num_experts_per_tok
         if arch.n_shared_experts:
             mlp_size += _shared_expert_size(arch) * arch.n_shared_experts
         if arch.moe_has_dense_mlp:
             mlp_size += arch.intermediate_size
+    else:
+        mlp_size = _get_mlp_size(arch)
     return arch.hidden_size + kv_size + kv_size, mlp_size
 
 
