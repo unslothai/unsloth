@@ -48,11 +48,16 @@ def run(args):
     # Activation capture setup (optional)
     capture_callback = None
     if args.capture_activations:
-        from unsloth import ActivationCaptureConfig, ActivationCapture, ActivationCaptureCallback
+        from unsloth import (
+            ActivationCaptureConfig,
+            ActivationCapture,
+            ActivationCaptureCallback,
+        )
+
         _capture_cfg = ActivationCaptureConfig(
-            output_dir       = args.capture_output_dir,
+            output_dir = args.capture_output_dir,
             capture_interval = args.capture_interval,
-            max_channels     = args.capture_max_channels,
+            max_channels = args.capture_max_channels,
         )
         # Capture object is created after the model is loaded (see below)
 
@@ -143,6 +148,7 @@ def run(args):
     # Attach activation capture now that model exists
     if args.capture_activations:
         from unsloth import ActivationCapture, ActivationCaptureCallback
+
         capture = ActivationCapture(model, _capture_cfg)
         capture_callback = ActivationCaptureCallback(capture)
         print(

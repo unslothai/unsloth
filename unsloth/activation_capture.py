@@ -16,7 +16,7 @@
 Neuron activation capture for training visualization.
 
 Hooks into decoder layer outputs during finetuning to compile lightweight
-per-channel statistics to animate a 2D or 3D block of neurons and show how 
+per-channel statistics to animate a 2D or 3D block of neurons and show how
 finetuning reshapes the model.
 
 Output layout (written to ``output_dir/``):
@@ -81,7 +81,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import torch
-from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+from transformers import (
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    TrainingArguments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +94,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ActivationCaptureConfig:
@@ -117,6 +123,7 @@ class ActivationCaptureConfig:
                             Default: True.
         seed:              Random seed for reproducible channel sampling.
     """
+
     output_dir: str = "activation_logs"
     capture_interval: int = 10
     max_channels: int = 64
@@ -129,6 +136,7 @@ class ActivationCaptureConfig:
 # ---------------------------------------------------------------------------
 # Core capture logic
 # ---------------------------------------------------------------------------
+
 
 class ActivationCapture:
     """Registers PyTorch forward hooks on transformer decoder layers and
@@ -159,7 +167,7 @@ class ActivationCapture:
         # Cache LoRA modules per layer for fast lookup
         self._lora_modules: Dict[int, List[tuple]] = {}
 
-        os.makedirs(config.output_dir, exist_ok=True)
+        os.makedirs(config.output_dir, exist_ok = True)
 
         # ---- locate decoder layers (handles PEFT wrapping) ----------------
         # PeftModel:  model  →  .base_model  →  .model  →  .model  →  .layers
@@ -172,7 +180,13 @@ class ActivationCapture:
                 break
             # try going one level deeper via common attribute names
             # "language_model" covers VLM wrappers like Gemma4ForConditionalGeneration
-            for attr in ("base_model", "model", "language_model", "transformer", "decoder"):
+            for attr in (
+                "base_model",
+                "model",
+                "language_model",
+                "transformer",
+                "decoder",
+            ):
                 deeper = getattr(candidate, attr, None)
                 if deeper is not None and deeper is not candidate:
                     candidate = deeper
@@ -194,7 +208,13 @@ class ActivationCapture:
         raw_cfg = None
         cfg_candidates = [model]
         _c = model
-        for _attr in ("base_model", "model", "language_model", "transformer", "decoder"):
+        for _attr in (
+            "base_model",
+            "model",
+            "language_model",
+            "transformer",
+            "decoder",
+        ):
             _next = getattr(_c, _attr, None)
             if _next is not None and _next is not _c:
                 cfg_candidates.append(_next)
@@ -204,16 +224,16 @@ class ActivationCapture:
                 raw_cfg = obj.config
                 break
 
-        self._hidden_size      = getattr(raw_cfg, "hidden_size", None)
+        self._hidden_size = getattr(raw_cfg, "hidden_size", None)
         # VLM configs (e.g. Gemma4) nest text dims under raw_cfg.text_config
         if self._hidden_size is None:
             _text_cfg = getattr(raw_cfg, "text_config", None)
             self._hidden_size = getattr(_text_cfg, "hidden_size", None)
-        self._intermediate_size= getattr(raw_cfg, "intermediate_size", None)
+        self._intermediate_size = getattr(raw_cfg, "intermediate_size", None)
         if self._intermediate_size is None:
             _text_cfg = getattr(raw_cfg, "text_config", None)
             self._intermediate_size = getattr(_text_cfg, "intermediate_size", None)
-        model_name             = getattr(raw_cfg, "_name_or_path", "unknown")
+        model_name = getattr(raw_cfg, "_name_or_path", "unknown")
 
         # ---- sample channels for display ----------------------------------
         n_total = self._hidden_size or config.max_channels
@@ -240,21 +260,21 @@ class ActivationCapture:
             lora_targets = sorted(all_targets)
 
         metadata = {
-            "model_name":         model_name,
-            "num_layers":         len(self._layers),
-            "hidden_size":        self._hidden_size,
-            "intermediate_size":  self._intermediate_size,
-            "captured_channels":  self._sampled_channels,
-            "capture_interval":   config.capture_interval,
-            "max_channels":       config.max_channels,
-            "capture_mlp_out":    config.capture_mlp_out,
-            "capture_gradients":  config.capture_gradients,
+            "model_name": model_name,
+            "num_layers": len(self._layers),
+            "hidden_size": self._hidden_size,
+            "intermediate_size": self._intermediate_size,
+            "captured_channels": self._sampled_channels,
+            "capture_interval": config.capture_interval,
+            "max_channels": config.max_channels,
+            "capture_mlp_out": config.capture_mlp_out,
+            "capture_gradients": config.capture_gradients,
             "capture_lora_norms": config.capture_lora_norms,
-            "lora_targets":       lora_targets,
-            "created_at":         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "lora_targets": lora_targets,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         with open(os.path.join(config.output_dir, "metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(metadata, f, indent = 2)
 
         # ---- prepare output file -----------------------------------------
         self._log_path = os.path.join(config.output_dir, "activation_log.jsonl")
@@ -262,7 +282,9 @@ class ActivationCapture:
 
         logger.info(
             "ActivationCapture: %d channels × %d layers → %s",
-            len(self._sampled_channels), len(self._layers), config.output_dir,
+            len(self._sampled_channels),
+            len(self._layers),
+            config.output_dir,
         )
 
     # ------------------------------------------------------------------
@@ -302,7 +324,8 @@ class ActivationCapture:
             total_adapters = sum(len(v) for v in self._lora_modules.values())
             logger.info(
                 "ActivationCapture: Found %d LoRA adapters across %d layers",
-                total_adapters, len(self._lora_modules)
+                total_adapters,
+                len(self._lora_modules),
             )
         else:
             logger.info("ActivationCapture: No LoRA adapters found (non-PEFT model?)")
@@ -325,15 +348,17 @@ class ActivationCapture:
                         # Use the cyclic trace identity:
                         #   ||BA||_F^2 = tr(A^T B^T B A) = tr(B^T B · A A^T)
                         # Both intermediates are [r, r] — far cheaper than [d_out, d_in].
-                        A = lora_A.weight.float()       # [r, in_features]
-                        B = lora_B.weight.float()       # [out_features, r]
-                        BtB = B.T @ B                   # [r, r]
-                        AAt = A @ A.T                   # [r, r]
+                        A = lora_A.weight.float()  # [r, in_features]
+                        B = lora_B.weight.float()  # [out_features, r]
+                        BtB = B.T @ B  # [r, r]
+                        AAt = A @ A.T  # [r, r]
                         # (BtB * AAt).sum() == tr(BtB @ AAt) because BtB is symmetric
-                        norm = (BtB * AAt).sum().clamp(min=0).sqrt().item()
+                        norm = (BtB * AAt).sum().clamp(min = 0).sqrt().item()
                         layer_norms[target_name] = norm
                 except Exception as e:
-                    logger.debug(f"Could not compute LoRA norm for layer {layer_idx} {target_name}: {e}")
+                    logger.debug(
+                        f"Could not compute LoRA norm for layer {layer_idx} {target_name}: {e}"
+                    )
             if layer_norms:
                 lora_norms[layer_idx] = layer_norms
         return lora_norms
@@ -348,13 +373,13 @@ class ActivationCapture:
         Also registers backward hooks for gradient capture if enabled.
         """
         for idx, layer in enumerate(self._layers):
-            h = layer.register_forward_hook(self._make_layer_hook(idx, kind="layer"))
+            h = layer.register_forward_hook(self._make_layer_hook(idx, kind = "layer"))
             self._hooks.append(h)
             if self.config.capture_mlp_out:
                 mlp = getattr(layer, "mlp", None)
                 if mlp is not None:
                     h2 = mlp.register_forward_hook(
-                        self._make_layer_hook(idx, kind="mlp")
+                        self._make_layer_hook(idx, kind = "mlp")
                     )
                     self._hooks.append(h2)
 
@@ -365,7 +390,8 @@ class ActivationCapture:
 
         logger.debug(
             "ActivationCapture: %d forward hooks, %d backward hooks attached.",
-            len(self._hooks), len(self._grad_hooks)
+            len(self._hooks),
+            len(self._grad_hooks),
         )
 
     def detach(self):
@@ -407,9 +433,9 @@ class ActivationCapture:
                 # full [B, S, H] fp32 copy; instead only [B, S, K] is cast.
                 # Reduces peak VRAM spike by H/K (e.g. 64x for K=64, d=4096).
                 h_sampled = hidden.detach()[:, :, sampled].float()  # [B, S, K]
-                flat = h_sampled.reshape(-1, n_channels)             # [B*S, K]
-                mean_abs = flat.abs().mean(dim=0).tolist()
-                mean     = flat.mean(dim=0).tolist()
+                flat = h_sampled.reshape(-1, n_channels)  # [B*S, K]
+                mean_abs = flat.abs().mean(dim = 0).tolist()
+                mean = flat.mean(dim = 0).tolist()
 
             buf_key = layer_idx if kind == "layer" else f"{layer_idx}_mlp"
             self._buffer[buf_key] = {"mean_abs": mean_abs, "mean": mean}
@@ -424,6 +450,7 @@ class ActivationCapture:
         which indicates how much this layer is contributing to the loss
         gradient — i.e., how much it's "learning" this step.
         """
+
         def hook(module, grad_input, grad_output):
             if not self._should_capture:
                 return
@@ -470,8 +497,8 @@ class ActivationCapture:
             return
 
         record = {
-            "step":   self._step,
-            "loss":   self._loss,
+            "step": self._step,
+            "loss": self._loss,
             "layers": {str(k): v for k, v in self._buffer.items()},
         }
 
@@ -491,7 +518,7 @@ class ActivationCapture:
                 }
 
         with open(self._log_path, "a") as f:
-            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            f.write(json.dumps(record, separators = (",", ":")) + "\n")
 
         self._buffer.clear()
         self._grad_buffer.clear()
@@ -501,6 +528,7 @@ class ActivationCapture:
 # ---------------------------------------------------------------------------
 # HuggingFace Trainer callback
 # ---------------------------------------------------------------------------
+
 
 class ActivationCaptureCallback(TrainerCallback):
     """Drives an :class:`ActivationCapture` instance from a HuggingFace Trainer.
@@ -531,32 +559,49 @@ class ActivationCaptureCallback(TrainerCallback):
     def __init__(self, capture: ActivationCapture):
         self.capture = capture
 
-    def on_train_begin(self, args: TrainingArguments, state: TrainerState,
-                       control: TrainerControl, **kwargs):
+    def on_train_begin(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         self.capture.attach()
         # Arm capture for step 0 so the pre-finetune baseline is recorded.
-        self.capture.mark_capture(step=0, loss=None)
+        self.capture.mark_capture(step = 0, loss = None)
 
-    def on_step_begin(self, args: TrainingArguments, state: TrainerState,
-                      control: TrainerControl, **kwargs):
+    def on_step_begin(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         step = state.global_step
         interval = self.capture.config.capture_interval
-        is_on_interval = (step % interval == 0)
-        is_last_step   = (state.max_steps > 0 and step == state.max_steps - 1)
+        is_on_interval = step % interval == 0
+        is_last_step = state.max_steps > 0 and step == state.max_steps - 1
 
         if is_on_interval or is_last_step:
-            loss = (
-                state.log_history[-1].get("loss")
-                if state.log_history else None
-            )
-            self.capture.mark_capture(step=step, loss=loss)
+            loss = state.log_history[-1].get("loss") if state.log_history else None
+            self.capture.mark_capture(step = step, loss = loss)
 
-    def on_step_end(self, args: TrainingArguments, state: TrainerState,
-                    control: TrainerControl, **kwargs):
+    def on_step_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         self.capture.flush()
 
-    def on_train_end(self, args: TrainingArguments, state: TrainerState,
-                     control: TrainerControl, **kwargs):
+    def on_train_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         # Final flush in case the very last step was on an interval boundary
         # and the callback had armed capture but training ended atomically.
         self.capture.flush()
