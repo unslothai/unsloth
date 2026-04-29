@@ -1511,6 +1511,30 @@ if ($_studioOverride) {
 }
 $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
+# why: in env-override mode $StudioHome is a user-chosen workspace; refuse
+# to Remove-Item any directory that doesn't carry the Studio ownership
+# marker instead of silently destroying unrelated user data.
+$StudioOwnedMarker = ".unsloth-studio-owned"
+function Assert-StudioOwnedOrAbsent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    if ($env:UNSLOTH_STUDIO_HOME -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker))) {
+        Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
+        Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+        exit 1
+    }
+}
+function Mark-StudioOwned {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    try {
+        [System.IO.File]::WriteAllText((Join-Path $Path $StudioOwnedMarker), "")
+    } catch {}
+}
+
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.
 if (Test-Path -LiteralPath $VenvDir -PathType Container) {
@@ -1769,6 +1793,7 @@ $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 $_NeedT5Install = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
+    Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
     Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
     $_NeedT5Install = $true
 }
@@ -1785,8 +1810,10 @@ $ErrorActionPreference = "Continue"
 
 # --- .venv_t5_530 (transformers 5.3.0) ---
 substep "pre-installing transformers 5.3.0 for newer model support..."
+Assert-StudioOwnedOrAbsent -Path $VenvT5_530Dir -Label "transformers 5.3 sidecar venv"
 if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
 [System.IO.Directory]::CreateDirectory($VenvT5_530Dir) | Out-Null
+Mark-StudioOwned -Path $VenvT5_530Dir
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_530Dir --no-deps $pkg
@@ -1818,8 +1845,10 @@ step "transformers" "5.3.0 pre-installed"
 
 # --- .venv_t5_550 (transformers 5.5.0) ---
 substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
+Assert-StudioOwnedOrAbsent -Path $VenvT5_550Dir -Label "transformers 5.5 sidecar venv"
 if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
 [System.IO.Directory]::CreateDirectory($VenvT5_550Dir) | Out-Null
+Mark-StudioOwned -Path $VenvT5_550Dir
 foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_550Dir --no-deps $pkg
@@ -2503,11 +2532,13 @@ if (-not $NeedLlamaSourceBuild) {
 
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
+        Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install"
         if (Test-Path -LiteralPath $OriginalLlamaCppDir) { Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force }
         Move-Item -LiteralPath $LlamaCppDir -Destination $OriginalLlamaCppDir
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
+        Mark-StudioOwned -Path $LlamaCppDir
     } elseif (-not $BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         # Build failed -- clean up temp dir, preserve existing install
         if (Test-Path -LiteralPath $LlamaCppDir) { Remove-Item -LiteralPath $LlamaCppDir -Recurse -Force }

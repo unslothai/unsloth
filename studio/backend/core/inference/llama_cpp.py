@@ -508,7 +508,11 @@ class LlamaCppBackend:
             if _is_legacy:
                 search_roots = [legacy_llama]
             else:
-                search_roots = [_resolved_sr / "llama.cpp", legacy_llama]
+                # why: _kill_orphaned_servers excludes the legacy root in custom
+                # mode; discovery must match so we never spawn a server we then
+                # refuse to clean up. UNSLOTH_LLAMA_CPP_PATH (handled earlier)
+                # is the explicit way to share a build across roots.
+                search_roots = [_resolved_sr / "llama.cpp"]
         except ImportError:
             search_roots = [legacy_llama]
         _seen_roots: set[str] = set()

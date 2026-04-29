@@ -401,7 +401,20 @@ MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
 POLL_INTERVAL_SEC=1
 LOG_FILE="$DATA_DIR/studio.log"
+# why: in env-override mode multiple installs share an OS user; namespace the
+# lock and remember our own healthy port so we never attach to an unrelated
+# Studio listening on the global 8888..8908 range.
 LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"
+PORT_FILE=""
+if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+    if command -v cksum >/dev/null 2>&1; then
+        _LOCK_KEY=$(printf '%s' "$DATA_DIR" | cksum | awk '{print $1}')
+    else
+        _LOCK_KEY=""
+    fi
+    [ -n "$_LOCK_KEY" ] && LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u)-${_LOCK_KEY}.lock"
+    PORT_FILE="$DATA_DIR/studio.port"
+fi
 
 # ── HTTP GET helper (supports curl and wget) ──
 _http_get() {
@@ -446,6 +459,25 @@ _candidate_ports() {
 }
 
 _find_healthy_port() {
+    if [ -n "$PORT_FILE" ] && [ -f "$PORT_FILE" ]; then
+        # why: env-mode installs only attach to a port we previously launched
+        # ourselves; never to a sibling Studio that happens to be healthy.
+        _p=$(cat "$PORT_FILE" 2>/dev/null || true)
+        case "$_p" in
+            ''|*[!0-9]*) ;;
+            *)
+                if _check_health "$_p"; then
+                    echo "$_p"
+                    return 0
+                fi
+                rm -f "$PORT_FILE"
+                ;;
+        esac
+        return 1
+    fi
+    if [ -n "$PORT_FILE" ]; then
+        return 1
+    fi
     for _p in $(_candidate_ports | sort -un); do
         if _check_health "$_p"; then
             echo "$_p"
@@ -596,6 +628,7 @@ if [ -t 1 ]; then
         _obwr_deadline=$(($(date +%s) + TIMEOUT_SEC))
         while [ "$(date +%s)" -lt "$_obwr_deadline" ]; do
             if _check_health "$_launch_port"; then
+                [ -n "$PORT_FILE" ] && printf '%s\n' "$_launch_port" > "$PORT_FILE" 2>/dev/null || true
                 _release_lock
                 _open_browser "http://localhost:$_launch_port"
                 exit 0
@@ -619,6 +652,7 @@ else
     _deadline=$(($(date +%s) + TIMEOUT_SEC))
     while [ "$(date +%s)" -lt "$_deadline" ]; do
         if _check_health "$_launch_port"; then
+            [ -n "$PORT_FILE" ] && printf '%s\n' "$_launch_port" > "$PORT_FILE" 2>/dev/null || true
             _open_browser "http://localhost:$_launch_port"
             exit 0
         fi

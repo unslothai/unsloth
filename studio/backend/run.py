@@ -167,7 +167,10 @@ _PID_FILE = _studio_root() / "studio.pid"
 # real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
 # picks up the custom build. Skip for legacy-default to avoid flipping
 # default-mode installs into env-override.
-_LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+try:
+    _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
 try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):

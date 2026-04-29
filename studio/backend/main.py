@@ -28,7 +28,10 @@ import _platform_compat  # noqa: F401
 # its LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
-_LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
+try:
+    _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = _Path.home() / ".unsloth" / "studio"
 try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):

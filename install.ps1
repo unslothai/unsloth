@@ -450,6 +450,9 @@ function Install-UnslothStudio {
             # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) in the
             # launcher so fresh shells don't need to re-export. Default installs
             # get an empty prefix so behavior matches pre-PR exactly.
+            # why: also bake $portFile / $mutexName per-install so concurrent
+            # custom-root launchers cannot serialize through one global mutex
+            # or attach to an unrelated Studio listening on 8888..8908.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
                 # When override == legacy default, llama.cpp stays at
                 # ~/.unsloth/llama.cpp (one shared build). Canonicalize the
@@ -465,9 +468,16 @@ function Install-UnslothStudio {
                 }
                 $_sq = $StudioHome -replace "'", "''"
                 $_llama = $_llamaPath -replace "'", "''"
+                $_appDirSq = $appDir -replace "'", "''"
+                $_appBytes = [Text.Encoding]::UTF8.GetBytes($appDir)
+                $_appHash = ([BitConverter]::ToString(
+                    [Security.Cryptography.SHA256]::Create().ComputeHash($_appBytes)
+                ) -replace '-', '').Substring(0, 16)
                 # UNSLOTH_LLAMA_CPP_PATH is a pre-existing user override; only default if unset.
-                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`nif (-not `$env:UNSLOTH_LLAMA_CPP_PATH) {`n    `$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n}`n"
-            } else { "" }
+                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`nif (-not `$env:UNSLOTH_LLAMA_CPP_PATH) {`n    `$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n}`n`$portFile = '$_appDirSq\studio.port'`n`$mutexName = 'Local\UnslothStudioLauncher-$_appHash'`n"
+            } else {
+                "`$portFile = `$null`n`$mutexName = 'Local\UnslothStudioLauncher'`n"
+            }
 
             $launcherContent = @"
 $studioHomeExport`$ErrorActionPreference = 'Stop'
@@ -507,6 +517,17 @@ function Get-CandidatePorts {
 }
 
 function Find-HealthyStudioPort {
+    if (`$portFile) {
+        if (Test-Path -LiteralPath `$portFile) {
+            `$cached = Get-Content -LiteralPath `$portFile -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (`$cached -match '^\d+`$') {
+                `$cachedPort = [int]`$cached
+                if (Test-StudioHealth -Port `$cachedPort) { return `$cachedPort }
+                Remove-Item -LiteralPath `$portFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        return `$null
+    }
     foreach (`$candidate in (Get-CandidatePorts)) {
         if (Test-StudioHealth -Port `$candidate) {
             return `$candidate
@@ -560,7 +581,7 @@ if (`$existingPort) {
     exit 0
 }
 
-`$launchMutex = [System.Threading.Mutex]::new(`$false, 'Local\UnslothStudioLauncher')
+`$launchMutex = [System.Threading.Mutex]::new(`$false, `$mutexName)
 `$haveMutex = `$false
 try {
     try {
@@ -616,9 +637,13 @@ try {
     `$browserOpened = `$false
     `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
     while ((Get-Date) -lt `$deadline) {
-        `$healthyPort = Find-HealthyStudioPort
-        if (`$healthyPort) {
-            Start-Process "http://localhost:`$healthyPort"
+        if (Test-StudioHealth -Port `$launchPort) {
+            if (`$portFile) {
+                try {
+                    [System.IO.File]::WriteAllText(`$portFile, "`$launchPort`n")
+                } catch {}
+            }
+            Start-Process "http://localhost:`$launchPort"
             `$browserOpened = `$true
             break
         }

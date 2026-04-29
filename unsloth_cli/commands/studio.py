@@ -72,8 +72,12 @@ def _ensure_studio_env_exported() -> None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
-    _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
-    if STUDIO_HOME.resolve() == _legacy_studio:
+    try:
+        _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
+        _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
+    except (OSError, ValueError):
+        _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
+    if _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"

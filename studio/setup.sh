@@ -543,9 +543,24 @@ fi
 #
 # Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
 # single .venv_t5 are always migrated to the tiered layout.
+# why: in env-override mode $STUDIO_HOME is a user-chosen workspace; refuse
+# to rm -rf any directory that doesn't carry the Studio ownership marker
+# instead of silently destroying unrelated user data.
+_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
+_assert_studio_owned_or_absent() {
+    _aso_dir="$1"
+    _aso_label="$2"
+    [ -d "$_aso_dir" ] || return 0
+    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
+        exit 1
+    fi
+}
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate
+    _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
     rm -rf "$STUDIO_HOME/.venv_t5"
     _NEED_T5_INSTALL=true
 fi
@@ -555,16 +570,20 @@ fi
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
 if [ "$_NEED_T5_INSTALL" = true ]; then
+    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
     [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
     mkdir -p "$VENV_T5_530_DIR"
+    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
     run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
     step "transformers" "5.3.0 pre-installed"
 
+    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
     [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
     mkdir -p "$VENV_T5_550_DIR"
+    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
     run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
@@ -1051,8 +1070,10 @@ else
 
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
             rm -rf "$LLAMA_CPP_DIR"
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
