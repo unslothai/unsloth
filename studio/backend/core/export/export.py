@@ -378,6 +378,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
@@ -387,6 +388,7 @@ class ExportBackend:
                         repo_id,
                         self.current_tokenizer,
                         token = hf_token,
+                        private = private,
                     )
                 else:
                     hub_save_method = (
@@ -432,6 +434,7 @@ class ExportBackend:
             return (
                 False,
                 "This is a PEFT model. Use 'Merged Model' export type instead.",
+                None,
             )
 
         try:
@@ -461,6 +464,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing base model to Hub: {repo_id}")
@@ -470,6 +474,7 @@ class ExportBackend:
                         repo_id,
                         self.current_tokenizer,
                         token = hf_token,
+                        private = private,
                     )
                 else:
                     # Get base model name from request or model config
@@ -645,6 +650,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
@@ -708,6 +714,7 @@ class ExportBackend:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
+                        None,
                     )
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
