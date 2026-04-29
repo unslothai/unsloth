@@ -1181,9 +1181,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
                 side_effect = _stub_resolver,
             ),
         ):
-            result = hardware_module._determine_attention_impl_for_gpu_estimate(
-                config
-            )
+            result = hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
         self.assertEqual(result, "eager")
         self.assertIsNone(captured["model_class"])

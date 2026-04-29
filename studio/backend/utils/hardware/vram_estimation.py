@@ -16,20 +16,26 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 QUANT_4BIT_FACTOR = 16 / 5
-DOUBLE_QUANT_4BIT_FACTOR = 3.6  # bnb_4bit_use_double_quant; see VRAM_ESTIMATION.md section 1
+DOUBLE_QUANT_4BIT_FACTOR = (
+    3.6  # bnb_4bit_use_double_quant; see VRAM_ESTIMATION.md section 1
+)
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
-NON_FLASH_ATTENTION_FACTOR = 12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
+NON_FLASH_ATTENTION_FACTOR = (
+    12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
+)
 
 LINEAR_ATTENTION_IMPLS = frozenset({"flash_attention_2", "sdpa", "flex_attention"})
 
-_SKIP_MODULE_TEXT_PREFIXES = frozenset({
-    "model",
-    "model.model",
-    "language_model",
-    "language_model.model",
-    "model.language_model",
-    "model.language_model.model",
-})
+_SKIP_MODULE_TEXT_PREFIXES = frozenset(
+    {
+        "model",
+        "model.model",
+        "language_model",
+        "language_model.model",
+        "model.language_model",
+        "model.language_model.model",
+    }
+)
 
 DEFAULT_TARGET_MODULES = [
     "q_proj",
@@ -216,10 +222,7 @@ def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
         )
         start = max(0, int(moe_start))
         interval = int(moe_interval)
-        moe_indices = {
-            i for i in range(start, end)
-            if (i + 1) % interval == 0
-        }
+        moe_indices = {i for i in range(start, end) if (i + 1) % interval == 0}
         return tuple(i for i in range(total_layers) if i not in moe_indices)
 
     first_k = getattr(text_config, "first_k_dense_replace", None)
@@ -325,9 +328,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     # why: Llama4 dense layers use intermediate_size_mlp; routed and shared
     # experts use intermediate_size. Llama4TextMoe builds one shared_expert
     # per MoE layer (modeling_llama4.py).
-    intermediate_size_mlp_raw = _first_scalar(
-        _moe_attr("intermediate_size_mlp")
-    )
+    intermediate_size_mlp_raw = _first_scalar(_moe_attr("intermediate_size_mlp"))
     dense_intermediate_size = (
         int(intermediate_size_mlp_raw)
         if intermediate_size_mlp_raw is not None
@@ -462,11 +463,7 @@ def _per_layer_input_quantizable(arch: ModelArchConfig) -> int:
         return 0
     n_layers = arch.num_hidden_layers
     hd = arch.hidden_size
-    return (
-        hd * (n_layers * pli)
-        + (hd * pli) * n_layers
-        + (pli * hd) * n_layers
-    )
+    return hd * (n_layers * pli) + (hd * pli) * n_layers + (pli * hd) * n_layers
 
 
 def _per_layer_input_norm_elements(arch: ModelArchConfig) -> int:
@@ -713,9 +710,7 @@ def _build_text_module_elements(
                 )
             )
         )
-        experts_total = (
-            layer_modules.get("mlp.experts", 0) if is_sibling_experts else 0
-        )
+        experts_total = layer_modules.get("mlp.experts", 0) if is_sibling_experts else 0
         layer_total = sum(layer_modules.values())
 
         aggregate_modules = {
@@ -1036,12 +1031,16 @@ def compute_lora_params(
             # gate_proj/up_proj/down_proj naming via Unsloth's
             # get_moe_target_parameters. Shared experts are nn.Linear and
             # are picked up by get_peft_regex.
-            routed_moe = 0 if all_linear else _lora_mlp_elements(
-                hd,
-                _get_mlp_size(arch),
-                r,
-                selected_modules,
-                n_experts,
+            routed_moe = (
+                0
+                if all_linear
+                else _lora_mlp_elements(
+                    hd,
+                    _get_mlp_size(arch),
+                    r,
+                    selected_modules,
+                    n_experts,
+                )
             )
             shared_moe = _lora_mlp_elements(
                 hd,
@@ -1076,12 +1075,16 @@ def compute_lora_params(
         # (Qwen3.5-MoE: routed mlp_size != shared_expert_intermediate_size).
         # See structured branch for the all-linear exclusion rationale; only
         # routed (nn.Parameter) experts are excluded under all-linear.
-        routed_moe = 0 if all_linear else _lora_mlp_elements(
-            hd,
-            _get_mlp_size(arch),
-            r,
-            selected_modules,
-            n_experts,
+        routed_moe = (
+            0
+            if all_linear
+            else _lora_mlp_elements(
+                hd,
+                _get_mlp_size(arch),
+                r,
+                selected_modules,
+                n_experts,
+            )
         )
         shared_moe = _lora_mlp_elements(
             hd,
@@ -1115,7 +1118,9 @@ def compute_lora_params(
             * n_layers
         )
 
-    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+    return (
+        attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+    )
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:
@@ -1200,9 +1205,7 @@ def _per_layer_activation_bytes(
     pli = arch.hidden_size_per_layer_input
     activation_ple = seq_len * batch_size * (arch.hidden_size + pli) if pli > 0 else 0
     return int(
-        (activation_qkv + residual_memory + activation_mlp + activation_ple)
-        * 2
-        * 1.25
+        (activation_qkv + residual_memory + activation_mlp + activation_ple) * 2 * 1.25
     )
 
 
