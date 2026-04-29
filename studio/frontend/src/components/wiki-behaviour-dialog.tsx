@@ -67,7 +67,7 @@ const CATEGORY_ORDER = [
   "Other",
 ] as const;
 
-const EXPECTED_RUNTIME_WIKI_ENV_VARS = 58;
+const EXPECTED_RUNTIME_WIKI_ENV_VARS = 59;
 
 function categoryForVariable(name: string): (typeof CATEGORY_ORDER)[number] {
   if (

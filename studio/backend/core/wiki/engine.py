@@ -498,6 +498,11 @@ class WikiConfig:
             _env_flag("UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES", True),
         )
     )
+    index_llm_title_on_rebuild: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_INDEX_LLM_TITLE_ON_REBUILD", False
+        )
+    )
     low_unique_ratio_min_tokens: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_MIN_TOKENS", 40, minimum = 1
@@ -1008,8 +1013,7 @@ class LLMWikiEngine:
                     known_concepts = known_concepts,
                 )
             )
-            if semantic_missing_concepts.get("status") == "ok":
-                missing_concepts = filtered_missing
+            missing_concepts = filtered_missing
 
         entity_merge_candidates = self._merge_candidates_for_folder(
             self.entities_dir,
@@ -1084,12 +1088,7 @@ class LLMWikiEngine:
                 candidate_pool.append(enriched)
 
         if include_concepts:
-            concept_items_lexical = self._lexical_merge_candidates_for_folder(
-                self.concepts_dir,
-                "concepts",
-                similarity_threshold = threshold,
-            )
-            concept_items = list(concept_items_lexical)
+            concept_items: List[Dict[str, Any]] = []
 
             if semantic_concept_merge:
                 semantic_items, semantic_error = (
@@ -1103,10 +1102,7 @@ class LLMWikiEngine:
                 semantic_concept_candidates = len(semantic_items)
                 if semantic_error:
                     semantic_merge_errors.append(semantic_error)
-                concept_items = self._combine_merge_candidates(
-                    concept_items_lexical,
-                    semantic_items,
-                )
+                concept_items = list(semantic_items)
 
             concept_candidates = len(concept_items)
             for item in concept_items:
@@ -2286,14 +2282,13 @@ class LLMWikiEngine:
         max_results: int,
     ) -> Dict[str, Any]:
         query_limit = max(1, min(8, int(max_queries)))
-        result_limit = max(1, min(10, int(max_results)))
-        fallback_query = f"{concept_slug.replace('-', ' ')} concept overview"
+        _result_limit = max(1, min(10, int(max_results)))
 
         if not self.cfg.enrichment_web_gap_llm_planner_enabled:
             return {
-                "status": "fallback_lexical",
+                "status": "strict_llm_only",
                 "reason": "llm_web_planner_disabled",
-                "queries": [fallback_query],
+                "queries": [],
                 "direct_results": [],
             }
 
@@ -2302,12 +2297,10 @@ class LLMWikiEngine:
             f"Missing concept slug: {concept_slug}\n"
             f"Concept title: {concept_title}\n\n"
             "Return strict JSON only with this schema:\n"
-            '{"queries":["query"],"direct_results":[{"title":"string","url":"https://...","snippet":"string"}],"reason":"string"}\n\n'
+            '{"queries":["query"],"reason":"string"}\n\n'
             "Rules:\n"
-            f"- Return at most {query_limit} queries and at most {result_limit} direct_results.\n"
+            f"- Return at most {query_limit} queries.\n"
             "- Queries should be specific, technical, and high precision.\n"
-            "- direct_results is optional. Use it only if your runtime already resolved good URLs via external web tools.\n"
-            "- direct_results URLs must be absolute http/https.\n"
             "- No markdown fences and no text outside JSON.\n"
         )
 
@@ -2315,9 +2308,9 @@ class LLMWikiEngine:
         parsed = self._safe_json(raw)
         if not isinstance(parsed, dict):
             return {
-                "status": "fallback_lexical",
+                "status": "strict_llm_only",
                 "reason": "llm_web_planner_invalid_json",
-                "queries": [fallback_query],
+                "queries": [],
                 "direct_results": [],
             }
 
@@ -2337,29 +2330,11 @@ class LLMWikiEngine:
                 if len(queries) >= query_limit:
                     break
 
-        direct_results: List[Dict[str, str]] = []
-        seen_urls: Set[str] = set()
-        raw_direct = parsed.get("direct_results", parsed.get("results", []))
-        if isinstance(raw_direct, list):
-            for item in raw_direct:
-                normalized = self._normalize_web_result(
-                    item if isinstance(item, dict) else {},
-                    fallback_title = concept_title,
-                )
-                if normalized is None:
-                    continue
-                if normalized["url"] in seen_urls:
-                    continue
-                seen_urls.add(normalized["url"])
-                direct_results.append(normalized)
-                if len(direct_results) >= result_limit:
-                    break
-
-        if not queries and not direct_results:
+        if not queries:
             return {
-                "status": "fallback_lexical",
+                "status": "strict_llm_only",
                 "reason": "llm_web_planner_empty",
-                "queries": [fallback_query],
+                "queries": [],
                 "direct_results": [],
             }
 
@@ -2367,7 +2342,7 @@ class LLMWikiEngine:
             "status": "ok",
             "reason": "llm_web_planner_ok",
             "queries": queries,
-            "direct_results": direct_results,
+            "direct_results": [],
         }
 
     def _llm_select_web_gap_results(
@@ -2502,26 +2477,6 @@ class LLMWikiEngine:
             max_results = result_limit,
         )
 
-        direct_results = [
-            item for item in plan.get("direct_results", []) if isinstance(item, dict)
-        ]
-        if direct_results:
-            selected, selected_meta = self._llm_select_web_gap_results(
-                concept_slug = concept_slug,
-                concept_title = concept_title,
-                candidates = direct_results,
-                max_results = result_limit,
-            )
-            return selected, {
-                "status": "ok_direct",
-                "plan_status": plan.get("status"),
-                "plan_reason": plan.get("reason"),
-                "selector_status": selected_meta.get("status"),
-                "selector_reason": selected_meta.get("reason"),
-                "queries_consumed": 0,
-                "direct_results": len(direct_results),
-            }
-
         if budget <= 0:
             return [], {
                 "status": "empty",
@@ -2540,7 +2495,15 @@ class LLMWikiEngine:
         ]
         planned_queries = [q for q in planned_queries if len(q) >= 6]
         if not planned_queries:
-            planned_queries = [f"{concept_slug.replace('-', ' ')} concept overview"]
+            return [], {
+                "status": "empty",
+                "plan_status": plan.get("status"),
+                "plan_reason": plan.get("reason"),
+                "selector_status": "skipped",
+                "selector_reason": "no_planned_queries",
+                "queries_consumed": 0,
+                "direct_results": 0,
+            }
 
         queries_used = 0
         harvested: List[Dict[str, str]] = []
@@ -2653,10 +2616,10 @@ class LLMWikiEngine:
         raw = str(self.llm_fn(prompt) or "").strip()
         parsed = self._safe_json(raw)
         if not isinstance(parsed, dict):
-            return lexical_missing, {
-                "status": "fallback_lexical",
+            return [], {
+                "status": "strict_semantic_only",
                 "reason": "semantic_missing_invalid_json",
-                "kept_missing": len(lexical_missing),
+                "kept_missing": 0,
                 "rejected_candidates": 0,
                 "related_to_existing": 0,
             }
@@ -2665,10 +2628,10 @@ class LLMWikiEngine:
         related_raw = parsed.get("related_to_existing", [])
         reject_raw = parsed.get("reject", [])
         if not isinstance(keep_raw, list):
-            return lexical_missing, {
-                "status": "fallback_lexical",
+            return [], {
+                "status": "strict_semantic_only",
                 "reason": "semantic_missing_schema_invalid",
-                "kept_missing": len(lexical_missing),
+                "kept_missing": 0,
                 "rejected_candidates": 0,
                 "related_to_existing": 0,
             }
@@ -3663,14 +3626,8 @@ class LLMWikiEngine:
         prefix: str,
         similarity_threshold: float = 0.75,
     ) -> List[Dict[str, Any]]:
-        lexical_candidates = self._lexical_merge_candidates_for_folder(
-            folder,
-            prefix,
-            similarity_threshold = similarity_threshold,
-        )
-
         if not self.cfg.merge_llm_candidate_planner_enabled:
-            return lexical_candidates
+            return []
 
         if prefix == "concepts":
             semantic_candidates, _semantic_error = (
@@ -3694,7 +3651,7 @@ class LLMWikiEngine:
         if semantic_candidates:
             return semantic_candidates[:64]
 
-        return lexical_candidates
+        return []
 
     def _combine_merge_candidates(
         self,
@@ -4740,6 +4697,13 @@ class LLMWikiEngine:
     def _analysis_index_summary(self, text: str) -> str:
         answer = self._extract_analysis_answer(text) or ""
         title = self._analysis_title_from_answer(answer)
+        primary_source = self._extract_analysis_primary_source_link(text)
+
+        if title and (
+            self._looks_like_identifier_title(title)
+            or self._looks_like_low_information_source_title(title)
+        ):
+            title = ""
 
         if not title:
             question = self._extract_analysis_question(text) or ""
@@ -4747,11 +4711,38 @@ class LLMWikiEngine:
                 r"(?i)summarize source\s+'([^']+)'", question
             )
             if source_title_match:
-                title = source_title_match.group(1).strip()
+                source_title = source_title_match.group(1).strip()
+                needs_informative = self._looks_like_identifier_title(
+                    source_title
+                ) or self._looks_like_low_information_source_title(source_title)
+                if needs_informative and primary_source:
+                    informative = self._analysis_index_title_from_source_page(primary_source)
+                    title = (
+                        informative
+                        or self._analysis_title_from_answer_excerpt(answer)
+                        or source_title
+                    )
+                elif needs_informative:
+                    title = self._analysis_title_from_answer_excerpt(answer) or source_title
+                else:
+                    title = source_title
             else:
                 title = re.sub(r"\s+", " ", question).strip() if question else ""
 
-        primary_source = self._extract_analysis_primary_source_link(text)
+        if title and self._looks_like_low_information_source_title(title):
+            informative_from_answer = self._analysis_title_from_answer_excerpt(answer)
+            if informative_from_answer:
+                title = informative_from_answer
+
+        if self.cfg.index_llm_title_on_rebuild:
+            llm_title = self._llm_generate_analysis_index_title(
+                analysis_text = text,
+                fallback_title = title,
+                primary_source = primary_source,
+            )
+            if llm_title:
+                title = llm_title
+
         if title and primary_source:
             return f"{title} | primary: [[{primary_source}]]"
         if title:
@@ -5128,12 +5119,7 @@ class LLMWikiEngine:
             return []
 
         if not self.cfg.enrichment_llm_selector_enabled:
-            return self._select_enrichment_links_lexical(
-                analysis_text = analysis_text,
-                candidates = filtered_candidates,
-                existing_links = existing_links,
-                limit = limit,
-            )
+            return []
 
         llm_selected = self._llm_select_enrichment_links(
             analysis_text = analysis_text,
@@ -5144,12 +5130,7 @@ class LLMWikiEngine:
         if llm_selected is not None:
             return llm_selected
 
-        return self._select_enrichment_links_lexical(
-            analysis_text = analysis_text,
-            candidates = filtered_candidates,
-            existing_links = existing_links,
-            limit = limit,
-        )
+        return []
 
     def _select_enrichment_links_lexical(
         self,
@@ -5331,10 +5312,10 @@ class LLMWikiEngine:
         if self.cfg.enrichment_llm_selector_enabled:
             strategy = (
                 "index-driven candidate inventory + semantic LLM selector "
-                "(lexical fallback only when LLM output is invalid)"
+                "(strict LLM mode, no lexical fallback)"
             )
         else:
-            strategy = "index-driven lexical overlap from index.md link inventory"
+            strategy = "enrichment LLM selector disabled (strict mode: no links selected)"
 
         lines = [
             f"- generated_at: {self._now_iso()}",
@@ -5756,7 +5737,7 @@ class LLMWikiEngine:
 
     def _entity_query_focus(self, query: str) -> Tuple[Set[str], str]:
         if not self.cfg.entity_query_focus_llm_enabled:
-            return self._entity_query_focus_lexical(query)
+            return set(), ""
 
         query_text = self._normalize_web_text(str(query or "").strip(), 260)
         if len(query_text) < 3:
@@ -5801,7 +5782,7 @@ class LLMWikiEngine:
             if is_lookup is False:
                 return set(), ""
 
-        return self._entity_query_focus_lexical(query)
+        return set(), ""
 
     def _rank_pages(
         self,
@@ -6104,18 +6085,7 @@ class LLMWikiEngine:
                 if llm_selected:
                     linked_pages = llm_selected[: self.cfg.ranking_link_fanout]
                 else:
-                    # Prefer links that are already ranked and/or path-relevant to query terms.
-                    linked_pages.sort(
-                        key = lambda p: (
-                            ranked_map.get(p, 0.0),
-                            self._overlap_ratio(
-                                query_terms or set(),
-                                set(self._tokenize_terms(p)),
-                            ),
-                        ),
-                        reverse = True,
-                    )
-                    linked_pages = linked_pages[: self.cfg.ranking_link_fanout]
+                    linked_pages = []
 
                 links_cache[rel] = linked_pages
 
@@ -6555,6 +6525,144 @@ class LLMWikiEngine:
 
         return None
 
+    def _analysis_title_from_answer_excerpt(self, answer: str) -> Optional[str]:
+        raw = str(answer or "").strip()
+        if not raw:
+            return None
+
+        def _clean_candidate(value: str) -> Optional[str]:
+            candidate = re.sub(r"\[\[[^\]]+\]\]", " ", str(value or "")).strip()
+            candidate = re.sub(r"\s+", " ", candidate).strip(" -:;,.")
+            candidate = self._normalize_web_text(candidate, 120)
+            if len(candidate) < 8:
+                return None
+            if self._looks_like_source_first_template_title(candidate):
+                return None
+            if self._looks_like_identifier_title(candidate):
+                return None
+            if self._looks_like_low_information_source_title(candidate):
+                return None
+            return candidate
+
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        for line in lines:
+            plain = re.sub(r"^[\-*\s]+", "", line).strip()
+            plain = re.sub(r"(?i)^\*{0,2}title\*{0,2}\s*:\s*", "", plain).strip()
+            plain = re.sub(r"(?i)^section\s+[a-z]\s*:\s*", "", plain).strip()
+            if not plain:
+                continue
+            cleaned = _clean_candidate(plain)
+            if cleaned:
+                return cleaned
+
+        return None
+
+    def _llm_generate_analysis_index_title(
+        self,
+        analysis_text: str,
+        fallback_title: str = "",
+        primary_source: str = "",
+    ) -> Optional[str]:
+        question = self._normalize_web_text(
+            self._extract_analysis_question(analysis_text) or "",
+            420,
+        )
+        answer_preview = self._normalize_web_text(
+            self._extract_analysis_answer(analysis_text) or "",
+            2400,
+        )
+        fallback = self._normalize_web_text(str(fallback_title or "").strip(), 160)
+        source_link = self._normalize_wikilink(
+            primary_source or self._extract_analysis_primary_source_link(analysis_text) or ""
+        )
+        source_hint = self._analysis_index_title_from_source_page(source_link)
+        source_hint = self._normalize_web_text(source_hint or "", 180)
+
+        prompt = (
+            "You are generating a concise index title for a wiki analysis page.\n"
+            "Return strict JSON only with this schema:\n"
+            '{"title":"string"}\n\n'
+            "Rules:\n"
+            "- Produce a short, specific title (roughly 5-14 words).\n"
+            "- Avoid generic labels (summary, overview, section A).\n"
+            "- Avoid identifier-only titles (arXiv IDs, version IDs).\n"
+            "- Prefer concrete topic wording that is easy to scan in an index.\n"
+            "- No markdown fences and no text outside JSON.\n\n"
+            f"QUESTION:\n{question or '(none)'}\n\n"
+            f"PRIMARY_SOURCE_LINK:\n{source_link or '(none)'}\n\n"
+            f"PRIMARY_SOURCE_TITLE_HINT:\n{source_hint or '(none)'}\n\n"
+            f"FALLBACK_TITLE:\n{fallback or '(none)'}\n\n"
+            f"ANSWER_EXCERPT:\n{answer_preview or '(none)'}"
+        )
+
+        raw = str(self.llm_fn(prompt) or "").strip()
+        parsed = self._safe_json(raw)
+        if not isinstance(parsed, dict):
+            return None
+
+        candidate = parsed.get("title", parsed.get("index_title", ""))
+        candidate_text = self._normalize_web_text(str(candidate or "").strip(), 140)
+        if not candidate_text:
+            return None
+        if self._looks_like_source_first_template_title(candidate_text):
+            return None
+        if self._looks_like_identifier_title(candidate_text):
+            return None
+        if len(candidate_text) < 4:
+            return None
+
+        return candidate_text
+
+    def _analysis_index_title_from_source_page(self, source_link: str) -> Optional[str]:
+        normalized = self._normalize_wikilink(source_link)
+        if not normalized.startswith("sources/"):
+            return None
+
+        source_path = self.wiki_dir / f"{normalized}.md"
+        if not source_path.exists():
+            return None
+
+        source_text = source_path.read_text(encoding = "utf-8", errors = "ignore")
+        frontmatter, _body = self._split_frontmatter_block(source_text)
+
+        if frontmatter:
+            title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", frontmatter)
+            if title_match:
+                raw_title = title_match.group(1).strip().strip("\"'")
+                if raw_title.lower().startswith("external source:"):
+                    raw_title = raw_title.split(":", 1)[1].strip()
+                raw_title = re.sub(r"\s*\[[^\]]+#[0-9a-f]{6,12}\]\s*$", "", raw_title)
+                cleaned = re.sub(r"\s+", " ", raw_title).strip(" -:;,.")
+                if (
+                    cleaned
+                    and not self._looks_like_identifier_title(cleaned)
+                    and not self._looks_like_low_information_source_title(cleaned)
+                ):
+                    return cleaned
+
+        heading_match = re.search(r"(?m)^#\s+(.+?)\s*$", source_text)
+        if heading_match:
+            heading = re.sub(r"\s+", " ", heading_match.group(1)).strip(" -:;,.")
+            if (
+                heading
+                and not self._looks_like_identifier_title(heading)
+                and not self._looks_like_low_information_source_title(heading)
+            ):
+                return heading
+
+        summary = self._extract_markdown_section(source_text, "Summary")
+        if summary.strip():
+            first_line = self._first_nonempty_content_line(summary)
+            normalized_summary = self._normalize_web_text(first_line, 140)
+            if (
+                normalized_summary
+                and not self._looks_like_identifier_title(normalized_summary)
+                and not self._looks_like_low_information_source_title(normalized_summary)
+            ):
+                return normalized_summary
+
+        return None
+
     def _looks_like_source_first_template_title(self, title: str) -> bool:
         normalized = re.sub(r"\s+", " ", str(title or "")).strip().lower()
         if not normalized:
@@ -6573,6 +6681,54 @@ class LLMWikiEngine:
             "summary title",
         )
         return any(phrase in normalized for phrase in placeholder_phrases)
+
+    def _looks_like_low_information_source_title(self, title: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+        if not normalized:
+            return False
+
+        generic_prefixes = (
+            "chat history",
+            "chat log",
+            "conversation log",
+            "conversation transcript",
+            "session log",
+        )
+        if any(normalized.startswith(prefix) for prefix in generic_prefixes):
+            return True
+
+        if "chat history" in normalized and re.search(r"\b(session|log|transcript)\b", normalized):
+            return True
+
+        dated_chat_pattern = re.compile(
+            r"^(?:chat|conversation)\s+(?:history|log|transcript)"
+            r"(?:\s+from)?\s+"
+            r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
+            r"january|february|march|april|june|july|august|september|october|november|december)"
+            r"\s+\d{1,2}(?:,)?\s+\d{4}"
+            r"(?:\s+session\s+[0-9-]{4,})?$"
+        )
+        if dated_chat_pattern.match(normalized):
+            return True
+
+        return False
+
+    def _looks_like_identifier_title(self, title: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not normalized:
+            return False
+
+        lowered = normalized.lower()
+        if re.match(r"^(?:arxiv:)?\d{4}\.\d{4,5}(?:v\d+)?$", lowered):
+            return True
+        if re.match(r"^\d{4}[-_]\d{4,6}(?:v\d+)?$", lowered):
+            return True
+
+        compact = normalized.replace(" ", "")
+        if re.match(r"^[0-9vV._-]+$", compact) and any(ch.isdigit() for ch in compact):
+            return True
+
+        return False
 
     def _analysis_slug_terms(
         self,

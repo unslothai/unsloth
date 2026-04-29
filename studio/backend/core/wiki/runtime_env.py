@@ -392,6 +392,12 @@ WIKI_ENV_SPECS: tuple[WikiEnvSpec, ...] = (
         minimum = 8,
     ),
     WikiEnvSpec(
+        name = "UNSLOTH_WIKI_ENGINE_INDEX_LLM_TITLE_ON_REBUILD",
+        kind = "bool",
+        default = "false",
+        description = "Generate analysis index titles with LLM during index rebuild.",
+    ),
+    WikiEnvSpec(
         name = "UNSLOTH_WIKI_ENGINE_ENRICH_REFRESH_OLDEST_NON_FALLBACK_PAGES",
         kind = "int",
         default = "0",

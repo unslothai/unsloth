@@ -555,7 +555,7 @@ def test_rank_pages_link_expansion_can_use_llm_selector(tmp_path: Path):
     assert "concepts/beta.md" in ranked_paths
 
 
-def test_rank_pages_link_expansion_llm_selector_falls_back_to_lexical(tmp_path: Path):
+def test_rank_pages_link_expansion_llm_selector_invalid_does_not_expand(tmp_path: Path):
     def _llm(prompt: str) -> str:
         if "link expansion selector" in prompt:
             return "not-json"
@@ -581,7 +581,7 @@ def test_rank_pages_link_expansion_llm_selector_falls_back_to_lexical(tmp_path: 
         encoding = "utf-8",
     )
     lexical_page.write_text(
-        "# Gamma\n\nContains alpha unique query token for lexical fallback preference.\n",
+        "# Gamma\n\nUnrelated topic details with no relevant overlap.\n",
         encoding = "utf-8",
     )
 
@@ -592,14 +592,19 @@ def test_rank_pages_link_expansion_llm_selector_falls_back_to_lexical(tmp_path: 
     ranked = engine._rank_pages("alpha unique query token")
     ranked_paths = [rel for rel, _ in ranked]
 
-    assert "concepts/gamma.md" in ranked_paths
+    assert "concepts/gamma.md" not in ranked_paths
     assert "concepts/beta.md" not in ranked_paths
 
 
 def test_rank_pages_boosts_entity_targets_for_who_is_queries(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "entity intent parser" in prompt:
+            return '{"is_entity_lookup": true, "target": "Zohair"}'
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     entity_page = tmp_path / "wiki" / "entities" / "zohair.md"
@@ -1043,9 +1048,14 @@ def test_low_unique_ratio_min_tokens_is_configurable(tmp_path: Path):
 
 
 def test_enrich_analysis_pages_prepends_enrichment_section(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "enrichment link selector for wiki analysis maintenance" in prompt:
+            return '{"selected_ids":["E001"]}'
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
@@ -1121,7 +1131,7 @@ def test_enrich_link_selection_can_use_llm_selector(tmp_path: Path):
     assert selected == ["concepts/currency-debasement"]
 
 
-def test_enrich_link_selection_llm_invalid_falls_back_to_lexical(tmp_path: Path):
+def test_enrich_link_selection_llm_invalid_returns_empty_in_strict_mode(tmp_path: Path):
     def _llm(prompt: str) -> str:
         if "enrichment link selector for wiki analysis maintenance" in prompt:
             return "not-json"
@@ -1143,7 +1153,7 @@ def test_enrich_link_selection_llm_invalid_falls_back_to_lexical(tmp_path: Path)
         group_name = "concepts",
     )
 
-    assert selected == ["concepts/retrieval-pipeline"]
+    assert selected == []
 
 
 def test_enrich_link_selection_llm_empty_does_not_fallback_to_lexical(
@@ -1227,9 +1237,14 @@ def test_export_graphify_wiki_returns_report_and_writes_index_when_available(
 
 
 def test_enrich_analysis_pages_dry_run_does_not_edit_file(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "enrichment link selector for wiki analysis maintenance" in prompt:
+            return '{"selected_ids":["E001"]}'
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     (tmp_path / "wiki" / "entities" / "data-ingestion.md").write_text(
@@ -1428,11 +1443,19 @@ def test_enrich_link_repair_dry_run_reports_without_writing(tmp_path: Path):
 
 
 def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "web research planner" in prompt:
+            return '{"queries":["retrieval benchmarking ranking metrics"]}'
+        if "selecting the best external sources" in prompt:
+            return '{"selected_ids":["R001"]}'
+        return (
+            "Source summary: retrieval benchmarking compares ranking quality, "
+            "recall tradeoffs, and evaluation setup details across datasets."
+        )
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = (
-            lambda _: "Source summary: retrieval benchmarking compares ranking quality, recall tradeoffs, and evaluation setup details across datasets."
-        ),
+        llm_fn = _llm,
     )
 
     engine.lint = lambda: {"missing_concepts": ["retrieval-benchmarking"]}  # type: ignore[assignment]
@@ -1486,9 +1509,16 @@ def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
 def test_enrich_analysis_pages_web_gap_fill_dry_run_does_not_write_pages(
     tmp_path: Path,
 ):
+    def _llm(prompt: str) -> str:
+        if "web research planner" in prompt:
+            return '{"queries":["semantic layering systems overview"]}'
+        if "selecting the best external sources" in prompt:
+            return '{"selected_ids":["R001"]}'
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     engine.lint = lambda: {"missing_concepts": ["semantic-layering"]}  # type: ignore[assignment]
@@ -1565,6 +1595,51 @@ def test_llm_web_gap_discovery_uses_planner_and_selector(tmp_path: Path):
     assert selected[0]["url"] == "https://example.com/b"
     assert meta["plan_status"] == "ok"
     assert meta["selector_status"] == "ok"
+
+
+def test_llm_web_gap_discovery_ignores_planner_direct_results(tmp_path: Path):
+    def llm_fn(prompt: str) -> str:
+        if "web research planner" in prompt:
+            return (
+                '{"queries":["liquidity squeeze mechanics"],'
+                '"direct_results":[{"title":"LLM Injected",'
+                '"url":"https://example.com/llm-injected",'
+                '"snippet":"should be ignored"}]}'
+            )
+        if "selecting the best external sources" in prompt:
+            return '{"selected_ids":["R001"]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = llm_fn,
+    )
+
+    seen_queries: list[str] = []
+
+    def _fake_search(query: str, _max_results: int):
+        seen_queries.append(query)
+        return [
+            {
+                "title": "DDGS Result",
+                "url": "https://example.com/ddgs-result",
+                "snippet": "Market liquidity and short squeeze mechanics overview.",
+            }
+        ]
+
+    engine._web_search_results = _fake_search  # type: ignore[assignment]
+
+    selected, meta = engine._llm_web_discover_results_for_concept(
+        concept_slug = "liquidity-squeeze",
+        query_budget = 1,
+        max_results = 1,
+    )
+
+    assert seen_queries == ["liquidity squeeze mechanics"]
+    assert selected
+    assert selected[0]["url"] == "https://example.com/ddgs-result"
+    assert meta["queries_consumed"] == 1
+    assert meta["direct_results"] == 0
 
 
 def test_external_source_summary_uses_watcher_style_source_first_prompt(
@@ -2438,6 +2513,256 @@ def test_index_analysis_summary_ignores_template_placeholder_title(tmp_path: Pat
     assert "[fallback-resolved:" in line
 
 
+def test_index_analysis_summary_replaces_identifier_source_title_with_source_page_title(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_page = tmp_path / "wiki" / "sources" / "2508-20330v4.md"
+    source_page.write_text(
+        "---\n"
+        "title: FORGE: Foundational Optimization with Representation Graph Engineering\n"
+        "type: source\n"
+        "source_ref: https://arxiv.org/abs/2508.20330v4\n"
+        "ingested_at: 2026-04-28T22:00:00+00:00\n"
+        "---\n\n"
+        "# FORGE: Foundational Optimization with Representation Graph Engineering\n\n"
+        "## Summary\n"
+        "FORGE introduces a graph-based optimization framework for robust reasoning.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "forge-summary.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source '2508.20330v4' with a source-first lens. "
+        "Primary page: [[sources/2508-20330v4]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: 2508.20330v4\n"
+        "Section A: A concise summary of FORGE.\n\n"
+        "## Context Pages\n"
+        "- [[sources/2508-20330v4]]\n\n"
+        "## Retry Status\n"
+        "- status: resolved_in_place\n"
+        "- resolved_by: [[analysis/forge-summary]]\n"
+        "- resolved_at: 2026-04-28T22:30:00+00:00\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item for item in index_text.splitlines() if "[[analysis/forge-summary]]" in item
+    )
+
+    assert "2508.20330v4 | primary" not in line
+    assert "FORGE: Foundational Optimization with Representation Graph Engineering" in line
+    assert "[[sources/2508-20330v4]]" in line
+    assert "[fallback-resolved:" in line
+
+
+def test_index_analysis_summary_replaces_generic_chat_history_title_with_source_summary(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_page = tmp_path / "wiki" / "sources" / "chat-history-20260420-184704-930406.md"
+    source_page.write_text(
+        "---\n"
+        "title: Chat History Log from April 20 2026 Session 184704\n"
+        "type: source\n"
+        "source_ref: chat-history://2026-04-20/184704\n"
+        "ingested_at: 2026-04-29T00:00:00+00:00\n"
+        "---\n\n"
+        "# Chat History Log from April 20 2026 Session 184704\n\n"
+        "## Summary\n"
+        "QLoRA memory bottlenecks and adapter merge trade-offs for 24GB GPUs.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "chat-history-summary.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Chat History Log from April 20 2026 Session 184704' with a source-first lens. "
+        "Primary page: [[sources/chat-history-20260420-184704-930406]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: Chat History Log from April 20 2026 Session 184704\n"
+        "Section A: Discusses practical fine-tuning constraints and merge strategy.\n\n"
+        "## Context Pages\n"
+        "- [[sources/chat-history-20260420-184704-930406]]\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/chat-history-summary]]" in item
+    )
+
+    assert "Chat History Log from April 20 2026 Session 184704" not in line
+    assert "QLoRA memory bottlenecks and adapter merge trade-offs for 24GB GPUs" in line
+    assert "[[sources/chat-history-20260420-184704-930406]]" in line
+
+
+def test_index_analysis_summary_uses_answer_excerpt_when_chat_title_is_generic(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_page = tmp_path / "wiki" / "sources" / "chat-history-20260422-153443-261090.md"
+    source_page.write_text(
+        "---\n"
+        "title: Chat History Log from April 22 2026 Session 153443\n"
+        "type: source\n"
+        "source_ref: chat-history://2026-04-22/153443\n"
+        "ingested_at: 2026-04-29T00:00:00+00:00\n"
+        "---\n\n"
+        "# Chat History Log from April 22 2026 Session 153443\n",
+        encoding = "utf-8",
+    )
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "chat-history-fallback-answer.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Chat History Log from April 22 2026 Session 153443' with a source-first lens. "
+        "Primary page: [[sources/chat-history-20260422-153443-261090]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: Chat History Log from April 22 2026 Session 153443\n"
+        "Section A: Diagnosing duplicate wiki source ingestion during watcher bursts.\n"
+        "Section B: Key takeaways.\n\n"
+        "## Context Pages\n"
+        "- [[sources/chat-history-20260422-153443-261090]]\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/chat-history-fallback-answer]]" in item
+    )
+
+    assert "Chat History Log from April 22 2026 Session 153443" not in line
+    assert "Diagnosing duplicate wiki source ingestion during watcher bursts" in line
+    assert "[[sources/chat-history-20260422-153443-261090]]" in line
+
+
+def test_index_analysis_summary_can_generate_llm_title_when_flag_enabled(
+    tmp_path: Path,
+):
+    def _llm(prompt: str) -> str:
+        if "concise index title for a wiki analysis page" in prompt:
+            return '{"title":"FORGE Graph Optimization Pretraining Overview"}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+    engine.cfg.index_llm_title_on_rebuild = True
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "forge-llm-index-title.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source '2508.20330v4' with a source-first lens. "
+        "Primary page: [[sources/2508-20330v4]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "The paper introduces FORGE (Foundational Optimization Representations from Graph Embeddings)...\n\n"
+        "## Context Pages\n"
+        "- [[sources/2508-20330v4]]\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/forge-llm-index-title]]" in item
+    )
+
+    assert "FORGE Graph Optimization Pretraining Overview" in line
+    assert "[[sources/2508-20330v4]]" in line
+
+
+def test_index_analysis_summary_llm_title_invalid_falls_back_when_flag_enabled(
+    tmp_path: Path,
+):
+    def _llm(prompt: str) -> str:
+        if "concise index title for a wiki analysis page" in prompt:
+            return "not-json"
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+    engine.cfg.index_llm_title_on_rebuild = True
+
+    source_page = tmp_path / "wiki" / "sources" / "2508-20330v4.md"
+    source_page.write_text(
+        "---\n"
+        "title: FORGE: Foundational Optimization with Representation Graph Engineering\n"
+        "type: source\n"
+        "source_ref: https://arxiv.org/abs/2508.20330v4\n"
+        "ingested_at: 2026-04-28T22:00:00+00:00\n"
+        "---\n\n"
+        "# FORGE: Foundational Optimization with Representation Graph Engineering\n",
+        encoding = "utf-8",
+    )
+
+    analysis_page = tmp_path / "wiki" / "analysis" / "forge-llm-index-fallback.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source '2508.20330v4' with a source-first lens. "
+        "Primary page: [[sources/2508-20330v4]].\n\n"
+        "## Answer Mode\nllm\n\n"
+        "## Answer\n"
+        "Title: 2508.20330v4\n"
+        "Section A: A concise summary of FORGE.\n\n"
+        "## Context Pages\n"
+        "- [[sources/2508-20330v4]]\n",
+        encoding = "utf-8",
+    )
+
+    engine._rebuild_index()
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text(encoding = "utf-8")
+    line = next(
+        item
+        for item in index_text.splitlines()
+        if "[[analysis/forge-llm-index-fallback]]" in item
+    )
+
+    assert "FORGE: Foundational Optimization with Representation Graph Engineering" in line
+    assert "[[sources/2508-20330v4]]" in line
+
+
 def test_rebuild_index_omits_sources_when_source_index_disabled(
     tmp_path: Path,
     monkeypatch,
@@ -2507,9 +2832,29 @@ def test_llm_rerank_uses_compact_index_without_sources_when_disabled(
 
 
 def test_lint_reports_entity_and_concept_merge_candidates(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if (
+            "semantic duplicate merge planner" in prompt
+            and "Page kind: entities" in prompt
+        ):
+            return (
+                '{"merges":['
+                '{"canonical_id":"M001","duplicate_id":"M002","confidence":0.88,'
+                '"reason":"Same entity naming variant"}'
+                "]}"
+            )
+        if "semantic concept merge planner" in prompt:
+            return (
+                '{"merges":['
+                '{"canonical_id":"C001","duplicate_id":"C002","confidence":0.9,'
+                '"reason":"Same concept naming variant"}'
+                "]}"
+            )
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
@@ -2618,7 +2963,7 @@ def test_lint_semantic_filters_missing_concepts(tmp_path: Path):
     assert semantic.get("rejected_candidates") == 1
 
 
-def test_lint_missing_concepts_semantic_filter_falls_back_to_lexical(tmp_path: Path):
+def test_lint_missing_concepts_semantic_filter_strict_on_invalid_output(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
         llm_fn = lambda _: "{}",
@@ -2644,21 +2989,31 @@ def test_lint_missing_concepts_semantic_filter_falls_back_to_lexical(tmp_path: P
 
     report = engine.lint()
 
-    assert set(report.get("missing_concepts", [])) == {
-        "instances",
-        "business",
-        "retrieval-benchmarking",
-    }
+    assert report.get("missing_concepts", []) == []
     semantic = report.get("semantic_missing_concepts", {})
-    assert semantic.get("status") == "fallback_lexical"
+    assert semantic.get("status") == "strict_semantic_only"
+    assert semantic.get("reason") == "semantic_missing_schema_invalid"
 
 
 def test_merge_duplicate_knowledge_pages_dry_run_reports_without_writing(
     tmp_path: Path,
 ):
+    def _llm(prompt: str) -> str:
+        if (
+            "semantic duplicate merge planner" in prompt
+            and "Page kind: entities" in prompt
+        ):
+            return (
+                '{"merges":['
+                '{"canonical_id":"M001","duplicate_id":"M002","confidence":0.9,'
+                '"reason":"Entity alias"}'
+                "]}"
+            )
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
@@ -2711,9 +3066,22 @@ def test_merge_duplicate_knowledge_pages_dry_run_reports_without_writing(
 def test_merge_duplicate_knowledge_pages_apply_archives_and_rewrites_links(
     tmp_path: Path,
 ):
+    def _llm(prompt: str) -> str:
+        if (
+            "semantic duplicate merge planner" in prompt
+            and "Page kind: entities" in prompt
+        ):
+            return (
+                '{"merges":['
+                '{"canonical_id":"M001","duplicate_id":"M002","confidence":0.9,'
+                '"reason":"Entity alias"}'
+                "]}"
+            )
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     (tmp_path / "wiki" / "entities" / "retrieval-pipeline.md").write_text(
@@ -2826,9 +3194,19 @@ def test_replace_wikilinks_with_map_preserves_alias_and_heading_fragments(
 
 
 def test_merge_candidates_handle_instance_pluralization(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "semantic concept merge planner" in prompt:
+            return (
+                '{"merges":['
+                '{"canonical_id":"C001","duplicate_id":"C002","confidence":0.92,'
+                '"reason":"Plural variant of same concept"}'
+                "]}"
+            )
+        return "{}"
+
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
-        llm_fn = lambda _: "{}",
+        llm_fn = _llm,
     )
 
     singular = tmp_path / "wiki" / "concepts" / "instance.md"
