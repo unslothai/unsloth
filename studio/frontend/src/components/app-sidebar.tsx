@@ -66,30 +66,30 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, MoreHorizontalIcon, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useTrainingRuntimeStore } from "@/features/training";
+import {
+  ChatSearchDialog,
+  deleteChatItem,
+  renameChatItem,
+  useChatRuntimeStore,
+  useChatSearchStore,
+  useChatSidebarItems,
+  type SidebarItem,
+} from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { usePlatformStore } from "@/config/env";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
-  useChatSidebarItems,
-  deleteChatItem,
-  renameChatItem,
-  type SidebarItem,
-} from "@/features/chat/hooks/use-chat-sidebar-items";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
-import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
-import {
-  useTrainingHistorySidebarItems,
   deleteTrainingRun,
+  removeTrainingUnloadGuard,
   renameTrainingRun,
+  useTrainingHistorySidebarItems,
+  useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
