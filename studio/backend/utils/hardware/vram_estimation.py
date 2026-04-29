@@ -97,6 +97,7 @@ class ModelArchConfig:
     quant_4bit_factor: float = QUANT_4BIT_FACTOR
     moe_has_dense_mlp: bool = False
     dense_layer_indices: tuple = ()
+    dense_intermediate_size: Optional[int] = None
 
 
 @dataclass
@@ -171,6 +172,15 @@ def _first_scalar(value):
     return value
 
 
+def _max_scalar(value):
+    # why: Hunyuan-V1-MoE moe_topk can be a per-layer list; activation
+    # accounting uses the max top-k as a conservative upper bound.
+    if isinstance(value, (list, tuple)):
+        items = [v for v in value if v is not None]
+        return max(items) if items else None
+    return value
+
+
 def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
     """Layer indices that use dense MLP instead of MoE. Position matters."""
     # why: transformers Exaone-MoE / Laguna / Hy_v3 / GLM-MoE-DSA / GLM4-MoE-Lite /
@@ -184,9 +194,18 @@ def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
             if str(t).lower() == "dense"
         )
 
+    # why: Llama4TextConfig.__init__ auto-populates self.moe_layers from
+    # interleave_moe_layer_step; Llama4TextDecoderLayer dispatches via
+    # `layer_idx in config.moe_layers` (modeling_llama4.py).
+    llama4_moe_layers = getattr(text_config, "moe_layers", None)
+    if llama4_moe_layers is not None:
+        moe_indices = {int(i) for i in llama4_moe_layers}
+        return tuple(i for i in range(total_layers) if i not in moe_indices)
+
     # why: transformers ERNIE 4.5 MoE / ERNIE 4.5 VL MoE declare MoE layers
     # via moe_layer_start_index / moe_layer_end_index / moe_layer_interval;
-    # moe_layer_end_index == -1 means "last layer" (configuration_ernie4_5_moe.py:239).
+    # the model's per-layer guard is `(layer_idx + 1) % interval == 0` with
+    # start <= layer_idx <= end (modeling_ernie4_5_moe.py).
     moe_start = getattr(text_config, "moe_layer_start_index", None)
     moe_interval = getattr(text_config, "moe_layer_interval", None)
     if moe_start is not None and moe_interval is not None and int(moe_interval) > 0:
@@ -197,7 +216,11 @@ def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
             else min(int(moe_end_raw) + 1, total_layers)
         )
         start = max(0, int(moe_start))
-        moe_indices = set(range(start, end, int(moe_interval)))
+        interval = int(moe_interval)
+        moe_indices = {
+            i for i in range(start, end)
+            if (i + 1) % interval == 0
+        }
         return tuple(i for i in range(total_layers) if i not in moe_indices)
 
     first_k = getattr(text_config, "first_k_dense_replace", None)
@@ -248,6 +271,16 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
 
     num_kv_heads = getattr(text_config, "num_key_value_heads", num_heads)
 
+    # why: DBRX places its MoE attrs on the DbrxFFNConfig sub-config; probe
+    # ffn_config as a secondary source so DBRX is not misclassified as dense.
+    ffn_config = getattr(text_config, "ffn_config", None)
+
+    def _moe_attr(name):
+        value = getattr(text_config, name, None)
+        if value is None and ffn_config is not None:
+            value = getattr(ffn_config, name, None)
+        return value
+
     num_experts = None
     for attr in (
         "num_local_experts",
@@ -255,46 +288,35 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         "n_routed_experts",
         "moe_num_experts",
     ):
-        num_experts = _first_scalar(getattr(text_config, attr, None))
+        num_experts = _first_scalar(_moe_attr(attr))
         if num_experts is not None:
             break
 
-    moe_intermediate_raw = getattr(text_config, "moe_intermediate_size", None)
+    moe_intermediate_raw = _moe_attr("moe_intermediate_size")
+    if moe_intermediate_raw is None:
+        moe_intermediate_raw = _moe_attr("ffn_hidden_size")
     moe_intermediate = _first_scalar(moe_intermediate_raw)
     # why: transformers Exaone-MoE uses `num_shared_experts`; ERNIE MoE uses
     # `moe_num_shared_experts`; Qwen3.5-MoE uses `shared_expert_intermediate_size`
     # plus a single shared expert without an explicit count. Fall through to the
     # canonical `n_shared_experts` last.
     n_shared_experts = (
-        _first_scalar(getattr(text_config, "n_shared_experts", None))
-        or _first_scalar(getattr(text_config, "num_shared_experts", None))
-        or _first_scalar(getattr(text_config, "moe_num_shared_experts", None))
+        _first_scalar(_moe_attr("n_shared_experts"))
+        or _first_scalar(_moe_attr("num_shared_experts"))
+        or _first_scalar(_moe_attr("moe_num_shared_experts"))
         or 0
     )
-    shared_expert_intermediate_size = getattr(
-        text_config,
-        "shared_expert_intermediate_size",
-        None,
-    )
-    # why: ERNIE MoE encodes shared_expert intermediate as the second element of
-    # moe_intermediate_size when no explicit shared_expert_intermediate_size is
-    # set.
-    if (
-        shared_expert_intermediate_size is None
-        and isinstance(moe_intermediate_raw, (list, tuple))
-        and len(moe_intermediate_raw) > 1
-    ):
-        shared_expert_intermediate_size = moe_intermediate_raw[1]
+    shared_expert_intermediate_size = _moe_attr("shared_expert_intermediate_size")
     if shared_expert_intermediate_size and n_shared_experts == 0:
         n_shared_experts = 1
-    # why: DBRX exposes moe_top_k, Hunyuan-V1-MoE exposes moe_topk; ERNIE
-    # families already alias num_experts_per_tok→moe_k via attribute_map so
-    # the canonical name picks them up.
+    # why: DBRX exposes moe_top_k, Hunyuan-V1-MoE exposes moe_topk (which can
+    # be a per-layer list); _max_scalar normalizes list values to the worst
+    # case so int(...) below cannot crash on the canonical attribute_map path.
     num_experts_per_tok = (
-        getattr(text_config, "num_experts_per_tok", None)
-        or getattr(text_config, "top_k_experts", None)
-        or _first_scalar(getattr(text_config, "moe_top_k", None))
-        or _first_scalar(getattr(text_config, "moe_topk", None))
+        _max_scalar(_moe_attr("num_experts_per_tok"))
+        or _max_scalar(_moe_attr("top_k_experts"))
+        or _max_scalar(_moe_attr("moe_top_k"))
+        or _max_scalar(_moe_attr("moe_topk"))
         or 1
     )
 
@@ -302,6 +324,28 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     if num_experts is not None and num_experts > 1:
         dense_layer_indices = _compute_dense_layer_indices(text_config, num_layers)
     num_dense_layers = len(dense_layer_indices)
+
+    # why: Llama4 dense layers use intermediate_size_mlp (e.g. 16384), while
+    # routed experts and the auto-attached shared expert use intermediate_size
+    # (e.g. 8192). Llama4TextMoe always builds one shared_expert per MoE
+    # layer, so synthesize n_shared_experts=1 when the dense-vs-MoE width
+    # split is present and no shared_expert was already configured.
+    intermediate_size_mlp_raw = _first_scalar(
+        _moe_attr("intermediate_size_mlp")
+    )
+    dense_intermediate_size = (
+        int(intermediate_size_mlp_raw)
+        if intermediate_size_mlp_raw is not None
+        else None
+    )
+    if (
+        intermediate_size_mlp_raw is not None
+        and num_experts is not None
+        and num_experts > 1
+        and shared_expert_intermediate_size is None
+        and n_shared_experts == 0
+    ):
+        n_shared_experts = 1
 
     q_lora_rank = getattr(text_config, "q_lora_rank", None)
     kv_lora_rank = getattr(text_config, "kv_lora_rank", None)
@@ -357,6 +401,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         quant_4bit_factor = quant_4bit_factor,
         moe_has_dense_mlp = bool(getattr(text_config, "enable_moe_block", False)),
         dense_layer_indices = dense_layer_indices,
+        dense_intermediate_size = dense_intermediate_size,
     )
 
 
@@ -491,8 +536,8 @@ def _layer_attention_dims(arch: ModelArchConfig, layer_idx: int) -> tuple:
 
 def _layer_mlp_size(arch: ModelArchConfig, layer_idx: int) -> int:
     if arch.use_double_wide_mlp and _is_kv_shared_layer(arch, layer_idx):
-        return arch.intermediate_size * 2
-    return arch.intermediate_size
+        return _dense_mlp_size(arch) * 2
+    return _dense_mlp_size(arch)
 
 
 def _text_linear_dims(
@@ -749,6 +794,13 @@ def _get_mlp_size(arch: ModelArchConfig) -> int:
     return arch.intermediate_size
 
 
+def _dense_mlp_size(arch: ModelArchConfig) -> int:
+    # why: Llama4 dense layers use intermediate_size_mlp (typically 16384)
+    # while routed/shared experts use intermediate_size; for everyone else
+    # arch.dense_intermediate_size is None and we fall back to intermediate_size.
+    return arch.dense_intermediate_size or arch.intermediate_size
+
+
 def _get_num_experts(arch: ModelArchConfig) -> int:
     return arch.num_experts if arch.num_experts and arch.num_experts > 1 else 1
 
@@ -771,7 +823,7 @@ def _compute_attn_elements(arch: ModelArchConfig) -> int:
 
 
 def _compute_dense_mlp_elements(arch: ModelArchConfig) -> int:
-    return arch.hidden_size * arch.intermediate_size * 3
+    return arch.hidden_size * _dense_mlp_size(arch) * 3
 
 
 def _shared_expert_size(arch: ModelArchConfig) -> int:
@@ -1051,7 +1103,7 @@ def compute_lora_params(
         moe_mlp = routed_moe + shared_moe
         dense_mlp = _lora_mlp_elements(
             hd,
-            arch.intermediate_size,
+            _dense_mlp_size(arch),
             r,
             selected_modules,
             1,
@@ -1065,7 +1117,7 @@ def compute_lora_params(
         mlp_total = (
             _lora_mlp_elements(
                 hd,
-                arch.intermediate_size,
+                _dense_mlp_size(arch),
                 r,
                 selected_modules,
                 1,

@@ -872,12 +872,22 @@ def estimate_fp16_model_size_bytes(
         return int(total_params * 2), "safetensors"
 
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    config_bytes: Optional[int] = None
     if config is not None:
         config_bytes = _estimate_fp16_model_size_bytes_from_config(config)
-        if config_bytes is not None:
-            return config_bytes, "config"
 
     local_bytes = _get_local_weight_size_bytes(estimate_model)
+
+    # why: for local multimodal directories, config-derived bytes only cover
+    # the text tower; safetensors on disk include the vision/audio tower too.
+    # Prefer the larger so the extra_bytes correction in
+    # estimate_required_model_memory_gb sees the multimodal delta.
+    if config_bytes is not None and local_bytes is not None:
+        if local_bytes > config_bytes:
+            return local_bytes, "weight_bytes"
+        return config_bytes, "config"
+    if config_bytes is not None:
+        return config_bytes, "config"
     if local_bytes is not None:
         return local_bytes, "weight_bytes"
 
