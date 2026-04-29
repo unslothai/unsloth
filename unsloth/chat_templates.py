@@ -2790,7 +2790,7 @@ def test_chat_templates():
     try:
         from fastchat.conversation import get_conv_template
     except:
-        subprocess.run(["pip", "-qqq", "install", "git+https://github.com/lm-sys/FastChat.git@v0.2.36"], check=False)
+        subprocess.run(["pip", "-qqq", "install", "git+https://github.com/lm-sys/FastChat.git@v0.2.36"], check = False)
         from fastchat.conversation import get_conv_template
     correct_prompt = get_conv_template("vicuna_v1.1")
     for j in range(len(messages)-1):
@@ -2808,7 +2808,7 @@ def test_chat_templates():
     try:
         from fastchat.conversation import get_conv_template
     except:
-        subprocess.run(["pip", "-qqq", "install", "git+https://github.com/lm-sys/FastChat.git@v0.2.36"], check=False)
+        subprocess.run(["pip", "-qqq", "install", "git+https://github.com/lm-sys/FastChat.git@v0.2.36"], check = False)
         from fastchat.conversation import get_conv_template
     correct_prompt = get_conv_template("zero_shot")
     for j in range(len(messages)-1):
