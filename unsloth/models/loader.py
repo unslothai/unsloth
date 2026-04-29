@@ -1185,6 +1185,29 @@ class FastModel(FastBaseModel):
 
             if is_rdna():
                 os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+        # PaliGemma (v1: Gemma backbone, v2: Gemma2 backbone)
+        # Must be checked before generic "gemma2"/"gemma" to apply fast kernels
+        # to the inner language_model via class-level patching.
+        elif "paligemma" in model_types_all:
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+            if "gemma2" in model_types_all:
+                # PaliGemma 2 — language_model is Gemma2ForCausalLM
+                if not SUPPORTS_GEMMA2:
+                    raise RuntimeError(
+                        "Unsloth: PaliGemma 2 requires transformers >= 4.42.3.\n"
+                        'Try `pip install --upgrade "transformers>=4.42.3"`\n'
+                        "to obtain the latest transformers build, then restart this session."
+                    )
+                FastGemma2Model.pre_patch()
+            else:
+                # PaliGemma 1 — language_model is GemmaForCausalLM
+                if not SUPPORTS_GEMMA:
+                    raise RuntimeError(
+                        "Unsloth: PaliGemma requires transformers >= 4.38.\n"
+                        'Try `pip install --upgrade "transformers>=4.38"`\n'
+                        "to obtain the latest transformers build, then restart this session."
+                    )
+                FastGemmaModel.pre_patch()
         # Cohere
         elif "cohere2" in model_types_all and transformers_version < Version(
             "4.50.0.dev0"
