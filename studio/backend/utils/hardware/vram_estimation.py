@@ -388,18 +388,26 @@ def _per_layer_input_norm_elements(arch: ModelArchConfig) -> int:
 def _per_layer_input_lora_params(
     arch: ModelArchConfig,
     r: int,
+    target_modules,
     all_linear: bool,
 ) -> int:
-    if not all_linear:
-        return 0
     pli = arch.hidden_size_per_layer_input
     if pli <= 0:
         return 0
+    targets = (
+        {target_modules}
+        if isinstance(target_modules, str)
+        else set(target_modules or [])
+    )
     n_layers = arch.num_hidden_layers
     hd = arch.hidden_size
-    total = hd * r + r * (n_layers * pli)
-    total += (hd * r + r * pli) * n_layers
-    total += (pli * r + r * hd) * n_layers
+    total = 0
+    if all_linear or "per_layer_model_projection" in targets:
+        total += hd * r + r * (n_layers * pli)
+    if all_linear or "per_layer_input_gate" in targets:
+        total += (hd * r + r * pli) * n_layers
+    if all_linear or "per_layer_projection" in targets:
+        total += (pli * r + r * hd) * n_layers
     return total
 
 
@@ -541,7 +549,14 @@ def _build_text_module_elements(
                     }
                 )
             else:
-                layer_modules["mlp.experts"] = _compute_moe_mlp_elements(arch)
+                layer_modules["mlp.experts"] = _compute_routed_moe_elements(arch)
+                shared_moe = _compute_shared_moe_elements(arch)
+                if shared_moe:
+                    # why: Qwen3.5-MoE exposes shared expert as
+                    # mlp.shared_expert; Exaone-MoE/Laguna/GLM-style configs use
+                    # mlp.shared_experts. Register both names so child-path
+                    # llm_int8_skip_modules entries match the right shared block.
+                    layer_modules["mlp.shared_expert"] = shared_moe
                 if arch.moe_has_dense_mlp:
                     # why: enable_moe_block runs the dense MLP and the MoE
                     # experts in parallel; register both for skip matching.
@@ -606,6 +621,18 @@ def _build_text_module_elements(
             canonical = f"text.layers.{layer_idx}.{name}"
             elements[canonical] = value
             _add_module_aliases(aliases, canonical, canonical.removeprefix("text."))
+            if name == "mlp.experts" and arch.moe_has_dense_mlp:
+                # why: gemma4 enable_moe_block exposes routed experts at
+                # layers.<i>.experts (sibling of self.mlp), not under mlp.
+                _add_module_aliases(aliases, canonical, f"layers.{layer_idx}.experts")
+            elif name == "mlp.shared_expert":
+                # why: Exaone-MoE / Laguna / GLM-style configs use the plural
+                # `shared_experts` attribute name; register both spellings.
+                _add_module_aliases(
+                    aliases,
+                    canonical,
+                    f"layers.{layer_idx}.mlp.shared_experts",
+                )
 
     if pli > 0:
         canonical = "text.per_layer_model_projection"
@@ -679,16 +706,29 @@ def _shared_expert_size(arch: ModelArchConfig) -> int:
     return arch.shared_expert_intermediate_size or _get_mlp_size(arch)
 
 
-def _compute_moe_mlp_elements(arch: ModelArchConfig) -> int:
+def _compute_routed_moe_elements(arch: ModelArchConfig) -> int:
     hd = arch.hidden_size
-    mlp_size = _get_mlp_size(arch)
     n_experts = _get_num_experts(arch)
-    routed = hd * mlp_size * 3 * n_experts + n_experts * hd
-    if arch.n_shared_experts:
-        shared_size = _shared_expert_size(arch)
-        # why: Qwen3.5-MoE shared_expert_gate is a hd→1 Linear per shared expert.
-        routed += hd * shared_size * 3 * arch.n_shared_experts + arch.n_shared_experts * hd
-    return routed
+    return hd * _get_mlp_size(arch) * 3 * n_experts + n_experts * hd
+
+
+def _compute_shared_moe_elements(arch: ModelArchConfig) -> int:
+    if not arch.n_shared_experts:
+        return 0
+    hd = arch.hidden_size
+    shared_size = _shared_expert_size(arch)
+    total = hd * shared_size * 3 * arch.n_shared_experts
+    # why: only Qwen2-MoE / Qwen3.5-MoE define a shared_expert_gate Linear
+    # (hidden_size→1); other families (Exaone-MoE, HY-V3, GLM4-MoE-Lite, Laguna)
+    # have shared_experts without a gate. shared_expert_intermediate_size is the
+    # Qwen-style discriminator.
+    if arch.shared_expert_intermediate_size:
+        total += arch.n_shared_experts * hd
+    return total
+
+
+def _compute_moe_mlp_elements(arch: ModelArchConfig) -> int:
+    return _compute_routed_moe_elements(arch) + _compute_shared_moe_elements(arch)
 
 
 def _compute_layer_elements(arch: ModelArchConfig):
@@ -872,7 +912,13 @@ def compute_lora_params(
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
-            moe_mlp = _lora_mlp_elements(
+            # why: peft target_modules="all-linear" attaches LoRA to nn.Linear
+            # only; Unsloth's get_moe_target_parameters (models/_utils.py:3253)
+            # expands MoE expert nn.Parameter LoRA only when target_modules
+            # contains explicit gate_proj/up_proj/down_proj/gate_up_proj names.
+            # Bare "all-linear" therefore does NOT enable expert/shared-expert
+            # LoRA in actual training.
+            moe_mlp = 0 if all_linear else _lora_mlp_elements(
                 hd,
                 _get_mlp_size(arch),
                 r,
@@ -900,7 +946,7 @@ def compute_lora_params(
         return (
             attn_total
             + mlp_total
-            + _per_layer_input_lora_params(arch, r, all_linear)
+            + _per_layer_input_lora_params(arch, r, target_modules, all_linear)
         )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
@@ -908,7 +954,8 @@ def compute_lora_params(
         n_moe = n_layers - n_dense
         # why: routed and shared experts may use different intermediate sizes
         # (Qwen3.5-MoE: routed mlp_size != shared_expert_intermediate_size).
-        moe_mlp = _lora_mlp_elements(
+        # See structured branch for the all-linear exclusion rationale.
+        moe_mlp = 0 if all_linear else _lora_mlp_elements(
             hd,
             _get_mlp_size(arch),
             r,
@@ -945,7 +992,7 @@ def compute_lora_params(
             * n_layers
         )
 
-    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, all_linear)
+    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules, all_linear)
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:
@@ -982,10 +1029,19 @@ def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
     n_experts = _get_num_experts(arch)
     is_moe_layer = n_experts > 1 and not _is_dense_mlp_layer(arch, layer_idx)
     if _uses_structured_layer_shapes(arch):
-        q_size, kv_size, has_k, has_v = _layer_attention_dims(arch, layer_idx)
-        qkv_size = q_size + (kv_size if has_k else 0) + (kv_size if has_v else 0)
+        q_size, kv_size, _has_k, _has_v = _layer_attention_dims(arch, layer_idx)
+        # why: KV-shared layers (Gemma4/Gemma3n) drop k_proj/v_proj WEIGHTS but
+        # the donor layer's K/V tensors stay alive across the shared range, so
+        # activation memory still pays for kv_size; only the weight path uses
+        # has_k/has_v.
+        layer_type = _layer_types(arch)[layer_idx]
+        use_alt_attention = arch.attention_k_eq_v and layer_type != "sliding_attention"
+        kv_count = 1 if use_alt_attention else 2
+        qkv_size = q_size + kv_size * kv_count
         if is_moe_layer:
             mlp_size = _get_mlp_size(arch)
+            if arch.n_shared_experts:
+                mlp_size += _shared_expert_size(arch) * arch.n_shared_experts
             if arch.moe_has_dense_mlp:
                 mlp_size += _layer_mlp_size(arch, layer_idx)
         else:
@@ -993,8 +1049,11 @@ def _layer_qkv_mlp_sizes(arch: ModelArchConfig, layer_idx: int) -> tuple:
         return qkv_size, mlp_size
     kv_size = _get_kv_size(arch)
     mlp_size = _get_mlp_size(arch)
-    if is_moe_layer and arch.moe_has_dense_mlp:
-        mlp_size += arch.intermediate_size
+    if is_moe_layer:
+        if arch.n_shared_experts:
+            mlp_size += _shared_expert_size(arch) * arch.n_shared_experts
+        if arch.moe_has_dense_mlp:
+            mlp_size += arch.intermediate_size
     return arch.hidden_size + kv_size + kv_size, mlp_size
 
 
@@ -1008,7 +1067,16 @@ def _per_layer_activation_bytes(
     activation_qkv = seq_len * batch_size * qkv_size
     residual_memory = (seq_len * batch_size) * 2
     activation_mlp = seq_len * batch_size * (mlp_size + mlp_size)
-    return int((activation_qkv + residual_memory + activation_mlp) * 2 * 1.25)
+    # why: per_layer_input_gate (hd-sized) and per_layer_projection (pli-sized)
+    # outputs materialize once per decoder layer when hidden_size_per_layer_input
+    # is set; see gemma4/modular_gemma4.py:1141-1145.
+    pli = arch.hidden_size_per_layer_input
+    activation_ple = seq_len * batch_size * (arch.hidden_size + pli) if pli > 0 else 0
+    return int(
+        (activation_qkv + residual_memory + activation_mlp + activation_ple)
+        * 2
+        * 1.25
+    )
 
 
 def compute_activation_bytes(
@@ -1039,6 +1107,12 @@ def compute_activation_bytes(
             for i in range(n_layers)
         )
         linear_bytes = int(max_layer_bytes * effective_layers)
+
+    # why: gemma4 per_layer_model_projection runs once outside the per-decoder
+    # loop and materializes a [B, S, L, PLI] tensor; see modular_gemma4.py:1247.
+    pli = arch.hidden_size_per_layer_input
+    if pli > 0:
+        linear_bytes += int(seq_len * batch_size * n_layers * pli * 2 * 1.25)
 
     if _is_linear_attention(attention_implementation):
         return linear_bytes
