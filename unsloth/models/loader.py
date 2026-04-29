@@ -1192,7 +1192,7 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
             if "gemma2" in model_types_all:
                 # PaliGemma 2 — language_model is Gemma2ForCausalLM
-                if not SUPPORTS_GEMMA2:
+                if transformers_version < Version("4.42.3"):
                     raise RuntimeError(
                         "Unsloth: PaliGemma 2 requires transformers >= 4.42.3.\n"
                         'Try `pip install --upgrade "transformers>=4.42.3"`\n'
