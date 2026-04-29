@@ -906,7 +906,7 @@ async def get_activations(
     metadata = None
     if metadata_path.exists():
         try:
-            with open(metadata_path, "r", encoding="utf-8") as f:
+            with open(metadata_path, "r", encoding = "utf-8") as f:
                 metadata = _json_mod.load(f)
         except Exception as exc:
             logger.warning("Failed to read activation metadata: %s", exc)
@@ -914,7 +914,7 @@ async def get_activations(
     records: list[dict] = []
     if log_path.exists():
         try:
-            with open(log_path, "r", encoding="utf-8") as f:
+            with open(log_path, "r", encoding = "utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line:

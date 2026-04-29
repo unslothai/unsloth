@@ -95,7 +95,9 @@ class TrainingBackend:
         # Job metadata
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
-        self._active_output_dir: Optional[str] = None  # set as soon as output_dir is known
+        self._active_output_dir: Optional[str] = (
+            None  # set as soon as output_dir is known
+        )
 
         # DB persistence
         self._metric_buffer: list[dict] = []
