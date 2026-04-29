@@ -1,4 +1,5 @@
 """Verify dpo_trainer_vision_process_row forwards prompt and images verbatim."""
+
 import ast
 import os
 
@@ -17,8 +18,7 @@ def _load_helpers():
     ns = {"torch": _torch}
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_DPO_VISION_KEYS"
-            for t in node.targets
+            isinstance(t, ast.Name) and t.id == "_DPO_VISION_KEYS" for t in node.targets
         ):
             exec(ast.get_source_segment(src, node), ns)
     for node in tree.body:
@@ -33,7 +33,7 @@ class _Tok:
     eos_token_id = 99
     bos_token_id = None
 
-    def __call__(self, t, add_special_tokens=False):
+    def __call__(self, t, add_special_tokens = False):
         return {"input_ids": [10]}
 
 
@@ -46,7 +46,7 @@ class _Capture:
         self.last_text = None
         self.last_images = "__sentinel__"
 
-    def __call__(self, images=None, text=None, add_special_tokens=False):
+    def __call__(self, images = None, text = None, add_special_tokens = False):
         self.last_text = text
         self.last_images = images
         out = {"input_ids": [[1, 2]]}
@@ -90,7 +90,12 @@ def test_multi_image_prompt_unchanged_no_extra_placeholders():
     ns = _load_helpers()
     proc = _Capture()
     ns["dpo_trainer_vision_process_row"](
-        {"prompt": "compare", "chosen": "c", "rejected": "r", "images": ["a", "b", "c"]},
+        {
+            "prompt": "compare",
+            "chosen": "c",
+            "rejected": "r",
+            "images": ["a", "b", "c"],
+        },
         proc,
     )
     assert proc.last_text == "compare"
@@ -126,7 +131,7 @@ def test_single_pil_like_image_forwarded_verbatim():
 def test_numpy_ndarray_image_forwarded_verbatim():
     ns = _load_helpers()
     proc = _Capture()
-    arr = np.zeros((2, 3, 3), dtype=np.uint8)
+    arr = np.zeros((2, 3, 3), dtype = np.uint8)
     ns["dpo_trainer_vision_process_row"](
         {"prompt": "p", "chosen": "c", "rejected": "r", "images": arr},
         proc,
