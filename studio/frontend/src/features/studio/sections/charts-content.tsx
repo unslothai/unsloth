@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ReactElement, useEffect, useMemo } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useChartPreferencesStore } from "./charts/chart-preferences-store";
 import { EvalLossChartCard } from "./charts/eval-loss-chart-card";
@@ -19,6 +19,51 @@ import {
   ema,
   toLog1p,
 } from "./charts/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
+// ── Expandable chart wrapper ────────────────────────────────────────────────
+// Shows the chart normally; a hover-reveal button opens it full-width in a
+// Dialog so the user can inspect detail without scrolling or zooming.
+
+function ExpandableChartCard({
+  title,
+  chart,
+}: {
+  title: string;
+  chart: () => ReactElement;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative h-full">
+      {chart()}
+      {/* Expand button — always subtly visible, full opacity on hover */}
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="absolute right-2 top-2 z-10 rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
+        title="Expand chart"
+        aria-label={`Expand ${title} chart`}
+      >
+        <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="w-[90vw] max-w-none sm:max-w-none">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+          </DialogHeader>
+          <div className="mt-2 aspect-video w-full max-h-[calc(100svh-8rem)]">{chart()}</div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
 
 type LossDisplayPoint = {
   step: number;
@@ -280,39 +325,59 @@ export function ChartsContent({
   const avgDisplay = lossScale === "log" ? toLog1p(avgRaw) : avgRaw;
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <TrainingLossChartCard
-        data={displayLossData}
-        domain={lossDomain}
-        visibleStepDomain={visibleStepDomain}
-        xAxisTicks={xAxisTicks}
-        avgRaw={avgRaw}
-        avgDisplay={avgDisplay}
-        showRaw={showRaw}
-        showSmoothed={showSmoothed}
-        showAvgLine={showAvgLine}
-        scale={lossScale}
+    <div className="grid grid-cols-2 grid-rows-2 gap-4 h-full">
+      <ExpandableChartCard
+        title="Training Loss"
+        chart={() => (
+          <TrainingLossChartCard
+            data={displayLossData}
+            domain={lossDomain}
+            visibleStepDomain={visibleStepDomain}
+            xAxisTicks={xAxisTicks}
+            avgRaw={avgRaw}
+            avgDisplay={avgDisplay}
+            showRaw={showRaw}
+            showSmoothed={showSmoothed}
+            showAvgLine={showAvgLine}
+            scale={lossScale}
+          />
+        )}
       />
-      <GradNormChartCard
-        data={displayGradData}
-        domain={gradDomain}
-        visibleStepDomain={visibleStepDomain}
-        xAxisTicks={xAxisTicks}
-        scale={gradScale}
+      <ExpandableChartCard
+        title="Gradient Norm"
+        chart={() => (
+          <GradNormChartCard
+            data={displayGradData}
+            domain={gradDomain}
+            visibleStepDomain={visibleStepDomain}
+            xAxisTicks={xAxisTicks}
+            scale={gradScale}
+          />
+        )}
       />
-      <LearningRateChartCard
-        data={displayLrData}
-        domain={lrDomain}
-        visibleStepDomain={visibleStepDomain}
-        xAxisTicks={xAxisTicks}
-        scale={lrScale}
+      <ExpandableChartCard
+        title="Learning Rate"
+        chart={() => (
+          <LearningRateChartCard
+            data={displayLrData}
+            domain={lrDomain}
+            visibleStepDomain={visibleStepDomain}
+            xAxisTicks={xAxisTicks}
+            scale={lrScale}
+          />
+        )}
       />
-      <EvalLossChartCard
-        data={reducedEvalLossData}
-        domain={evalLossDomain}
-        ticks={evalLossStepTicks}
-        isTraining={isTraining}
-        evalEnabled={evalEnabled}
+      <ExpandableChartCard
+        title="Eval Loss"
+        chart={() => (
+          <EvalLossChartCard
+            data={reducedEvalLossData}
+            domain={evalLossDomain}
+            ticks={evalLossStepTicks}
+            isTraining={isTraining}
+            evalEnabled={evalEnabled}
+          />
+        )}
       />
     </div>
   );
