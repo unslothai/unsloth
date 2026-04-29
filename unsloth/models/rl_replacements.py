@@ -268,10 +268,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 # Guard reload_weights and sync_weights - skip when fast inference LoRA shares weights with vLLM
 # https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
-def grpo_trainer__generate_single_turn(function_name, function):
-    if function_name != "_generate_single_turn":
-        return function
-
+def _guard_vllm_sync_reload_for_shared_weights(function):
     # Guard reload_weights - only call when not sharing weights with vLLM
     reload_weights_pattern = re.compile(
         r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
@@ -303,6 +300,14 @@ def grpo_trainer__generate_single_turn(function_name, function):
         )
 
     function = sync_weights_block.sub(guard_sync_weights_block, function)
+    return function
+
+
+def grpo_trainer__generate_single_turn(function_name, function):
+    if function_name != "_generate_single_turn":
+        return function
+
+    function = _guard_vllm_sync_reload_for_shared_weights(function)
 
     # TRL 0.24.0-0.25.1 truncation regression fix
     #
@@ -331,6 +336,16 @@ def grpo_trainer__generate_single_turn(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
+
+
+def grpo_trainer__generate(function_name, function):
+    if function_name != "_generate":
+        return function
+
+    return _guard_vllm_sync_reload_for_shared_weights(function)
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
 # Fix incorrect special tokens handling and truncation in older TRL versions
