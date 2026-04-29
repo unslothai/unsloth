@@ -761,6 +761,31 @@ def run_training_process(
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
+        # Emit output_dir early so the activations endpoint can find logs during training
+        event_queue.put({"type": "output_dir_set", "output_dir": output_dir, "ts": time.time()})
+
+        # Wire ActivationCaptureCallback for text/VLM models (audio models skipped)
+        if not trainer.is_audio and not trainer.is_audio_vlm:
+            try:
+                from unsloth.activation_capture import (
+                    ActivationCaptureConfig,
+                    ActivationCapture,
+                    ActivationCaptureCallback,
+                )
+                # Target ~30 replay frames; fall back to every step when total unknown
+                _cfg_max_steps = config.get("max_steps", 0) or 0
+                _act_interval = max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 1
+                _act_config = ActivationCaptureConfig(
+                    output_dir=os.path.join(output_dir, "activation_logs"),
+                    capture_interval=_act_interval,
+                )
+                _act_capture = ActivationCapture(trainer.model, _act_config)
+                _act_cb = ActivationCaptureCallback(_act_capture)
+                trainer.extra_hf_callbacks = [_act_cb]
+                logger.info("ActivationCaptureCallback registered for %s\n", output_dir)
+            except Exception as _act_err:
+                logger.warning("ActivationCaptureCallback unavailable: %s\n", _act_err)
+
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))

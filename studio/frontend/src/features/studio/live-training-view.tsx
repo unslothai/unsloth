@@ -10,6 +10,7 @@ import type { TrainingViewData } from "@/features/training";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
+import { NeuronHeatmapSection } from "./sections/neuron-heatmap-section";
 import { ProgressSection } from "./sections/progress-section";
 import { TrainingStartOverlay } from "./training-start-overlay";
 
@@ -89,23 +90,34 @@ export function LiveTrainingView(): ReactElement {
     <div className={cn("relative", showOverlay && "min-h-[72vh]")}>
       <div
         className={cn(
-          "relative z-10 flex flex-col gap-6 transition-[filter]",
+          "relative z-10 flex flex-col gap-4 transition-[filter]",
           showOverlay && "blur",
         )}
       >
         <div data-tour="studio-training-progress">
           <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
         </div>
-        <ChartsSection
-          currentStep={viewData.currentStep}
-          totalSteps={viewData.totalSteps}
-          isTraining={viewData.isTrainingRunning}
-          evalEnabled={viewData.evalEnabled}
-          lossHistory={viewData.lossHistory}
-          lrHistory={viewData.lrHistory}
-          gradNormHistory={viewData.gradNormHistory}
-          evalLossHistory={viewData.evalLossHistory}
-        />
+        {/* Activation heatmap (left) + training charts (right) side-by-side */}
+        <div className="flex items-stretch gap-4">
+          <div className="shrink-0">
+            <NeuronHeatmapSection
+              isTraining={viewData.isTrainingRunning}
+              jobId={runtime.jobId}
+            />
+          </div>
+          <div className="flex-1 min-w-0">
+            <ChartsSection
+              currentStep={viewData.currentStep}
+              totalSteps={viewData.totalSteps}
+              isTraining={viewData.isTrainingRunning}
+              evalEnabled={viewData.evalEnabled}
+              lossHistory={viewData.lossHistory}
+              lrHistory={viewData.lrHistory}
+              gradNormHistory={viewData.gradNormHistory}
+              evalLossHistory={viewData.evalLossHistory}
+            />
+          </div>
+        </div>
       </div>
       {showOverlay ? (
         <TrainingStartOverlay

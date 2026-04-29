@@ -166,12 +166,13 @@ class ActivationCapture:
         # Plain HF:   model  →  .model  →  .layers
         candidate = model
         layers = None
-        for _ in range(5):  # unwrap at most 5 levels of nesting
+        for _ in range(8):  # unwrap at most 8 levels of nesting
             layers = getattr(candidate, "layers", None)
             if layers is not None:
                 break
             # try going one level deeper via common attribute names
-            for attr in ("base_model", "model"):
+            # "language_model" covers VLM wrappers like Gemma4ForConditionalGeneration
+            for attr in ("base_model", "model", "language_model", "transformer", "decoder"):
                 deeper = getattr(candidate, attr, None)
                 if deeper is not None and deeper is not candidate:
                     candidate = deeper
@@ -188,14 +189,30 @@ class ActivationCapture:
         self._layers = layers
 
         # ---- read config dimensions ---------------------------------------
+        # `candidate` is now the object that owns `.layers`; walk up from model
+        # trying common nesting patterns so we find the HF config object.
         raw_cfg = None
-        for obj in (model, getattr(model, "model", None), getattr(getattr(model, "model", None), "model", None)):
+        cfg_candidates = [model]
+        _c = model
+        for _attr in ("base_model", "model", "language_model", "transformer", "decoder"):
+            _next = getattr(_c, _attr, None)
+            if _next is not None and _next is not _c:
+                cfg_candidates.append(_next)
+                _c = _next
+        for obj in cfg_candidates:
             if obj is not None and hasattr(obj, "config"):
                 raw_cfg = obj.config
                 break
 
         self._hidden_size      = getattr(raw_cfg, "hidden_size", None)
+        # VLM configs (e.g. Gemma4) nest text dims under raw_cfg.text_config
+        if self._hidden_size is None:
+            _text_cfg = getattr(raw_cfg, "text_config", None)
+            self._hidden_size = getattr(_text_cfg, "hidden_size", None)
         self._intermediate_size= getattr(raw_cfg, "intermediate_size", None)
+        if self._intermediate_size is None:
+            _text_cfg = getattr(raw_cfg, "text_config", None)
+            self._intermediate_size = getattr(_text_cfg, "intermediate_size", None)
         model_name             = getattr(raw_cfg, "_name_or_path", "unknown")
 
         # ---- sample channels for display ----------------------------------
@@ -304,11 +321,16 @@ class ActivationCapture:
                     with torch.no_grad():
                         # lora_A.weight: [r, in_features]
                         # lora_B.weight: [out_features, r]
-                        # effective delta: B @ A  -> [out_features, in_features]
-                        A = lora_A.weight.float()
-                        B = lora_B.weight.float()
-                        delta = B @ A
-                        norm = torch.linalg.matrix_norm(delta, ord="fro").item()
+                        # Avoid materialising [out_features, in_features] delta = B @ A.
+                        # Use the cyclic trace identity:
+                        #   ||BA||_F^2 = tr(A^T B^T B A) = tr(B^T B · A A^T)
+                        # Both intermediates are [r, r] — far cheaper than [d_out, d_in].
+                        A = lora_A.weight.float()       # [r, in_features]
+                        B = lora_B.weight.float()       # [out_features, r]
+                        BtB = B.T @ B                   # [r, r]
+                        AAt = A @ A.T                   # [r, r]
+                        # (BtB * AAt).sum() == tr(BtB @ AAt) because BtB is symmetric
+                        norm = (BtB * AAt).sum().clamp(min=0).sqrt().item()
                         layer_norms[target_name] = norm
                 except Exception as e:
                     logger.debug(f"Could not compute LoRA norm for layer {layer_idx} {target_name}: {e}")
@@ -381,10 +403,11 @@ class ActivationCapture:
                 return
 
             with torch.no_grad():
-                # Cast to float32 to handle bfloat16 / float16 uniformly
-                h = hidden.detach().float()          # [B, S, H]
-                h_sampled = h[:, :, sampled]         # [B, S, C]
-                flat = h_sampled.reshape(-1, n_channels)  # [B*S, C]
+                # Index K channels BEFORE casting to fp32 — avoids allocating a
+                # full [B, S, H] fp32 copy; instead only [B, S, K] is cast.
+                # Reduces peak VRAM spike by H/K (e.g. 64x for K=64, d=4096).
+                h_sampled = hidden.detach()[:, :, sampled].float()  # [B, S, K]
+                flat = h_sampled.reshape(-1, n_channels)             # [B*S, K]
                 mean_abs = flat.abs().mean(dim=0).tolist()
                 mean     = flat.mean(dim=0).tolist()
 

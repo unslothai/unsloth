@@ -854,3 +854,75 @@ async def stream_training_progress(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/activations")
+async def get_activations(
+    output_dir: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Return activation log data for the current (or specified) training run.
+
+    Reads ``activation_logs/metadata.json`` and ``activation_logs/activation_log.jsonl``
+    from the training output directory.  Returns ``{"metadata": {...}, "records": [...]}``
+    with an empty records list when no data is available yet.
+    """
+    import json as _json_mod
+
+    # Resolve the output directory to search for activation logs
+    candidate_dirs: list[Path] = []
+
+    if output_dir:
+        candidate_dirs.append(Path(output_dir))
+    else:
+        # Try the current backend's active output dir (set as soon as training begins)
+        # then fall back to _output_dir (set on completion)
+        try:
+            backend = get_training_backend()
+            active_out = getattr(backend, "_active_output_dir", None)
+            if active_out:
+                candidate_dirs.append(Path(active_out))
+            backend_out = getattr(backend, "_output_dir", None)
+            if backend_out and backend_out != active_out:
+                candidate_dirs.append(Path(backend_out))
+        except Exception:
+            pass
+
+    # Find the activation_logs directory
+    activation_dir: Optional[Path] = None
+    for base in candidate_dirs:
+        candidate = base / "activation_logs"
+        if candidate.is_dir():
+            activation_dir = candidate
+            break
+
+    if activation_dir is None:
+        return {"metadata": None, "records": []}
+
+    metadata_path = activation_dir / "metadata.json"
+    log_path = activation_dir / "activation_log.jsonl"
+
+    metadata = None
+    if metadata_path.exists():
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = _json_mod.load(f)
+        except Exception as exc:
+            logger.warning("Failed to read activation metadata: %s", exc)
+
+    records: list[dict] = []
+    if log_path.exists():
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(_json_mod.loads(line))
+                        except _json_mod.JSONDecodeError:
+                            pass
+        except Exception as exc:
+            logger.warning("Failed to read activation log: %s", exc)
+
+    return {"metadata": metadata, "records": records}
