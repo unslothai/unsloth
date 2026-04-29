@@ -157,17 +157,18 @@ def dpo_trainer_vision_process_row(
     is_chat = False,
 ):
     vision_token = getattr(processing_class, "image_token", None)
-    text = features["prompt"]
+    text = features.get("prompt", "")
+    images = features.get("images") or []
     if (
         vision_token is not None
         and isinstance(text, str)
-        and len(features.get("images", [])) > 0
+        and len(images) > 0
         and vision_token not in text
     ):
         text = f"{vision_token} " + text
     processor, tokenizer = processing_class, processing_class.tokenizer
     processed_features = processor(
-        images = features["images"],
+        images = images,
         text = text,
         add_special_tokens = False,
     )
@@ -186,7 +187,7 @@ def dpo_trainer_vision_process_row(
             prompt_input_ids = [tokenizer.bos_token_id] + prompt_input_ids
         if tokenizer.eos_token_id is not None:
             prompt_input_ids = prompt_input_ids + [tokenizer.eos_token_id]
-    if not is_chat:
+    if not is_chat and tokenizer.eos_token_id is not None:
         chosen_input_ids = chosen_input_ids + [tokenizer.eos_token_id]
         rejected_input_ids = rejected_input_ids + [tokenizer.eos_token_id]
 
@@ -210,14 +211,18 @@ def dpo_trainer_vision_process_row(
         output["token_type_ids"] = processed_features["token_type_ids"][0]
 
     pixel_position_ids = processed_features.get("pixel_position_ids")
+    _used_image_position_ids = False
     if pixel_position_ids is None:
         pixel_position_ids = processed_features.get("image_position_ids")
+        _used_image_position_ids = pixel_position_ids is not None
 
-    if torch.is_tensor(pixel_position_ids):
+    if pixel_position_ids is not None:
         output["pixel_position_ids"] = pixel_position_ids[0]
 
     for _k in ("image_position_ids", "mm_token_type_ids"):
         if _k in processed_features:
+            if _k == "image_position_ids" and _used_image_position_ids:
+                continue
             output[_k] = processed_features[_k][0]
 
     return output
@@ -231,11 +236,19 @@ def dpo_trainer_vision_signature_columns(function_name, function):
         return function
 
     _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
-    return function.replace(
+    new_function = function.replace(
         '                "image_sizes",\n' '                "token_type_ids",\n',
         f'                "image_sizes",\n'
         f"{_extra_columns}"
         f'                "token_type_ids",\n',
+    )
+    if new_function != function:
+        return new_function
+    return function.replace(
+        '                "image_sizes",\n' '                "ref_chosen_logps",\n',
+        f'                "image_sizes",\n'
+        f"{_extra_columns}"
+        f'                "ref_chosen_logps",\n',
     )
 
 
@@ -252,21 +265,22 @@ def dpo_trainer_concatenated_inputs(function_name, function):
         for _k in _DPO_VISION_KEYS
     )
 
-    return function.replace(
+    image_sizes_block = (
         '        if "image_sizes" in batch:\n'
         '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
-        '        if "token_type_ids" in batch:\n',
-        '        if "image_sizes" in batch:\n'
-        '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
-        f"{_extra_inputs}"
-        '        if "token_type_ids" in batch:\n',
     )
+    new_function = function.replace(
+        image_sizes_block + '        if "token_type_ids" in batch:\n',
+        image_sizes_block + _extra_inputs + '        if "token_type_ids" in batch:\n',
+    )
+    if new_function != function:
+        return new_function
+    if image_sizes_block in function:
+        return function.replace(image_sizes_block, image_sizes_block + _extra_inputs, 1)
+    return function
 
 
-def dpo_trainer_concatenated_forward(function_name, function):
-    if function_name != "concatenated_forward":
-        return function
-
+def _dpo_trainer_extend_vision_model_kwargs(function):
     if all(_k in function for _k in _DPO_VISION_KEYS):
         return function
 
@@ -292,6 +306,18 @@ def dpo_trainer_concatenated_forward(function_name, function):
     )
 
 
+def dpo_trainer_concatenated_forward(function_name, function):
+    if function_name != "concatenated_forward":
+        return function
+    return _dpo_trainer_extend_vision_model_kwargs(function)
+
+
+def dpo_trainer_compute_loss_liger(function_name, function):
+    if function_name != "_compute_loss_liger":
+        return function
+    return _dpo_trainer_extend_vision_model_kwargs(function)
+
+
 def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
     if "data_collator" not in call_args:
         return ""
@@ -304,12 +330,25 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "\n"
         "    def _unsloth_dpo_torch_call(self, examples):\n"
         "        output = _old_dpo_collator_torch_call(self, examples)\n"
+        "        import torch as _unsloth_torch\n"
+        "        try:\n"
+        "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
+        "        except Exception:\n"
+        "            _unsloth_trl_pad = None\n"
         "        for _k in " + _vision_keys + ":\n"
-        "            if _k in examples[0]:\n"
-        "                import torch as _unsloth_torch\n"
+        "            if not all(_k in example for example in examples):\n"
+        "                continue\n"
+        "            _padding_value = -1 if _k.endswith('position_ids') else 0\n"
+        "            _values = [_unsloth_torch.as_tensor(example[_k]) for example in examples]\n"
+        "            try:\n"
+        "                if _unsloth_trl_pad is not None and _values[0].dim() <= 2:\n"
+        "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side='left')\n"
+        "                else:\n"
+        "                    from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
+        "                    output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
+        "            except Exception:\n"
         "                from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
-        "                _values = [_unsloth_torch.tensor(example[_k]) for example in examples]\n"
-        "                output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=0)\n"
+        "                output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
         "        return output\n"
         "\n"
         "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
@@ -344,7 +383,6 @@ def dpo_trainer_prepare_dataset(function_name, function):
         '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
         "            if self.is_vision_model:\n"
         '                map_kwargs.pop("num_proc", None)\n'
-        '                map_kwargs.pop("writer_batch_size", None)\n'
         "\n"
         "            dataset = dataset.map(\n"
         "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
@@ -359,6 +397,7 @@ RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
