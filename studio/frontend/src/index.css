@@ -350,22 +350,29 @@
 		letter-spacing: -0.02em;
 	}
 
-	/* Tailwind v4 dropped the default `cursor: pointer` on buttons. Restore
-	   pointer cursors for interactive elements so clickability is discoverable
-	   without per-component annotations. */
-	button:not(:disabled),
-	[role="button"]:not([aria-disabled="true"]),
-	[role="switch"]:not([aria-disabled="true"]),
-	[role="checkbox"]:not([aria-disabled="true"]),
-	[role="radio"]:not([aria-disabled="true"]),
-	[role="menuitem"]:not([aria-disabled="true"]),
-	[role="menuitemcheckbox"]:not([aria-disabled="true"]),
-	[role="menuitemradio"]:not([aria-disabled="true"]),
-	[role="option"]:not([aria-disabled="true"]),
-	[role="tab"]:not([aria-disabled="true"]),
-	summary,
-	label:has(> input[type="checkbox"]:not(:disabled)),
-	label:has(> input[type="radio"]:not(:disabled)) {
+	/* Tailwind v4 follows the browser default of `cursor: default` on buttons.
+	   Restore pointer cursors for interactive elements so clickability is
+	   discoverable without per-component annotations. Disabled state honored
+	   via :disabled (form elements), [aria-disabled], and [data-disabled]
+	   (Radix sets the latter on disabled triggers like Tabs/Switch). */
+	:where(
+		button,
+		[role="button"],
+		[role="switch"],
+		[role="checkbox"],
+		[role="radio"],
+		[role="menuitem"],
+		[role="menuitemcheckbox"],
+		[role="menuitemradio"],
+		[role="option"],
+		[role="tab"],
+		summary
+	):not(:disabled, [aria-disabled="true"], [data-disabled]) {
+		cursor: pointer;
+	}
+
+	label:has(input[type="checkbox"]:not(:disabled)),
+	label:has(input[type="radio"]:not(:disabled)) {
 		cursor: pointer;
 	}
 }
