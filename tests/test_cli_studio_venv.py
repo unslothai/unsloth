@@ -88,7 +88,12 @@ def test_stage_setup_script_copies_when_inside_studio_venv(monkeypatch, tmp_path
     monkeypatch.setattr(studio, "STUDIO_HOME", studio_home)
 
     package_root = (
-        studio_home / "unsloth_studio" / "lib" / "python3.11" / "site-packages" / "studio"
+        studio_home
+        / "unsloth_studio"
+        / "lib"
+        / "python3.11"
+        / "site-packages"
+        / "studio"
     )
     package_root.mkdir(parents = True)
     script = package_root / "setup.sh"
