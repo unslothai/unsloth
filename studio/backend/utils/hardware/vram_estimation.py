@@ -121,9 +121,8 @@ class VramBreakdown:
     gradients: int
     activations: int
     cuda_overhead: int
-    # The computed (formula-based) activation cost. Equal to `activations`
-    # since the activation floor was removed; retained for backward
-    # compatibility with consumers that read this field.
+    # Equals `activations`; retained for backward compatibility with
+    # consumers that read this field.
     activations_computed: int = 0
 
     @property
@@ -296,10 +295,8 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     if moe_intermediate_raw is None:
         moe_intermediate_raw = _moe_attr("ffn_hidden_size")
     moe_intermediate = _first_scalar(moe_intermediate_raw)
-    # why: transformers Exaone-MoE uses `num_shared_experts`; ERNIE MoE uses
-    # `moe_num_shared_experts`; Qwen3.5-MoE uses `shared_expert_intermediate_size`
-    # plus a single shared expert without an explicit count. Fall through to the
-    # canonical `n_shared_experts` last.
+    # why: Exaone-MoE / ERNIE families alias num_shared_experts /
+    # moe_num_shared_experts to the canonical n_shared_experts.
     n_shared_experts = (
         _first_scalar(_moe_attr("n_shared_experts"))
         or _first_scalar(_moe_attr("num_shared_experts"))
@@ -325,11 +322,9 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         dense_layer_indices = _compute_dense_layer_indices(text_config, num_layers)
     num_dense_layers = len(dense_layer_indices)
 
-    # why: Llama4 dense layers use intermediate_size_mlp (e.g. 16384), while
-    # routed experts and the auto-attached shared expert use intermediate_size
-    # (e.g. 8192). Llama4TextMoe always builds one shared_expert per MoE
-    # layer, so synthesize n_shared_experts=1 when the dense-vs-MoE width
-    # split is present and no shared_expert was already configured.
+    # why: Llama4 dense layers use intermediate_size_mlp; routed and shared
+    # experts use intermediate_size. Llama4TextMoe builds one shared_expert
+    # per MoE layer (modeling_llama4.py).
     intermediate_size_mlp_raw = _first_scalar(
         _moe_attr("intermediate_size_mlp")
     )
@@ -692,10 +687,8 @@ def _build_text_module_elements(
             )
 
         if pli > 0:
-            # why: gemma4 PLE per-layer linears; their elements were added to
-            # total_quantizable in _compute_layer_elements but never registered
-            # for skip-module matching, so quantization_skip_modules entries
-            # like model.layers.0.per_layer_input_gate produced 0-byte delta.
+            # why: register PLE per-layer linears so llm_int8_skip_modules
+            # entries like model.layers.0.per_layer_input_gate match.
             layer_modules["per_layer_input_gate"] = hd_global * pli
             layer_modules["per_layer_projection"] = pli * hd_global
 
@@ -795,9 +788,8 @@ def _get_mlp_size(arch: ModelArchConfig) -> int:
 
 
 def _dense_mlp_size(arch: ModelArchConfig) -> int:
-    # why: Llama4 dense layers use intermediate_size_mlp (typically 16384)
-    # while routed/shared experts use intermediate_size; for everyone else
-    # arch.dense_intermediate_size is None and we fall back to intermediate_size.
+    # why: Llama4 dense layers use intermediate_size_mlp; routed/shared
+    # experts use intermediate_size. Other configs leave the field None.
     return arch.dense_intermediate_size or arch.intermediate_size
 
 
@@ -1039,13 +1031,11 @@ def compute_lora_params(
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
-            # why: peft target_modules="all-linear" attaches LoRA to nn.Linear
-            # only; Unsloth's get_moe_target_parameters (models/_utils.py:3253)
-            # expands MoE expert nn.Parameter LoRA only when target_modules
-            # contains explicit gate_proj/up_proj/down_proj/gate_up_proj names.
-            # Bare "all-linear" therefore does NOT enable routed-expert
-            # LoRA, but shared experts ARE regular nn.Linear MLPs and get
-            # picked up by get_peft_regex.
+            # why: peft "all-linear" attaches LoRA to nn.Linear only;
+            # routed experts are nn.Parameter and need explicit
+            # gate_proj/up_proj/down_proj naming via Unsloth's
+            # get_moe_target_parameters. Shared experts are nn.Linear and
+            # are picked up by get_peft_regex.
             routed_moe = 0 if all_linear else _lora_mlp_elements(
                 hd,
                 _get_mlp_size(arch),

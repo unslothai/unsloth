@@ -878,10 +878,9 @@ def estimate_fp16_model_size_bytes(
 
     local_bytes = _get_local_weight_size_bytes(estimate_model)
 
-    # why: for local multimodal directories, config-derived bytes only cover
-    # the text tower; safetensors on disk include the vision/audio tower too.
-    # Prefer the larger so the extra_bytes correction in
-    # estimate_required_model_memory_gb sees the multimodal delta.
+    # why: config-derived bytes cover only the text tower; local safetensors
+    # include vision/audio towers. Take the larger so the multimodal
+    # extra_bytes correction can fire.
     if config_bytes is not None and local_bytes is not None:
         if local_bytes > config_bytes:
             return local_bytes, "weight_bytes"
@@ -986,18 +985,15 @@ def estimate_required_model_memory_gb(
 
     if arch is not None:
         breakdown = estimate_training_vram(arch, vram_config)
-        # why: extract_arch_config only sees text_config, so multimodal models
-        # (VLMs) and partially-modeled families (Gemma3n AltUp/Laurel etc.)
-        # would otherwise lose vision/audio tower bytes that the safetensors
-        # total includes.
+        # why: extract_arch_config only sees text_config; safetensors include
+        # vision/audio tower bytes that the text-arch fp16 total misses.
         arch_fp16_bytes = compute_total_params(arch) * 2
         extra_bytes = max(0, int(model_size_bytes) - arch_fp16_bytes)
         if extra_bytes > 0:
             breakdown.model_weights += extra_bytes
             if training_method == "full":
-                # why: under full fine-tuning the extra (vision/audio tower)
-                # params are trainable, so optimizer + gradient bytes scale
-                # with them too.
+                # why: full fine-tuning makes the extra (vision/audio) params
+                # trainable; optimizer + gradient bytes scale with them too.
                 extra_params = extra_bytes // 2
                 breakdown.optimizer_states += compute_optimizer_bytes(
                     extra_params,
