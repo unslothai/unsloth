@@ -158,13 +158,22 @@ def dpo_trainer_vision_process_row(
 ):
     vision_token = getattr(processing_class, "image_token", None)
     text = features.get("prompt", "")
-    images = features.get("images") or []
+    raw_images = features.get("images")
+    if raw_images is None:
+        images = None
+        num_images = 0
+    elif isinstance(raw_images, (list, tuple)):
+        images = raw_images
+        num_images = len(raw_images)
+    else:
+        images = raw_images
+        num_images = 1
     if (
         vision_token is not None
         and isinstance(text, str)
-        and len(images) > 0
+        and num_images > 0
     ):
-        missing_vision_tokens = len(images) - text.count(vision_token)
+        missing_vision_tokens = num_images - text.count(vision_token)
         if missing_vision_tokens > 0:
             text = (vision_token + " ") * missing_vision_tokens + text
     processor, tokenizer = processing_class, processing_class.tokenizer
@@ -209,13 +218,19 @@ def dpo_trainer_vision_process_row(
     if "image_sizes" in processed_features:
         output["image_sizes"] = processed_features["image_sizes"][0]
     if "token_type_ids" in processed_features:
-        output["token_type_ids"] = processed_features["token_type_ids"][0]
+        token_type_ids = processed_features["token_type_ids"][0]
+        if max_prompt_length is not None:
+            token_type_ids = token_type_ids[-max_prompt_length:]
+        output["token_type_ids"] = token_type_ids
     if "pixel_position_ids" in processed_features:
         output["pixel_position_ids"] = processed_features["pixel_position_ids"][0]
     if "image_position_ids" in processed_features:
         output["image_position_ids"] = processed_features["image_position_ids"][0]
     if "mm_token_type_ids" in processed_features:
-        output["mm_token_type_ids"] = processed_features["mm_token_type_ids"][0]
+        mm_token_type_ids = processed_features["mm_token_type_ids"][0]
+        if max_prompt_length is not None:
+            mm_token_type_ids = mm_token_type_ids[-max_prompt_length:]
+        output["mm_token_type_ids"] = mm_token_type_ids
 
     return output
 
