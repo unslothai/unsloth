@@ -51,9 +51,7 @@ def _run_install_guard(
     script = (
         f'STUDIO_HOME="{studio_home}"\n'
         f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
-        f'_STUDIO_HOME_REDIRECT="{redirect}"\n'
-        + block
-        + 'echo RESULT=ok\n'
+        f'_STUDIO_HOME_REDIRECT="{redirect}"\n' + block + "echo RESULT=ok\n"
     )
     return subprocess.run(
         ["bash", "-c", script],
@@ -76,9 +74,7 @@ def test_env_mode_blocks_unsloth_studio_without_sentinels(tmp_path):
 
 def test_env_mode_passes_when_share_studio_conf_present(tmp_path):
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(
-        studio_home, redirect = "env", create_share_conf = True
-    )
+    res = _run_install_guard(studio_home, redirect = "env", create_share_conf = True)
     assert res.returncode == 0, (
         f"share/studio.conf sentinel must allow cleanup;"
         f" stdout={res.stdout!r} stderr={res.stderr!r}"
@@ -89,9 +85,7 @@ def test_env_mode_passes_when_share_studio_conf_present(tmp_path):
 
 def test_env_mode_passes_when_bin_unsloth_shim_present(tmp_path):
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(
-        studio_home, redirect = "env", create_bin_shim = True
-    )
+    res = _run_install_guard(studio_home, redirect = "env", create_bin_shim = True)
     assert res.returncode == 0, res.stderr
     assert not (studio_home / "unsloth_studio").exists()
 
@@ -108,15 +102,15 @@ def test_install_ps1_has_matching_env_mode_guard():
     src = INSTALL_PS1.read_text()
     block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
     block = src[block_start : block_start + 2000]
-    assert "$StudioRedirectMode -eq 'env'" in block, (
-        "install.ps1 must gate Remove-Item $VenvDir on env-mode"
-    )
-    assert 'share\\studio.conf' in block, (
-        "install.ps1 guard must check share\\studio.conf sentinel"
-    )
-    assert 'bin\\unsloth.exe' in block, (
-        "install.ps1 guard must check bin\\unsloth.exe sentinel"
-    )
+    assert (
+        "$StudioRedirectMode -eq 'env'" in block
+    ), "install.ps1 must gate Remove-Item $VenvDir on env-mode"
+    assert (
+        "share\\studio.conf" in block
+    ), "install.ps1 guard must check share\\studio.conf sentinel"
+    assert (
+        "bin\\unsloth.exe" in block
+    ), "install.ps1 guard must check bin\\unsloth.exe sentinel"
     assert "Refusing to delete non-Studio venv" in block
 
 
@@ -124,9 +118,9 @@ def test_setup_ps1_has_writability_probe():
     src = SETUP_PS1.read_text()
     idx = src.index("if (Test-Path -LiteralPath $_studioOverride -PathType Container)")
     block = src[idx : idx + 2000]
-    assert "WriteAllText" in block, (
-        "setup.ps1 must write-probe UNSLOTH_STUDIO_HOME like setup.sh:417"
-    )
-    assert "is not writable" in block, (
-        "setup.ps1 probe failure must produce a clear writable-error message"
-    )
+    assert (
+        "WriteAllText" in block
+    ), "setup.ps1 must write-probe UNSLOTH_STUDIO_HOME like setup.sh:417"
+    assert (
+        "is not writable" in block
+    ), "setup.ps1 probe failure must produce a clear writable-error message"
