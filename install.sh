@@ -433,10 +433,19 @@ _check_health() {
     _port=$1
     _resp=$(_http_get "http://127.0.0.1:$_port/api/health") || return 1
     case "$_resp" in
-        *'"status"'*'"healthy"'*'"service"'*'"Unsloth UI Backend"'*) return 0 ;;
-        *'"service"'*'"Unsloth UI Backend"'*'"status"'*'"healthy"'*) return 0 ;;
+        *'"status"'*'"healthy"'*'"service"'*'"Unsloth UI Backend"'*) ;;
+        *'"service"'*'"Unsloth UI Backend"'*'"status"'*'"healthy"'*) ;;
+        *) return 1 ;;
     esac
-    return 1
+    # why: env-mode launchers must reject a stale port that now points at a
+    # sibling Studio (different install root) instead of opening the wrong UI.
+    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+        case "$_resp" in
+            *"\"studio_root\":\"$UNSLOTH_STUDIO_HOME\""*|*"\"studio_root\": \"$UNSLOTH_STUDIO_HOME\""*) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 0
 }
 
 # ── Port scanning ──
@@ -1872,8 +1881,9 @@ if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
     echo "       Move or remove it manually, then re-run the installer." >&2
     exit 1
 fi
-rm -f -- "$_shim_path"
-ln -s "$VENV_DIR/bin/unsloth" "$_shim_path"
+# why: -sfn is atomic and -n prevents descent into a symlink-to-directory at
+# the shim path (the directory guard above already rejects a real directory).
+ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
 
 case ":$PATH:" in
     *":$_LOCAL_BIN:"*) ;;  # already on PATH

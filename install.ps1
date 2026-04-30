@@ -491,7 +491,11 @@ function Test-StudioHealth {
     try {
         `$url = "http://127.0.0.1:`$Port/api/health"
         `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
-        return (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')
+        if (-not (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')) { return `$false }
+        # why: env-mode launchers must reject a stale port pointing at a
+        # sibling Studio (different install root) instead of opening the wrong UI.
+        if (`$env:UNSLOTH_STUDIO_HOME -and `$resp.studio_root -ne `$env:UNSLOTH_STUDIO_HOME) { return `$false }
+        return `$true
     } catch {
         return `$false
     }

@@ -2301,6 +2301,12 @@ if (-not $NeedLlamaSourceBuild) {
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
     if (Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")) {
+        # why: in-place git mutation (remote set-url, checkout -B, clean -fdx)
+        # rewrites $LlamaCppDir; mirror the prebuilt and temp-dir-swap guards
+        # so an unrelated workspace .git tree is never silently overwritten.
+        if ($StudioHomeIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        }
         Write-Host "   Syncing llama.cpp to $ResolvedSourceRef..." -ForegroundColor Gray
         # Always sync the remote URL so switching between default/fork sources works
         Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$ResolvedSourceUrl.git" } | Out-Null

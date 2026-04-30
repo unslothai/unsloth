@@ -261,6 +261,10 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
+        # why: env-mode launchers verify this against UNSLOTH_STUDIO_HOME so a
+        # cached studio.port that points to a sibling Studio (different root)
+        # is rejected instead of opening the wrong install.
+        "studio_root": str(_studio_root()),
     }
 
 
