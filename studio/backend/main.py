@@ -23,25 +23,6 @@ if _backend_dir not in sys.path:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
-# Direct `uvicorn main:app` launches bypass run.py, so re-export here too
-# (mirrors run.py). Required BEFORE the unsloth-zoo import below, since
-# its LLAMA_CPP_DEFAULT_DIR binding is import-time.
-from utils.paths.storage_roots import studio_root as _studio_root
-
-try:
-    _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
-except (OSError, ValueError):
-    _LEGACY_STUDIO_ROOT = _Path.home() / ".unsloth" / "studio"
-try:
-    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
-except (OSError, ValueError):
-    _STUDIO_ROOT_RESOLVED = _studio_root()
-if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
-        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
-
 import mimetypes
 import shutil
 import warnings

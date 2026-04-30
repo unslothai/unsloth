@@ -1492,68 +1492,18 @@ if (-not $PythonCmd) {
 
 substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
-# The venv must already exist (created by install.ps1); this script only
-# updates packages. UNSLOTH_STUDIO_HOME overrides the root.
-$_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $null }
-if ($_studioOverride) {
-    if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
-        $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
-    }
-    if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
-        $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
-        # why: mirror setup.sh:417 and install.ps1:130 -- fail fast when the
-        # custom root is read-only instead of erroring later while creating
-        # sidecar venvs / installing packages.
-        $_setupWriteProbe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
-        try {
-            [System.IO.File]::WriteAllText($_setupWriteProbe, "")
-            Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
-        } catch {
-            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
-            exit 1
-        }
-    } else {
-        Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$_studioOverride does not exist." -ForegroundColor Red
-        Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-        exit 1
-    }
-} else {
-    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-}
-$VenvDir = Join-Path $StudioHome "unsloth_studio"
-
-# why: in env-override mode $StudioHome is a user-chosen workspace; refuse
-# to Remove-Item any directory that doesn't carry the Studio ownership
-# marker instead of silently destroying unrelated user data.
-$StudioOwnedMarker = ".unsloth-studio-owned"
-function Assert-StudioOwnedOrAbsent {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
-    if ($env:UNSLOTH_STUDIO_HOME -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker))) {
-        Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
-        Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-        exit 1
-    }
-}
-function Mark-StudioOwned {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
-    try {
-        [System.IO.File]::WriteAllText((Join-Path $Path $StudioOwnedMarker), "")
-    } catch {}
-}
+# The venv must already exist (created by install.ps1).
+# This script (setup.ps1 / "unsloth studio update") only updates packages.
+$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.
-if (Test-Path -LiteralPath $VenvDir -PathType Container) {
+if (Test-Path $VenvDir -PathType Container) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
 
-    if (Test-Path -LiteralPath $VenvPyExe) {
+    if (Test-Path $VenvPyExe) {
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $VenvPyExe
@@ -1597,7 +1547,7 @@ if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         try {
-            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
+            Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
@@ -1606,7 +1556,7 @@ if (Test-Path -LiteralPath $VenvDir -PathType Container) {
     }
 }
 
-if (-not (Test-Path -LiteralPath $VenvDir)) {
+if (-not (Test-Path $VenvDir)) {
     Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
     Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
     Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
@@ -1797,19 +1747,17 @@ if ($stackExit -ne 0) {
 # ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
-# T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
-$VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
-$VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
-$VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
+$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
+$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
+$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
 
 $_NeedT5Install = $false
-if (Test-Path -LiteralPath $VenvT5Legacy) {
-    Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
-    Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
+if (Test-Path $VenvT5Legacy) {
+    Remove-Item -Recurse -Force $VenvT5Legacy
     $_NeedT5Install = $true
 }
-if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
 # Also reinstall when python deps were updated
 if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
 
@@ -1821,10 +1769,8 @@ $ErrorActionPreference = "Continue"
 
 # --- .venv_t5_530 (transformers 5.3.0) ---
 substep "pre-installing transformers 5.3.0 for newer model support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_530Dir -Label "transformers 5.3 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_530Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_530Dir
+if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
+New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_530Dir --no-deps $pkg
@@ -1856,10 +1802,8 @@ step "transformers" "5.3.0 pre-installed"
 
 # --- .venv_t5_550 (transformers 5.5.0) ---
 substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_550Dir -Label "transformers 5.5 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_550Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_550Dir
+if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
+New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
 foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_550Dir --no-deps $pkg
@@ -1895,25 +1839,8 @@ step "transformers" "5.5.0 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-# Nest llama.cpp under $StudioHome only for real env-overrides, never the
-# legacy default. Stale UNSLOTH_STUDIO_HOME pointing at legacy must not
-# accidentally relocate llama.cpp.
-$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-# Canonicalize both sides so a junctioned/symlinked %USERPROFILE% behaves
-# the same in env-mode (resolved) and default mode (logical $StudioHome).
-$_studioHomeCanon = $StudioHome
-if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
-    $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path
-}
-if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
-    $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
-}
-if ($_studioHomeCanon -eq $LegacyStudioHome) {
-    $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
-} else {
-    $UnslothHome = $StudioHome
-}
-if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
+$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
@@ -2015,7 +1942,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
 } else {
     Write-Host ""
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
-    if (Test-Path -LiteralPath $LlamaCppDir) {
+    if (Test-Path $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
     $prebuiltArgs = @(
@@ -2069,7 +1996,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         } elseif ($prebuiltExit -eq 3) {
             step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
-            if (Test-Path -LiteralPath $LlamaCppDir) {
+            if (Test-Path $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
             substep "Close Studio or other llama.cpp users and retry" "Yellow"
@@ -2077,7 +2004,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
-            if (Test-Path -LiteralPath $LlamaCppDir) {
+            if (Test-Path $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
@@ -2153,10 +2080,10 @@ $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
-if (Test-Path -LiteralPath $LlamaServerBin) {
+if (Test-Path $LlamaServerBin) {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path -LiteralPath $CmakeCacheFile) {
-        $cachedCuda = Select-String -LiteralPath $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+    if (Test-Path $CmakeCacheFile) {
+        $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
         if ($HasNvidiaSmi -and -not $cachedCuda) {
             Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
@@ -2170,7 +2097,7 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
 if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
     # up new model architecture support (e.g. Gemma 4).
@@ -2272,7 +2199,7 @@ if (-not $NeedLlamaSourceBuild) {
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
-    if (Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")) {
+    if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   Syncing llama.cpp to $ResolvedSourceRef..." -ForegroundColor Gray
         # Always sync the remote URL so switching between default/fork sources works
         Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$ResolvedSourceUrl.git" } | Out-Null
@@ -2346,21 +2273,21 @@ if (-not $NeedLlamaSourceBuild) {
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
         $buildTmp = "$LlamaCppDir.build.$PID"
-        $null = [System.IO.Directory]::CreateDirectory((Split-Path -LiteralPath $LlamaCppDir))
-        if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path $LlamaCppDir -Parent)
+        if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
         if ($LlamaPr) {
             $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$LlamaSource.git" $buildTmp }
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch PR #$LlamaPr"
-                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
                 }
             }
             if ($BuildOk) {
@@ -2368,7 +2295,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout PR #$LlamaPr"
-                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
                 }
             }
         } elseif ($ResolvedSourceRefKind -eq "pull") {
@@ -2376,14 +2303,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch source PR ref"
-                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
                 }
             }
             if ($BuildOk) {
@@ -2391,7 +2318,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout source PR ref"
-                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
                 }
             }
         } elseif ($ResolvedSourceRefKind -eq "commit") {
@@ -2399,14 +2326,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch source commit"
-                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
                 }
             }
             if ($BuildOk) {
@@ -2414,7 +2341,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout source commit"
-                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
                 }
             }
         } else {
@@ -2427,7 +2354,7 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
             }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
@@ -2543,16 +2470,14 @@ if (-not $NeedLlamaSourceBuild) {
 
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
-        Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install"
-        if (Test-Path -LiteralPath $OriginalLlamaCppDir) { Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force }
-        Move-Item -LiteralPath $LlamaCppDir -Destination $OriginalLlamaCppDir
+        if (Test-Path $OriginalLlamaCppDir) { Remove-Item -Recurse -Force $OriginalLlamaCppDir }
+        Move-Item $LlamaCppDir $OriginalLlamaCppDir
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
-        Mark-StudioOwned -Path $LlamaCppDir
     } elseif (-not $BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         # Build failed -- clean up temp dir, preserve existing install
-        if (Test-Path -LiteralPath $LlamaCppDir) { Remove-Item -LiteralPath $LlamaCppDir -Recurse -Force }
+        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -2567,16 +2492,16 @@ if (-not $NeedLlamaSourceBuild) {
     $totalSec = [math]::Round($totalSw.Elapsed.TotalSeconds % 60, 1)
 
     # -- Summary --
-    if ($BuildOk -and (Test-Path -LiteralPath $LlamaServerBin)) {
+    if ($BuildOk -and (Test-Path $LlamaServerBin)) {
         step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
-        if (Test-Path -LiteralPath $QuantizeBin) {
+        if (Test-Path $QuantizeBin) {
             step "llama-quantize" "built"
         }
         step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
-        if ($BuildOk -and (Test-Path -LiteralPath $altBin)) {
+        if ($BuildOk -and (Test-Path $altBin)) {
             step "llama.cpp" "built"
             step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
