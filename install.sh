@@ -373,11 +373,22 @@ create_studio_shortcuts() {
     _css_icon_png="$_css_data_dir/unsloth-studio.png"
     _css_gem_png="$_css_data_dir/unsloth-gem.png"
 
+    # Same-install discriminator baked into the launcher; the backend's
+    # /api/health returns sha256(str(studio_root())) and the launcher
+    # rejects healthy backends whose hash differs.
+    _css_studio_root_id=$(python3 - "$STUDIO_HOME" <<'PY' 2>/dev/null || echo ""
+import hashlib, sys
+print(hashlib.sha256(sys.argv[1].encode("utf-8", "surrogatepass")).hexdigest())
+PY
+)
+
     mkdir -p "$_css_data_dir"
 
     # ── Write launcher script ──
-    # Single-quoted heredoc; @@DATA_DIR@@ is substituted via sed below so
-    # the runtime launcher reads studio.conf from the resolved DATA_DIR.
+    # Single-quoted heredoc; @@DATA_DIR@@ and @@STUDIO_ROOT_ID@@ are
+    # substituted via sed below so the runtime launcher reads studio.conf
+    # from the resolved DATA_DIR and verifies it is talking to its own
+    # backend (not a sibling Studio listening on the same port).
     cat > "$_css_launcher" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
 # Unsloth Studio Launcher
@@ -385,6 +396,7 @@ create_studio_shortcuts() {
 set -euo pipefail
 
 DATA_DIR='@@DATA_DIR@@'
+_EXPECTED_STUDIO_ROOT_ID='@@STUDIO_ROOT_ID@@'
 
 # Read exe path from config written at install time.
 # Sourcing is safe: the config file is written by install.sh, not user input.
@@ -437,11 +449,13 @@ _check_health() {
         *'"service"'*'"Unsloth UI Backend"'*'"status"'*'"healthy"'*) ;;
         *) return 1 ;;
     esac
-    # why: env-mode launchers must reject a stale port that now points at a
-    # sibling Studio (different install root) instead of opening the wrong UI.
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+    # why: verify the backend belongs to THIS install (not a sibling Studio
+    # listening on the same port). The hex digest baked at install time avoids
+    # both JSON-escape mismatches on paths with `\`/`"` and leaking the raw
+    # install path to unauthenticated callers.
+    if [ -n "$_EXPECTED_STUDIO_ROOT_ID" ]; then
         case "$_resp" in
-            *"\"studio_root\":\"$UNSLOTH_STUDIO_HOME\""*|*"\"studio_root\": \"$UNSLOTH_STUDIO_HOME\""*) return 0 ;;
+            *"\"studio_root_id\":\"$_EXPECTED_STUDIO_ROOT_ID\""*|*"\"studio_root_id\": \"$_EXPECTED_STUDIO_ROOT_ID\""*) return 0 ;;
             *) return 1 ;;
         esac
     fi
@@ -690,6 +704,12 @@ LAUNCHER_EOF
             "$_css_launcher" > "$_css_launcher.tmp" \
             && mv "$_css_launcher.tmp" "$_css_launcher"
     fi
+
+    # Bake the same-install discriminator into ALL modes (env / home / default)
+    # so the launcher rejects sibling Studios on the same port. Hex-only so no
+    # shell/sed escape tricks are needed.
+    sed "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" "$_css_launcher" > "$_css_launcher.tmp" \
+        && mv "$_css_launcher.tmp" "$_css_launcher"
 
     chmod +x "$_css_launcher"
 

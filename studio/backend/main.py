@@ -42,11 +42,25 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+import hashlib
 import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+
+
+def _studio_root_id() -> str:
+    """Stable hex digest of the resolved Studio install root.
+
+    Used as a same-install discriminator in /api/health so launchers can
+    verify they are talking to their own backend without leaking the raw
+    filesystem path (which can include username, home dir, workspace name,
+    or CI checkout path) to anyone reachable on the port.
+    """
+    return hashlib.sha256(
+        str(_studio_root()).encode("utf-8", "surrogatepass")
+    ).hexdigest()
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -261,10 +275,12 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
-        # why: env-mode launchers verify this against UNSLOTH_STUDIO_HOME so a
-        # cached studio.port that points to a sibling Studio (different root)
-        # is rejected instead of opening the wrong install.
-        "studio_root": str(_studio_root()),
+        # why: launchers verify this against the install-time hash baked into
+        # the generated launcher so a cached port pointing at a sibling Studio
+        # (different root) is rejected instead of opening the wrong install.
+        # Hex digest avoids leaking the raw install path to unauthenticated
+        # callers (Studio supports -H 0.0.0.0).
+        "studio_root_id": _studio_root_id(),
     }
 
 

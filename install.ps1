@@ -447,6 +447,14 @@ function Install-UnslothStudio {
                 [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
             }
 
+            # Same-install discriminator baked into the launcher; the backend's
+            # /api/health returns sha256(str(studio_root())) and the launcher
+            # rejects healthy backends whose hash differs.
+            $_studioRootBytes = [Text.Encoding]::UTF8.GetBytes($StudioHome)
+            $_studioRootId = ([BitConverter]::ToString(
+                [Security.Cryptography.SHA256]::Create().ComputeHash($_studioRootBytes)
+            ) -replace '-', '').ToLowerInvariant()
+
             # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) in the
             # launcher so fresh shells don't need to re-export. Default installs
             # get an empty prefix so behavior matches pre-PR exactly.
@@ -485,6 +493,7 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$maxPortOffset = 20
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
+`$_ExpectedStudioRootId = '$_studioRootId'
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -492,9 +501,10 @@ function Test-StudioHealth {
         `$url = "http://127.0.0.1:`$Port/api/health"
         `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
         if (-not (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')) { return `$false }
-        # why: env-mode launchers must reject a stale port pointing at a
-        # sibling Studio (different install root) instead of opening the wrong UI.
-        if (`$env:UNSLOTH_STUDIO_HOME -and `$resp.studio_root -ne `$env:UNSLOTH_STUDIO_HOME) { return `$false }
+        # why: verify the backend belongs to THIS install (not a sibling Studio
+        # listening on the same port). The hex digest baked at install time
+        # avoids leaking the raw install path to unauthenticated callers.
+        if (`$_ExpectedStudioRootId -and `$resp.studio_root_id -ne `$_ExpectedStudioRootId) { return `$false }
         return `$true
     } catch {
         return `$false
