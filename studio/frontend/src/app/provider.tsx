@@ -26,18 +26,29 @@ interface AppProviderProps {
 // ---------------------------------------------------------------------------
 
 type TauriWindowMode = "setup" | "app";
+type WindowLayoutGuard = () => boolean;
 
-async function showSetupWindow(): Promise<void> {
+async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  if (!isCurrent()) return;
+
   const win = getCurrentWindow();
+  if (!isCurrent()) return;
   await win.center();
+  if (!isCurrent()) return;
   await win.show();
 }
 
-async function applyAppWindowLayout(): Promise<void> {
+async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
+  if (!isCurrent()) return;
+
   const win = getCurrentWindow();
   const monitor = await currentMonitor();
+  if (!isCurrent()) return;
+
+  let finalW = 900;
+  let finalH = 600;
 
   if (monitor) {
     // Convert physical pixels to logical using scale factor
@@ -46,19 +57,22 @@ async function applyAppWindowLayout(): Promise<void> {
     const screenH = monitor.size.height / scale;
 
     // Target: 75% of screen width, golden ratio height, capped at min 900x600
-    const targetW = Math.max(900, Math.round(screenW * 0.75));
-    const targetH = Math.max(600, Math.round(targetW / 1.618));
+    finalW = Math.max(900, Math.round(screenW * 0.75));
+    const targetH = Math.max(600, Math.round(finalW / 1.618));
     // Don't exceed screen height
-    const finalH = Math.min(targetH, Math.round(screenH * 0.85));
-    const finalW = targetW;
-
-    await win.setSize(new LogicalSize(finalW, finalH));
+    finalH = Math.min(targetH, Math.round(screenH * 0.85));
   }
 
   // Apply constraints and finalize without animating through intermediate sizes
+  if (!isCurrent()) return;
+  await win.setSize(new LogicalSize(finalW, finalH));
+  if (!isCurrent()) return;
   await win.setSizeConstraints({ minWidth: 900, minHeight: 600 });
+  if (!isCurrent()) return;
   await win.setResizable(true);
+  if (!isCurrent()) return;
   await win.center();
+  if (!isCurrent()) return;
   await win.show();
 }
 
@@ -149,8 +163,17 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
   const hasEnteredAppModeRef = useRef(false);
+  const windowLayoutGenerationRef = useRef(0);
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    return () => {
+      windowLayoutGenerationRef.current += 1;
+      appliedWindowModeRef.current = null;
+    };
+  }, []);
 
   // Keep the Tauri window hidden during preflight, then show it centered in setup
   // mode or apply the final app layout in one instant step.
@@ -158,13 +181,22 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     if (!isTauri) return;
 
     const nextMode = getTauriWindowMode(status, hasEnteredAppModeRef.current);
-    if (!nextMode || appliedWindowModeRef.current === nextMode) return;
+    if (!nextMode) {
+      appliedWindowModeRef.current = null;
+      windowLayoutGenerationRef.current += 1;
+      return;
+    }
+    if (appliedWindowModeRef.current === nextMode) return;
 
     appliedWindowModeRef.current = nextMode;
     if (nextMode === "app") hasEnteredAppModeRef.current = true;
 
+    const layoutGeneration = windowLayoutGenerationRef.current + 1;
+    windowLayoutGenerationRef.current = layoutGeneration;
+    const isCurrent = () => windowLayoutGenerationRef.current === layoutGeneration;
     const applyWindowMode = nextMode === "setup" ? showSetupWindow : applyAppWindowLayout;
-    applyWindowMode().catch(async () => {
+    applyWindowMode(isCurrent).catch(async () => {
+      if (!isCurrent()) return;
       // On failure, at minimum make the window visible and resizable so user can fix manually.
       try {
         await showWindowFallback();
