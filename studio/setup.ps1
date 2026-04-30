@@ -1596,6 +1596,19 @@ if (Test-Path -LiteralPath $VenvDir -PathType Container) {
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
+        # why: mirror install.ps1 env-mode guard so an update against a custom
+        # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv at
+        # the workspace root. -PathType Leaf rejects a directory at the shim
+        # path masquerading as the sentinel.
+        if (
+            $env:UNSLOTH_STUDIO_HOME -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+        ) {
+            Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
+            Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+            exit 1
+        }
         try {
             Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
@@ -2018,6 +2031,14 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
+    # why: install_llama_prebuilt.py uses os.replace() to move any existing
+    # install_dir aside before staging the prebuilt, so an unrelated
+    # $env:UNSLOTH_STUDIO_HOME\llama.cpp can be displaced before the
+    # source-build ownership check ever runs. Mirror the marker guard already
+    # used on the source-build replacement path.
+    if ($env:UNSLOTH_STUDIO_HOME) {
+        Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+    }
     $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
@@ -2061,6 +2082,9 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
                 step "llama.cpp" "prebuilt up to date and validated"
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
+            }
+            if ($env:UNSLOTH_STUDIO_HOME -and (Test-Path -LiteralPath $LlamaCppDir -PathType Container)) {
+                Mark-StudioOwned -Path $LlamaCppDir
             }
             $installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir
             if ($installedRelease) {

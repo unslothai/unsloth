@@ -673,6 +673,14 @@ else
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
+    # why: install_llama_prebuilt.py uses os.replace() to move any existing
+    # install_dir aside before staging the prebuilt, so an unrelated
+    # $UNSLOTH_STUDIO_HOME/llama.cpp can be displaced before the source-build
+    # ownership check ever runs. Mirror the marker guard already used on the
+    # source-build replacement path.
+    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
@@ -699,6 +707,9 @@ else
             step "llama.cpp" "prebuilt up to date and validated"
         else
             step "llama.cpp" "prebuilt installed and validated"
+        fi
+        if [ -n "${UNSLOTH_STUDIO_HOME:-}" ] && [ -d "$LLAMA_CPP_DIR" ]; then
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"

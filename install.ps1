@@ -929,10 +929,12 @@ shell.Run cmd, 0, False
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
         # existing $StudioHome\unsloth_studio that lacks Studio sentinels.
+        # -PathType Leaf rejects a directory at the sentinel path (an
+        # unrelated workspace could have one) from satisfying the guard.
         if (
             $StudioRedirectMode -eq 'env' -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf")) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe"))
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
         ) {
             Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
