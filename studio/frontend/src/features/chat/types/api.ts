@@ -188,6 +188,7 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  cancel_id?: string;
 }
 
 export interface OpenAIChatDelta {

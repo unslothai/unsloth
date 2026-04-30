@@ -73,7 +73,7 @@ export function WizardLayout() {
   }, [isFinalStep]);
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
+    <div className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] items-center justify-center overflow-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
