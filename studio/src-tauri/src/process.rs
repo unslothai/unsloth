@@ -1,3 +1,4 @@
+use crate::diagnostics::{self, BackendLog, DiagnosticsState};
 use log::{error, info, warn};
 use process_wrap::std::*;
 use regex::Regex;
@@ -15,6 +16,8 @@ pub struct BackendProcess {
     pub port: Option<u16>,
     pub logs: VecDeque<String>,
     pub intentional_stop: bool,
+    pub generation: u64,
+    pub diagnostics_session: Option<BackendLog>,
 }
 
 impl Default for BackendProcess {
@@ -24,6 +27,8 @@ impl Default for BackendProcess {
             port: None,
             logs: VecDeque::with_capacity(MAX_LOG_LINES),
             intentional_stop: false,
+            generation: 0,
+            diagnostics_session: None,
         }
     }
 }
@@ -245,24 +250,48 @@ pub fn start_backend(
     state: &BackendState,
     port: u16,
     shutdown: &ShutdownFlag,
-) -> Result<(), String> {
-    let bin = resolve_backend_binary()?;
+    diagnostics_state: &DiagnosticsState,
+) -> Result<u64, String> {
+    let bin = match resolve_backend_binary() {
+        Ok(bin) => bin,
+        Err(msg) => {
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                None,
+                "resolve_backend_binary",
+                &msg,
+            );
+            return Err(msg);
+        }
+    };
 
     shutdown.store(false, Ordering::SeqCst);
 
-    // Reset state
-    {
+    // Reset state and invalidate any readers from an older backend generation
+    // before we release the lock and spawn a new child.
+    let generation = {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
         if proc.child.is_some() {
             return Err("Backend is already running.".to_string());
         }
+        proc.generation = proc.generation.wrapping_add(1);
         proc.port = None;
         proc.logs.clear();
         proc.intentional_stop = false;
-    }
+        proc.diagnostics_session = None;
+        proc.generation
+    };
+
+    let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
 
     let args = backend_args(port);
     info!("Starting backend: {:?} {}", bin, args.join(" "));
+    diagnostics::append_phase_line(
+        &backend_log.handle,
+        "meta",
+        &format!("Starting backend: {:?} {}", bin, args.join(" ")),
+    );
 
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
@@ -289,9 +318,17 @@ pub fn start_backend(
 
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn backend: {}", e))?;
+        let child = cmd.spawn().map_err(|e| {
+            let msg = format!("Failed to spawn backend: {}", e);
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                Some(generation),
+                "spawn_backend",
+                &msg,
+            );
+            msg
+        })?;
         Box::new(child)
     };
 
@@ -300,25 +337,45 @@ pub fn start_backend(
         // Keep the backend tree in a process group on Unix for cleanup.
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(ProcessGroup::leader());
-        wrap.spawn()
-            .map_err(|e| format!("Failed to spawn backend: {}", e))?
+        wrap.spawn().map_err(|e| {
+            let msg = format!("Failed to spawn backend: {}", e);
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                Some(generation),
+                "spawn_backend",
+                &msg,
+            );
+            msg
+        })?
     };
 
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
 
-    // Store child in state
+    // Store child in state for the already-selected generation.
     {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
         proc.child = Some(child);
+        proc.diagnostics_session = Some(backend_log.clone());
     }
 
     // Spawn stdout reader thread
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let diagnostics_clone = diagnostics_state.clone();
+        let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
-            read_output_stream(stdout, &app_handle, &state_clone, false);
+            read_output_stream(
+                stdout,
+                &app_handle,
+                &state_clone,
+                &diagnostics_clone,
+                &backend_log_clone,
+                false,
+                generation,
+            );
         });
     }
 
@@ -326,12 +383,22 @@ pub fn start_backend(
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let diagnostics_clone = diagnostics_state.clone();
+        let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
-            read_output_stream(stderr, &app_handle, &state_clone, true);
+            read_output_stream(
+                stderr,
+                &app_handle,
+                &state_clone,
+                &diagnostics_clone,
+                &backend_log_clone,
+                true,
+                generation,
+            );
         });
     }
 
-    Ok(())
+    Ok(generation)
 }
 
 /// Read lines from a child process stream (stdout or stderr).
@@ -341,7 +408,10 @@ fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
     state: &BackendState,
+    diagnostics_state: &DiagnosticsState,
+    backend_log: &BackendLog,
     is_stderr: bool,
+    generation: u64,
 ) {
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
@@ -359,27 +429,56 @@ fn read_output_stream<R: std::io::Read>(
                     text.clone()
                 };
 
+                diagnostics::append_phase_line(
+                    &backend_log.handle,
+                    if is_stderr { "stderr" } else { "stdout" },
+                    &text,
+                );
+
                 // Check for TAURI_PORT on stdout only
-                if !is_stderr {
-                    if let Some(caps) = port_re.captures(&text) {
-                        if let Some(port_str) = caps.get(1) {
-                            if let Ok(port) = port_str.as_str().parse::<u16>() {
-                                info!("Detected backend port: {}", port);
-                                if let Ok(mut proc) = state.lock() {
-                                    proc.port = Some(port);
-                                }
-                                let _ = app.emit("server-port", port);
-                            }
+                let detected_port = if !is_stderr {
+                    port_re
+                        .captures(&text)
+                        .and_then(|caps| caps.get(1))
+                        .and_then(|port_str| port_str.as_str().parse::<u16>().ok())
+                } else {
+                    None
+                };
+
+                // Buffer the log line only for the current backend generation.
+                // Old reader threads can briefly outlive a stop/start cycle;
+                // they must not overwrite the new backend's port or logs.
+                let mut should_record_port = None;
+                let current_generation = if let Ok(mut proc) = state.lock() {
+                    if proc.generation != generation {
+                        false
+                    } else {
+                        if let Some(port) = detected_port {
+                            proc.port = Some(port);
+                            should_record_port = Some(port);
                         }
+                        if proc.logs.len() >= MAX_LOG_LINES {
+                            proc.logs.pop_front();
+                        }
+                        proc.logs.push_back(log_line.clone());
+                        true
                     }
+                } else {
+                    false
+                };
+
+                if !current_generation {
+                    break;
                 }
 
-                // Buffer the log line
-                if let Ok(mut proc) = state.lock() {
-                    if proc.logs.len() >= MAX_LOG_LINES {
-                        proc.logs.pop_front();
-                    }
-                    proc.logs.push_back(log_line.clone());
+                if let Some(port) = should_record_port {
+                    diagnostics::record_backend_port(
+                        diagnostics_state,
+                        &backend_log.session_id,
+                        port,
+                    );
+                    info!("Detected backend port: {}", port);
+                    let _ = app.emit("server-port", port);
                 }
 
                 info!("[backend] {}", log_line);
@@ -400,12 +499,18 @@ fn read_output_stream<R: std::io::Read>(
 
     // Stream closed. Only the stdout reader checks for crashes.
     if !is_stderr {
+        let mut exit_record: Option<(String, bool)> = None;
+        let mut emit_crash = false;
         if let Ok(mut proc) = state.lock() {
+            if proc.generation != generation {
+                return;
+            }
             let intentional = proc.intentional_stop;
             let exited = if let Some(ref mut child) = proc.child {
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         info!("Backend stdout stream ended with status: {}", status);
+                        exit_record = Some((status.to_string(), intentional));
                         true
                     }
                     Ok(None) => {
@@ -423,11 +528,22 @@ fn read_output_stream<R: std::io::Read>(
 
             if exited {
                 proc.child = None;
-                if !intentional {
-                    error!("Backend process stdout closed unexpectedly (crash detected)");
-                    let _ = app.emit("server-crashed", ());
-                }
+                proc.diagnostics_session = None;
+                emit_crash = !intentional;
             }
+        }
+        if let Some((status, intentional)) = exit_record {
+            diagnostics::record_backend_exit(
+                diagnostics_state,
+                &backend_log.session_id,
+                Some(status),
+                intentional,
+                None,
+            );
+        }
+        if emit_crash {
+            error!("Backend process stdout closed unexpectedly (crash detected)");
+            let _ = app.emit("server-crashed", ());
         }
     }
 }
@@ -435,8 +551,15 @@ fn read_output_stream<R: std::io::Read>(
 /// Graceful shutdown of the backend process and its entire subprocess tree.
 /// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL to group
 /// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> hidden taskkill /T /F
-pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(), String> {
+pub fn stop_backend(
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: Option<&DiagnosticsState>,
+) -> Result<(), String> {
     shutdown.store(true, Ordering::SeqCst);
+    if let Some(diagnostics_state) = diagnostics_state {
+        diagnostics::record_backend_intentional_stop(diagnostics_state);
+    }
 
     // Extract the child and mark intentional stop.
     // We take the child OUT of the mutex so we don't hold the lock during the wait loop.
@@ -525,13 +648,4 @@ pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(),
         info!("Backend process group forcefully stopped");
         Ok(())
     }
-}
-
-/// Spawn `stop_backend` on a background thread and return immediately.
-/// Used by the tray "quit" path so the 5s graceful-wait does not block
-/// the Tauri main event loop before `app.exit(0)` fires.
-pub fn stop_backend_detached(state: BackendState, shutdown: ShutdownFlag) {
-    std::thread::spawn(move || {
-        let _ = stop_backend(&state, &shutdown);
-    });
 }

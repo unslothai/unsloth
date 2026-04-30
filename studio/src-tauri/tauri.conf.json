@@ -2,8 +2,14 @@
   "productName": "Unsloth Studio (Desktop)",
   "identifier": "ai.unsloth.studio",
   "build": {
-    "beforeDevCommand": "npm --prefix ../frontend run dev -- --port 5173 --strictPort",
-    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "beforeDevCommand": {
+      "cwd": "../frontend",
+      "script": "npm run dev -- --port 5173 --strictPort"
+    },
+    "beforeBuildCommand": {
+      "cwd": "../frontend",
+      "script": "npm run build"
+    },
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173"
   },
@@ -21,18 +27,13 @@
         "visible": false,
         "resizable": false
       }
-    ],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "id": "main",
-      "tooltip": "Unsloth Studio (Desktop)"
-    }
+    ]
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENjJENDYxMTQ1QTYyOEIKUldTTFlsb1VZZFJpTFY1aHgyRkRqZUdjWGg0Sm1BVEZoMDVWME5PdE42bjZiekFRc1Fsb0JNbmIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2RDhGMDMzNDNEMTlGMkQKUldRdG45RkRNL0RZMXZsaVo2TElUQlVHb1hVNWEyajhUOGFXeTdNVDFZTFdBVUtlZUh5L2wwWVYK",
       "endpoints": [
-        "https://github.com/danielhanchen/unsloth-staging-2/releases/latest/download/latest.json"
+        "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
@@ -42,11 +43,14 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
+    "publisher": "Unsloth AI",
+    "homepage": "https://unsloth.ai/",
+    "copyright": "© 2026 Unsloth AI. All rights reserved.",
+    "license": "AGPL-3.0-only",
     "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "resources": {
       "../../install.sh": "install.sh",
-      "../../install.ps1": "install.ps1",
-      "../install_python_stack.py": "install_python_stack.py"
+      "../../install.ps1": "install.ps1"
     },
     "icon": [
       "icons/32x32.png",
@@ -54,6 +58,18 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh",
+        "template": "./windows/installer.nsi",
+        "installerIcon": "./icons/icon.ico",
+        "headerImage": "./windows/branding/nsis-header.bmp",
+        "sidebarImage": "./windows/branding/nsis-sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    },
     "linux": {
       "deb": {
         "postRemoveScript": "./linux/postremove.sh"
