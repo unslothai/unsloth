@@ -514,6 +514,26 @@ def test_engine_surfaces_extraction_diagnostics(tmp_path: Path):
     assert "John Doe" in text
 
 
+def test_ingest_source_sanitizes_invalid_unicode_surrogates(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda prompt: prompt,
+    )
+
+    result = engine.ingest_source(
+        source_title = "Resume\udc51",
+        source_text = "Unicode payload with invalid surrogate \udc51 should be sanitized.",
+        source_ref = "file:///tmp/Resume\udc51.pdf",
+    )
+
+    source_page = tmp_path / "wiki" / f"{result['source_page']}.md"
+    text = source_page.read_text(encoding = "utf-8")
+
+    assert "\udc51" not in text
+    assert "\uFFFD" in text
+    assert "invalid surrogate" in text
+
+
 def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
     tmp_path: Path,
 ):
@@ -574,11 +594,9 @@ def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
     assert report["chunk_planner"]["chunk_count"] >= 3
     assert len(report["chunk_source_pages"]) == report["chunk_planner"]["chunk_count"]
     assert len(report["chunk_analysis_pages"]) == report["chunk_planner"]["chunk_count"]
-    assert (
-        report["merged_analysis_page"]
-        == "analysis/long-design-doc--chunk-merged-analysis"
-    )
+    assert report["merged_analysis_page"].startswith("analysis/long-design-doc--chunk-merged--")
     assert report["failed_chunks"] == []
+    assert len(report["chunk_analysis_pages_removed"]) == len(report["chunk_analysis_pages"])
 
     for rel in report["chunk_source_pages"]:
         assert rel.startswith("sources/long-design-doc--chunk-")
@@ -587,16 +605,19 @@ def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
     for rel in report["chunk_analysis_pages"]:
         assert rel.startswith("analysis/long-design-doc--chunk-")
         assert rel.endswith("--analysis")
-        assert (tmp_path / "wiki" / f"{rel}.md").exists()
+        assert rel in report["chunk_analysis_pages_removed"]
+        assert not (tmp_path / "wiki" / f"{rel}.md").exists()
 
-    merged_path = (
-        tmp_path / "wiki" / "analysis" / "long-design-doc--chunk-merged-analysis.md"
-    )
+    merged_path = tmp_path / "wiki" / f"{report['merged_analysis_page']}.md"
     merged_text = merged_path.read_text(encoding = "utf-8")
+    assert "## Answer Mode\nchunk-merge-extractive-fallback\n" in merged_text
+    assert "Section A:" in merged_text
+    assert "Section I:" in merged_text
     assert "## Merge Diagnostics" in merged_text
     assert "- chunk_analysis_pages:" in merged_text
     assert "[[sources/long-design-doc]]" in merged_text
-    assert "[[analysis/long-design-doc--chunk-001-of-" in merged_text
+    assert "[[analysis/long-design-doc--chunk-001-of-" not in merged_text
+    assert "[[sources/long-design-doc--chunk-001-of-" in merged_text
     assert "CHUNK_ANALYSIS_CONTEXT:" in captured["merge_prompt"]
 
 
@@ -662,8 +683,9 @@ def test_ingest_source_with_chunked_analysis_cleans_up_stale_chunk_artifacts(
     assert second["chunk_planner"]["chunk_count"] == 1
     assert len(second["chunk_source_pages"]) == 1
     assert len(second["chunk_analysis_pages"]) == 1
+    assert len(second["chunk_analysis_pages_removed"]) == 1
     assert second["stale_chunk_source_pages_removed"]
-    assert second["stale_chunk_analysis_pages_removed"]
+    assert second["stale_chunk_analysis_pages_removed"] == []
 
     for rel in second["stale_chunk_source_pages_removed"]:
         assert not (tmp_path / "wiki" / f"{rel}.md").exists()
@@ -678,7 +700,7 @@ def test_ingest_source_with_chunked_analysis_cleans_up_stale_chunk_artifacts(
         (tmp_path / "wiki" / "analysis").glob("long-design-doc--chunk-*--analysis.md")
     )
     assert len(remaining_chunk_source_pages) == 1
-    assert len(remaining_chunk_analysis_pages) == 1
+    assert len(remaining_chunk_analysis_pages) == 0
 
 
 def test_chunked_analysis_caps_default_context_window_to_extract_limit(
@@ -729,12 +751,10 @@ def test_chunked_analysis_caps_default_context_window_to_extract_limit(
 
     assert report["status"] == "ok"
     assert report["context_window_chars"] == 21000
+    assert report["chunk_query_context_max_chars"] == 21000
     assert report["chunk_planner"]["chunk_target_chars"] <= 21000
     assert report["chunk_planner"]["chunk_count"] > 1
-
-    for rel in report["chunk_analysis_pages"]:
-        text = (tmp_path / "wiki" / f"{rel}.md").read_text(encoding = "utf-8")
-        assert "- query_context_max_chars: 21000" in text
+    assert len(report["chunk_analysis_pages_removed"]) == len(report["chunk_analysis_pages"])
 
 
 def test_chunked_analysis_replans_large_single_chunk_default_window(
@@ -791,19 +811,9 @@ def test_chunked_analysis_replans_large_single_chunk_default_window(
     assert report["adaptive_replan_applied"] is True
     assert report["adaptive_replan_initial_context_window_chars"] == 400000
     assert report["adaptive_replan_initial_chunk_count"] == 1
-    assert (
-        report["adaptive_replan_final_chunk_count"]
-        == report["chunk_planner"]["chunk_count"]
-    )
-
-    first_chunk_analysis = report["chunk_analysis_pages"][0]
-    first_chunk_text = (tmp_path / "wiki" / f"{first_chunk_analysis}.md").read_text(
-        encoding = "utf-8"
-    )
-    assert (
-        f"- query_context_max_chars: {report['context_window_chars']}"
-        in first_chunk_text
-    )
+    assert report["adaptive_replan_final_chunk_count"] == report["chunk_planner"]["chunk_count"]
+    assert report["chunk_query_context_max_chars"] == report["context_window_chars"]
+    assert len(report["chunk_analysis_pages_removed"]) == len(report["chunk_analysis_pages"])
 
     log_text = (tmp_path / "wiki" / "log.md").read_text(encoding = "utf-8")
     assert "- Adaptive replan applied: yes" in log_text

@@ -17,6 +17,11 @@ import "@xyflow/react/dist/style.css";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -28,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { authFetch } from "@/features/auth";
 import { cn } from "@/lib/utils";
+import { ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 
 type WikiDataKind = "source" | "analysis" | "entity" | "concept";
@@ -84,6 +90,11 @@ type WikiGraphLayoutMode =
   | "dagre-vertical"
   | "dagre-horizontal"
   | "radial";
+type WikiDataPanelSectionKey =
+  | "searchFilters"
+  | "filteredNodes"
+  | "selection"
+  | "deletePreview";
 
 const KIND_ORDER: WikiDataKind[] = ["source", "analysis", "entity", "concept"];
 
@@ -137,6 +148,13 @@ const GRAPH_LAYOUT_OPTIONS: Array<{ mode: WikiGraphLayoutMode; label: string }> 
 const GRAPH_NODE_WIDTH = 236;
 const GRAPH_NODE_HEIGHT = 96;
 const FORCE_LAYOUT_MAX_NODES = 220;
+
+const DEFAULT_PANEL_SECTION_OPEN: Record<WikiDataPanelSectionKey, boolean> = {
+  searchFilters: true,
+  filteredNodes: true,
+  selection: true,
+  deletePreview: true,
+};
 
 function sortGraphNodesForLayout(nodes: WikiDataGraphNode[]): WikiDataGraphNode[] {
   const kindOrder: Record<WikiDataKind, number> = {
@@ -517,10 +535,23 @@ export function WikiDataDialog({ open, onOpenChange }: WikiDataDialogProps) {
   const [kindFilters, setKindFilters] = useState<WikiDataNodeFilters>(
     DEFAULT_KIND_FILTERS,
   );
+  const [panelSectionOpen, setPanelSectionOpen] = useState<
+    Record<WikiDataPanelSectionKey, boolean>
+  >(DEFAULT_PANEL_SECTION_OPEN);
   const [graphNodes, setGraphNodes] = useState<WikiDataGraphNode[]>([]);
   const [graphEdges, setGraphEdges] = useState<WikiDataGraphEdge[]>([]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [previewReports, setPreviewReports] = useState<WikiDeleteResponse[]>([]);
+
+  const setPanelSectionVisibility = useCallback(
+    (section: WikiDataPanelSectionKey, open: boolean): void => {
+      setPanelSectionOpen((current) => ({
+        ...current,
+        [section]: open,
+      }));
+    },
+    [],
+  );
 
   const loadGraph = useCallback(async (nextIncludeAnalysis: boolean): Promise<void> => {
     setLoadingGraph(true);
@@ -936,7 +967,7 @@ export function WikiDataDialog({ open, onOpenChange }: WikiDataDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-7xl gap-4 p-0 sm:max-w-[min(98vw,1440px)]">
         <DialogHeader className="border-b border-border/70 px-6 pt-5 pb-4">
-          <DialogTitle className="font-heading text-lg">Edit Wiki Data</DialogTitle>
+          <DialogTitle className="font-heading text-lg">View/Edit Wiki Data</DialogTitle>
           <DialogDescription>
             Search and filter wiki nodes, multi-select entries, then archive impacted pages.
           </DialogDescription>
@@ -1063,262 +1094,318 @@ export function WikiDataDialog({ open, onOpenChange }: WikiDataDialogProps) {
           </div>
 
           <ScrollArea className="h-[min(62vh,720px)] rounded-2xl border border-border/70 bg-background/70 p-4">
-            <div className="space-y-5">
-              <div>
-                <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
-                  Search & Filters
-                </h3>
-                <div className="space-y-2 pt-2">
-                  <Input
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder="Filter by node label or id"
-                    disabled={loadingGraph || deleting}
+            <div className="space-y-3">
+              <Collapsible
+                open={panelSectionOpen.searchFilters}
+                onOpenChange={(open) => setPanelSectionVisibility("searchFilters", open)}
+                className="rounded-xl border border-border/70 bg-background/60 px-3 py-2"
+              >
+                <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+                  <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
+                    Search & Filters
+                  </h3>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 text-muted-foreground transition-transform duration-200",
+                      panelSectionOpen.searchFilters ? "rotate-0" : "-rotate-90",
+                    )}
                   />
-                  <div className="flex flex-wrap items-center gap-2">
-                    {KIND_ORDER.map((kind) => (
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2">
+                  <div className="space-y-2">
+                    <Input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Filter by node label or id"
+                      disabled={loadingGraph || deleting}
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      {KIND_ORDER.map((kind) => (
+                        <Button
+                          key={`kind-filter-${kind}`}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => toggleKindFilter(kind)}
+                          className={cn(!kindFilters[kind] && "opacity-55")}
+                          disabled={deleting}
+                        >
+                          {KIND_LABEL[kind]}
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button
-                        key={`kind-filter-${kind}`}
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => toggleKindFilter(kind)}
-                        className={cn(!kindFilters[kind] && "opacity-55")}
-                        disabled={deleting}
+                        onClick={selectFilteredNodes}
+                        disabled={visibleGraphNodes.length === 0 || deleting}
                       >
-                        {KIND_LABEL[kind]}
+                        Select Filtered
                       </Button>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={selectFilteredNodes}
-                      disabled={visibleGraphNodes.length === 0 || deleting}
-                    >
-                      Select Filtered
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={clearFilteredNodes}
-                      disabled={selectedNodeIds.length === 0 || deleting}
-                    >
-                      Clear Filtered
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Showing {visibleGraphNodes.length} nodes for current filters.
-                  </p>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
-                  Filtered Nodes
-                </h3>
-                {visibleGraphNodes.length === 0 ? (
-                  <p className="pt-2 text-xs text-muted-foreground">
-                    No nodes available for current filters.
-                  </p>
-                ) : (
-                  <div className="mt-2 max-h-56 space-y-1 overflow-auto rounded-xl border border-border/70 p-2">
-                    {visibleGraphNodes.slice(0, 200).map((node) => (
-                      <label
-                        key={`selectable-${node.id}`}
-                        className={cn(
-                          "flex cursor-pointer items-start gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs",
-                          selectedNodeIds.includes(node.id) && "border-foreground/20 bg-muted/60",
-                        )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={clearFilteredNodes}
+                        disabled={selectedNodeIds.length === 0 || deleting}
                       >
-                        <input
-                          type="checkbox"
-                          className="mt-0.5 h-4 w-4"
-                          checked={selectedNodeIds.includes(node.id)}
-                          onChange={() => toggleNodeSelection(node.id)}
-                        />
-                        <span className="min-w-0">
-                          <span className="block truncate font-medium text-foreground">
-                            {node.label}
-                          </span>
-                          <span className="block truncate text-muted-foreground">
-                            {node.id}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                    {visibleGraphNodes.length > 200 ? (
-                      <p className="px-2 pt-1 text-[11px] text-muted-foreground">
-                        Showing first 200 nodes. Refine filters to narrow the list.
-                      </p>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
-                  Selection
-                </h3>
-                {selectedNodes.length === 0 ? (
-                  <p className="pt-2 text-xs text-muted-foreground">
-                    Select one or more nodes from the graph or filtered list.
-                  </p>
-                ) : (
-                  <div className="space-y-2 pt-2">
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <Badge variant="outline">Selected: {selectedNodes.length}</Badge>
-                      {selectedKindCounts.source > 0 ? (
-                        <Badge variant="outline">Sources: {selectedKindCounts.source}</Badge>
-                      ) : null}
-                      {selectedKindCounts.analysis > 0 ? (
-                        <Badge variant="outline">Analyses: {selectedKindCounts.analysis}</Badge>
-                      ) : null}
-                      {selectedKindCounts.entity > 0 ? (
-                        <Badge variant="outline">Entities: {selectedKindCounts.entity}</Badge>
-                      ) : null}
-                      {selectedKindCounts.concept > 0 ? (
-                        <Badge variant="outline">Concepts: {selectedKindCounts.concept}</Badge>
-                      ) : null}
+                        Clear Filtered
+                      </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                      Showing {visibleGraphNodes.length} nodes for current filters.
+                    </p>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
 
-                    <div className="max-h-44 space-y-1 overflow-auto rounded-xl border border-border/70 p-2">
-                      {selectedNodes.slice(0, 40).map((node) => (
-                        <div
-                          key={`selected-${node.id}`}
+              <Collapsible
+                open={panelSectionOpen.filteredNodes}
+                onOpenChange={(open) => setPanelSectionVisibility("filteredNodes", open)}
+                className="rounded-xl border border-border/70 bg-background/60 px-3 py-2"
+              >
+                <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+                  <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
+                    Filtered Nodes
+                  </h3>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 text-muted-foreground transition-transform duration-200",
+                      panelSectionOpen.filteredNodes ? "rotate-0" : "-rotate-90",
+                    )}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2">
+                  {visibleGraphNodes.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No nodes available for current filters.
+                    </p>
+                  ) : (
+                    <div className="max-h-56 space-y-1 overflow-auto rounded-xl border border-border/70 p-2">
+                      {visibleGraphNodes.slice(0, 200).map((node) => (
+                        <label
+                          key={`selectable-${node.id}`}
                           className={cn(
-                            "flex items-start justify-between gap-2 rounded-lg border px-2 py-1.5",
-                            node.kind === "source" && "border-sky-300/60 bg-sky-50/40",
-                            node.kind === "analysis" && "border-violet-300/60 bg-violet-50/40",
-                            node.kind === "entity" && "border-emerald-300/60 bg-emerald-50/40",
-                            node.kind === "concept" && "border-amber-300/60 bg-amber-50/40",
+                            "flex cursor-pointer items-start gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs",
+                            selectedNodeIds.includes(node.id) && "border-foreground/20 bg-muted/60",
                           )}
                         >
-                          <div className="min-w-0 text-xs">
-                            <p className="truncate font-medium text-foreground">{node.label}</p>
-                            <p className="truncate text-muted-foreground">{node.id}</p>
-                          </div>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => toggleNodeSelection(node.id)}
-                            disabled={deleting}
-                          >
-                            Remove
-                          </Button>
-                        </div>
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4"
+                            checked={selectedNodeIds.includes(node.id)}
+                            onChange={() => toggleNodeSelection(node.id)}
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium text-foreground">
+                              {node.label}
+                            </span>
+                            <span className="block truncate text-muted-foreground">
+                              {node.id}
+                            </span>
+                          </span>
+                        </label>
                       ))}
-                      {selectedNodes.length > 40 ? (
-                        <p className="px-1 pt-1 text-[11px] text-muted-foreground">
-                          ... +{selectedNodes.length - 40} more selected nodes
+                      {visibleGraphNodes.length > 200 ? (
+                        <p className="px-2 pt-1 text-[11px] text-muted-foreground">
+                          Showing first 200 nodes. Refine filters to narrow the list.
                         </p>
                       ) : null}
                     </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
 
-              <div>
-                <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
-                  Delete Preview
-                </h3>
-                {loadingPreview ? (
-                  <p className="pt-2 text-xs text-muted-foreground">Calculating delete impact...</p>
-                ) : !preview ? (
-                  <p className="pt-2 text-xs text-muted-foreground">
-                    Select at least one node to preview deletion impact.
-                  </p>
-                ) : (
-                  <div className="space-y-3 pt-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="outline">Planned pages: {preview.planned_total_pages}</Badge>
-                      <Badge variant="outline">Status: {preview.status}</Badge>
-                      <Badge variant="outline">Preview groups: {previewReports.length}</Badge>
+              <Collapsible
+                open={panelSectionOpen.selection}
+                onOpenChange={(open) => setPanelSectionVisibility("selection", open)}
+                className="rounded-xl border border-border/70 bg-background/60 px-3 py-2"
+              >
+                <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+                  <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
+                    Selection
+                  </h3>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 text-muted-foreground transition-transform duration-200",
+                      panelSectionOpen.selection ? "rotate-0" : "-rotate-90",
+                    )}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2">
+                  {selectedNodes.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Select one or more nodes from the graph or filtered list.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="outline">Selected: {selectedNodes.length}</Badge>
+                        {selectedKindCounts.source > 0 ? (
+                          <Badge variant="outline">Sources: {selectedKindCounts.source}</Badge>
+                        ) : null}
+                        {selectedKindCounts.analysis > 0 ? (
+                          <Badge variant="outline">Analyses: {selectedKindCounts.analysis}</Badge>
+                        ) : null}
+                        {selectedKindCounts.entity > 0 ? (
+                          <Badge variant="outline">Entities: {selectedKindCounts.entity}</Badge>
+                        ) : null}
+                        {selectedKindCounts.concept > 0 ? (
+                          <Badge variant="outline">Concepts: {selectedKindCounts.concept}</Badge>
+                        ) : null}
+                      </div>
+
+                      <div className="max-h-44 space-y-1 overflow-auto rounded-xl border border-border/70 p-2">
+                        {selectedNodes.slice(0, 40).map((node) => (
+                          <div
+                            key={`selected-${node.id}`}
+                            className={cn(
+                              "flex items-start justify-between gap-2 rounded-lg border px-2 py-1.5",
+                              node.kind === "source" && "border-sky-300/60 bg-sky-50/40",
+                              node.kind === "analysis" && "border-violet-300/60 bg-violet-50/40",
+                              node.kind === "entity" && "border-emerald-300/60 bg-emerald-50/40",
+                              node.kind === "concept" && "border-amber-300/60 bg-amber-50/40",
+                            )}
+                          >
+                            <div className="min-w-0 text-xs">
+                              <p className="truncate font-medium text-foreground">{node.label}</p>
+                              <p className="truncate text-muted-foreground">{node.id}</p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => toggleNodeSelection(node.id)}
+                              disabled={deleting}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                        {selectedNodes.length > 40 ? (
+                          <p className="px-1 pt-1 text-[11px] text-muted-foreground">
+                            ... +{selectedNodes.length - 40} more selected nodes
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
 
-                    {preview.missing_entries.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Missing</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.missing_entries).map((item) => (
-                            <li key={`missing-${item}`}>{item}</li>
-                          ))}
-                        </ul>
+              <Collapsible
+                open={panelSectionOpen.deletePreview}
+                onOpenChange={(open) => setPanelSectionVisibility("deletePreview", open)}
+                className="rounded-xl border border-border/70 bg-background/60 px-3 py-2"
+              >
+                <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+                  <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
+                    Delete Preview
+                  </h3>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 text-muted-foreground transition-transform duration-200",
+                      panelSectionOpen.deletePreview ? "rotate-0" : "-rotate-90",
+                    )}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2">
+                  {loadingPreview ? (
+                    <p className="text-xs text-muted-foreground">Calculating delete impact...</p>
+                  ) : !preview ? (
+                    <p className="text-xs text-muted-foreground">
+                      Select at least one node to preview deletion impact.
+                    </p>
+                  ) : (
+                    <div className="space-y-3 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">Planned pages: {preview.planned_total_pages}</Badge>
+                        <Badge variant="outline">Status: {preview.status}</Badge>
+                        <Badge variant="outline">Preview groups: {previewReports.length}</Badge>
                       </div>
-                    ) : null}
 
-                    {preview.invalid_entries.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Invalid</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.invalid_entries).map((item) => (
-                            <li key={`invalid-${item}`}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+                      {preview.missing_entries.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Missing</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.missing_entries).map((item) => (
+                              <li key={`missing-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
 
-                    {preview.errors.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Errors</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.errors).map((item) => (
-                            <li key={`error-${item}`}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+                      {preview.invalid_entries.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Invalid</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.invalid_entries).map((item) => (
+                              <li key={`invalid-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
 
-                    {preview.planned_source_pages.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Sources</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.planned_source_pages).map((item) => (
-                            <li key={`source-${item}`}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+                      {preview.errors.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Errors</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.errors).map((item) => (
+                              <li key={`error-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
 
-                    {preview.planned_analysis_pages.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Analyses</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.planned_analysis_pages).map((item) => (
-                            <li key={`analysis-${item}`}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+                      {preview.planned_source_pages.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Sources</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.planned_source_pages).map((item) => (
+                              <li key={`source-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
 
-                    {preview.planned_entity_pages.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Entities</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.planned_entity_pages).map((item) => (
-                            <li key={`entity-${item}`}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+                      {preview.planned_analysis_pages.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Analyses</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.planned_analysis_pages).map((item) => (
+                              <li key={`analysis-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
 
-                    {preview.planned_concept_pages.length > 0 ? (
-                      <div>
-                        <p className="font-semibold text-foreground/90">Concepts</p>
-                        <ul className="pt-1 text-muted-foreground">
-                          {trimList(preview.planned_concept_pages).map((item) => (
-                            <li key={`concept-${item}`}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
+                      {preview.planned_entity_pages.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Entities</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.planned_entity_pages).map((item) => (
+                              <li key={`entity-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+
+                      {preview.planned_concept_pages.length > 0 ? (
+                        <div>
+                          <p className="font-semibold text-foreground/90">Concepts</p>
+                          <ul className="pt-1 text-muted-foreground">
+                            {trimList(preview.planned_concept_pages).map((item) => (
+                              <li key={`concept-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
             </div>
           </ScrollArea>
         </div>

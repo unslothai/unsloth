@@ -808,9 +808,51 @@ class LLMWikiEngine:
         if not self.log_file.exists():
             self.log_file.write_text("# Log\n\n", encoding = "utf-8")
 
+    def _sanitize_invalid_unicode_surrogates(
+        self,
+        text: str,
+        *,
+        field_name: str,
+    ) -> str:
+        if not text:
+            return text
+
+        replaced_count = 0
+        cleaned_chars: List[str] = []
+        for ch in str(text):
+            codepoint = ord(ch)
+            if 0xD800 <= codepoint <= 0xDFFF:
+                cleaned_chars.append("\uFFFD")
+                replaced_count += 1
+            else:
+                cleaned_chars.append(ch)
+
+        if replaced_count > 0:
+            logger.warning(
+                "Sanitized %s invalid unicode surrogate character(s) in %s before UTF-8 write.",
+                replaced_count,
+                field_name,
+            )
+
+        return "".join(cleaned_chars)
+
     def ingest_source(
         self, source_title: str, source_text: str, source_ref: Optional[str] = None
     ) -> Dict:
+        source_title = self._sanitize_invalid_unicode_surrogates(
+            source_title,
+            field_name = "source_title",
+        )
+        source_text = self._sanitize_invalid_unicode_surrogates(
+            source_text,
+            field_name = "source_text",
+        )
+        if source_ref is not None:
+            source_ref = self._sanitize_invalid_unicode_surrogates(
+                source_ref,
+                field_name = "source_ref",
+            )
+
         now = self._now_iso()
         source_slug = self._slug(source_title)
         source_path = self.sources_dir / f"{source_slug}.md"
@@ -1083,6 +1125,18 @@ class LLMWikiEngine:
         )
 
         merged_analysis_page = str(merge_report.get("merged_analysis_page", "")).strip()
+        chunk_analysis_pages_removed: List[str] = []
+        if merged_analysis_page and not failed_chunks:
+            for rel in chunk_analysis_pages:
+                normalized_rel = self._normalize_wikilink(rel)
+                if not normalized_rel:
+                    continue
+                page_path = self.wiki_dir / f"{normalized_rel}.md"
+                if not page_path.exists() or not page_path.is_file():
+                    continue
+                page_path.unlink()
+                chunk_analysis_pages_removed.append(normalized_rel)
+
         adaptive_replan_details_line = ""
         if adaptive_replan_applied:
             adaptive_replan_details_line = (
@@ -1101,6 +1155,7 @@ class LLMWikiEngine:
             f"- Chunk overlap chars: {chunk_plan.get('chunk_overlap_chars', 0)}\n"
             f"- Chunk source pages: {len(chunk_source_pages)}\n"
             f"- Chunk analysis pages: {len(chunk_analysis_pages)}\n"
+            f"- Chunk analysis pages removed after merge: {len(chunk_analysis_pages_removed)}\n"
             f"- Failed chunks: {len(failed_chunks)}\n"
             f"- Stale chunk source pages removed: {len(stale_chunk_source_pages_removed)}\n"
             f"- Stale chunk analysis pages removed: {len(stale_chunk_analysis_pages_removed)}\n"
@@ -1128,6 +1183,8 @@ class LLMWikiEngine:
             },
             "chunk_source_pages": chunk_source_pages,
             "chunk_analysis_pages": chunk_analysis_pages,
+            "chunk_analysis_pages_removed": chunk_analysis_pages_removed,
+            "chunk_query_context_max_chars": effective_context_window_chars,
             "merged_analysis_page": merged_analysis_page,
             "merge_answer_mode": merge_report.get("answer_mode", "unknown"),
             "merge_fallback_reason": merge_report.get("fallback_reason"),
@@ -7444,8 +7501,25 @@ class LLMWikiEngine:
             + "--analysis"
         )
 
-    def _chunk_merged_analysis_slug(self, source_slug: str) -> str:
-        return f"{self._slug(source_slug or 'source')}--chunk-merged-analysis"
+    def _chunk_merged_analysis_slug(
+        self,
+        source_slug: str,
+        merged_answer: str = "",
+        source_title: str = "",
+    ) -> str:
+        base = self._slug(source_slug or "source")
+        topic = self._analysis_title_from_answer(merged_answer)
+        if not topic:
+            topic = source_title
+        topic_slug = self._slug(topic or "merged-analysis")
+
+        base_slug = f"{base}--chunk-merged--{topic_slug}"
+        slug = base_slug
+        suffix = 2
+        while (self.analysis_dir / f"{slug}.md").exists():
+            slug = f"{base_slug}-{suffix}"
+            suffix += 1
+        return slug
 
     def _chunk_source_ref(
         self,
@@ -7508,10 +7582,6 @@ class LLMWikiEngine:
         chunk_source_pages: List[str],
         chunk_analysis_pages: List[str],
     ) -> Dict[str, Any]:
-        merged_slug = self._chunk_merged_analysis_slug(source_slug)
-        merged_rel = f"analysis/{merged_slug}"
-        merged_path = self.analysis_dir / f"{merged_slug}.md"
-
         normalized_source_page = self._normalize_wikilink(source_page) or source_page
         question = (
             f"Merge chunk analyses for source '{source_title}'. "
@@ -7573,18 +7643,31 @@ class LLMWikiEngine:
                 "Merge chunk analyses into one final wiki report.\n"
                 f"Source title: {source_title}\n"
                 f"Primary source page: [[{normalized_source_page}]]\n"
-                f"Chunk analysis pages: {', '.join([f'[[{rel}]]' for rel in chunk_analysis_pages])}\n\n"
-                "Return plain markdown with:\n"
-                "- concise executive summary\n"
-                "- merged key findings\n"
-                "- disagreements or uncertainty\n"
-                "- final caveats and assumptions\n"
-                "Cite evidence inline using wiki links to source/chunk pages.\n\n"
-                "CHUNK_ANALYSIS_CONTEXT:\n" + "\n\n".join(context_blocks)
+                f"Chunk source pages: {', '.join([f'[[{rel}]]' for rel in chunk_source_pages])}\n\n"
+                "Output format (strict):\n"
+                "- Title: concise merged title\n"
+                "- Section A: Brief merged summary paragraph\n"
+                "- Section B: Key takeaways (bullets)\n"
+                "- Section C: Wiki updates (bullets)\n"
+                "- Section D: Important equations or formulas (bullets, or explicit none)\n"
+                "- Section E: Caveats (bullets)\n"
+                "- Section F: Assumptions (bullets)\n"
+                "- Section G: source or conversation\n"
+                "- Section H: Potential disputable claims\n"
+                "- Section I: Date/time sensitivity (with timestamp when relevant)\n\n"
+                "Requirements:\n"
+                "- Cite claims inline using wiki links.\n"
+                "- Prefer [[sources/...]] links, including chunk source pages.\n"
+                "- Do not cite analysis chunk pages in the final answer.\n\n"
+                "CHUNK_ANALYSIS_CONTEXT:\n"
+                + "\n\n".join(context_blocks)
             )
 
             raw_answer = str(self.llm_fn(prompt) or "").strip()
             low_quality_reason = self._low_quality_reason(raw_answer)
+            missing_sections = self._missing_required_section_labels(raw_answer)
+            if low_quality_reason is None and missing_sections:
+                low_quality_reason = f"missing_merge_sections:{','.join(missing_sections)}"
             if low_quality_reason is None:
                 answer = raw_answer
             else:
@@ -7592,12 +7675,26 @@ class LLMWikiEngine:
                 answer_mode = "chunk-merge-extractive-fallback"
                 answer = self._extractive_chunk_merge_answer(
                     source_page = normalized_source_page,
-                    chunk_analysis_pages = used_chunk_analysis_pages
-                    or chunk_analysis_pages,
+                    chunk_analysis_pages = used_chunk_analysis_pages or chunk_analysis_pages,
+                    chunk_source_pages = chunk_source_pages,
                 )
 
+        answer = self._rewrite_chunk_analysis_links_to_sources(
+            answer,
+            chunk_analysis_pages = chunk_analysis_pages,
+            chunk_source_pages = chunk_source_pages,
+        )
+
+        merged_slug = self._chunk_merged_analysis_slug(
+            source_slug = source_slug,
+            merged_answer = answer,
+            source_title = source_title,
+        )
+        merged_rel = f"analysis/{merged_slug}"
+        merged_path = self.analysis_dir / f"{merged_slug}.md"
+
         context_pages: List[str] = []
-        for rel in [normalized_source_page] + used_chunk_analysis_pages:
+        for rel in [normalized_source_page] + chunk_source_pages:
             normalized = self._normalize_wikilink(rel)
             if not normalized:
                 continue
@@ -7642,24 +7739,85 @@ class LLMWikiEngine:
             "context_pages": context_pages,
         }
 
+    def _missing_required_section_labels(self, answer: str) -> List[str]:
+        missing: List[str] = []
+        for label in ("A", "B", "C", "D", "E", "F", "G", "H", "I"):
+            if not self._analysis_answer_has_section_label(answer, label):
+                missing.append(label)
+        return missing
+
+    def _rewrite_chunk_analysis_links_to_sources(
+        self,
+        answer: str,
+        chunk_analysis_pages: List[str],
+        chunk_source_pages: List[str],
+    ) -> str:
+        mapping: Dict[str, str] = {}
+        for idx, analysis_rel in enumerate(chunk_analysis_pages):
+            normalized_analysis = self._normalize_wikilink(analysis_rel)
+            if not normalized_analysis:
+                continue
+
+            source_rel = (
+                chunk_source_pages[idx]
+                if idx < len(chunk_source_pages)
+                else ""
+            )
+            normalized_source = self._normalize_wikilink(source_rel)
+            if not normalized_source:
+                continue
+            mapping[normalized_analysis] = normalized_source
+
+        if not mapping:
+            return answer
+
+        def _replace(match: re.Match[str]) -> str:
+            target = self._normalize_wikilink(match.group(1))
+            if not target:
+                return match.group(0)
+            replacement = mapping.get(target)
+            if not replacement:
+                return match.group(0)
+            return f"[[{replacement}]]"
+
+        return re.sub(r"\[\[([^\]]+)\]\]", _replace, answer)
+
     def _extractive_chunk_merge_answer(
         self,
         source_page: str,
         chunk_analysis_pages: List[str],
+        chunk_source_pages: Optional[List[str]] = None,
     ) -> str:
-        if not chunk_analysis_pages:
-            return (
-                "Chunk merge fallback could not extract chunk analysis evidence because "
-                "no chunk analysis pages were available."
-            )
-
-        lines = [
-            "LLM merge quality was low; using extractive chunk-merge fallback.",
-            "",
+        normalized_source_page = self._normalize_wikilink(source_page) or source_page
+        normalized_chunk_source_pages = [
+            self._normalize_wikilink(rel) or ""
+            for rel in (chunk_source_pages or [])
         ]
 
-        emitted = 0
-        for rel in chunk_analysis_pages:
+        if not chunk_analysis_pages:
+            return (
+                "Title: Chunk Merge Fallback\n\n"
+                f"Section A: Chunk merge fallback could not extract chunk analysis evidence because no chunk analysis pages were available. [[{normalized_source_page}]]\n\n"
+                "Section B:\n"
+                f"- No chunk-level takeaways were available. [[{normalized_source_page}]]\n\n"
+                "Section C:\n"
+                "- Wiki updates could not be inferred from missing chunk analyses.\n\n"
+                "Section D:\n"
+                "- No equations/formulas extracted in fallback mode.\n\n"
+                "Section E:\n"
+                "- Merge used fallback mode due to unavailable chunk analysis pages.\n\n"
+                "Section F:\n"
+                "- Assumes source page remains the ground-truth reference for follow-up review.\n\n"
+                "Section G: source\n\n"
+                "Section H:\n"
+                "- Potential disputable claims cannot be assessed without chunk analyses.\n\n"
+                "Section I:\n"
+                f"- Date/time sensitivity unknown; verify directly in [[{normalized_source_page}]]."
+            )
+
+        observations: List[Tuple[str, str]] = []
+
+        for idx, rel in enumerate(chunk_analysis_pages):
             page_path = self.wiki_dir / f"{self._normalize_wikilink(rel)}.md"
             if not page_path.exists():
                 continue
@@ -7672,16 +7830,56 @@ class LLMWikiEngine:
             if not summary:
                 continue
 
-            lines.append(f"- {summary} [[{self._normalize_wikilink(rel)}]]")
-            emitted += 1
-            if emitted >= 32:
+            chunk_source_rel = (
+                normalized_chunk_source_pages[idx]
+                if idx < len(normalized_chunk_source_pages)
+                and normalized_chunk_source_pages[idx]
+                else normalized_source_page
+            )
+            observations.append((summary, chunk_source_rel))
+            if len(observations) >= 32:
                 break
 
-        if emitted == 0:
-            lines.append("- No extractive chunk details were available.")
+        if not observations:
+            observations = [
+                (
+                    "No reliable chunk-level details were extracted during fallback merge.",
+                    normalized_source_page,
+                )
+            ]
 
-        lines.append(f"- Primary source: [[{self._normalize_wikilink(source_page)}]]")
-        return "\n".join(lines)
+        section_b_lines = [
+            f"- {summary} [[{chunk_source_rel}]]"
+            for summary, chunk_source_rel in observations[:8]
+        ]
+        section_c_lines = [
+            (
+                f"- Merged {len(observations)} chunk-level observations into one consolidated report. "
+                f"[[{normalized_source_page}]]"
+            )
+        ]
+
+        return (
+            f"Title: Merged Summary - {self._slug(normalized_source_page).replace('-', ' ').title()}\n\n"
+            f"Section A: Consolidated fallback merge summary derived from chunk analyses for [[{normalized_source_page}]].\n\n"
+            "Section B:\n"
+            + "\n".join(section_b_lines)
+            + "\n\n"
+            "Section C:\n"
+            + "\n".join(section_c_lines)
+            + "\n\n"
+            "Section D:\n"
+            "- No explicit equations/formulas were reliably extracted in fallback mode.\n\n"
+            "Section E:\n"
+            "- Merge used extractive fallback due to low-quality or structurally invalid LLM merge output.\n\n"
+            "Section F:\n"
+            "- Assumes each chunk analysis reflects its corresponding chunk source page faithfully.\n\n"
+            "Section G: source\n\n"
+            "Section H:\n"
+            f"- Potential disputable claims should be re-validated against [[{normalized_source_page}]] and chunk source pages.\n\n"
+            "Section I:\n"
+            f"- Date/time sensitivity is unknown from fallback merge; verify timestamps directly in [[{normalized_source_page}]]."
+        )
 
     def _safe_json(self, text: str) -> Optional[Dict]:
         text = text.strip()
@@ -7941,7 +8139,7 @@ class LLMWikiEngine:
             "- Cite claims inline with wiki links like [[sources/...]] [[entities/...]] [[concepts/...]]\n"
             "- Keep the response specific and avoid generic filler\n"
             "- Make sure you populate caveats and limitations by looking at the content critically, especially if it's technical. If the source is very clean and straightforward, say so but still include a caveats section with a note to that effect.\n"
-            f"- Prioritize [[{source_rel}]] over unrelated pages"
+            f"- Prioritize [[{source_rel}]] over unrelated pages\n"
             "This might be a chunked version of the source, so be mindful that some information might be missing. Focus on what's present in the text and avoid making assumptions about missing content."
         )
 

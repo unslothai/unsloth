@@ -12,6 +12,10 @@ This document summarizes the backend RAG changes made to unblock end-to-end wiki
 - Low-quality answer gating now catches shorter repeated-token degeneration runs earlier, reducing cases where repetitive gibberish slips through as `Answer Mode: llm`.
 - Added explicit adaptive chunk replan diagnostics: runtime marker (`WIKI_CHUNK_REPLAN ...`) and `wiki/log.md` fields now show whether adaptive replan was applied and the window/chunk-count before→after values.
 - Wiki data dialog now provides explicit top-row hide/show controls for source, entity, and concept nodes (alongside analysis visibility).
+- Chunked wiki ingestion now removes intermediate `analysis/*--chunk-###-of-###--analysis` pages after successful merge, while preserving the merged analysis page and source/chunk source pages.
+- Chunk-merge outputs now enforce watcher-style `Section A` through `Section I` structure; non-conforming merge LLM output automatically falls back to a sectioned extractive merge answer.
+- Chunk-merge filenames are now content-aware and unique (`...--chunk-merged--<topic>`), instead of a single generic `--chunk-merged-analysis` slug.
+- Watcher auto-analysis now skips additional source-first query generation when the same ingest already ran in chunked mode and produced a merged analysis page, preventing duplicate extra analysis files.
 
 ## Incremental Update (2026-04-28)
 

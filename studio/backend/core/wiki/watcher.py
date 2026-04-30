@@ -175,6 +175,17 @@ class WikiFileEventHandler(FileSystemEventHandler):
                 if not title:
                     return
 
+                ingest_metadata: dict = {}
+                pop_ingest_metadata = getattr(
+                    self.ingestor,
+                    "pop_recent_ingest_metadata",
+                    None,
+                )
+                if callable(pop_ingest_metadata):
+                    maybe_metadata = pop_ingest_metadata(file_path)
+                    if isinstance(maybe_metadata, dict):
+                        ingest_metadata = maybe_metadata
+
                 with self._lock:
                     self._processed_mtime_ns[resolved] = mtime_ns
                     self._processed_hash[resolved] = file_hash
@@ -194,6 +205,14 @@ class WikiFileEventHandler(FileSystemEventHandler):
                 logger.info(
                     "Skipping auto wiki analysis for %s (no active model loaded)",
                     file_path.name,
+                )
+                return
+
+            if str(ingest_metadata.get("mode", "")).strip().lower() == "chunked":
+                logger.info(
+                    "Skipping watcher auto wiki analysis for %s (chunked ingest already produced merged analysis: %s)",
+                    file_path.name,
+                    str(ingest_metadata.get("merged_analysis_page", "") or "unknown"),
                 )
                 return
 

@@ -6,6 +6,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -17,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { authFetch } from "@/features/auth";
 import { cn } from "@/lib/utils";
+import { ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 
 type WikiEnvKind = "bool" | "int" | "float" | "string";
@@ -67,9 +73,11 @@ const CATEGORY_ORDER = [
   "Other",
 ] as const;
 
+type WikiVariableCategory = (typeof CATEGORY_ORDER)[number];
+
 const EXPECTED_RUNTIME_WIKI_ENV_VARS = 68;
 
-function categoryForVariable(name: string): (typeof CATEGORY_ORDER)[number] {
+function categoryForVariable(name: string): WikiVariableCategory {
   if (
     name.includes("ENGINE_ENRICH_WEB") ||
     name.includes("ENGINE_ENRICH_FILL") ||
@@ -144,6 +152,13 @@ export function WikiBehaviourDialog({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [restartSupported, setRestartSupported] = useState(false);
   const [overridesFile, setOverridesFile] = useState("");
+  const [sectionOpen, setSectionOpen] = useState<Record<WikiVariableCategory, boolean>>(
+    () =>
+      Object.fromEntries(CATEGORY_ORDER.map((category) => [category, false])) as Record<
+        WikiVariableCategory,
+        boolean
+      >,
+  );
 
   const currentValues = useMemo(
     () => Object.fromEntries(variables.map((item) => [item.name, item.current_value])),
@@ -168,7 +183,7 @@ export function WikiBehaviourDialog({
       );
     });
 
-    const grouped = new Map<(typeof CATEGORY_ORDER)[number], WikiEnvVariable[]>();
+    const grouped = new Map<WikiVariableCategory, WikiEnvVariable[]>();
     for (const item of filtered) {
       const category = categoryForVariable(item.name);
       const rows = grouped.get(category) ?? [];
@@ -358,114 +373,140 @@ export function WikiBehaviourDialog({
               No wiki variables match the current filter.
             </div>
           ) : (
-            <div className="space-y-6 py-4">
-              {groupedVariables.map(({ category, items }) => (
-                <section key={category} className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
-                      {category}
-                    </h3>
-                    <Badge variant="outline">{items.length}</Badge>
-                  </div>
+            <div className="space-y-3 py-4">
+              {groupedVariables.map(({ category, items }) => {
+                const isOpen = sectionOpen[category] ?? true;
+                return (
+                  <Collapsible
+                    key={category}
+                    open={isOpen}
+                    onOpenChange={(openValue) => {
+                      setSectionOpen((current) => ({
+                        ...current,
+                        [category]: openValue,
+                      }));
+                    }}
+                    className="rounded-2xl border border-border/70 bg-background/60 px-3 py-2"
+                  >
+                    <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold tracking-wide text-foreground/90">
+                          {category}
+                        </h3>
+                        <Badge variant="outline">{items.length}</Badge>
+                      </div>
+                      <ChevronDown
+                        className={cn(
+                          "size-4 text-muted-foreground transition-transform duration-200",
+                          isOpen ? "rotate-0" : "-rotate-90",
+                        )}
+                      />
+                    </CollapsibleTrigger>
 
-                  <div className="space-y-2.5">
-                    {items.map((item) => {
-                      const value = draftValues[item.name] ?? item.current_value;
-                      const isChanged = value !== item.current_value;
-                      const error = fieldErrors[item.name];
-                      return (
-                        <div
-                          key={item.name}
-                          className={cn(
-                            "rounded-2xl border border-border/70 bg-background/70 p-3",
-                            isChanged && "border-primary/40",
-                            error && "border-destructive/70",
-                          )}
-                        >
-                          <div className="flex flex-wrap items-center gap-2 pb-2">
-                            <p className="text-xs font-semibold tracking-wide text-foreground/90">
-                              {item.name}
-                            </p>
-                            <Badge variant="outline">{item.kind}</Badge>
-                            <Badge variant="outline">
-                              {item.source === "environment" ? "Environment" : "Default"}
-                            </Badge>
-                            {item.has_override ? <Badge variant="secondary">Persisted</Badge> : null}
-                            {isChanged ? <Badge variant="secondary">Edited</Badge> : null}
-                          </div>
+                    <CollapsibleContent className="pt-3">
+                      <div className="space-y-2.5">
+                        {items.map((item) => {
+                          const value = draftValues[item.name] ?? item.current_value;
+                          const isChanged = value !== item.current_value;
+                          const error = fieldErrors[item.name];
+                          return (
+                            <div
+                              key={item.name}
+                              className={cn(
+                                "rounded-2xl border border-border/70 bg-background/70 p-3",
+                                isChanged && "border-primary/40",
+                                error && "border-destructive/70",
+                              )}
+                            >
+                              <div className="flex flex-wrap items-center gap-2 pb-2">
+                                <p className="text-xs font-semibold tracking-wide text-foreground/90">
+                                  {item.name}
+                                </p>
+                                <Badge variant="outline">{item.kind}</Badge>
+                                <Badge variant="outline">
+                                  {item.source === "environment" ? "Environment" : "Default"}
+                                </Badge>
+                                {item.has_override ? <Badge variant="secondary">Persisted</Badge> : null}
+                                {isChanged ? <Badge variant="secondary">Edited</Badge> : null}
+                              </div>
 
-                          <p className="pb-2 text-xs text-muted-foreground">{item.description}</p>
+                              <p className="pb-2 text-xs text-muted-foreground">{item.description}</p>
 
-                          <div className="flex flex-wrap items-center gap-2">
-                            {item.kind === "bool" ? (
-                              <select
-                                value={value}
-                                onChange={(event) => setDraftValue(item.name, event.target.value)}
-                                disabled={saving}
-                                className={cn(
-                                  "bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-9 min-w-[180px] rounded-4xl border px-3 text-sm outline-none focus-visible:ring-[3px]",
-                                  error && "border-destructive/70 focus-visible:border-destructive",
+                              <div className="flex flex-wrap items-center gap-2">
+                                {item.kind === "bool" ? (
+                                  <select
+                                    value={value}
+                                    onChange={(event) => setDraftValue(item.name, event.target.value)}
+                                    disabled={saving}
+                                    className={cn(
+                                      "bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-9 min-w-[180px] rounded-4xl border px-3 text-sm outline-none focus-visible:ring-[3px]",
+                                      error && "border-destructive/70 focus-visible:border-destructive",
+                                    )}
+                                  >
+                                    <option value="true">true</option>
+                                    <option value="false">false</option>
+                                  </select>
+                                ) : (
+                                  <Input
+                                    value={value}
+                                    onChange={(event) => setDraftValue(item.name, event.target.value)}
+                                    disabled={saving}
+                                    className={cn(
+                                      "h-9 min-w-[240px] flex-1",
+                                      error && "border-destructive/70",
+                                    )}
+                                  />
                                 )}
-                              >
-                                <option value="true">true</option>
-                                <option value="false">false</option>
-                              </select>
-                            ) : (
-                              <Input
-                                value={value}
-                                onChange={(event) => setDraftValue(item.name, event.target.value)}
-                                disabled={saving}
-                                className={cn("h-9 min-w-[240px] flex-1", error && "border-destructive/70")}
-                              />
-                            )}
 
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="xs"
-                              disabled={saving}
-                              onClick={() => setDraftValue(item.name, item.default_value)}
-                            >
-                              Default
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="xs"
-                              disabled={saving}
-                              onClick={() => setDraftValue(item.name, "")}
-                            >
-                              Clear
-                            </Button>
-                          </div>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  disabled={saving}
+                                  onClick={() => setDraftValue(item.name, item.default_value)}
+                                >
+                                  Default
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  disabled={saving}
+                                  onClick={() => setDraftValue(item.name, "")}
+                                >
+                                  Clear
+                                </Button>
+                              </div>
 
-                          <div className="pt-2 text-xs text-muted-foreground">
-                            <span>Current: {currentValues[item.name] ?? item.current_value}</span>
-                            <span className="px-2">•</span>
-                            <span>Default: {item.default_value}</span>
-                            {item.minimum !== null && item.minimum !== undefined ? (
-                              <>
+                              <div className="pt-2 text-xs text-muted-foreground">
+                                <span>Current: {currentValues[item.name] ?? item.current_value}</span>
                                 <span className="px-2">•</span>
-                                <span>Min: {item.minimum}</span>
-                              </>
-                            ) : null}
-                            {item.maximum !== null && item.maximum !== undefined ? (
-                              <>
-                                <span className="px-2">•</span>
-                                <span>Max: {item.maximum}</span>
-                              </>
-                            ) : null}
-                          </div>
+                                <span>Default: {item.default_value}</span>
+                                {item.minimum !== null && item.minimum !== undefined ? (
+                                  <>
+                                    <span className="px-2">•</span>
+                                    <span>Min: {item.minimum}</span>
+                                  </>
+                                ) : null}
+                                {item.maximum !== null && item.maximum !== undefined ? (
+                                  <>
+                                    <span className="px-2">•</span>
+                                    <span>Max: {item.maximum}</span>
+                                  </>
+                                ) : null}
+                              </div>
 
-                          {error ? (
-                            <p className="pt-2 text-xs font-medium text-destructive">{error}</p>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
+                              {error ? (
+                                <p className="pt-2 text-xs font-medium text-destructive">{error}</p>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                );
+              })}
             </div>
           )}
         </ScrollArea>

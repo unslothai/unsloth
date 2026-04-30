@@ -644,7 +644,7 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
                       <span className="text-[14px] leading-[18px] tracking-[0.01em]">
-                        Edit Wiki Data
+                        View/Edit Wiki Data
                       </span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
