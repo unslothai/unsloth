@@ -929,10 +929,11 @@ shell.Run cmd, 0, False
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
         # existing $StudioHome\unsloth_studio that lacks Studio sentinels.
-        # -PathType Leaf rejects a directory at the sentinel path (an
-        # unrelated workspace could have one) from satisfying the guard.
+        # -PathType Leaf rejects a directory at the sentinel path. Accept the
+        # in-VENV ownership marker so partial-install retries are not blocked.
         if (
             $StudioRedirectMode -eq 'env' -and
+            -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
         ) {
@@ -995,6 +996,13 @@ shell.Run cmd, 0, False
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
+    }
+
+    # Mark the freshly-created venv as Studio-owned so a partial install can be
+    # repaired by re-running install.ps1; the env-mode deletion guard above
+    # accepts this marker as the primary sentinel.
+    if (Test-Path -LiteralPath $VenvDir -PathType Container) {
+        try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
 
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──

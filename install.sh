@@ -1146,12 +1146,14 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     # why: matching guard to the .venv branch below -- in env-mode
     # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
     # existing $STUDIO_HOME/unsloth_studio that lacks Studio sentinels.
-    # Sentinel must be a real file or symlink: a bare directory at
-    # bin/unsloth (possible in unrelated workspaces) must not pass.
+    # Accept the in-VENV ownership marker so partial-install retries are
+    # not blocked. Sentinels must be regular files: -f follows symlinks
+    # to files (the legitimate ln -s shim shape) but rejects directories
+    # and broken/dir-targeted symlinks.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
        && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
-       && [ ! -f "$STUDIO_HOME/bin/unsloth" ] \
-       && [ ! -L "$STUDIO_HOME/bin/unsloth" ]; then
+       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
         echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
         exit 1
@@ -1200,6 +1202,13 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
 fi
 
+# Mark the freshly-created venv as Studio-owned so a partial install can be
+# repaired by re-running install.sh; the env-mode deletion guard above accepts
+# this marker as the primary sentinel.
+if [ -x "$VENV_DIR/bin/python" ]; then
+    : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+fi
+
 # Guard against Python 3.13.8 torch import bug on Apple Silicon
 # (skip when the user explicitly chose a version via --python)
 if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
@@ -1211,6 +1220,9 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         rm -rf "$VENV_DIR"
         PYTHON_VERSION="3.12"
         run_install_cmd "recreate venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
     fi
 fi
 

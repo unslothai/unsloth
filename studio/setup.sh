@@ -546,12 +546,29 @@ fi
 # why: in env-override mode $STUDIO_HOME is a user-chosen workspace; refuse
 # to rm -rf any directory that doesn't carry the Studio ownership marker
 # instead of silently destroying unrelated user data.
+# The marker is required only when STUDIO_HOME canonicalizes to something
+# other than the legacy default; an explicit UNSLOTH_STUDIO_HOME=$HOME/.unsloth/studio
+# must behave like a default install so pre-PR T5/llama dirs are not blocked.
 _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
+_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+_studio_home_canon="$STUDIO_HOME"
+if [ -d "$_studio_home_canon" ]; then
+    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
+        || _studio_home_canon="$STUDIO_HOME"
+fi
+if [ -d "$_LEGACY_STUDIO_HOME" ]; then
+    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
+        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+_STUDIO_HOME_IS_CUSTOM=false
+if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
+    _STUDIO_HOME_IS_CUSTOM=true
+fi
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     [ -d "$_aso_dir" ] || return 0
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
         echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
         exit 1
@@ -594,23 +611,12 @@ fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides, never the
-# legacy default. Compare canonicalized paths so STUDIO_HOME (logical in
-# default mode, canonical in env mode) and the legacy side line up under
-# symlinked $HOME.
-_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-_studio_home_canon="$STUDIO_HOME"
-if [ -d "$_studio_home_canon" ]; then
-    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
-        || _studio_home_canon="$STUDIO_HOME"
-fi
-if [ -d "$_LEGACY_STUDIO_HOME" ]; then
-    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
-        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-fi
-if [ "$_studio_home_canon" = "$_LEGACY_STUDIO_HOME" ]; then
-    UNSLOTH_HOME="$HOME/.unsloth"
-else
+# legacy default. Reuses the canonical comparison computed above so the
+# llama.cpp nest decision matches the ownership-guard semantics.
+if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
+else
+    UNSLOTH_HOME="$HOME/.unsloth"
 fi
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
@@ -678,7 +684,7 @@ else
     # $UNSLOTH_STUDIO_HOME/llama.cpp can be displaced before the source-build
     # ownership check ever runs. Mirror the marker guard already used on the
     # source-build replacement path.
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     _PREBUILT_CMD=(
@@ -708,7 +714,7 @@ else
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
-        if [ -n "${UNSLOTH_STUDIO_HOME:-}" ] && [ -d "$LLAMA_CPP_DIR" ]; then
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"

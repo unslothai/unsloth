@@ -1525,14 +1525,26 @@ $VenvDir = Join-Path $StudioHome "unsloth_studio"
 # why: in env-override mode $StudioHome is a user-chosen workspace; refuse
 # to Remove-Item any directory that doesn't carry the Studio ownership
 # marker instead of silently destroying unrelated user data.
+# The marker is required only when $StudioHome canonicalizes to something
+# other than the legacy default; an explicit override pointing at the legacy
+# default behaves like a default install so pre-PR T5/llama dirs are not blocked.
 $StudioOwnedMarker = ".unsloth-studio-owned"
+$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+$_studioHomeCanon = $StudioHome
+if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
+    $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path
+}
+if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
+    $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
+}
+$StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
 function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Label
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
-    if ($env:UNSLOTH_STUDIO_HOME -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker))) {
+    if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
         Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1
@@ -1599,9 +1611,11 @@ if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         # why: mirror install.ps1 env-mode guard so an update against a custom
         # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv at
         # the workspace root. -PathType Leaf rejects a directory at the shim
-        # path masquerading as the sentinel.
+        # path masquerading as the sentinel. Accept the in-VENV ownership marker
+        # so partial-install retries are not blocked.
         if (
-            $env:UNSLOTH_STUDIO_HOME -and
+            $StudioHomeIsCustom -and
+            -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
         ) {
@@ -1909,22 +1923,12 @@ step "transformers" "5.5.0 pre-installed"
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
 # Nest llama.cpp under $StudioHome only for real env-overrides, never the
-# legacy default. Stale UNSLOTH_STUDIO_HOME pointing at legacy must not
-# accidentally relocate llama.cpp.
-$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-# Canonicalize both sides so a junctioned/symlinked %USERPROFILE% behaves
-# the same in env-mode (resolved) and default mode (logical $StudioHome).
-$_studioHomeCanon = $StudioHome
-if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
-    $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path
-}
-if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
-    $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
-}
-if ($_studioHomeCanon -eq $LegacyStudioHome) {
-    $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
-} else {
+# legacy default. Reuses $StudioHomeIsCustom from the canonical comparison
+# computed above so the llama.cpp nest matches ownership-guard semantics.
+if ($StudioHomeIsCustom) {
     $UnslothHome = $StudioHome
+} else {
+    $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
 }
 if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
@@ -2036,7 +2040,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     # $env:UNSLOTH_STUDIO_HOME\llama.cpp can be displaced before the
     # source-build ownership check ever runs. Mirror the marker guard already
     # used on the source-build replacement path.
-    if ($env:UNSLOTH_STUDIO_HOME) {
+    if ($StudioHomeIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
     }
     $prebuiltArgs = @(
@@ -2083,7 +2087,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
             }
-            if ($env:UNSLOTH_STUDIO_HOME -and (Test-Path -LiteralPath $LlamaCppDir -PathType Container)) {
+            if ($StudioHomeIsCustom -and (Test-Path -LiteralPath $LlamaCppDir -PathType Container)) {
                 Mark-StudioOwned -Path $LlamaCppDir
             }
             $installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir
@@ -2366,6 +2370,12 @@ if (-not $NeedLlamaSourceBuild) {
                     Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
                 }
             }
+        }
+        # why: in-place git-sync (the temp-dir clone path calls Mark-StudioOwned
+        # at swap-time) must mark the existing tree so a subsequent prebuilt
+        # update path's Assert-StudioOwnedOrAbsent does not exit on the same root.
+        if ($BuildOk -and $StudioHomeIsCustom) {
+            Mark-StudioOwned -Path $LlamaCppDir
         }
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
