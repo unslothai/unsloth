@@ -822,7 +822,7 @@ class LLMWikiEngine:
         for ch in str(text):
             codepoint = ord(ch)
             if 0xD800 <= codepoint <= 0xDFFF:
-                cleaned_chars.append("\uFFFD")
+                cleaned_chars.append("\ufffd")
                 replaced_count += 1
             else:
                 cleaned_chars.append(ch)
@@ -7659,15 +7659,16 @@ class LLMWikiEngine:
                 "- Cite claims inline using wiki links.\n"
                 "- Prefer [[sources/...]] links, including chunk source pages.\n"
                 "- Do not cite analysis chunk pages in the final answer.\n\n"
-                "CHUNK_ANALYSIS_CONTEXT:\n"
-                + "\n\n".join(context_blocks)
+                "CHUNK_ANALYSIS_CONTEXT:\n" + "\n\n".join(context_blocks)
             )
 
             raw_answer = str(self.llm_fn(prompt) or "").strip()
             low_quality_reason = self._low_quality_reason(raw_answer)
             missing_sections = self._missing_required_section_labels(raw_answer)
             if low_quality_reason is None and missing_sections:
-                low_quality_reason = f"missing_merge_sections:{','.join(missing_sections)}"
+                low_quality_reason = (
+                    f"missing_merge_sections:{','.join(missing_sections)}"
+                )
             if low_quality_reason is None:
                 answer = raw_answer
             else:
@@ -7675,7 +7676,8 @@ class LLMWikiEngine:
                 answer_mode = "chunk-merge-extractive-fallback"
                 answer = self._extractive_chunk_merge_answer(
                     source_page = normalized_source_page,
-                    chunk_analysis_pages = used_chunk_analysis_pages or chunk_analysis_pages,
+                    chunk_analysis_pages = used_chunk_analysis_pages
+                    or chunk_analysis_pages,
                     chunk_source_pages = chunk_source_pages,
                 )
 
@@ -7759,9 +7761,7 @@ class LLMWikiEngine:
                 continue
 
             source_rel = (
-                chunk_source_pages[idx]
-                if idx < len(chunk_source_pages)
-                else ""
+                chunk_source_pages[idx] if idx < len(chunk_source_pages) else ""
             )
             normalized_source = self._normalize_wikilink(source_rel)
             if not normalized_source:
@@ -7790,8 +7790,7 @@ class LLMWikiEngine:
     ) -> str:
         normalized_source_page = self._normalize_wikilink(source_page) or source_page
         normalized_chunk_source_pages = [
-            self._normalize_wikilink(rel) or ""
-            for rel in (chunk_source_pages or [])
+            self._normalize_wikilink(rel) or "" for rel in (chunk_source_pages or [])
         ]
 
         if not chunk_analysis_pages:
@@ -7862,12 +7861,8 @@ class LLMWikiEngine:
         return (
             f"Title: Merged Summary - {self._slug(normalized_source_page).replace('-', ' ').title()}\n\n"
             f"Section A: Consolidated fallback merge summary derived from chunk analyses for [[{normalized_source_page}]].\n\n"
-            "Section B:\n"
-            + "\n".join(section_b_lines)
-            + "\n\n"
-            "Section C:\n"
-            + "\n".join(section_c_lines)
-            + "\n\n"
+            "Section B:\n" + "\n".join(section_b_lines) + "\n\n"
+            "Section C:\n" + "\n".join(section_c_lines) + "\n\n"
             "Section D:\n"
             "- No explicit equations/formulas were reliably extracted in fallback mode.\n\n"
             "Section E:\n"

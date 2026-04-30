@@ -323,7 +323,9 @@ class WikiIngestor:
                 return str(source)
         return str(source)
 
-    def pop_recent_ingest_metadata(self, source: Path | str) -> Optional[Dict[str, Any]]:
+    def pop_recent_ingest_metadata(
+        self, source: Path | str
+    ) -> Optional[Dict[str, Any]]:
         key = self._ingest_metadata_key(source)
         return self._recent_ingest_metadata.pop(key, None)
 

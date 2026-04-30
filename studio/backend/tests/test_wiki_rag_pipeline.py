@@ -530,7 +530,7 @@ def test_ingest_source_sanitizes_invalid_unicode_surrogates(tmp_path: Path):
     text = source_page.read_text(encoding = "utf-8")
 
     assert "\udc51" not in text
-    assert "\uFFFD" in text
+    assert "\ufffd" in text
     assert "invalid surrogate" in text
 
 
@@ -594,9 +594,13 @@ def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
     assert report["chunk_planner"]["chunk_count"] >= 3
     assert len(report["chunk_source_pages"]) == report["chunk_planner"]["chunk_count"]
     assert len(report["chunk_analysis_pages"]) == report["chunk_planner"]["chunk_count"]
-    assert report["merged_analysis_page"].startswith("analysis/long-design-doc--chunk-merged--")
+    assert report["merged_analysis_page"].startswith(
+        "analysis/long-design-doc--chunk-merged--"
+    )
     assert report["failed_chunks"] == []
-    assert len(report["chunk_analysis_pages_removed"]) == len(report["chunk_analysis_pages"])
+    assert len(report["chunk_analysis_pages_removed"]) == len(
+        report["chunk_analysis_pages"]
+    )
 
     for rel in report["chunk_source_pages"]:
         assert rel.startswith("sources/long-design-doc--chunk-")
@@ -754,7 +758,9 @@ def test_chunked_analysis_caps_default_context_window_to_extract_limit(
     assert report["chunk_query_context_max_chars"] == 21000
     assert report["chunk_planner"]["chunk_target_chars"] <= 21000
     assert report["chunk_planner"]["chunk_count"] > 1
-    assert len(report["chunk_analysis_pages_removed"]) == len(report["chunk_analysis_pages"])
+    assert len(report["chunk_analysis_pages_removed"]) == len(
+        report["chunk_analysis_pages"]
+    )
 
 
 def test_chunked_analysis_replans_large_single_chunk_default_window(
@@ -811,9 +817,14 @@ def test_chunked_analysis_replans_large_single_chunk_default_window(
     assert report["adaptive_replan_applied"] is True
     assert report["adaptive_replan_initial_context_window_chars"] == 400000
     assert report["adaptive_replan_initial_chunk_count"] == 1
-    assert report["adaptive_replan_final_chunk_count"] == report["chunk_planner"]["chunk_count"]
+    assert (
+        report["adaptive_replan_final_chunk_count"]
+        == report["chunk_planner"]["chunk_count"]
+    )
     assert report["chunk_query_context_max_chars"] == report["context_window_chars"]
-    assert len(report["chunk_analysis_pages_removed"]) == len(report["chunk_analysis_pages"])
+    assert len(report["chunk_analysis_pages_removed"]) == len(
+        report["chunk_analysis_pages"]
+    )
 
     log_text = (tmp_path / "wiki" / "log.md").read_text(encoding = "utf-8")
     assert "- Adaptive replan applied: yes" in log_text
