@@ -39,7 +39,7 @@ jobs:
 
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       # ── Linux dependencies ──
       - name: Install Linux dependencies
@@ -50,7 +50,7 @@ jobs:
 
       # ── Node.js ──
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
 
@@ -65,7 +65,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: 'studio/src-tauri -> target'
 
@@ -105,7 +105,7 @@ jobs:
       # ── Linux: build + sign + upload ──
       - name: Build Linux app
         if: matrix.platform == 'ubuntu-22.04'
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -130,7 +130,7 @@ jobs:
       # ── macOS: build + sign + notarize + upload ──
       - name: Build macOS app
         if: matrix.platform == 'macos-latest'
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -159,7 +159,7 @@ jobs:
       # ── Windows: build + sign + upload ──
       - name: Build Windows app
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
