@@ -16,7 +16,7 @@ import type {
  * delete + reload smoke tests; the path or API may change without a semver signal on “public”
  * surface area.
  */
-import { MessageRepository } from "@assistant-ui/core/runtime/utils/message-repository";
+import { MessageRepository } from "@assistant-ui/core/internal";
 import { db } from "@/features/chat/db";
 import type { MessageRecord } from "@/features/chat/types";
 

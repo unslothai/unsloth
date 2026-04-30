@@ -746,7 +746,15 @@ class TestRouteErrors(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
+                    inference_route.load_model(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -886,7 +894,15 @@ class TestRouteErrors(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
+                    inference_route.load_model(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -942,7 +958,15 @@ class TestRouteErrors(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
+                    inference_route.load_model(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
