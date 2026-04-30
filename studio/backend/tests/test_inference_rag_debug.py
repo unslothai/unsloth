@@ -18,9 +18,7 @@ _unsloth_stub.FastVisionModel = object
 sys.modules.setdefault("unsloth", _unsloth_stub)
 
 _chat_templates_stub = _types.ModuleType("unsloth.chat_templates")
-_chat_templates_stub.get_chat_template = (
-    lambda tokenizer, chat_template = None: tokenizer
-)
+_chat_templates_stub.get_chat_template = lambda tokenizer, chat_template = None: tokenizer
 sys.modules.setdefault("unsloth.chat_templates", _chat_templates_stub)
 
 _transformers_stub = _types.ModuleType("transformers")

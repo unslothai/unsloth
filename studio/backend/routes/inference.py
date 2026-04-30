@@ -2803,7 +2803,9 @@ async def openai_chat_completions(
                                 f"{rag_context}"
                             )
                             if system_prompt:
-                                system_prompt = system_prompt.rstrip() + "\n\n" + rag_block
+                                system_prompt = (
+                                    system_prompt.rstrip() + "\n\n" + rag_block
+                                )
                             else:
                                 system_prompt = rag_block
                         else:

@@ -693,7 +693,9 @@ class WikiConfig:
     def __post_init__(self) -> None:
         token_capacity = max(0, int(self.model_token_capacity))
         if token_capacity > 0:
-            safe_tokens = max(256, int(token_capacity * float(self.model_safe_token_ratio)))
+            safe_tokens = max(
+                256, int(token_capacity * float(self.model_safe_token_ratio))
+            )
             safe_chars = max(1200, int(safe_tokens * float(self.model_chars_per_token)))
 
             # Only apply model-derived defaults when values are still at built-in
@@ -722,8 +724,11 @@ class WikiConfig:
             ):
                 self.ranking_max_chars = safe_chars
             if (
-                not _env_is_set("UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_CONTEXT_WINDOW_CHARS")
-                and int(self.chunk_analysis_context_window_chars) == chunk_context_default
+                not _env_is_set(
+                    "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_CONTEXT_WINDOW_CHARS"
+                )
+                and int(self.chunk_analysis_context_window_chars)
+                == chunk_context_default
             ):
                 self.chunk_analysis_context_window_chars = safe_chars
             if (
@@ -927,7 +932,9 @@ class LLMWikiEngine:
         adaptive_replan_initial_chunk_count = len(chunk_items)
         if context_window_chars is None and len(chunk_items) <= 1:
             source_chars = int(chunk_plan.get("source_chars", 0))
-            large_source_threshold = max(50000, int(self.cfg.chunk_analysis_min_chars) * 2)
+            large_source_threshold = max(
+                50000, int(self.cfg.chunk_analysis_min_chars) * 2
+            )
             if source_chars >= large_source_threshold:
                 # Auto-mode should produce multiple chunks for truly large sources
                 # even when configured context windows are very large.
@@ -1058,9 +1065,11 @@ class LLMWikiEngine:
         )
         stale_chunk_analysis_pages_removed: List[str] = []
         if not failed_chunks:
-            stale_chunk_analysis_pages_removed = self._cleanup_stale_chunk_analysis_pages(
-                source_slug = source_slug,
-                active_chunk_analysis_slugs = expected_chunk_analysis_slugs,
+            stale_chunk_analysis_pages_removed = (
+                self._cleanup_stale_chunk_analysis_pages(
+                    source_slug = source_slug,
+                    active_chunk_analysis_slugs = expected_chunk_analysis_slugs,
+                )
             )
 
         merge_report = self._merge_chunk_analysis_pages(
@@ -1808,7 +1817,9 @@ class LLMWikiEngine:
 
             text = full.read_text(encoding = "utf-8", errors = "ignore")
             for target in self._extract_link_targets(text):
-                if not (target.startswith("entities/") or target.startswith("concepts/")):
+                if not (
+                    target.startswith("entities/") or target.startswith("concepts/")
+                ):
                     continue
                 rel_target = f"{target}.md"
                 if rel_target in existing_pages:
@@ -1995,10 +2006,12 @@ class LLMWikiEngine:
 
         report["resolved_entries"] = resolved_entries
         report["planned_source_pages"] = [
-            rel[:-3] if rel.endswith(".md") else rel for rel in sorted(planned_source_pages)
+            rel[:-3] if rel.endswith(".md") else rel
+            for rel in sorted(planned_source_pages)
         ]
         report["planned_analysis_pages"] = [
-            rel[:-3] if rel.endswith(".md") else rel for rel in sorted(planned_analysis_pages)
+            rel[:-3] if rel.endswith(".md") else rel
+            for rel in sorted(planned_analysis_pages)
         ]
         report["planned_entity_pages"] = [
             rel[:-3] if rel.endswith(".md") else rel for rel in planned_entity_pages
@@ -3336,7 +3349,9 @@ class LLMWikiEngine:
             "selector_status": selected_meta.get("status"),
             "selector_reason": selected_meta.get("reason"),
             "planned_queries": planned_queries,
-            "selected_urls": [item.get("url", "") for item in selected if item.get("url", "")],
+            "selected_urls": [
+                item.get("url", "") for item in selected if item.get("url", "")
+            ],
             "queries_consumed": queries_used,
             "direct_results": 0,
         }
@@ -3356,10 +3371,18 @@ class LLMWikiEngine:
             normalized_cards.append(
                 {
                     "source": source_rel,
-                    "title": self._normalize_web_text(str(item.get("title", "")).strip(), 140),
-                    "summary": self._normalize_web_text(str(item.get("summary", "")).strip(), 320),
-                    "entities": self._normalize_web_text(str(item.get("entities", "")).strip(), 240),
-                    "concepts": self._normalize_web_text(str(item.get("concepts", "")).strip(), 240),
+                    "title": self._normalize_web_text(
+                        str(item.get("title", "")).strip(), 140
+                    ),
+                    "summary": self._normalize_web_text(
+                        str(item.get("summary", "")).strip(), 320
+                    ),
+                    "entities": self._normalize_web_text(
+                        str(item.get("entities", "")).strip(), 240
+                    ),
+                    "concepts": self._normalize_web_text(
+                        str(item.get("concepts", "")).strip(), 240
+                    ),
                 }
             )
 
@@ -3488,7 +3511,9 @@ class LLMWikiEngine:
                 existing = self._slug(str(item.get("existing", "")).strip())
                 if existing and existing not in known_set:
                     continue
-                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+                reason = self._normalize_web_text(
+                    str(item.get("reason", "")).strip(), 180
+                )
                 related_items.append(
                     {
                         "slug": slug,
@@ -3505,7 +3530,9 @@ class LLMWikiEngine:
                 slug = self._slug(str(item.get("slug", "")).strip())
                 if not slug:
                     continue
-                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+                reason = self._normalize_web_text(
+                    str(item.get("reason", "")).strip(), 180
+                )
                 rejected_items.append(
                     {
                         "slug": slug,
@@ -3768,8 +3795,12 @@ class LLMWikiEngine:
                     "concept": slug,
                     "plan_status": str(search_meta.get("plan_status", "")).strip(),
                     "plan_reason": str(search_meta.get("plan_reason", "")).strip(),
-                    "selector_status": str(search_meta.get("selector_status", "")).strip(),
-                    "selector_reason": str(search_meta.get("selector_reason", "")).strip(),
+                    "selector_status": str(
+                        search_meta.get("selector_status", "")
+                    ).strip(),
+                    "selector_reason": str(
+                        search_meta.get("selector_reason", "")
+                    ).strip(),
                     "planned_queries": [
                         self._normalize_web_text(str(item).strip(), 180)
                         for item in search_meta.get("planned_queries", [])
@@ -3780,7 +3811,9 @@ class LLMWikiEngine:
                         for item in search_meta.get("selected_urls", [])
                         if str(item).strip()
                     ],
-                    "queries_consumed": max(0, int(search_meta.get("queries_consumed", 0))),
+                    "queries_consumed": max(
+                        0, int(search_meta.get("queries_consumed", 0))
+                    ),
                 }
             )
 
@@ -3906,8 +3939,12 @@ class LLMWikiEngine:
                 for item in web_discovery_audit:
                     planned_queries = item.get("planned_queries", [])
                     selected_urls = item.get("selected_urls", [])
-                    query_text = "; ".join(planned_queries) if planned_queries else "none"
-                    selected_text = ", ".join(selected_urls) if selected_urls else "none"
+                    query_text = (
+                        "; ".join(planned_queries) if planned_queries else "none"
+                    )
+                    selected_text = (
+                        ", ".join(selected_urls) if selected_urls else "none"
+                    )
                     audit_lines.append(
                         "  - "
                         f"{item.get('concept', 'unknown')}"
@@ -6350,9 +6387,9 @@ class LLMWikiEngine:
             if not raw_label:
                 continue
 
-            cleaned = re.split(r"\s+\|\s+primary:\s*", raw_label, maxsplit = 1, flags = re.I)[
-                0
-            ].strip()
+            cleaned = re.split(
+                r"\s+\|\s+primary:\s*", raw_label, maxsplit = 1, flags = re.I
+            )[0].strip()
             cleaned = re.sub(r"\s+\[[^\]]+\]\s*$", "", cleaned).strip()
             if not cleaned:
                 continue
@@ -6455,7 +6492,9 @@ class LLMWikiEngine:
             for target_rel in target_rels:
                 if target_rel not in graph_page_set:
                     continue
-                target_id = target_rel[:-3] if target_rel.endswith(".md") else target_rel
+                target_id = (
+                    target_rel[:-3] if target_rel.endswith(".md") else target_rel
+                )
                 edge_id = f"{source_id}->{target_id}"
                 if edge_id in edge_ids:
                     continue
@@ -6470,7 +6509,9 @@ class LLMWikiEngine:
                 str(item.get("id", "")),
             )
         )
-        edges.sort(key = lambda item: (str(item.get("source", "")), str(item.get("target", ""))))
+        edges.sort(
+            key = lambda item: (str(item.get("source", "")), str(item.get("target", "")))
+        )
 
         return {
             "status": "ok",
@@ -7278,7 +7319,10 @@ class LLMWikiEngine:
         )
 
         target_chars = (
-            int(effective_context_window_chars * float(self.cfg.chunk_analysis_target_ratio))
+            int(
+                effective_context_window_chars
+                * float(self.cfg.chunk_analysis_target_ratio)
+            )
             if chunk_target_chars is None
             else int(chunk_target_chars)
         )
@@ -7410,7 +7454,9 @@ class LLMWikiEngine:
         chunk_index: int,
         chunk_count: int,
     ) -> str:
-        base = str(source_ref or "").strip() or str(source_page or "").strip() or "local"
+        base = (
+            str(source_ref or "").strip() or str(source_page or "").strip() or "local"
+        )
         base = base.split("#", 1)[0].strip()
         return f"{base}#chunk-{max(1, int(chunk_index)):03d}-of-{max(1, int(chunk_count)):03d}"
 
@@ -7485,7 +7531,9 @@ class LLMWikiEngine:
                 chunk_analysis_pages = chunk_analysis_pages,
             )
         else:
-            merge_context_budget = max(6000, int(max(1200, context_window_chars) * 0.70))
+            merge_context_budget = max(
+                6000, int(max(1200, context_window_chars) * 0.70)
+            )
             context_blocks: List[str] = []
             remaining_budget = merge_context_budget
             pages_remaining = len(chunk_analysis_pages)
@@ -7532,8 +7580,7 @@ class LLMWikiEngine:
                 "- disagreements or uncertainty\n"
                 "- final caveats and assumptions\n"
                 "Cite evidence inline using wiki links to source/chunk pages.\n\n"
-                "CHUNK_ANALYSIS_CONTEXT:\n"
-                + "\n\n".join(context_blocks)
+                "CHUNK_ANALYSIS_CONTEXT:\n" + "\n\n".join(context_blocks)
             )
 
             raw_answer = str(self.llm_fn(prompt) or "").strip()
@@ -7545,7 +7592,8 @@ class LLMWikiEngine:
                 answer_mode = "chunk-merge-extractive-fallback"
                 answer = self._extractive_chunk_merge_answer(
                     source_page = normalized_source_page,
-                    chunk_analysis_pages = used_chunk_analysis_pages or chunk_analysis_pages,
+                    chunk_analysis_pages = used_chunk_analysis_pages
+                    or chunk_analysis_pages,
                 )
 
         context_pages: List[str] = []
@@ -7618,7 +7666,9 @@ class LLMWikiEngine:
 
             page_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
             answer = self._extract_analysis_answer(page_text) or page_text
-            summary = self._first_sentences(self._clean_source_text(answer), max_chars = 320)
+            summary = self._first_sentences(
+                self._clean_source_text(answer), max_chars = 320
+            )
             if not summary:
                 continue
 

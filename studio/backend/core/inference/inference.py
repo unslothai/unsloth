@@ -2219,6 +2219,7 @@ class InferenceBackend:
         Retrieves relevant wiki snippets for the user query.
         This path is retrieval-first and does not depend on the wiki LLM answer path.
         """
+
         def _empty_debug() -> dict[str, object]:
             return {
                 "query": query,

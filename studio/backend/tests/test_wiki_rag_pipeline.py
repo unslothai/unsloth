@@ -574,7 +574,10 @@ def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
     assert report["chunk_planner"]["chunk_count"] >= 3
     assert len(report["chunk_source_pages"]) == report["chunk_planner"]["chunk_count"]
     assert len(report["chunk_analysis_pages"]) == report["chunk_planner"]["chunk_count"]
-    assert report["merged_analysis_page"] == "analysis/long-design-doc--chunk-merged-analysis"
+    assert (
+        report["merged_analysis_page"]
+        == "analysis/long-design-doc--chunk-merged-analysis"
+    )
     assert report["failed_chunks"] == []
 
     for rel in report["chunk_source_pages"]:
@@ -586,7 +589,9 @@ def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
         assert rel.endswith("--analysis")
         assert (tmp_path / "wiki" / f"{rel}.md").exists()
 
-    merged_path = tmp_path / "wiki" / "analysis" / "long-design-doc--chunk-merged-analysis.md"
+    merged_path = (
+        tmp_path / "wiki" / "analysis" / "long-design-doc--chunk-merged-analysis.md"
+    )
     merged_text = merged_path.read_text(encoding = "utf-8")
     assert "## Merge Diagnostics" in merged_text
     assert "- chunk_analysis_pages:" in merged_text
@@ -786,14 +791,18 @@ def test_chunked_analysis_replans_large_single_chunk_default_window(
     assert report["adaptive_replan_applied"] is True
     assert report["adaptive_replan_initial_context_window_chars"] == 400000
     assert report["adaptive_replan_initial_chunk_count"] == 1
-    assert report["adaptive_replan_final_chunk_count"] == report["chunk_planner"]["chunk_count"]
+    assert (
+        report["adaptive_replan_final_chunk_count"]
+        == report["chunk_planner"]["chunk_count"]
+    )
 
     first_chunk_analysis = report["chunk_analysis_pages"][0]
     first_chunk_text = (tmp_path / "wiki" / f"{first_chunk_analysis}.md").read_text(
         encoding = "utf-8"
     )
     assert (
-        f"- query_context_max_chars: {report['context_window_chars']}" in first_chunk_text
+        f"- query_context_max_chars: {report['context_window_chars']}"
+        in first_chunk_text
     )
 
     log_text = (tmp_path / "wiki" / "log.md").read_text(encoding = "utf-8")
@@ -874,15 +883,11 @@ def test_delete_wiki_entries_source_cascades_to_analysis_and_orphan_knowledge(
         encoding = "utf-8",
     )
     entity_path.write_text(
-        "# Alpha Entity\n\n"
-        "## Sources\n"
-        "- [[sources/alpha]]\n",
+        "# Alpha Entity\n\n" "## Sources\n" "- [[sources/alpha]]\n",
         encoding = "utf-8",
     )
     concept_path.write_text(
-        "# Alpha Concept\n\n"
-        "## Sources\n"
-        "- [[sources/alpha]]\n",
+        "# Alpha Concept\n\n" "## Sources\n" "- [[sources/alpha]]\n",
         encoding = "utf-8",
     )
     engine._rebuild_index()
@@ -1033,8 +1038,7 @@ def test_get_wiki_data_graph_returns_expected_nodes_and_edges(tmp_path: Path):
         encoding = "utf-8",
     )
     (tmp_path / "wiki" / "analysis" / "alpha-summary.md").write_text(
-        "# Alpha Analysis\n\n"
-        "Answer cites [[entities/alpha-entity]].\n",
+        "# Alpha Analysis\n\n" "Answer cites [[entities/alpha-entity]].\n",
         encoding = "utf-8",
     )
     (tmp_path / "wiki" / "entities" / "alpha-entity.md").write_text(
