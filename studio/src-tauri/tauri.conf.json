@@ -55,6 +55,7 @@
     "windows": {
       "nsis": {
         "installerHooks": "./windows/hooks.nsh",
+        "template": "./windows/installer.nsi",
         "installerIcon": "./icons/icon.ico",
         "headerImage": "./windows/branding/nsis-header.bmp",
         "sidebarImage": "./windows/branding/nsis-sidebar.bmp",

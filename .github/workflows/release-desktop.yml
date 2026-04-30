@@ -15,7 +15,7 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest
@@ -54,9 +54,36 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install pinned Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.10.1
+
+      - name: Verify pinned Tauri CLI
+        run: |
+          node -e "const { execFileSync } = require('node:child_process'); const out = execFileSync('tauri', ['--version'], { encoding: 'utf8' }).trim(); console.log(out); const [name, version] = out.split(/\s+/); if (name !== 'tauri-cli' || version !== '2.10.1') throw new Error('Expected tauri-cli 2.10.1, got ' + out);"
+
       - name: Install frontend dependencies
         working-directory: studio/frontend
         run: npm install
+
+      - name: Verify backend package is published
+        shell: bash
+        run: |
+          node <<'JS'
+          const { readFileSync } = require('node:fs');
+
+          (async () => {
+            const cargo = readFileSync('studio/src-tauri/Cargo.toml', 'utf8');
+            const match = cargo.match(/^version\s*=\s*"([^"]+)"/m);
+            if (!match) throw new Error('Could not read desktop app version');
+
+            const appVersion = match[1];
+            const response = await fetch(`https://pypi.org/pypi/unsloth/${appVersion}/json`);
+            if (!response.ok) {
+              const message = 'Publish unsloth=={app_version} to PyPI before the desktop release';
+              throw new Error(`${message.replace('{app_version}', appVersion)} (HTTP ${response.status})`);
+            }
+          })();
+          JS
 
       # ── Rust ──
       - name: Install Rust stable
@@ -105,13 +132,14 @@ jobs:
       # ── Linux: build + sign + upload ──
       - name: Build Linux app
         if: matrix.platform == 'ubuntu-22.04'
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: studio
+          tauriScript: tauri
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
@@ -123,6 +151,7 @@ jobs:
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+            > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}
@@ -130,7 +159,7 @@ jobs:
       # ── macOS: build + sign + notarize + upload ──
       - name: Build macOS app
         if: matrix.platform == 'macos-latest'
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -141,6 +170,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: studio
+          tauriScript: tauri
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
@@ -152,6 +182,7 @@ jobs:
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+            > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}
@@ -159,7 +190,7 @@ jobs:
       # ── Windows: build + sign + upload ──
       - name: Build Windows app
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -171,6 +202,7 @@ jobs:
           AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
         with:
           projectPath: studio
+          tauriScript: tauri
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
@@ -182,6 +214,7 @@ jobs:
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+            > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}
