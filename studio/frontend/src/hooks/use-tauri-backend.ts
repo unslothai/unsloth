@@ -342,12 +342,14 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // Install completed — validate the managed binary's desktop capability
-      // before starting it. The install-complete event listener does NOT call
-      // startServer() to avoid a double-start race condition.
+      // Install completed — start the managed backend we just installed.
+      // Do not run the general preflight here: it can attach to an unrelated
+      // already-running CLI/backend server before launching our managed one.
+      // The install-complete event listener does NOT call startServer() to
+      // avoid a double-start race condition.
       setBackendStatus("starting");
       elevationResumeRef.current = null;
-      await checkInstallAndStart();
+      await startServer();
     } catch (e) {
       const msg = String(e);
       // NEEDS_ELEVATION is not a real error — the Rust side also emits
