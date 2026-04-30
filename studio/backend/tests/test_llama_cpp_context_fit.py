@@ -114,9 +114,13 @@ def _make_backend(
     inst._kv_value_length = kv_value_length
     inst._kv_lora_rank = None
     inst._sliding_window = None
+    inst._sliding_window_pattern = None
     inst._ssm_inner_size = None
     inst._full_attention_interval = None
     inst._key_length_mla = None
+    inst._n_kv_heads_by_layer = None
+    inst._kv_key_length_swa = None
+    inst._kv_value_length_swa = None
     return inst
 
 

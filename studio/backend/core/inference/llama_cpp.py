@@ -214,15 +214,19 @@ class LlamaCppBackend:
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
+        self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
-        # Architecture-aware KV fields (8 new fields for 5-path estimation)
+        # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
         self._kv_value_length: Optional[int] = None
         self._sliding_window: Optional[int] = None
+        self._sliding_window_pattern: Optional[list[bool]] = None
         self._full_attention_interval: Optional[int] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
+        self._kv_key_length_swa: Optional[int] = None
+        self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
         self._ssm_state_size: Optional[int] = None
         self._lock = threading.Lock()
@@ -747,6 +751,14 @@ class LlamaCppBackend:
             self._n_kv_heads is not None or self._n_heads is not None
         )
 
+    def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
+        if (
+            self._n_kv_heads_by_layer is not None
+            and layer_idx < len(self._n_kv_heads_by_layer)
+        ):
+            return self._n_kv_heads_by_layer[layer_idx]
+        return fallback
+
     def _estimate_kv_cache_bytes(
         self, n_ctx: int, cache_type_kv: Optional[str] = None
     ) -> int:
@@ -820,6 +832,21 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
+            key_len_swa = self._kv_key_length_swa or key_len
+            val_len_swa = self._kv_value_length_swa or val_len
+            if self._sliding_window_pattern is not None:
+                total = 0.0
+                for layer_idx in range(n_layers):
+                    layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
+                    is_swa = (
+                        layer_idx < len(self._sliding_window_pattern)
+                        and self._sliding_window_pattern[layer_idx]
+                    )
+                    layer_ctx = min(n_ctx, swa) if is_swa else n_ctx
+                    layer_key_len = key_len_swa if is_swa else key_len
+                    layer_val_len = val_len_swa if is_swa else val_len
+                    total += layer_ctx * layer_n_kv * (layer_key_len + layer_val_len) * bpe
+                return int(total)
             n_global = max(1, n_layers // 4)
             n_swa = n_layers - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
@@ -1017,6 +1044,19 @@ class LlamaCppBackend:
                 for _ in range(alen):
                     LlamaCppBackend._gguf_skip_value(f, atype)
 
+    @staticmethod
+    def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
+        if atype == 4:  # UINT32
+            return [struct.unpack("<I", f.read(4))[0] for _ in range(alen)]
+        if atype == 5:  # INT32
+            return [struct.unpack("<i", f.read(4))[0] for _ in range(alen)]
+        if atype == 7:  # BOOL
+            return [struct.unpack("<?", f.read(1))[0] for _ in range(alen)]
+
+        for _ in range(alen):
+            LlamaCppBackend._gguf_skip_value(f, atype)
+        return None
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -1035,14 +1075,18 @@ class LlamaCppBackend:
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
+        self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
         self._kv_key_length = None
         self._kv_value_length = None
         self._sliding_window = None
+        self._sliding_window_pattern = None
         self._full_attention_interval = None
         self._kv_lora_rank = None
         self._key_length_mla = None
+        self._kv_key_length_swa = None
+        self._kv_value_length_swa = None
         self._ssm_inner_size = None
         self._ssm_state_size = None
 
@@ -1052,6 +1096,7 @@ class LlamaCppBackend:
             # we know the architecture name.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            sliding_window_pattern_period: Optional[int] = None
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -1083,9 +1128,12 @@ class LlamaCppBackend:
                                     f"{arch}.attention.key_length": "kv_key_length",
                                     f"{arch}.attention.value_length": "kv_value_length",
                                     f"{arch}.attention.sliding_window": "sliding_window",
+                                    f"{arch}.attention.sliding_window_pattern": "sliding_window_pattern",
                                     f"{arch}.full_attention_interval": "full_attention_interval",
                                     f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
                                     f"{arch}.attention.key_length_mla": "key_length_mla",
+                                    f"{arch}.attention.key_length_swa": "kv_key_length_swa",
+                                    f"{arch}.attention.value_length_swa": "kv_value_length_swa",
                                     f"{arch}.ssm.inner_size": "ssm_inner_size",
                                     f"{arch}.ssm.state_size": "ssm_state_size",
                                 }
@@ -1099,11 +1147,34 @@ class LlamaCppBackend:
                             )
                             attr = arch_keys.get(key)
                             if attr:
-                                setattr(self, f"_{attr}", val_i)
+                                if attr == "sliding_window_pattern":
+                                    sliding_window_pattern_period = val_i
+                                else:
+                                    setattr(self, f"_{attr}", val_i)
+                        elif vtype == 9:  # ARRAY
+                            atype = struct.unpack("<I", f.read(4))[0]
+                            alen = struct.unpack("<Q", f.read(8))[0]
+                            val_a = self._gguf_read_array_value(f, atype, alen)
+                            attr = arch_keys.get(key)
+                            if attr == "n_kv_heads" and val_a is not None:
+                                self._n_kv_heads_by_layer = [int(x) for x in val_a]
+                            elif attr == "sliding_window_pattern" and val_a is not None:
+                                self._sliding_window_pattern = [bool(x) for x in val_a]
+                                sliding_window_pattern_period = None
                         else:
                             self._gguf_skip_value(f, vtype)
                     else:
                         self._gguf_skip_value(f, vtype)
+
+            if (
+                self._sliding_window_pattern is None
+                and sliding_window_pattern_period
+                and self._n_layers
+            ):
+                self._sliding_window_pattern = [
+                    (i + 1) % sliding_window_pattern_period != 0
+                    for i in range(self._n_layers)
+                ]
 
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
@@ -1989,14 +2060,18 @@ class LlamaCppBackend:
             self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
+            self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None
+            self._sliding_window_pattern = None
             self._full_attention_interval = None
             self._kv_lora_rank = None
             self._key_length_mla = None
+            self._kv_key_length_swa = None
+            self._kv_value_length_swa = None
             self._ssm_inner_size = None
             self._ssm_state_size = None
             # Clean up temp chat template file

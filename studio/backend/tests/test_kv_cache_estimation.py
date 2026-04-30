@@ -77,8 +77,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
     """Build a minimal GGUF v3 binary blob with the given KV metadata.
 
-    Only supports UINT32 (type 4), UINT64 (type 10), and STRING (type 8)
-    values, which is all the metadata parser reads.
+    Supports the scalar and simple array metadata used by the parser.
     """
     buf = io.BytesIO()
     # Header: magic, version, tensor_count, kv_count
@@ -96,6 +95,17 @@ def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
             val_bytes = val.encode("utf-8")
             buf.write(struct.pack("<Q", len(val_bytes)))
             buf.write(val_bytes)
+        elif isinstance(val, list):
+            buf.write(struct.pack("<I", 9))  # ARRAY
+            is_bool_array = all(isinstance(x, bool) for x in val)
+            buf.write(struct.pack("<I", 7 if is_bool_array else 5))
+            buf.write(struct.pack("<Q", len(val)))
+            if is_bool_array:
+                for item in val:
+                    buf.write(struct.pack("<?", item))
+            else:
+                for item in val:
+                    buf.write(struct.pack("<i", item))
         elif isinstance(val, int):
             if val <= 0xFFFFFFFF:
                 buf.write(struct.pack("<I", 4))  # UINT32
@@ -133,7 +143,7 @@ def _backend_from_gguf(arch: str, fields: dict) -> LlamaCppBackend:
 
 
 class TestGGUFParserNewFields:
-    """Verify that the 8 new architecture-aware fields are correctly parsed."""
+    """Verify that architecture-aware fields are correctly parsed."""
 
     @pytest.mark.parametrize(
         "field,gguf_key,value",
@@ -158,15 +168,49 @@ class TestGGUFParserNewFields:
             "_kv_key_length",
             "_kv_value_length",
             "_sliding_window",
+            "_sliding_window_pattern",
             "_full_attention_interval",
             "_kv_lora_rank",
             "_key_length_mla",
+            "_kv_key_length_swa",
+            "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
         ]:
             assert getattr(b, attr) is None
 
-    def test_all_13_fields_parsed_together(self):
+    def test_array_fields_parsed(self):
+        b = _backend_from_gguf(
+            "gemma4",
+            {
+                "block_count": 6,
+                "attention.head_count_kv": [8, 8, 8, 8, 8, 2],
+                "attention.sliding_window_pattern": [True, True, True, True, True, False],
+            },
+        )
+        assert b._n_kv_heads is None
+        assert b._n_kv_heads_by_layer == [8, 8, 8, 8, 8, 2]
+        assert b._sliding_window_pattern == [True, True, True, True, True, False]
+
+    def test_scalar_sliding_window_pattern_expanded(self):
+        block_count = 8
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "attention.sliding_window_pattern": 4,
+                "block_count": block_count,
+                "attention.head_count_kv": 4,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 1024,
+            },
+        )
+        expected = [(i + 1) % 4 != 0 for i in range(block_count)]
+        assert isinstance(b._sliding_window_pattern, list)
+        assert b._sliding_window_pattern == expected
+        assert b._estimate_kv_cache_bytes(4096, "f16") > 0
+
+    def test_all_fields_parsed_together(self):
         fields = {
             "context_length": 131072,
             "block_count": 62,
@@ -176,9 +220,12 @@ class TestGGUFParserNewFields:
             "attention.key_length": 128,
             "attention.value_length": 128,
             "attention.sliding_window": 1024,
+            "attention.sliding_window_pattern": [True, False],
             "full_attention_interval": 6,
             "attention.kv_lora_rank": 512,
             "attention.key_length_mla": 256,
+            "attention.key_length_swa": 64,
+            "attention.value_length_swa": 64,
             "ssm.inner_size": 4096,
             "ssm.state_size": 128,
         }
@@ -191,9 +238,12 @@ class TestGGUFParserNewFields:
         assert b._kv_key_length == 128
         assert b._kv_value_length == 128
         assert b._sliding_window == 1024
+        assert b._sliding_window_pattern == [True, False]
         assert b._full_attention_interval == 6
         assert b._kv_lora_rank == 512
         assert b._key_length_mla == 256
+        assert b._kv_key_length_swa == 64
+        assert b._kv_value_length_swa == 64
         assert b._ssm_inner_size == 4096
         assert b._ssm_state_size == 128
 
@@ -209,11 +259,19 @@ class TestGGUFParserReset:
                 "block_count": 32,
                 "attention.key_length": 128,
                 "attention.kv_lora_rank": 512,
+                "attention.head_count_kv": [8, 2],
+                "attention.sliding_window_pattern": [True, False],
+                "attention.key_length_swa": 64,
+                "attention.value_length_swa": 64,
                 "ssm.inner_size": 4096,
             },
         )
         assert b._kv_key_length == 128
         assert b._kv_lora_rank == 512
+        assert b._n_kv_heads_by_layer == [8, 2]
+        assert b._sliding_window_pattern == [True, False]
+        assert b._kv_key_length_swa == 64
+        assert b._kv_value_length_swa == 64
         assert b._ssm_inner_size == 4096
 
         # Second parse without those fields -- they should be None
@@ -230,6 +288,10 @@ class TestGGUFParserReset:
             os.unlink(path)
         assert b._kv_key_length is None
         assert b._kv_lora_rank is None
+        assert b._n_kv_heads_by_layer is None
+        assert b._sliding_window_pattern is None
+        assert b._kv_key_length_swa is None
+        assert b._kv_value_length_swa is None
         assert b._ssm_inner_size is None
         assert b._n_layers == 64
 
@@ -474,6 +536,32 @@ class TestSlidingWindowEstimation:
         kv_per = 8 * (64 + 64) * 2
         expected = int(n_global * 131072 * kv_per + n_swa * min(131072, 128) * kv_per)
         assert b._estimate_kv_cache_bytes(131072, "f16") == expected
+
+    def test_gemma4_per_layer_swa_metadata(self):
+        b = self._swa_backend(
+            _n_layers = 30,
+            _n_kv_heads = None,
+            _n_kv_heads_by_layer = [8, 8, 8, 8, 8, 2] * 5,
+            _n_heads = 16,
+            _embedding_length = 2816,
+            _kv_key_length = 512,
+            _kv_value_length = 512,
+            _sliding_window = 1024,
+            _sliding_window_pattern = [True, True, True, True, True, False] * 5,
+            _kv_key_length_swa = 256,
+            _kv_value_length_swa = 256,
+        )
+
+        full_layers = 5
+        sliding_layers = 25
+
+        def expected(ctx):
+            full = full_layers * ctx * 2 * (512 + 512) * 2
+            sliding = sliding_layers * min(ctx, 1024) * 8 * (256 + 256) * 2
+            return int(full + sliding)
+
+        for ctx in (4096, 46500, 262144):
+            assert b._estimate_kv_cache_bytes(ctx, "f16") == expected(ctx)
 
     def test_ctx_smaller_than_window(self):
         """When context < sliding_window, SWA layers use full context anyway."""
@@ -799,13 +887,17 @@ class TestLifecycle:
             "_kv_key_length",
             "_kv_value_length",
             "_sliding_window",
+            "_sliding_window_pattern",
             "_full_attention_interval",
             "_kv_lora_rank",
             "_key_length_mla",
+            "_kv_key_length_swa",
+            "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
         ]:
             assert getattr(b, attr) is None
+        assert b._n_kv_heads_by_layer is None
 
     def test_unload_resets_fields(self):
         b = LlamaCppBackend()
@@ -813,6 +905,10 @@ class TestLifecycle:
         b._kv_key_length = 128
         b._kv_lora_rank = 512
         b._sliding_window = 1024
+        b._sliding_window_pattern = [True, False]
+        b._n_kv_heads_by_layer = [8, 2]
+        b._kv_key_length_swa = 64
+        b._kv_value_length_swa = 64
         b._ssm_inner_size = 4096
         b._full_attention_interval = 4
         b.unload_model()
@@ -820,13 +916,17 @@ class TestLifecycle:
             "_kv_key_length",
             "_kv_value_length",
             "_sliding_window",
+            "_sliding_window_pattern",
             "_full_attention_interval",
             "_kv_lora_rank",
             "_key_length_mla",
+            "_kv_key_length_swa",
+            "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
         ]:
             assert getattr(b, attr) is None
+        assert b._n_kv_heads_by_layer is None
 
     def test_end_to_end_synthetic_mla(self):
         """Full round-trip: write GGUF -> parse -> estimate."""
