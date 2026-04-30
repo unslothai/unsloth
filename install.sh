@@ -711,6 +711,15 @@ else
 fi
 LAUNCHER_EOF
 
+    # Bake the same-install discriminator and install-time mode flag FIRST so
+    # the user-controlled DATA_DIR substitution below cannot collide with any
+    # literal `@@STUDIO_ROOT_ID@@` / `@@INSTALLED_IS_ENV_MODE@@` text inside
+    # $DATA_DIR. Hex/boolean-only values, no sed-escape tricks needed.
+    sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" \
+        -e "s|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g" \
+        "$_css_launcher" > "$_css_launcher.tmp" \
+        && mv "$_css_launcher.tmp" "$_css_launcher"
+
     # Env-mode bakes an absolute DATA_DIR (root fixed at install time);
     # default / HOME-redirect keeps the literal $HOME/.local/share/unsloth
     # so behavior is byte-identical to pre-override.
@@ -727,15 +736,6 @@ LAUNCHER_EOF
             "$_css_launcher" > "$_css_launcher.tmp" \
             && mv "$_css_launcher.tmp" "$_css_launcher"
     fi
-
-    # Bake the same-install discriminator into ALL modes (env / home / default)
-    # so the launcher rejects sibling Studios on the same port. Hex-only so no
-    # shell/sed escape tricks are needed. Also bake the install-time mode flag
-    # so PORT_FILE/LOCK_DIR namespacing is stable against runtime env leakage.
-    sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" \
-        -e "s|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g" \
-        "$_css_launcher" > "$_css_launcher.tmp" \
-        && mv "$_css_launcher.tmp" "$_css_launcher"
 
     chmod +x "$_css_launcher"
 

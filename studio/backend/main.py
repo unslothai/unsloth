@@ -51,7 +51,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 
 
 _STUDIO_ROOT_ID_CACHE: str = hashlib.sha256(
-    str(_studio_root()).encode("utf-8", "surrogatepass")
+    str(_STUDIO_ROOT_RESOLVED).encode("utf-8", "surrogatepass")
 ).hexdigest()
 
 

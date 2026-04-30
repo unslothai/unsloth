@@ -449,8 +449,17 @@ function Install-UnslothStudio {
 
             # Same-install discriminator baked into the launcher; the backend's
             # /api/health returns sha256(str(studio_root())) and the launcher
-            # rejects healthy backends whose hash differs.
-            $_studioRootBytes = [Text.Encoding]::UTF8.GetBytes($StudioHome)
+            # rejects healthy backends whose hash differs. Canonicalize first
+            # so a junctioned USERPROFILE produces the same digest the backend
+            # computes via Path.resolve().
+            $_studioRootForId = $StudioHome
+            try {
+                [System.IO.Directory]::CreateDirectory($_studioRootForId) | Out-Null
+                $_studioRootForId = (Resolve-Path -LiteralPath $_studioRootForId -ErrorAction Stop).Path
+            } catch {
+                $_studioRootForId = $StudioHome
+            }
+            $_studioRootBytes = [Text.Encoding]::UTF8.GetBytes($_studioRootForId)
             $_studioRootId = ([BitConverter]::ToString(
                 [Security.Cryptography.SHA256]::Create().ComputeHash($_studioRootBytes)
             ) -replace '-', '').ToLowerInvariant()
