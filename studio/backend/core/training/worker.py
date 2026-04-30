@@ -400,6 +400,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
 
+    if config.get("use_loftq"):
+        message = "LoftQ is not supported for MLX training yet."
+        _send("error", error=message)
+        raise NotImplementedError(message)
+
     # ── 1. Load model ──
     # Force text-only if the dataset is not an image dataset, even if the model
     # has vision capabilities (e.g. Qwen3.5-VL trained on plain alpaca text).
@@ -443,8 +448,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ],
             use_gradient_checkpointing=use_grad_checkpoint,
         )
-        if config.get("use_loftq"):
-            peft_kwargs["loftq_config"] = {"loftq_bits": 4, "loftq_iter": 1}
         if is_vlm:
             peft_kwargs["train_vision"] = config.get("finetune_vision_layers", False)
             peft_kwargs["train_projector"] = (
