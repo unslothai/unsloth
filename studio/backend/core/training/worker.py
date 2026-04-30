@@ -413,6 +413,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         full_finetuning=not use_lora,
         text_only=None if is_dataset_image else True,
         trust_remote_code=bool(config.get("trust_remote_code", False)),
+        random_state=config.get("random_seed", 3407),
     )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
@@ -433,12 +434,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
             r=config.get("lora_r", 16),
             lora_alpha=config.get("lora_alpha", 16),
             lora_dropout=config.get("lora_dropout", 0.0),
+            use_rslora=config.get("use_rslora", False),
+            init_lora_weights=config.get("init_lora_weights", True),
+            random_state=config.get("random_seed", 3407),
             target_modules=config.get("target_modules") or [
                 "q_proj", "k_proj", "v_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj",
             ],
             use_gradient_checkpointing=use_grad_checkpoint,
         )
+        if config.get("use_loftq"):
+            peft_kwargs["loftq_config"] = {"loftq_bits": 4, "loftq_iter": 1}
         if is_vlm:
             peft_kwargs["train_vision"] = config.get("finetune_vision_layers", False)
             peft_kwargs["train_projector"] = (
@@ -570,7 +576,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         warmup_steps = 5
 
     # Map optim name (Studio sends torch optimizers; map to MLX equivalents)
-    optim_raw = (config.get("optim") or "adafactor").lower()
+    optim_raw = (config.get("optim") or "adamw_8bit").lower()
     optim_map = {
         "adamw_8bit": "adamw",
         "paged_adamw_8bit": "adamw",
@@ -584,7 +590,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         "muon": "muon",
         "lion": "lion",
     }
-    optim_name = optim_map.get(optim_raw, "adafactor")
+    optim_name = optim_map.get(optim_raw, "adamw")
 
     # ── 5. Build output dir ──
     output_dir = config.get("output_dir", "")
@@ -614,7 +620,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             max_steps=max_steps,
             learning_rate=lr_value,
             warmup_steps=warmup_steps,
-            lr_scheduler_type=config.get("lr_scheduler_type", "cosine"),
+            lr_scheduler_type=config.get("lr_scheduler_type", "linear"),
             optim=optim_name,
             weight_decay=float(config.get("weight_decay", 0.001) or 0.001),
             logging_steps=1,
