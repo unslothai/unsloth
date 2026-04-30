@@ -752,9 +752,8 @@ class LlamaCppBackend:
         )
 
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
-        if (
-            self._n_kv_heads_by_layer is not None
-            and layer_idx < len(self._n_kv_heads_by_layer)
+        if self._n_kv_heads_by_layer is not None and layer_idx < len(
+            self._n_kv_heads_by_layer
         ):
             return self._n_kv_heads_by_layer[layer_idx]
         return fallback
@@ -845,7 +844,9 @@ class LlamaCppBackend:
                     layer_ctx = min(n_ctx, swa) if is_swa else n_ctx
                     layer_key_len = key_len_swa if is_swa else key_len
                     layer_val_len = val_len_swa if is_swa else val_len
-                    total += layer_ctx * layer_n_kv * (layer_key_len + layer_val_len) * bpe
+                    total += (
+                        layer_ctx * layer_n_kv * (layer_key_len + layer_val_len) * bpe
+                    )
                 return int(total)
             n_global = max(1, n_layers // 4)
             n_swa = n_layers - n_global

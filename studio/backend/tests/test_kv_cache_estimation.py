@@ -185,7 +185,14 @@ class TestGGUFParserNewFields:
             {
                 "block_count": 6,
                 "attention.head_count_kv": [8, 8, 8, 8, 8, 2],
-                "attention.sliding_window_pattern": [True, True, True, True, True, False],
+                "attention.sliding_window_pattern": [
+                    True,
+                    True,
+                    True,
+                    True,
+                    True,
+                    False,
+                ],
             },
         )
         assert b._n_kv_heads is None
