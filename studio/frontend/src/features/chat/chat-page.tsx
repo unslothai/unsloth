@@ -147,11 +147,13 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   onFoldersChange,
+  onModelsChange,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModelId?: string) => void;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
@@ -163,6 +165,7 @@ const CompareContent = memo(function CompareContent({
       models={models}
       loraModels={loraModels}
       onFoldersChange={onFoldersChange}
+      onModelsChange={onModelsChange}
     />
   );
 });
@@ -331,6 +334,7 @@ function GeneralCompareHeader({
   value,
   onValueChange,
   onFoldersChange,
+  onModelsChange,
   side,
 }: {
   models: ModelOption[];
@@ -341,6 +345,7 @@ function GeneralCompareHeader({
     meta: { isLora: boolean; ggufVariant?: string },
   ) => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModelId?: string) => void;
   side: "left" | "right";
 }): ReactElement {
   return (
@@ -356,6 +361,7 @@ function GeneralCompareHeader({
         value={value}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
         variant="ghost"
         className="max-w-[80%] !h-[34px]"
       />
@@ -369,11 +375,13 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models,
   loraModels,
   onFoldersChange,
+  onModelsChange,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModelId?: string) => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -446,6 +454,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 })
               }
               onFoldersChange={onFoldersChange}
+              onModelsChange={(deletedModelId) => {
+                if (deletedModelId && model1.id === deletedModelId) {
+                  setModel1({ id: "", isLora: false });
+                }
+                onModelsChange?.(deletedModelId);
+              }}
             />
           }
         />
@@ -469,6 +483,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 })
               }
               onFoldersChange={onFoldersChange}
+              onModelsChange={(deletedModelId) => {
+                if (deletedModelId && model2.id === deletedModelId) {
+                  setModel2({ id: "", isLora: false });
+                }
+                onModelsChange?.(deletedModelId);
+              }}
             />
           }
         />
@@ -734,6 +754,17 @@ export function ChatPage(): ReactElement {
       .catch(() => {});
   }, [navigate]);
 
+  const refreshModelLists = useCallback((deletedModelId?: string) => {
+    if (
+      deletedModelId &&
+      useChatRuntimeStore.getState().params.checkpoint === deletedModelId
+    ) {
+      useChatRuntimeStore.getState().clearCheckpoint();
+    }
+    void refresh();
+    refreshLocalModels();
+  }, [refresh, refreshLocalModels]);
+
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({
       id: lora.id,
@@ -877,6 +908,7 @@ export function ChatPage(): ReactElement {
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
+                onModelsChange={refreshModelLists}
                 variant="ghost"
                 open={modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
@@ -962,6 +994,7 @@ export function ChatPage(): ReactElement {
             models={models}
             loraModels={loraModels}
             onFoldersChange={refreshLocalModels}
+            onModelsChange={refreshModelLists}
           />
         )}
       </div>

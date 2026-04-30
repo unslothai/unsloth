@@ -35,6 +35,7 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModelId?: string) => void;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -109,6 +110,7 @@ function ModelSelectorContent({
   onSelect,
   onEject,
   onFoldersChange,
+  onModelsChange,
   className,
   dataTour,
 }: {
@@ -118,6 +120,7 @@ function ModelSelectorContent({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModelId?: string) => void;
   className?: string;
   dataTour?: string;
 }) {
@@ -151,6 +154,7 @@ function ModelSelectorContent({
               loraModels={loraModels}
               value={value}
               onSelect={onSelect}
+              onModelsChange={onModelsChange}
             />
           </TabsContent>
         </Tabs>
@@ -182,6 +186,7 @@ export function ModelSelector({
   onValueChange,
   onEject,
   onFoldersChange,
+  onModelsChange,
   variant = "outline",
   size = "default",
   className,
@@ -276,6 +281,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
         className={contentClassName}
         dataTour={contentDataTour}
       />

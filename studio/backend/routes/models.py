@@ -8,6 +8,7 @@ Model Management API routes
 import hashlib
 import json
 import os
+import shutil
 import sys
 import uuid
 from pathlib import Path
@@ -1681,6 +1682,196 @@ async def scan_loras(
         logger.error(f"Error scanning LoRAs: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500, detail = f"Failed to scan LoRA adapters: {str(e)}"
+        )
+
+
+def _is_path_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) -> bool:
+    try:
+        active = Path(active_model).expanduser().resolve()
+        target = deleted_path.resolve()
+        return active == target or (
+            target.is_dir() and active.is_relative_to(target)
+        )
+    except Exception:
+        active_lower = active_model.lower()
+        target_lower = str(deleted_path).lower()
+        return active_lower == target_lower or active_lower.startswith(
+            f"{target_lower}{os.sep}"
+        )
+
+
+def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
+    deleted_count = 0
+    deleted_bytes = 0
+    for path in root.rglob("*"):
+        if not path.is_file() or not _is_main_gguf_filename(path.name):
+            continue
+        if _extract_quant_label(path.name).lower() != variant.lower():
+            continue
+        try:
+            deleted_bytes += path.stat().st_size
+        except OSError:
+            pass
+        path.unlink()
+        deleted_count += 1
+    return deleted_count, deleted_bytes
+
+
+@router.delete("/delete-finetuned")
+async def delete_finetuned_model(
+    model_path: str = Body(...),
+    source: str = Body(...),
+    export_type: Optional[str] = Body(None),
+    gguf_variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Delete a Studio-trained or exported model from disk.
+
+    Only paths under Studio's outputs/exports roots are accepted.  Exported
+    GGUF entries can delete one quantization variant at a time.
+    """
+    if source not in {"training", "exported"}:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only trained or exported Studio models can be deleted",
+        )
+
+    if not model_path or not model_path.strip():
+        raise HTTPException(status_code = 400, detail = "model_path is required")
+
+    raw_path = Path(model_path).expanduser()
+    if source == "training":
+        target_path = raw_path
+        allowed_root = outputs_root()
+    else:
+        allowed_root = exports_root()
+        target_path = (
+            raw_path.parent
+            if export_type == "gguf" and raw_path.suffix.lower() == ".gguf"
+            else raw_path
+        )
+
+    target_path = target_path.resolve()
+    allowed_root = allowed_root.resolve()
+
+    if not _is_path_under(target_path, allowed_root):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Model path is outside Studio storage",
+        )
+    if target_path == allowed_root:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Refusing to delete storage root",
+        )
+    if not target_path.exists() and not target_path.is_symlink():
+        raise HTTPException(status_code = 404, detail = "Model not found on disk")
+
+    if source == "training":
+        try:
+            from core.training import get_training_backend
+
+            training_backend = get_training_backend()
+            if training_backend.is_training_active():
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete trained models while training is running",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            if _loaded_model_matches_deleted_path(
+                llama_backend.model_identifier,
+                target_path,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        inference_backend = get_inference_backend()
+        if inference_backend.active_model_name:
+            if _loaded_model_matches_deleted_path(
+                inference_backend.active_model_name,
+                target_path,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        if export_type == "gguf" and gguf_variant:
+            if not target_path.is_dir():
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "GGUF variant deletion requires an export directory",
+                )
+            deleted_count, deleted_bytes = _delete_gguf_variant_files(
+                target_path,
+                gguf_variant,
+            )
+            if deleted_count == 0:
+                raise HTTPException(
+                    status_code = 404,
+                    detail = f"Variant {gguf_variant} not found on disk",
+                )
+            logger.info(
+                "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
+                deleted_count,
+                target_path,
+                gguf_variant,
+                deleted_bytes / (1024 * 1024),
+            )
+            return {
+                "status": "deleted",
+                "path": str(target_path),
+                "gguf_variant": gguf_variant,
+            }
+
+        if target_path.is_symlink() or target_path.is_file():
+            target_path.unlink()
+        else:
+            shutil.rmtree(target_path)
+
+        logger.info("Deleted fine-tuned model at %s", target_path)
+        return {"status": "deleted", "path": str(target_path)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error deleting fine-tuned model %s: %s",
+            target_path,
+            e,
+            exc_info = True,
+        )
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to delete fine-tuned model: {str(e)}",
         )
 
 
