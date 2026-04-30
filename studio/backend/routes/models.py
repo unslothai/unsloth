@@ -1697,8 +1697,14 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
     try:
         active = Path(active_model).expanduser().resolve()
         target = deleted_path.resolve()
-        return active == target or (target.is_dir() and active.is_relative_to(target))
-    except Exception:
+        return active == target or (
+            target.is_dir() and active.is_relative_to(target)
+        )
+    except (OSError, RuntimeError, ValueError) as e:
+        logger.debug(
+            "Could not resolve loaded/deleted model paths; falling back to string comparison: %s",
+            e,
+        )
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
         return active_lower == target_lower or active_lower.startswith(
@@ -1785,8 +1791,12 @@ async def delete_finetuned_model(
                 )
         except HTTPException:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not check training status before delete: %s", e)
+            raise HTTPException(
+                status_code = 500,
+                detail = "Could not verify training status before deleting",
+            ) from e
 
     try:
         from routes.inference import get_llama_cpp_backend
@@ -1803,8 +1813,8 @@ async def delete_finetuned_model(
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not check llama.cpp loaded model before delete: %s", e)
 
     try:
         inference_backend = get_inference_backend()
@@ -1819,8 +1829,8 @@ async def delete_finetuned_model(
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not check inference backend loaded model before delete: %s", e)
 
     try:
         if export_type == "gguf" and gguf_variant:
