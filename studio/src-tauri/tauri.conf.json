@@ -24,6 +24,7 @@
         "title": "Unsloth Studio (Desktop)",
         "width": 690,
         "height": 480,
+        "center": true,
         "visible": false,
         "resizable": false
       }

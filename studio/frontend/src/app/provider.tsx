@@ -10,7 +10,7 @@ import {
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { useTauriBackend } from "@/hooks/use-tauri-backend";
+import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { useRouterState } from "@tanstack/react-router";
@@ -25,67 +25,71 @@ interface AppProviderProps {
 // Tauri window helpers (only imported in Tauri mode)
 // ---------------------------------------------------------------------------
 
-async function showWindow(): Promise<void> {
+type TauriWindowMode = "setup" | "app";
+
+async function showSetupWindow(): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().show();
+  const win = getCurrentWindow();
+  await win.center();
+  await win.show();
 }
 
-function easeOutQuart(t: number): number {
-  return 1 - (1 - t) ** 4;
-}
-
-async function animateToGoldenRatio(abortRef: { current: boolean }): Promise<void> {
+async function applyAppWindowLayout(): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
-
-  // Ensure window is visible before resizing
-  await win.show();
-
   const monitor = await currentMonitor();
-  if (!monitor) return;
 
-  // Convert physical pixels to logical using scale factor
-  const scale = monitor.scaleFactor;
-  const screenW = monitor.size.width / scale;
-  const screenH = monitor.size.height / scale;
+  if (monitor) {
+    // Convert physical pixels to logical using scale factor
+    const scale = monitor.scaleFactor;
+    const screenW = monitor.size.width / scale;
+    const screenH = monitor.size.height / scale;
 
-  // Target: 75% of screen width, golden ratio height, capped at min 900x600
-  const targetW = Math.max(900, Math.round(screenW * 0.75));
-  const targetH = Math.max(600, Math.round(targetW / 1.618));
-  // Don't exceed screen height
-  const finalH = Math.min(targetH, Math.round(screenH * 0.85));
-  const finalW = targetW;
+    // Target: 75% of screen width, golden ratio height, capped at min 900x600
+    const targetW = Math.max(900, Math.round(screenW * 0.75));
+    const targetH = Math.max(600, Math.round(targetW / 1.618));
+    // Don't exceed screen height
+    const finalH = Math.min(targetH, Math.round(screenH * 0.85));
+    const finalW = targetW;
 
-  // Check reduced motion preference
-  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  if (prefersReducedMotion) {
     await win.setSize(new LogicalSize(finalW, finalH));
-  } else {
-    // Read current size instead of hardcoding — stays correct if tauri.conf.json changes
-    const inner = await win.innerSize();
-    const factor = await win.scaleFactor();
-    const startW = Math.round(inner.width / factor);
-    const startH = Math.round(inner.height / factor);
-    const steps = 15;
-    const stepDuration = 23; // ~350ms total
-
-    for (let i = 1; i <= steps; i++) {
-      if (abortRef.current) return;
-      const t = easeOutQuart(i / steps);
-      const w = Math.round(startW + (finalW - startW) * t);
-      const h = Math.round(startH + (finalH - startH) * t);
-      await win.setSize(new LogicalSize(w, h));
-      await new Promise((r) => setTimeout(r, stepDuration));
-    }
   }
 
-  if (abortRef.current) return;
-
-  // Apply constraints and finalize
-  await win.setResizable(true);
+  // Apply constraints and finalize without animating through intermediate sizes
   await win.setSizeConstraints({ minWidth: 900, minHeight: 600 });
+  await win.setResizable(true);
   await win.center();
+  await win.show();
+}
+
+async function showWindowFallback(): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const win = getCurrentWindow();
+  await win.setResizable(true);
+  await win.show();
+}
+
+function getTauriWindowMode(
+  status: BackendStatus,
+  hasEnteredAppMode: boolean,
+): TauriWindowMode | null {
+  switch (status) {
+    case "checking":
+      return null;
+    case "not-installed":
+    case "installing":
+    case "install-error":
+    case "needs-elevation":
+    case "repairing":
+    case "repair-error":
+      return "setup";
+    case "starting":
+    case "running":
+    case "stopped":
+      return "app";
+    case "error":
+      return hasEnteredAppMode ? "app" : "setup";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,30 +147,29 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     startInstall, retry, retryInstall, approveElevation, copyDiagnostics,
   } = useTauriBackend();
 
-  const hasResized = useRef(false);
-  const abortRef = useRef(false);
+  const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
+  const hasEnteredAppModeRef = useRef(false);
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
 
-  // Show the window once the frontend mounts (for pre-running states)
+  // Keep the Tauri window hidden during preflight, then show it centered in setup
+  // mode or apply the final app layout in one instant step.
   useEffect(() => {
-    if (isTauri) void showWindow();
-  }, []);
+    if (!isTauri) return;
 
-  // Animate resize when backend becomes ready
-  useEffect(() => {
-    if (status === "running" && !hasResized.current) {
-      hasResized.current = true;
-      abortRef.current = false;
-      animateToGoldenRatio(abortRef).catch(async () => {
-        // On failure, at minimum make the window resizable so user can fix manually
-        try {
-          const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().setResizable(true);
-        } catch { /* swallow — window may still be functional */ }
-      });
-    }
-    return () => { abortRef.current = true; };
+    const nextMode = getTauriWindowMode(status, hasEnteredAppModeRef.current);
+    if (!nextMode || appliedWindowModeRef.current === nextMode) return;
+
+    appliedWindowModeRef.current = nextMode;
+    if (nextMode === "app") hasEnteredAppModeRef.current = true;
+
+    const applyWindowMode = nextMode === "setup" ? showSetupWindow : applyAppWindowLayout;
+    applyWindowMode().catch(async () => {
+      // On failure, at minimum make the window visible and resizable so user can fix manually.
+      try {
+        await showWindowFallback();
+      } catch { /* swallow — window may still be functional */ }
+    });
   }, [status]);
 
   useEffect(() => {
