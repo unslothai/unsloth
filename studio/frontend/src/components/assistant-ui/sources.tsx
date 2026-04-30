@@ -104,7 +104,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "cursor-pointer outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         className,
       )}
     >
@@ -137,7 +137,7 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
   const displayTitle = source.title || domain;
 
   return (
-    <HoverCard openDelay={300} closeDelay={100}>
+    <HoverCard openDelay={0} closeDelay={0}>
       <HoverCardTrigger asChild>
         <span className="inline-block">
           <Source href={source.url}>
@@ -146,16 +146,21 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
           </Source>
         </span>
       </HoverCardTrigger>
-      <HoverCardContent side="top" align="start" className="w-72 p-3">
+      <HoverCardContent
+        side="top"
+        align="start"
+        className="!bg-black !text-white !w-72 !p-3 !rounded-2xl !shadow-md !ring-0 !duration-0"
+        style={{ animation: "none" }}
+      >
         <div className="flex gap-2.5">
           <SourceIcon url={source.url} size={4} className="mt-0.5 shrink-0" />
           <div className="min-w-0 space-y-1">
             <p className="text-sm font-semibold leading-tight truncate">
               {source.title || domain}
             </p>
-            <p className="text-xs text-muted-foreground truncate">{domain}</p>
+            <p className="text-xs text-white/60 truncate">{domain}</p>
             {source.description && (
-              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+              <p className="text-xs text-white/70 leading-relaxed line-clamp-3">
                 {source.description}
               </p>
             )}
@@ -245,7 +250,7 @@ const SourcesGroup: FC = () => {
   const hiddenCount = sources.length - (visibleCount ?? sources.length);
 
   return (
-    <div className="relative mt-2">
+    <div className="relative mt-2 mb-3">
       {/* Hidden measurement container — renders all badges to measure row positions */}
       <div
         ref={containerRef}
@@ -273,7 +278,7 @@ const SourcesGroup: FC = () => {
             onClick={() => setExpanded(true)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "cursor-pointer text-muted-foreground hover:text-foreground",
+              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
             )}
           >
             +{hiddenCount} more
@@ -285,7 +290,7 @@ const SourcesGroup: FC = () => {
             onClick={() => setExpanded(false)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "cursor-pointer text-muted-foreground hover:text-foreground",
+              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
             )}
           >
             Show less

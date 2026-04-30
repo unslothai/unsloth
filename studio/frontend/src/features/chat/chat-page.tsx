@@ -940,7 +940,7 @@ export function ChatPage(): ReactElement {
                     <HugeiconsIcon
                       icon={CustomizeIcon}
                       strokeWidth={1.75}
-                      className="size-5"
+                      className="size-icon"
                     />
                   </button>
                 </TooltipPrimitive.Trigger>

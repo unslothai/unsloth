@@ -52,7 +52,7 @@ const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
-  "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-[#edeeec] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
+  "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 type CodeFence = {
   language: string | null;
@@ -291,7 +291,7 @@ function MermaidCopyButton({ source }: { source: string }) {
       <HugeiconsIcon
         icon={copied ? Tick02Icon : Copy01Icon}
         strokeWidth={1.75}
-        className="size-[18px]"
+        className="size-icon"
       />
     </button>
   );
@@ -326,7 +326,7 @@ function CodeBlockActions({
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-[18px]"
+            className="size-icon"
           />
         </button>
         <button
@@ -338,7 +338,7 @@ function CodeBlockActions({
             downloadTextFile(getCodeFilename(language), source);
           }}
         >
-          <DownloadIcon className="size-[18px]" />
+          <DownloadIcon className="size-icon" />
         </button>
       </div>
     </div>

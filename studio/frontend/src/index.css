@@ -153,8 +153,20 @@
 	   Mid-dark gray on the light surface — visible enough to read as
 	   active controls, not so dark that they compete with message
 	   text. */
-	--chat-icon-fg: #6a6a6a;
+	--chat-icon-fg: #555555;
 	--chat-icon-fg-hover: var(--foreground);
+	--chat-icon-bg-hover: #ededec;
+
+	/* Standard interactive-icon size for nav, menus, action bars, and
+	   in-message code-block actions. Sized one step above body text so
+	   icons read as minimally larger than adjacent labels (~14px text).
+	   Theme-independent — declared once in :root. */
+	--icon-size: 18px;
+	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
+	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
+	   chat-message action bar so the leftmost icon's visual edge aligns
+	   with the message text edge. Auto-tracks --icon-size. */
+	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
 }
 
 .dark {
@@ -196,7 +208,7 @@
 	--sidebar-ring: oklch(0.705 0.15 162.5);
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
-	--font-sans: Geist, ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
 	--shadow-color: hsl(0 0% 0%);
@@ -238,8 +250,9 @@
 	/* Chat-message action icons. A touch lighter than the previous
 	   #b8b8b8 so the icons read clearly without going near pure white;
 	   hover restores full --foreground for affordance. */
-	--chat-icon-fg: #c4c4c4;
+	--chat-icon-fg: #d8d8d8;
 	--chat-icon-fg-hover: var(--foreground);
+	--chat-icon-bg-hover: #2d2e32;
 }
 
 @theme inline {
@@ -322,6 +335,7 @@
 	--color-panel-surface-fg-muted: var(--panel-surface-fg-muted);
 	--color-chat-icon-fg: var(--chat-icon-fg);
 	--color-chat-icon-fg-hover: var(--chat-icon-fg-hover);
+	--color-chat-icon-bg-hover: var(--chat-icon-bg-hover);
 
 	--animate-pulse: pulse var(--duration) ease-out infinite;
 
@@ -444,6 +458,15 @@
 
 	.nav-icon-btn {
 		@apply inline-flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+	}
+
+	/* Standard icon size — drives every nav/menu/action-bar icon
+	   (left sidebar, app-user menu, settings tabs, chat config toggle,
+	   right-panel close, chat message action bars, code-block actions).
+	   Pulls from --icon-size so a single edit retunes them all. */
+	.size-icon {
+		width: var(--icon-size);
+		height: var(--icon-size);
 	}
 
 	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
@@ -722,7 +745,7 @@
 
 	.menu-soft-surface,
 	.menu-soft-surface-up {
-		--menu-soft-edge: rgba(0, 0, 0, 0.06);
+		--menu-soft-edge: rgba(0, 0, 0, 0.14);
 		--menu-soft-shadow: rgba(0, 0, 0, 0.18);
 		--menu-soft-offset-y: 8px;
 		--menu-soft-blur: 28px;
@@ -739,7 +762,7 @@
 	}
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
-		--menu-soft-edge: rgba(255, 255, 255, 0.06);
+		--menu-soft-edge: rgba(255, 255, 255, 0.07);
 		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
 	}
 

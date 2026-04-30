@@ -63,13 +63,12 @@ import {
   LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
-  PencilIcon,
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { Copy01Icon, Delete02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Delete02Icon, Edit03Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type FC,
@@ -201,7 +200,7 @@ const ThreadScrollToBottom: FC = () => {
         isAtBottom && "invisible pointer-events-none",
       )}
     >
-      <ArrowDownIcon strokeWidth={1.75} className="size-[18px]" />
+      <ArrowDownIcon strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };
@@ -685,10 +684,10 @@ const GeneratingIndicator: FC = () => {
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] font-[450]"
+      className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
-      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
+      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
         <MessagePrimitive.Parts
           components={{
@@ -711,8 +710,8 @@ const AssistantMessage: FC = () => {
         <MessageError />
       </div>
 
-      <div className="aui-assistant-message-footer mt-2 flex min-h-8">
-        <BranchPicker />
+      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+        <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
@@ -754,7 +753,7 @@ const DeleteMessageButton: FC = () => {
       <HugeiconsIcon
         icon={Delete02Icon}
         strokeWidth={1.75}
-        className="size-[18px]"
+        className="size-icon"
       />
     </TooltipIconButton>
   );
@@ -784,7 +783,7 @@ const CopyButton: FC = () => {
       <HugeiconsIcon
         icon={copied ? Tick02Icon : Copy01Icon}
         strokeWidth={1.75}
-        className="size-[18px]"
+        className="size-icon"
       />
     </TooltipIconButton>
   );
@@ -794,12 +793,12 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-[#ededec] dark:[&_button:hover]:bg-[#2d2e32] [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon strokeWidth={1.75} className="size-[18px]" />
+          <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <DeleteMessageButton />
@@ -809,7 +808,7 @@ const AssistantActionBar: FC = () => {
             tooltip="More"
             className="data-[state=open]:bg-accent"
           >
-            <MoreHorizontalIcon strokeWidth={1.75} className="size-[18px]" />
+            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
           </TooltipIconButton>
         </ActionBarMorePrimitive.Trigger>
         <ActionBarMorePrimitive.Content
@@ -820,7 +819,7 @@ const AssistantActionBar: FC = () => {
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <DownloadIcon strokeWidth={1.75} className="size-[18px]" />
+              <DownloadIcon strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
@@ -851,19 +850,19 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] font-[450] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-foreground dark:bg-card">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
-        <div className="mt-2 flex min-h-8 items-center">
+        <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">
           <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-0.5 -mr-2" />
+          <BranchPicker className="aui-user-branch-picker ml-0.5" />
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -874,12 +873,12 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-[#edeeed] dark:[&_button:hover]:bg-[#2d2e32] [&_button:hover]:text-chat-icon-fg-hover"
+      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon strokeWidth={1.75} className="size-[18px]" />
+          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
       <DeleteMessageButton />
@@ -947,7 +946,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch={true}
       className={cn(
-        "aui-branch-picker-root mr-0.5 -ml-2 inline-flex items-center text-chat-icon-fg text-[13px]",
+        "aui-branch-picker-root inline-flex items-center text-chat-icon-fg text-[13px]",
         className,
       )}
       {...rest}
@@ -956,9 +955,9 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
         <button
           type="button"
           aria-label="Previous"
-          className="inline-flex size-7 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-[#ecedee] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          className="inline-flex size-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-[26px]" />
+          <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-mono text-[13px] tabular-nums">
@@ -968,9 +967,9 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
         <button
           type="button"
           aria-label="Next"
-          className="inline-flex size-7 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-[#ecedee] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          className="inline-flex size-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-[26px]" />
+          <ChevronRightIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>

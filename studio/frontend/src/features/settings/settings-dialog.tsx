@@ -119,7 +119,7 @@ export function SettingsDialog() {
                     <HugeiconsIcon
                       icon={tab.icon}
                       strokeWidth={1.75}
-                      className="relative z-10 size-[19px]"
+                      className="relative z-10 size-icon"
                     />
                     <span className="relative z-10">{tab.label}</span>
                   </button>

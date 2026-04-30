@@ -46,7 +46,7 @@ export const ContextUsageBar: FC<{
           type="button"
           aria-label={`Context usage: ${formatTokenCount(used)} of ${formatTokenCount(total)} tokens`}
           className={cn(
-            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-[13px] tabular-nums transition-colors hover:bg-[#ededed] dark:hover:bg-[#2d2e32] hover:text-chat-icon-fg-hover",
+            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-[13px] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >

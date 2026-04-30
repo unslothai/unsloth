@@ -172,7 +172,7 @@ function NavItem({
           data-tour={dataTour}
           className="sidebar-nav-btn h-[35px] rounded-[10px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
         >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-[19px]! shrink-0 group-hover/menu-button:animate-icon-pop" />
+          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
         </SidebarMenuButton>
       </div>
@@ -372,7 +372,7 @@ export function AppSidebar() {
             <span className="font-heading text-[21px] font-semibold tracking-[-0.01em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
               unsloth
             </span>
-            <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] py-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+            <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
               BETA
             </span>
           </Link>
@@ -385,7 +385,7 @@ export function AppSidebar() {
                   className="inline-flex h-[35px] w-[32px] items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close sidebar"
                 >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[19px]" />
+                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent
@@ -410,7 +410,7 @@ export function AppSidebar() {
                   className="inline-flex h-[35px] w-[32px] items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Open sidebar"
                 >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-[19px]" />
+                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
                 </button>
               </TooltipPrimitive.Trigger>
               <TooltipContent
@@ -425,7 +425,7 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 pt-[10px] pb-[8px] shrink-0">
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[8px] shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -468,7 +468,7 @@ export function AppSidebar() {
         </SidebarGroupContent>
       </SidebarGroup>
 
-      <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[10px] pb-[22px] shrink-0">
+      <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[20px] shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -549,7 +549,7 @@ export function AppSidebar() {
                           className="sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                         >
                           <span className="sidebar-row-action-glyph">
-                            <MoreHorizontalIcon strokeWidth={1.75} className="size-[18px]" />
+                            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                           </span>
                         </button>
                       </DropdownMenuTrigger>
@@ -560,14 +560,14 @@ export function AppSidebar() {
                         className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                       >
                         <DropdownMenuItem onSelect={() => openRenameChat(item)}>
-                          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-[19px]" />
+                          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                           <span>Rename</span>
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           variant="destructive"
                           onSelect={() => setConfirmingDelete({ kind: "chat", item })}
                         >
-                          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-[19px]" />
+                          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                           <span>Delete</span>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
@@ -638,7 +638,7 @@ export function AppSidebar() {
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
-                                <MoreHorizontalIcon strokeWidth={1.75} className="size-[18px]" />
+                                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
                           </DropdownMenuTrigger>
@@ -649,7 +649,7 @@ export function AppSidebar() {
                             className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                           >
                             <DropdownMenuItem onSelect={() => openRenameRun(run)}>
-                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-[19px]" />
+                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                               <span>Rename</span>
                             </DropdownMenuItem>
                             <DropdownMenuItem
@@ -658,7 +658,7 @@ export function AppSidebar() {
                                 setConfirmingDelete({ kind: "run", run })
                               }
                             >
-                              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-[19px]" />
+                              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                               <span>Delete</span>
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -708,7 +708,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[19px]" />
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>Settings</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
@@ -716,7 +716,7 @@ export function AppSidebar() {
                     ref={anchorRef as React.Ref<HTMLDivElement>}
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                   >
-                    {isDark ? <Sun strokeWidth={1.75} className="size-[19px]" /> : <Moon strokeWidth={1.75} className="size-[19px]" />}
+                    {isDark ? <Sun strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
                     <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -731,7 +731,7 @@ export function AppSidebar() {
                       );
                     }}
                   >
-                    <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-[19px]" />
+                    <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>Guided Tour</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
@@ -743,7 +743,7 @@ export function AppSidebar() {
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-[19px]" />
+                      <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Learn More</span>
                     </a>
                   </DropdownMenuItem>
@@ -756,7 +756,7 @@ export function AppSidebar() {
                       <HugeiconsIcon
                         icon={NewReleasesIcon}
                         strokeWidth={1.75}
-                        className="size-[19px]"
+                        className="size-icon"
                       />
                       <span>What's New</span>
                     </a>
@@ -770,7 +770,7 @@ export function AppSidebar() {
                       <HugeiconsIcon
                         icon={MessageSearch01Icon}
                         strokeWidth={1.75}
-                        className="size-[19px]"
+                        className="size-icon"
                       />
                       <span>Feedback</span>
                     </a>
@@ -778,7 +778,7 @@ export function AppSidebar() {
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t-[0.5px] border-border/70 dark:border-white/6 bg-transparent!" />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[19px]" />
+                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
                   <span>Shutdown</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>

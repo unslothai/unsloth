@@ -849,7 +849,7 @@ export function ChatSettingsPanel({
                   <HugeiconsIcon
                     icon={LayoutAlignRightIcon}
                     strokeWidth={1.75}
-                    className="size-[19px]"
+                    className="size-icon"
                   />
                 </button>
               </TooltipPrimitive.Trigger>
