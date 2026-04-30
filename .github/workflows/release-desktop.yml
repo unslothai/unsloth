@@ -55,11 +55,17 @@ jobs:
           node-version: 24
 
       - name: Install pinned Tauri CLI
-        run: npm install -g @tauri-apps/cli@2.10.1
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1
 
       - name: Verify pinned Tauri CLI
+        shell: bash
         run: |
-          node -e "const { execFileSync } = require('node:child_process'); const out = execFileSync('tauri', ['--version'], { encoding: 'utf8' }).trim(); console.log(out); const [name, version] = out.split(/\s+/); if (name !== 'tauri-cli' || version !== '2.10.1') throw new Error('Expected tauri-cli 2.10.1, got ' + out);"
+          out="$(npx --prefix studio tauri --version)"
+          echo "$out"
+          if [ "$out" != "tauri-cli 2.10.1" ]; then
+            echo "Expected tauri-cli 2.10.1, got $out" >&2
+            exit 1
+          fi
 
       - name: Install frontend dependencies
         working-directory: studio/frontend
@@ -139,7 +145,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: studio
-          tauriScript: tauri
+          tauriScript: npx --prefix . tauri
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
@@ -170,7 +176,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: studio
-          tauriScript: tauri
+          tauriScript: npx --prefix . tauri
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
@@ -202,7 +208,7 @@ jobs:
           AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
         with:
           projectPath: studio
-          tauriScript: tauri
+          tauriScript: npx --prefix . tauri
           tagName: desktop-v__VERSION__
           releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |

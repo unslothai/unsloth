@@ -2,8 +2,14 @@
   "productName": "Unsloth Studio (Desktop)",
   "identifier": "ai.unsloth.studio",
   "build": {
-    "beforeDevCommand": "npm --prefix ../frontend run dev -- --port 5173 --strictPort",
-    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "beforeDevCommand": {
+      "cwd": "../frontend",
+      "script": "npm run dev -- --port 5173 --strictPort"
+    },
+    "beforeBuildCommand": {
+      "cwd": "../frontend",
+      "script": "npm run build"
+    },
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173"
   },
