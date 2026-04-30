@@ -365,6 +365,46 @@ def _adapt_for_mlx_vlm(items):
     return adapted
 
 
+_MLX_STUDIO_OPTIM_MAP = {
+    "adamw_8bit": "adamw",
+    "paged_adamw_8bit": "adamw",
+    "adamw_bnb_8bit": "adamw",
+    "paged_adamw_32bit": "adamw",
+    "adamw_torch": "adamw",
+    "adamw_torch_fused": "adamw",
+    "adamw": "adamw",
+    "adafactor": "adafactor",
+    "sgd": "sgd",
+    "adam": "adam",
+    "muon": "muon",
+    "lion": "lion",
+}
+_MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
+
+
+def _normalize_mlx_studio_optimizer(value):
+    raw = str(value or "adamw_8bit").strip().lower()
+    try:
+        return _MLX_STUDIO_OPTIM_MAP[raw]
+    except KeyError:
+        supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
+        raise ValueError(
+            f"Unsupported optimizer for MLX training: {value!r}. "
+            f"Supported values: {supported}."
+        )
+
+
+def _normalize_mlx_studio_scheduler(value):
+    raw = str(value or "linear").strip().lower()
+    if raw not in _MLX_STUDIO_LR_SCHEDULERS:
+        supported = ", ".join(sorted(_MLX_STUDIO_LR_SCHEDULERS))
+        raise ValueError(
+            f"Unsupported LR scheduler for MLX training: {value!r}. "
+            f"Supported values: {supported}."
+        )
+    return raw
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -404,6 +444,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "LoftQ is not supported for MLX training yet."
         _send("error", error=message)
         raise NotImplementedError(message)
+
+    optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
+    lr_scheduler_type = _normalize_mlx_studio_scheduler(
+        config.get("lr_scheduler_type", "linear")
+    )
 
     # ── 1. Load model ──
     # Force text-only if the dataset is not an image dataset, even if the model
@@ -578,23 +623,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if warmup_steps is None:
         warmup_steps = 5
 
-    # Map optim name (Studio sends torch optimizers; map to MLX equivalents)
-    optim_raw = (config.get("optim") or "adamw_8bit").lower()
-    optim_map = {
-        "adamw_8bit": "adamw",
-        "paged_adamw_8bit": "adamw",
-        "adamw_bnb_8bit": "adamw",
-        "paged_adamw_32bit": "adamw",
-        "adamw_torch": "adamw",
-        "adamw_torch_fused": "adamw",
-        "adafactor": "adafactor",
-        "sgd": "sgd",
-        "adam": "adam",
-        "muon": "muon",
-        "lion": "lion",
-    }
-    optim_name = optim_map.get(optim_raw, "adamw")
-
     # ── 5. Build output dir ──
     output_dir = config.get("output_dir", "")
     if not output_dir:
@@ -623,7 +651,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             max_steps=max_steps,
             learning_rate=lr_value,
             warmup_steps=warmup_steps,
-            lr_scheduler_type=config.get("lr_scheduler_type", "linear"),
+            lr_scheduler_type=lr_scheduler_type,
             optim=optim_name,
             weight_decay=float(config.get("weight_decay", 0.001) or 0.001),
             logging_steps=1,
