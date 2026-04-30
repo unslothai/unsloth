@@ -636,25 +636,23 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    if config.get("train_on_completions", False) and not is_vlm:
+    if config.get("train_on_completions", False):
         _send("status", status_message="Configuring response-only training...")
         try:
-            chat_template = getattr(tokenizer, "chat_template", None)
-            if chat_template:
-                # Reasonable defaults based on common chat template tokens
-                # User's chat template determines exact tokens
-                instruction_part = "<|start_header_id|>user<|end_header_id|>\n\n"
-                response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-                if "<|im_start|>" in chat_template:
-                    instruction_part = "<|im_start|>user\n"
-                    response_part = "<|im_start|>assistant\n"
+            from utils.datasets import (
+                MODEL_TO_TEMPLATE_MAPPER,
+                TEMPLATE_TO_RESPONSES_MAPPER,
+            )
+            template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
+            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
+            if markers:
                 trainer = train_on_responses_only(
                     trainer,
-                    instruction_part=instruction_part,
-                    response_part=response_part,
+                    instruction_part=markers["instruction"],
+                    response_part=markers["response"],
                 )
             else:
-                _send("status", status_message="train_on_completions skipped (no chat_template)")
+                _send("status", status_message=f"train_on_completions skipped (no template for {model_name})")
         except Exception as e:
             _send("status", status_message=f"train_on_completions failed: {e}")
 
