@@ -81,7 +81,7 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-none text-black dark:text-white">
+          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
             {currentModel?.name ?? "Select model"}
           </span>
           {currentModel?.description && (
