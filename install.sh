@@ -373,12 +373,10 @@ create_studio_shortcuts() {
     _css_icon_png="$_css_data_dir/unsloth-studio.png"
     _css_gem_png="$_css_data_dir/unsloth-gem.png"
 
-    # Same-install discriminator baked into the launcher; the backend's
-    # /api/health returns sha256(str(studio_root())) and the launcher
-    # rejects healthy backends whose hash differs. Use the venv Python so
-    # systems with uv-managed Python (no system python3) still produce a
-    # non-empty digest, and canonicalize the path so default/home modes
-    # match the backend's Path(sys.prefix).resolve() canonicalization.
+    # Same-install discriminator: hash the canonical STUDIO_HOME so the
+    # launcher attaches only to its own /api/health (matches the backend's
+    # Path(sys.prefix).resolve()). Prefer venv Python so uv-managed hosts
+    # without system python3 still produce a non-empty digest.
     _css_python="$_css_exe_dir/python"
     if [ ! -x "$_css_python" ]; then
         _css_python=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
@@ -404,10 +402,8 @@ PY
     mkdir -p "$_css_data_dir"
 
     # ── Write launcher script ──
-    # Single-quoted heredoc; @@DATA_DIR@@ and @@STUDIO_ROOT_ID@@ are
-    # substituted via sed below so the runtime launcher reads studio.conf
-    # from the resolved DATA_DIR and verifies it is talking to its own
-    # backend (not a sibling Studio listening on the same port).
+    # Single-quoted heredoc; @@DATA_DIR@@, @@STUDIO_ROOT_ID@@, and
+    # @@INSTALLED_IS_ENV_MODE@@ are substituted via sed below.
     cat > "$_css_launcher" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
 # Unsloth Studio Launcher
@@ -472,9 +468,8 @@ _check_health() {
         *'"service"'*'"Unsloth UI Backend"'*'"status"'*'"healthy"'*) ;;
         *) return 1 ;;
     esac
-    # why: verify the backend belongs to THIS install (not a sibling Studio
-    # listening on the same port). The hex digest baked at install time avoids
-    # both JSON-escape mismatches on paths with `\`/`"` and leaking the raw
+    # why: verify the backend belongs to THIS install. Baked hex digest avoids
+    # JSON-escape mismatches on paths with `\`/`"` and avoids leaking the raw
     # install path to unauthenticated callers.
     if [ -n "$_EXPECTED_STUDIO_ROOT_ID" ]; then
         case "$_resp" in
@@ -711,10 +706,8 @@ else
 fi
 LAUNCHER_EOF
 
-    # Bake the same-install discriminator and install-time mode flag FIRST so
-    # the user-controlled DATA_DIR substitution below cannot collide with any
-    # literal `@@STUDIO_ROOT_ID@@` / `@@INSTALLED_IS_ENV_MODE@@` text inside
-    # $DATA_DIR. Hex/boolean-only values, no sed-escape tricks needed.
+    # why: bake non-user-controlled placeholders FIRST so a literal
+    # `@@STUDIO_ROOT_ID@@` inside $DATA_DIR cannot be rewritten below.
     sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" \
         -e "s|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g" \
         "$_css_launcher" > "$_css_launcher.tmp" \

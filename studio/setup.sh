@@ -543,12 +543,10 @@ fi
 #
 # Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
 # single .venv_t5 are always migrated to the tiered layout.
-# why: in env-override mode $STUDIO_HOME is a user-chosen workspace; refuse
-# to rm -rf any directory that doesn't carry the Studio ownership marker
-# instead of silently destroying unrelated user data.
-# The marker is required only when STUDIO_HOME canonicalizes to something
-# other than the legacy default; an explicit UNSLOTH_STUDIO_HOME=$HOME/.unsloth/studio
-# must behave like a default install so pre-PR T5/llama dirs are not blocked.
+# why: in env-override mode $STUDIO_HOME is user-chosen; require the
+# ownership marker before rm -rf so unrelated dirs survive. Gated on the
+# canonical comparison so an override pointing at the legacy default still
+# behaves like a default install.
 _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
 _studio_home_canon="$STUDIO_HOME"
@@ -610,9 +608,8 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-# Nest llama.cpp under $STUDIO_HOME only for real env-overrides, never the
-# legacy default. Reuses the canonical comparison computed above so the
-# llama.cpp nest decision matches the ownership-guard semantics.
+# Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
+# default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
 if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
@@ -679,11 +676,9 @@ else
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
-    # why: install_llama_prebuilt.py uses os.replace() to move any existing
-    # install_dir aside before staging the prebuilt, so an unrelated
-    # $UNSLOTH_STUDIO_HOME/llama.cpp can be displaced before the source-build
-    # ownership check ever runs. Mirror the marker guard already used on the
-    # source-build replacement path.
+    # why: install_llama_prebuilt.py uses os.replace(), which would displace
+    # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
+    # ownership check below ever runs.
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi

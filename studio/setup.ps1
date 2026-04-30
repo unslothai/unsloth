@@ -1522,12 +1522,10 @@ if ($_studioOverride) {
 }
 $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
-# why: in env-override mode $StudioHome is a user-chosen workspace; refuse
-# to Remove-Item any directory that doesn't carry the Studio ownership
-# marker instead of silently destroying unrelated user data.
-# The marker is required only when $StudioHome canonicalizes to something
-# other than the legacy default; an explicit override pointing at the legacy
-# default behaves like a default install so pre-PR T5/llama dirs are not blocked.
+# why: in env-override mode $StudioHome is user-chosen; require the
+# ownership marker before Remove-Item so unrelated dirs survive. Gated on
+# the canonical comparison so an override pointing at the legacy default
+# still behaves like a default install.
 $StudioOwnedMarker = ".unsloth-studio-owned"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $_studioHomeCanon = $StudioHome
@@ -1609,10 +1607,8 @@ if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
-        # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv at
-        # the workspace root. -PathType Leaf rejects a directory at the shim
-        # path masquerading as the sentinel. Accept the in-VENV ownership marker
-        # so partial-install retries are not blocked.
+        # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;
+        # -PathType Leaf rejects a directory masquerading as the sentinel.
         if (
             $StudioHomeIsCustom -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
@@ -2035,11 +2031,9 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
-    # why: install_llama_prebuilt.py uses os.replace() to move any existing
-    # install_dir aside before staging the prebuilt, so an unrelated
-    # $env:UNSLOTH_STUDIO_HOME\llama.cpp can be displaced before the
-    # source-build ownership check ever runs. Mirror the marker guard already
-    # used on the source-build replacement path.
+    # why: install_llama_prebuilt.py uses os.replace(), which would displace
+    # an unrelated $env:UNSLOTH_STUDIO_HOME\llama.cpp before the source-build
+    # ownership check below ever runs.
     if ($StudioHomeIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
     }

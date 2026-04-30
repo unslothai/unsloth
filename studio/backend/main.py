@@ -56,13 +56,8 @@ _STUDIO_ROOT_ID_CACHE: str = hashlib.sha256(
 
 
 def _studio_root_id() -> str:
-    """Stable hex digest of the resolved Studio install root.
-
-    Used as a same-install discriminator in /api/health so launchers can
-    verify they are talking to their own backend without leaking the raw
-    filesystem path (which can include username, home dir, workspace name,
-    or CI checkout path) to anyone reachable on the port.
-    """
+    """Same-install discriminator for /api/health (sha256 of the resolved
+    install root); avoids leaking the raw path to unauthenticated callers."""
     return _STUDIO_ROOT_ID_CACHE
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
@@ -278,11 +273,9 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
-        # why: launchers verify this against the install-time hash baked into
-        # the generated launcher so a cached port pointing at a sibling Studio
-        # (different root) is rejected instead of opening the wrong install.
-        # Hex digest avoids leaking the raw install path to unauthenticated
-        # callers (Studio supports -H 0.0.0.0).
+        # why: launchers compare against an install-time hash so a sibling
+        # Studio on the same port is rejected; hex digest avoids leaking the
+        # raw install path on -H 0.0.0.0.
         "studio_root_id": _studio_root_id(),
     }
 

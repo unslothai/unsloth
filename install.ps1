@@ -447,11 +447,9 @@ function Install-UnslothStudio {
                 [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
             }
 
-            # Same-install discriminator baked into the launcher; the backend's
-            # /api/health returns sha256(str(studio_root())) and the launcher
-            # rejects healthy backends whose hash differs. Canonicalize first
-            # so a junctioned USERPROFILE produces the same digest the backend
-            # computes via Path.resolve().
+            # Same-install discriminator: hash the resolved StudioHome so a
+            # junctioned USERPROFILE matches the backend's Path.resolve()
+            # digest in /api/health.
             $_studioRootForId = $StudioHome
             try {
                 [System.IO.Directory]::CreateDirectory($_studioRootForId) | Out-Null
@@ -464,12 +462,11 @@ function Install-UnslothStudio {
                 [Security.Cryptography.SHA256]::Create().ComputeHash($_studioRootBytes)
             ) -replace '-', '').ToLowerInvariant()
 
-            # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) in the
-            # launcher so fresh shells don't need to re-export. Default installs
-            # get an empty prefix so behavior matches pre-PR exactly.
-            # why: also bake $portFile / $mutexName per-install so concurrent
-            # custom-root launchers cannot serialize through one global mutex
-            # or attach to an unrelated Studio listening on 8888..8908.
+            # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) so fresh
+            # shells don't need to re-export, and bake per-install $portFile /
+            # $mutexName so concurrent custom-root launchers cannot serialize
+            # through one global mutex on 8888..8908. Default installs get an
+            # empty prefix to match pre-PR behavior.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
                 # When override == legacy default, llama.cpp stays at
                 # ~/.unsloth/llama.cpp (one shared build). Canonicalize the
@@ -510,9 +507,8 @@ function Test-StudioHealth {
         `$url = "http://127.0.0.1:`$Port/api/health"
         `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
         if (-not (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')) { return `$false }
-        # why: verify the backend belongs to THIS install (not a sibling Studio
-        # listening on the same port). The hex digest baked at install time
-        # avoids leaking the raw install path to unauthenticated callers.
+        # why: verify the backend belongs to THIS install via the install-time
+        # hex digest; raw path is not leaked over /api/health.
         if (`$_ExpectedStudioRootId -and `$resp.studio_root_id -ne `$_ExpectedStudioRootId) { return `$false }
         return `$true
     } catch {

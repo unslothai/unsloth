@@ -493,8 +493,6 @@ class LlamaCppBackend:
 
         # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
-        # Default mode skips $STUDIO_HOME/llama.cpp so a stale partial install
-        # there cannot shadow the real legacy binary.
         legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
         try:
             from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
@@ -2091,9 +2089,7 @@ class LlamaCppBackend:
             #                      (binary must be *under* one of these)
             install_roots: list[Path] = []
 
-            # Env-mode custom root (mirrors _find_llama_server_binary). Default
-            # mode excluded so we don't kill llama-server from another tool
-            # running under ~/.unsloth/studio/llama.cpp.
+            # Env-mode custom root (mirrors _find_llama_server_binary).
             _is_custom_root = False
             try:
                 from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
@@ -2109,10 +2105,9 @@ class LlamaCppBackend:
             except (ImportError, OSError, ValueError):
                 pass
 
-            # Primary install dir (default mode only). In env-mode we skip the
-            # legacy llama.cpp tree so a custom-root Studio does not kill a
-            # concurrent default-install Studio's llama-server (same OS user,
-            # different install -- the workspace-isolation use case).
+            # Primary install dir (default mode only). Env-mode skips this so
+            # a custom-root Studio cannot kill a concurrent default-install
+            # Studio's llama-server (same OS user, different install).
             if not _is_custom_root:
                 install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
