@@ -136,6 +136,8 @@
 	   through automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
+	--panel-input-surface: #f5f5f5;
+	--panel-input-surface-hover: #efefef;
 	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
 	   so the tone has a faint hue rather than pure neutral — keeps text and
 	   sliders quiet but not lifeless. */
@@ -241,6 +243,8 @@
 	   surface flow through automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
+	--panel-input-surface: #2a2b2e;
+	--panel-input-surface-hover: #2e3033;
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
 	--panel-surface-fg-muted: #ababab;
@@ -528,13 +532,12 @@
 	   prompt button, and the chat-template textarea so all three read
 	   as one quiet gray family, matching the focused-edit-number tint. */
 	.panel-input-group {
-		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[10px] border-transparent bg-black/[0.04] pr-0 transition-colors focus-within:border-transparent focus-within:ring-0 focus-within:shadow-none;
-	}
-	.dark .panel-input-group {
-		@apply bg-white/[0.05];
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[10px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		border: 0 !important;
+		background-color: var(--panel-input-surface);
 	}
 	.panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
-		border-color: transparent;
+		border: 0 !important;
 		box-shadow: none;
 	}
 
@@ -543,10 +546,11 @@
 	   the same gray as the preset input pill and don't pick up the
 	   theme's slight green-cast `--input`. */
 	.panel-text-surface {
-		@apply rounded-[20px] border border-transparent bg-black/[0.04] transition-colors hover:bg-black/[0.06];
+		@apply rounded-[20px] border-0 transition-colors;
+		background-color: var(--panel-input-surface);
 	}
-	.dark .panel-text-surface {
-		@apply bg-white/[0.05] hover:bg-white/[0.07];
+	.panel-text-surface:hover {
+		background-color: var(--panel-input-surface-hover);
 	}
 
 	/* Sidebar sliders: soft neutral grays — active fill and thumb stay

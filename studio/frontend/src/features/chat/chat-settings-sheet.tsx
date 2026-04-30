@@ -437,6 +437,7 @@ function ParamSlider({
   onChange,
   displayValue,
   info,
+  valueSize,
 }: {
   label: string;
   value: number;
@@ -446,6 +447,7 @@ function ParamSlider({
   onChange: (v: number) => void;
   displayValue?: string;
   info?: ReactNode;
+  valueSize?: number;
 }) {
   return (
     <div className="space-y-3.5">
@@ -463,7 +465,7 @@ function ParamSlider({
           onChange={onChange}
           displayValue={displayValue}
           ariaLabel={label}
-          size={6}
+          size={valueSize ?? 6}
         />
       </div>
       <Slider
@@ -1398,6 +1400,7 @@ function ToolCallTimeoutSlider() {
       step={1}
       onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
       displayValue={displayValue}
+      valueSize={10}
       info="Per-call wall-clock limit. Long-running tool executions are terminated when this elapses; the model continues with what completed."
     />
   );
