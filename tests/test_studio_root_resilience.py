@@ -137,9 +137,9 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
         custom / "llama.cpp" in roots
     ), f"custom root dropped on resolve() failure: {roots}"
     # custom-mode discovery excludes the legacy tree to match _kill_orphaned_servers.
-    assert (home / ".unsloth" / "llama.cpp") not in roots, (
-        f"legacy llama path must not appear in custom-mode search_roots: {roots}"
-    )
+    assert (
+        (home / ".unsloth" / "llama.cpp") not in roots
+    ), f"legacy llama path must not appear in custom-mode search_roots: {roots}"
 
 
 def test_search_roots_default_mode_uses_legacy_only(tmp_path):

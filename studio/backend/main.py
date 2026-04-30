@@ -60,6 +60,7 @@ def _studio_root_id() -> str:
     install root); avoids leaking the raw path to unauthenticated callers."""
     return _STUDIO_ROOT_ID_CACHE
 
+
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
 # module reads from the registry, and FastAPI/Starlette's StaticFiles uses

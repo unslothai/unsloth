@@ -227,9 +227,9 @@ def test_setup_ps1_stale_venv_has_env_mode_guard():
     # The guard must fire BEFORE the destructive call.
     guard_idx = block.index("$StudioHomeIsCustom")
     rm_idx = block.index("Remove-Item -LiteralPath $VenvDir")
-    assert guard_idx < rm_idx, (
-        "custom-root guard must precede Remove-Item -LiteralPath $VenvDir"
-    )
+    assert (
+        guard_idx < rm_idx
+    ), "custom-root guard must precede Remove-Item -LiteralPath $VenvDir"
 
 
 def test_setup_sh_prebuilt_llama_cpp_has_ownership_guard():
@@ -241,15 +241,14 @@ def test_setup_sh_prebuilt_llama_cpp_has_ownership_guard():
     idx = src.index("installing prebuilt llama.cpp...")
     block = src[idx : idx + 2000]
     assert (
-        '_assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"'
-        in block
+        '_assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"' in block
     ), "setup.sh must guard the prebuilt llama.cpp path with the ownership marker"
     guard_idx = block.index('_assert_studio_owned_or_absent "$LLAMA_CPP_DIR"')
     # Anchor on the actual command-array entry, not the why-comment mention.
     helper_idx = block.index('python "$SCRIPT_DIR/install_llama_prebuilt.py"')
-    assert guard_idx < helper_idx, (
-        "ownership guard must precede the install_llama_prebuilt.py call"
-    )
+    assert (
+        guard_idx < helper_idx
+    ), "ownership guard must precede the install_llama_prebuilt.py call"
 
 
 def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
@@ -265,9 +264,9 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
     guard_idx = block.index("Assert-StudioOwnedOrAbsent -Path $LlamaCppDir")
     # Anchor on the actual command-array entry, not the why-comment mention.
     helper_idx = block.index('"$PSScriptRoot\\install_llama_prebuilt.py"')
-    assert guard_idx < helper_idx, (
-        "Assert-StudioOwnedOrAbsent must precede the install_llama_prebuilt.py call"
-    )
+    assert (
+        guard_idx < helper_idx
+    ), "Assert-StudioOwnedOrAbsent must precede the install_llama_prebuilt.py call"
 
 
 def test_env_mode_passes_when_venv_marker_present(tmp_path):
@@ -359,7 +358,7 @@ def test_install_sh_writes_venv_marker_after_uv_venv():
     create_idx = src.index('run_install_cmd "create venv" uv venv "$VENV_DIR"')
     tail = src[create_idx : create_idx + 600]
     assert (
-        '.unsloth-studio-owned' in tail
+        ".unsloth-studio-owned" in tail
     ), "install.sh must write .unsloth-studio-owned after uv venv create"
 
 
@@ -367,10 +366,10 @@ def test_install_ps1_writes_venv_marker_after_uv_venv():
     """install.ps1 must write the .unsloth-studio-owned marker into
     $VenvDir after `uv venv` succeeds."""
     src = INSTALL_PS1.read_text()
-    venv_create = src.index('uv venv $VenvDir --python')
+    venv_create = src.index("uv venv $VenvDir --python")
     tail = src[venv_create : venv_create + 1500]
     assert (
-        '.unsloth-studio-owned' in tail
+        ".unsloth-studio-owned" in tail
     ), "install.ps1 must write .unsloth-studio-owned after uv venv create"
 
 
@@ -398,19 +397,19 @@ def test_setup_helpers_gate_on_canonical_custom_root():
         '"$_STUDIO_HOME_IS_CUSTOM" = true' in sh_func
     ), "setup.sh _assert_studio_owned_or_absent must gate on _STUDIO_HOME_IS_CUSTOM"
     assert (
-        '_LEGACY_STUDIO_HOME=' in sh_src
-        and '_studio_home_canon=' in sh_src
-        and '_STUDIO_HOME_IS_CUSTOM=' in sh_src
+        "_LEGACY_STUDIO_HOME=" in sh_src
+        and "_studio_home_canon=" in sh_src
+        and "_STUDIO_HOME_IS_CUSTOM=" in sh_src
     ), "setup.sh must compute the canonical custom-root flag"
 
     ps_src = SETUP_PS1.read_text()
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
     ps_func = ps_src[ps_idx : ps_idx + 800]
     assert (
-        '$StudioHomeIsCustom -and' in ps_func
+        "$StudioHomeIsCustom -and" in ps_func
     ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on $StudioHomeIsCustom"
     assert (
-        '$StudioOwnedMarker) -PathType Leaf' in ps_func
+        "$StudioOwnedMarker) -PathType Leaf" in ps_func
     ), "setup.ps1 marker check must use -PathType Leaf so a directory cannot satisfy it"
 
 
@@ -421,13 +420,13 @@ def test_setup_ps1_inplace_git_sync_marks_studio_owned():
     src = SETUP_PS1.read_text()
     inplace_idx = src.index('Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")')
     # The in-place branch ends just before the temp-dir clone branch.
-    clone_idx = src.index('Cloning llama.cpp @', inplace_idx)
-    inplace_block = src[inplace_idx : clone_idx]
+    clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
+    inplace_block = src[inplace_idx:clone_idx]
     assert (
         "Mark-StudioOwned -Path $LlamaCppDir" in inplace_block
     ), "in-place git-sync branch must call Mark-StudioOwned on success"
     assert (
-        '$StudioHomeIsCustom' in inplace_block
+        "$StudioHomeIsCustom" in inplace_block
     ), "in-place Mark-StudioOwned call should be gated on $StudioHomeIsCustom"
 
 
@@ -438,16 +437,16 @@ def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():
     both guard."""
     src = SETUP_PS1.read_text()
     inplace_idx = src.index('Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")')
-    clone_idx = src.index('Cloning llama.cpp @', inplace_idx)
-    inplace_block = src[inplace_idx : clone_idx]
+    clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
+    inplace_block = src[inplace_idx:clone_idx]
     assert (
-        'Assert-StudioOwnedOrAbsent -Path $LlamaCppDir' in inplace_block
+        "Assert-StudioOwnedOrAbsent -Path $LlamaCppDir" in inplace_block
     ), "in-place git-sync must Assert-StudioOwnedOrAbsent before mutating $LlamaCppDir"
     guard_idx = inplace_block.index("Assert-StudioOwnedOrAbsent -Path $LlamaCppDir")
     git_idx = inplace_block.index("git -C $LlamaCppDir remote set-url")
-    assert guard_idx < git_idx, (
-        "Assert-StudioOwnedOrAbsent must precede the first git mutation"
-    )
+    assert (
+        guard_idx < git_idx
+    ), "Assert-StudioOwnedOrAbsent must precede the first git mutation"
 
 
 def _extract_check_health_function() -> str:
@@ -464,7 +463,7 @@ def _run_check_health(expected_root_id: str, response_json: str) -> int:
         "_http_get() { printf '%s' \"$1\"; }\n"
         + fn.replace(
             '_resp=$(_http_get "http://127.0.0.1:$_port/api/health") || return 1',
-            f'_resp={response_json!r}',
+            f"_resp={response_json!r}",
         )
         + "\n_check_health 8888\n"
         "echo rc=$?\n"
@@ -538,13 +537,16 @@ def test_check_health_handles_path_with_backslash_via_hash():
     The hex digest baked at install time is escape-free, so paths with
     these characters round-trip correctly."""
     import hashlib
+
     weird_path = "/tmp/back\\slash"
     expected_id = hashlib.sha256(weird_path.encode("utf-8")).hexdigest()
     rc = _run_check_health(
         expected_id,
         f'{{"status":"healthy","service":"Unsloth UI Backend","studio_root_id":"{expected_id}"}}',
     )
-    assert rc == 0, "path with backslash must round-trip via hash (no JSON escape issue)"
+    assert (
+        rc == 0
+    ), "path with backslash must round-trip via hash (no JSON escape issue)"
 
 
 def test_install_ps1_test_studio_health_verifies_studio_root_id():
@@ -571,7 +573,10 @@ def test_install_ps1_bakes_studio_root_id_into_launcher():
         "$_studioRootId" in src
     ), "install.ps1 must compute $_studioRootId from $StudioHome"
     assert (
-        "SHA256" in src and ".HashData" in src or "SHA256" in src and ".ComputeHash" in src
+        "SHA256" in src
+        and ".HashData" in src
+        or "SHA256" in src
+        and ".ComputeHash" in src
     ), "install.ps1 must use SHA-256 hashing for the studio root id"
     assert (
         "$_ExpectedStudioRootId" in src
@@ -610,7 +615,7 @@ def test_install_sh_bakes_studio_root_id_into_launcher():
         "@@STUDIO_ROOT_ID@@" in src
     ), "install.sh must use @@STUDIO_ROOT_ID@@ placeholder in the launcher heredoc"
     assert (
-        's|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g' in src
+        "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" in src
     ), "install.sh must sed-substitute @@STUDIO_ROOT_ID@@ unconditionally (not just env-mode)"
 
 
@@ -618,22 +623,24 @@ def test_tauri_preflight_scrubs_studio_home_env():
     """All three Tauri CLI-spawn sites that lacked the scrub must now
     env_remove UNSLOTH_STUDIO_HOME and STUDIO_HOME, mirroring
     process.rs / install.rs / desktop_auth.rs / update.rs."""
-    preflight = (REPO_ROOT / "studio" / "src-tauri" / "src" / "preflight.rs").read_text()
+    preflight = (
+        REPO_ROOT / "studio" / "src-tauri" / "src" / "preflight.rs"
+    ).read_text()
     commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text()
     # Both functions in preflight.rs (run_cli_probe + probe_cli_capability)
     # must scrub. Count occurrences -- expect 2 in preflight, 1 in commands.
-    assert preflight.count('cmd.env_remove("UNSLOTH_STUDIO_HOME")') >= 2, (
-        "preflight.rs must scrub UNSLOTH_STUDIO_HOME in both run_cli_probe and probe_cli_capability"
-    )
-    assert preflight.count('cmd.env_remove("STUDIO_HOME")') >= 2, (
-        "preflight.rs must scrub STUDIO_HOME in both run_cli_probe and probe_cli_capability"
-    )
-    assert 'cmd.env_remove("UNSLOTH_STUDIO_HOME")' in commands, (
-        "commands.rs check_install_status must scrub UNSLOTH_STUDIO_HOME"
-    )
-    assert 'cmd.env_remove("STUDIO_HOME")' in commands, (
-        "commands.rs check_install_status must scrub STUDIO_HOME"
-    )
+    assert (
+        preflight.count('cmd.env_remove("UNSLOTH_STUDIO_HOME")') >= 2
+    ), "preflight.rs must scrub UNSLOTH_STUDIO_HOME in both run_cli_probe and probe_cli_capability"
+    assert (
+        preflight.count('cmd.env_remove("STUDIO_HOME")') >= 2
+    ), "preflight.rs must scrub STUDIO_HOME in both run_cli_probe and probe_cli_capability"
+    assert (
+        'cmd.env_remove("UNSLOTH_STUDIO_HOME")' in commands
+    ), "commands.rs check_install_status must scrub UNSLOTH_STUDIO_HOME"
+    assert (
+        'cmd.env_remove("STUDIO_HOME")' in commands
+    ), "commands.rs check_install_status must scrub STUDIO_HOME"
 
 
 def test_install_sh_shim_uses_atomic_replace():
@@ -657,7 +664,8 @@ def test_install_sh_canonicalizes_studio_home_for_root_id_hash(tmp_path):
     have a trailing slash)."""
     src = INSTALL_SH.read_text()
     assert (
-        '_css_studio_root_input="$(CDPATH= cd -P -- "$STUDIO_HOME" 2>/dev/null && pwd -P)"' in src
+        '_css_studio_root_input="$(CDPATH= cd -P -- "$STUDIO_HOME" 2>/dev/null && pwd -P)"'
+        in src
     ), "install.sh must canonicalize STUDIO_HOME with cd -P/pwd -P before hashing"
     assert (
         '"$_css_python" - "$_css_studio_root_input"' in src
@@ -673,9 +681,9 @@ def test_install_sh_canonicalizes_studio_home_for_root_id_hash(tmp_path):
             capture_output = True,
         )
         assert res.returncode == 0
-        assert res.stdout.strip() == str(real), (
-            f"cd -P / pwd -P must canonicalize {raw!r} to {real}; got {res.stdout!r}"
-        )
+        assert res.stdout.strip() == str(
+            real
+        ), f"cd -P / pwd -P must canonicalize {raw!r} to {real}; got {res.stdout!r}"
 
 
 def test_install_sh_create_shortcuts_uses_venv_python_first():
@@ -686,11 +694,11 @@ def test_install_sh_create_shortcuts_uses_venv_python_first():
     fn_start = src.index('_css_data_dir="$DATA_DIR"')
     block = src[fn_start : fn_start + 2500]
     venv_idx = block.index('_css_python="$_css_exe_dir/python"')
-    fallback_idx = block.index('command -v python3 2>/dev/null', venv_idx)
+    fallback_idx = block.index("command -v python3 2>/dev/null", venv_idx)
     hash_idx = block.index('_css_studio_root_id=$("$_css_python"', venv_idx)
-    assert venv_idx < fallback_idx < hash_idx, (
-        "venv Python must be tried before system python3, and the hash must run after both lookups"
-    )
+    assert (
+        venv_idx < fallback_idx < hash_idx
+    ), "venv Python must be tried before system python3, and the hash must run after both lookups"
 
 
 def test_install_sh_create_shortcuts_fails_fast_when_no_python():
@@ -701,17 +709,17 @@ def test_install_sh_create_shortcuts_fails_fast_when_no_python():
     fn_start = src.index('_css_data_dir="$DATA_DIR"')
     block = src[fn_start : fn_start + 2500]
     assert (
-        '[WARN] Cannot create launcher: Python not found for studio_root_id' in block
+        "[WARN] Cannot create launcher: Python not found for studio_root_id" in block
     ), "install.sh must warn when no Python is available"
     assert (
-        '[WARN] Cannot create launcher: failed to compute studio_root_id' in block
+        "[WARN] Cannot create launcher: failed to compute studio_root_id" in block
     ), "install.sh must warn when the python compute itself produces no output"
-    assert block.count("return 1") >= 2, (
-        "both the no-Python branch and the empty-hash branch must `return 1`"
-    )
+    assert (
+        block.count("return 1") >= 2
+    ), "both the no-Python branch and the empty-hash branch must `return 1`"
     assert (
         '|| echo ""' not in block.split("_css_studio_root_id=")[1].split("PY\n)")[0]
-    ), "install.sh must NOT silently swallow hash failures with || echo \"\""
+    ), 'install.sh must NOT silently swallow hash failures with || echo ""'
 
 
 def test_install_sh_bakes_installed_is_env_mode_flag_in_launcher():
@@ -723,13 +731,13 @@ def test_install_sh_bakes_installed_is_env_mode_flag_in_launcher():
         "_INSTALLED_IS_ENV_MODE='@@INSTALLED_IS_ENV_MODE@@'" in src
     ), "launcher heredoc must declare _INSTALLED_IS_ENV_MODE='@@INSTALLED_IS_ENV_MODE@@'"
     assert (
-        '_css_is_env_mode=false' in src
+        "_css_is_env_mode=false" in src
     ), "install.sh must default _css_is_env_mode to false"
     assert (
         '[ "$_STUDIO_HOME_REDIRECT" = "env" ] && _css_is_env_mode=true' in src
     ), "install.sh must set _css_is_env_mode=true only when _STUDIO_HOME_REDIRECT=env"
     assert (
-        's|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g' in src
+        "s|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g" in src
     ), "install.sh sed pipeline must substitute @@INSTALLED_IS_ENV_MODE@@"
 
 
@@ -750,23 +758,25 @@ def test_install_sh_launcher_gates_port_file_on_baked_flag_not_runtime_env():
     port_block = heredoc[port_block_start:port_block_end]
     assert 'PORT_FILE="$DATA_DIR/studio.port"' in port_block
     assert (
-        'if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then\n    if command -v cksum' not in heredoc
+        'if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then\n    if command -v cksum'
+        not in heredoc
     ), "launcher must NOT gate PORT_FILE on runtime UNSLOTH_STUDIO_HOME"
 
     def _run_launcher_gate(installed_flag: str, runtime_env: dict) -> str:
         # Reproduce just the LOCK_DIR/PORT_FILE init block in isolation.
         script = (
             f"_INSTALLED_IS_ENV_MODE={installed_flag!r}\n"
-            'DATA_DIR=/tmp/test_data_dir\n'
+            "DATA_DIR=/tmp/test_data_dir\n"
             'LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"\n'
-            'PORT_FILE=""\n'
-            + port_block
-            + '\necho "PORT_FILE=$PORT_FILE"\n'
+            'PORT_FILE=""\n' + port_block + '\necho "PORT_FILE=$PORT_FILE"\n'
         )
         env = {"PATH": "/usr/bin:/bin"}
         env.update(runtime_env)
         res = subprocess.run(
-            ["bash", "-c", script], text = True, capture_output = True, env = env,
+            ["bash", "-c", script],
+            text = True,
+            capture_output = True,
+            env = env,
         )
         for line in res.stdout.splitlines():
             if line.startswith("PORT_FILE="):
@@ -774,9 +784,9 @@ def test_install_sh_launcher_gates_port_file_on_baked_flag_not_runtime_env():
         return ""
 
     # default-mode install should NEVER set PORT_FILE, even if UNSLOTH_STUDIO_HOME leaks in.
-    assert _run_launcher_gate("false", {"UNSLOTH_STUDIO_HOME": "/tmp/leaked"}) == "", (
-        "default-mode launcher must keep PORT_FILE empty even with UNSLOTH_STUDIO_HOME in env"
-    )
+    assert (
+        _run_launcher_gate("false", {"UNSLOTH_STUDIO_HOME": "/tmp/leaked"}) == ""
+    ), "default-mode launcher must keep PORT_FILE empty even with UNSLOTH_STUDIO_HOME in env"
     # env-mode install should set PORT_FILE regardless of runtime env.
     assert (
         _run_launcher_gate("true", {}) == "/tmp/test_data_dir/studio.port"
@@ -849,23 +859,29 @@ def test_install_sh_root_id_matches_backend_resolved_under_symlinked_home(tmp_pa
     link = tmp_path / "linkhome"
     link.symlink_to(real)
     studio_home = real / ".unsloth" / "studio"
-    studio_home.mkdir(parents=True)
+    studio_home.mkdir(parents = True)
     raw_via_link = f"{link}/.unsloth/studio"
     res = subprocess.run(
         ["bash", "-c", f'CDPATH= cd -P -- "{raw_via_link}" 2>/dev/null && pwd -P'],
-        capture_output = True, text = True,
+        capture_output = True,
+        text = True,
     )
     install_canon = res.stdout.strip()
     backend_canon = str(Path(raw_via_link).resolve())
-    assert install_canon == backend_canon, (
-        f"install.sh cd -P must equal Path.resolve(); got {install_canon!r} vs {backend_canon!r}"
-    )
+    assert (
+        install_canon == backend_canon
+    ), f"install.sh cd -P must equal Path.resolve(); got {install_canon!r} vs {backend_canon!r}"
     import hashlib
-    install_id = hashlib.sha256(install_canon.encode("utf-8", "surrogatepass")).hexdigest()
-    backend_id = hashlib.sha256(backend_canon.encode("utf-8", "surrogatepass")).hexdigest()
-    assert install_id == backend_id, (
-        f"install vs backend digest must match for symlinked $HOME; got {install_id} vs {backend_id}"
-    )
+
+    install_id = hashlib.sha256(
+        install_canon.encode("utf-8", "surrogatepass")
+    ).hexdigest()
+    backend_id = hashlib.sha256(
+        backend_canon.encode("utf-8", "surrogatepass")
+    ).hexdigest()
+    assert (
+        install_id == backend_id
+    ), f"install vs backend digest must match for symlinked $HOME; got {install_id} vs {backend_id}"
 
 
 def test_install_sh_substitutes_root_id_before_data_dir():
@@ -881,9 +897,9 @@ def test_install_sh_substitutes_root_id_before_data_dir():
         "@@STUDIO_ROOT_ID@@ substitution must happen BEFORE @@DATA_DIR@@ "
         "(non-user-controlled placeholders first)"
     )
-    assert env_mode_idx < data_dir_idx, (
-        "@@INSTALLED_IS_ENV_MODE@@ substitution must happen BEFORE @@DATA_DIR@@"
-    )
+    assert (
+        env_mode_idx < data_dir_idx
+    ), "@@INSTALLED_IS_ENV_MODE@@ substitution must happen BEFORE @@DATA_DIR@@"
 
 
 def test_install_sh_root_id_pass_does_not_mutate_user_data_dir(tmp_path):
