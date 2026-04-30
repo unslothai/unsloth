@@ -50,6 +50,11 @@ from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
 
 
+_STUDIO_ROOT_ID_CACHE: str = hashlib.sha256(
+    str(_studio_root()).encode("utf-8", "surrogatepass")
+).hexdigest()
+
+
 def _studio_root_id() -> str:
     """Stable hex digest of the resolved Studio install root.
 
@@ -58,9 +63,7 @@ def _studio_root_id() -> str:
     filesystem path (which can include username, home dir, workspace name,
     or CI checkout path) to anyone reachable on the port.
     """
-    return hashlib.sha256(
-        str(_studio_root()).encode("utf-8", "surrogatepass")
-    ).hexdigest()
+    return _STUDIO_ROOT_ID_CACHE
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes

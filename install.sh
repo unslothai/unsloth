@@ -375,12 +375,31 @@ create_studio_shortcuts() {
 
     # Same-install discriminator baked into the launcher; the backend's
     # /api/health returns sha256(str(studio_root())) and the launcher
-    # rejects healthy backends whose hash differs.
-    _css_studio_root_id=$(python3 - "$STUDIO_HOME" <<'PY' 2>/dev/null || echo ""
+    # rejects healthy backends whose hash differs. Use the venv Python so
+    # systems with uv-managed Python (no system python3) still produce a
+    # non-empty digest, and canonicalize the path so default/home modes
+    # match the backend's Path(sys.prefix).resolve() canonicalization.
+    _css_python="$_css_exe_dir/python"
+    if [ ! -x "$_css_python" ]; then
+        _css_python=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
+    fi
+    if [ -z "$_css_python" ] || [ ! -x "$_css_python" ]; then
+        echo "[WARN] Cannot create launcher: Python not found for studio_root_id" >&2
+        return 1
+    fi
+    _css_studio_root_input="$(CDPATH= cd -P -- "$STUDIO_HOME" 2>/dev/null && pwd -P)"
+    [ -z "$_css_studio_root_input" ] && _css_studio_root_input="$STUDIO_HOME"
+    _css_studio_root_id=$("$_css_python" - "$_css_studio_root_input" <<'PY' 2>/dev/null
 import hashlib, sys
 print(hashlib.sha256(sys.argv[1].encode("utf-8", "surrogatepass")).hexdigest())
 PY
 )
+    if [ -z "$_css_studio_root_id" ]; then
+        echo "[WARN] Cannot create launcher: failed to compute studio_root_id" >&2
+        return 1
+    fi
+    _css_is_env_mode=false
+    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _css_is_env_mode=true
 
     mkdir -p "$_css_data_dir"
 
@@ -397,6 +416,7 @@ set -euo pipefail
 
 DATA_DIR='@@DATA_DIR@@'
 _EXPECTED_STUDIO_ROOT_ID='@@STUDIO_ROOT_ID@@'
+_INSTALLED_IS_ENV_MODE='@@INSTALLED_IS_ENV_MODE@@'
 
 # Read exe path from config written at install time.
 # Sourcing is safe: the config file is written by install.sh, not user input.
@@ -418,7 +438,10 @@ LOG_FILE="$DATA_DIR/studio.log"
 # Studio listening on the global 8888..8908 range.
 LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"
 PORT_FILE=""
-if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+# why: gate on the install-time mode (baked above) instead of the runtime env
+# var; sourcing a custom-root studio.conf in shell must not flip a default-mode
+# launcher into env-mode behavior with stale state.
+if [ "$_INSTALLED_IS_ENV_MODE" = "true" ]; then
     if command -v cksum >/dev/null 2>&1; then
         _LOCK_KEY=$(printf '%s' "$DATA_DIR" | cksum | awk '{print $1}')
     else
@@ -707,8 +730,11 @@ LAUNCHER_EOF
 
     # Bake the same-install discriminator into ALL modes (env / home / default)
     # so the launcher rejects sibling Studios on the same port. Hex-only so no
-    # shell/sed escape tricks are needed.
-    sed "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" "$_css_launcher" > "$_css_launcher.tmp" \
+    # shell/sed escape tricks are needed. Also bake the install-time mode flag
+    # so PORT_FILE/LOCK_DIR namespacing is stable against runtime env leakage.
+    sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" \
+        -e "s|@@INSTALLED_IS_ENV_MODE@@|$_css_is_env_mode|g" \
+        "$_css_launcher" > "$_css_launcher.tmp" \
         && mv "$_css_launcher.tmp" "$_css_launcher"
 
     chmod +x "$_css_launcher"

@@ -513,7 +513,7 @@ class LlamaCppBackend:
                 # refuse to clean up. UNSLOTH_LLAMA_CPP_PATH (handled earlier)
                 # is the explicit way to share a build across roots.
                 search_roots = [_resolved_sr / "llama.cpp"]
-        except ImportError:
+        except (ImportError, OSError, ValueError):
             search_roots = [legacy_llama]
         _seen_roots: set[str] = set()
         _unique_roots: list[Path] = []
