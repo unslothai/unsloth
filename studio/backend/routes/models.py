@@ -1697,9 +1697,7 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
     try:
         active = Path(active_model).expanduser().resolve()
         target = deleted_path.resolve()
-        return active == target or (
-            target.is_dir() and active.is_relative_to(target)
-        )
+        return active == target or (target.is_dir() and active.is_relative_to(target))
     except Exception:
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
