@@ -4,12 +4,18 @@
 import { StartupScreen } from "@/components/tauri/startup-screen";
 import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
+import {
+  WindowTitlebar,
+  shouldUseCustomWindowTitlebar,
+} from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { useRouterState } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 interface AppProviderProps {
   children: ReactNode;
@@ -103,6 +109,7 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
         error={update.error}
         onRetry={update.retryUpdate}
         onSkipRestart={update.skipAndRestart}
+        onCopyDiagnostics={update.copyDiagnostics}
       />
     );
   }
@@ -112,22 +119,34 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
       status={update.status}
       info={update.info}
       dismissed={update.dismissed}
+      lastFailure={update.lastFailure}
       isExternalServer={isExternalServer}
       onInstall={update.installUpdate}
       onDismiss={update.dismiss}
+      onCopyDiagnostics={update.copyDiagnostics}
     />
   );
 }
 
+const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
+  "/onboarding",
+  "/login",
+  "/change-password",
+  "/signup",
+]);
+
 function TauriWrapper({ children }: { children: ReactNode }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
     status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
-    startInstall, retry, retryInstall, approveElevation,
+    startInstall, retry, retryInstall, approveElevation, copyDiagnostics,
   } = useTauriBackend();
 
   const hasResized = useRef(false);
   const abortRef = useRef(false);
+  const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
+  const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
 
   // Show the window once the frontend mounts (for pre-running states)
   useEffect(() => {
@@ -150,23 +169,78 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => { abortRef.current = true; };
   }, [status]);
 
-  if (!isTauri) return <>{children}</>;
-  if (status === "running") return <><TauriUpdateLayer isExternalServer={isExternalServer} />{children}</>;
+  useEffect(() => {
+    if (!isTauri) {
+      setDesktopAuthReady(true);
+      return;
+    }
+    if (status !== "running") {
+      setDesktopAuthReady(false);
+      setDesktopAuthRetry(0);
+      return;
+    }
 
-  return (
+    let disposed = false;
+    setDesktopAuthReady(false);
+    tauriAutoAuth({ force: true }).then((authenticated) => {
+      if (disposed) return;
+      if (authenticated) {
+        setDesktopAuthReady(true);
+        return;
+      }
+      if (!getTauriAuthFailure()) {
+        window.setTimeout(() => {
+          if (!disposed) setDesktopAuthRetry((value) => value + 1);
+        }, 500);
+      }
+    });
+
+    return () => { disposed = true; };
+  }, [status, desktopAuthRetry]);
+
+  if (!isTauri) return <>{children}</>;
+
+  const showApp = status === "running" && desktopAuthReady;
+  const startupStatus = status === "running" ? "starting" : status;
+  const startupProgressDetail =
+    status === "running" && !desktopAuthReady
+      ? "Signing in to desktop session..."
+      : progressDetail;
+
+  const content = showApp ? (
+    <>
+      <TauriUpdateLayer isExternalServer={isExternalServer} />
+      {children}
+    </>
+  ) : (
     <StartupScreen
-      status={status}
+      status={startupStatus}
       logs={logs}
       error={error}
       currentStepIndex={currentStepIndex}
-      progressDetail={progressDetail}
+      progressDetail={startupProgressDetail}
       elevationPackages={elevationPackages}
       onInstall={startInstall}
       onRetry={retry}
       onRetryInstall={retryInstall}
       onApproveElevation={approveElevation}
       onStartServer={retry}
+      onCopyDiagnostics={copyDiagnostics}
     />
+  );
+
+  if (!shouldUseCustomWindowTitlebar()) return content;
+
+  const showSidebarSurface =
+    showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+
+  return (
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background [--studio-titlebar-height:34px]">
+      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {content}
+      </div>
+    </div>
   );
 }
 
