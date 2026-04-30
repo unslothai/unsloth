@@ -1,3 +1,4 @@
+use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::io::BufRead;
@@ -14,6 +15,8 @@ pub struct InstallProcess {
     pub intentional_stop: bool,
     /// Packages needing elevated install, parsed from [TAURI:NEED_SUDO] output.
     pub needed_packages: Vec<String>,
+    /// Current diagnostics attempt; kept after NEEDS_ELEVATION so apt output can be linked.
+    pub current_attempt: Option<AttemptLog>,
 }
 
 impl Default for InstallProcess {
@@ -22,6 +25,7 @@ impl Default for InstallProcess {
             child: None,
             intentional_stop: false,
             needed_packages: Vec::new(),
+            current_attempt: None,
         }
     }
 }
@@ -228,6 +232,8 @@ fn stream_output(
     app: &AppHandle,
     state: &InstallState,
     event_mode: InstallEventMode,
+    diagnostics: DiagnosticsState,
+    attempt: AttemptLog,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -236,6 +242,8 @@ fn stream_output(
     if let Some(out) = stdout {
         let app_clone = app.clone();
         let state_clone = Arc::clone(state);
+        let diagnostics_clone = diagnostics.clone();
+        let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(out);
             let mut buf = Vec::new();
@@ -245,14 +253,21 @@ fn stream_output(
                     Ok(0) => break,
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
+                        diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
                         // Parse structured Tauri protocol lines
                         if let Some(packages) = text.strip_prefix("[TAURI:NEED_SUDO] ") {
                             let pkgs: Vec<String> =
                                 packages.split_whitespace().map(String::from).collect();
                             if let Ok(mut install) = state_clone.lock() {
-                                install.needed_packages = pkgs;
+                                install.needed_packages = pkgs.clone();
                             }
+                            diagnostics::record_elevation_packages(
+                                &diagnostics_clone,
+                                &attempt_clone,
+                                &pkgs,
+                            );
                         } else if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
+                            diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
                             if !event_mode.emit_install_structured_events() {
                                 info!("[install][stdout] {}", text);
                                 let _ = app_clone.emit(event_mode.progress_event(), &text);
@@ -260,12 +275,23 @@ fn stream_output(
                             }
                             let _ = app_clone.emit("install-step", step);
                         } else if let Some(detail) = text.strip_prefix("[TAURI:PROGRESS] ") {
+                            diagnostics::record_progress(
+                                &diagnostics_clone,
+                                &attempt_clone,
+                                detail,
+                            );
                             if !event_mode.emit_install_structured_events() {
                                 info!("[install][stdout] {}", text);
                                 let _ = app_clone.emit(event_mode.progress_event(), detail);
                                 continue;
                             }
                             let _ = app_clone.emit("install-progress-detail", detail);
+                        } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
+                            diagnostics::record_diag_marker(
+                                &diagnostics_clone,
+                                &attempt_clone,
+                                marker,
+                            );
                         }
                         // Always forward the raw line
                         info!("[install][stdout] {}", text);
@@ -282,6 +308,7 @@ fn stream_output(
 
     if let Some(err) = stderr {
         let app_clone = app.clone();
+        let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(err);
             let mut buf = Vec::new();
@@ -291,6 +318,7 @@ fn stream_output(
                     Ok(0) => break,
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
+                        diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
                         warn!("[install][stderr] {}", text);
                         let _ = app_clone.emit(event_mode.progress_event(), &text);
                     }
@@ -345,30 +373,94 @@ fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
 /// Run the install script. Returns Ok(()) on success.
 /// Returns Err("NEEDS_ELEVATION") if system packages need elevated install (Linux only).
 /// Returns Err(message) on other failures.
-pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
-    run_install_with_event_mode(app, state, InstallEventMode::Full)
+pub fn run_install(
+    app: AppHandle,
+    state: InstallState,
+    diagnostics: DiagnosticsState,
+) -> Result<(), String> {
+    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None)
 }
 
-pub(crate) fn run_install_for_repair(app: AppHandle, state: InstallState) -> Result<(), String> {
-    run_install_with_event_mode(app, state, InstallEventMode::Repair)
+pub(crate) fn run_install_for_repair(
+    app: AppHandle,
+    state: InstallState,
+    diagnostics: DiagnosticsState,
+    repair_group_id: String,
+) -> Result<(), String> {
+    run_install_with_event_mode(
+        app,
+        state,
+        diagnostics,
+        InstallEventMode::Repair,
+        Some(repair_group_id),
+    )
 }
 
 fn run_install_with_event_mode(
     app: AppHandle,
     state: InstallState,
+    diagnostics: DiagnosticsState,
     event_mode: InstallEventMode,
+    repair_group_id: Option<String>,
 ) -> Result<(), String> {
+    let attempt = match repair_group_id.as_deref() {
+        Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "install"),
+        None => diagnostics::begin_install_attempt(&diagnostics),
+    };
+    if let Ok(mut install) = state.lock() {
+        install.current_attempt = Some(attempt.clone());
+    }
+
     emit_mode_progress(&app, event_mode, "Starting installation...");
 
-    let (script, args) = resolve_install_script(&app)?;
+    let (script, args) = match resolve_install_script(&app) {
+        Ok(resolved) => resolved,
+        Err(msg) => {
+            diagnostics::finish_attempt(
+                &diagnostics,
+                &attempt,
+                None,
+                false,
+                Some(format!("resolve_install_script: {msg}")),
+            );
+            clear_current_attempt(&state);
+            return Err(msg);
+        }
+    };
+    diagnostics::append_phase_line(
+        &attempt.handle,
+        "meta",
+        &format!("Using script: {}", script.display()),
+    );
     emit_mode_progress(
         &app,
         event_mode,
         &format!("Using script: {}", script.display()),
     );
 
-    let (stdout, stderr) = spawn_script(&script, &args, &state)?;
-    let threads = stream_output(&app, &state, event_mode, stdout, stderr);
+    let (stdout, stderr) = match spawn_script(&script, &args, &state) {
+        Ok(handles) => handles,
+        Err(msg) => {
+            diagnostics::finish_attempt(
+                &diagnostics,
+                &attempt,
+                None,
+                false,
+                Some(format!("spawn_install_script: {msg}")),
+            );
+            clear_current_attempt(&state);
+            return Err(msg);
+        }
+    };
+    let threads = stream_output(
+        &app,
+        &state,
+        event_mode,
+        diagnostics.clone(),
+        attempt.clone(),
+        stdout,
+        stderr,
+    );
 
     // Wait for exit, join reader threads
     let result = wait_for_exit(&state);
@@ -378,12 +470,20 @@ fn run_install_with_event_mode(
 
     match result {
         Ok((status, _)) if status.success() => {
+            diagnostics::finish_attempt(
+                &diagnostics,
+                &attempt,
+                Some(status.to_string()),
+                false,
+                None,
+            );
+            clear_current_attempt(&state);
             if event_mode.emit_terminal_events() {
                 emit_complete(&app);
             }
             Ok(())
         }
-        Ok((status, _)) => {
+        Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
             if code == 2 {
                 // Script needs elevated package install — report to frontend
@@ -391,11 +491,27 @@ fn run_install_with_event_mode(
                     .lock()
                     .map(|i| i.needed_packages.clone())
                     .unwrap_or_default();
+                diagnostics::record_elevation_packages(&diagnostics, &attempt, &packages);
+                diagnostics::finish_attempt(
+                    &diagnostics,
+                    &attempt,
+                    Some(status.to_string()),
+                    intentional,
+                    Some("needs_elevation".to_string()),
+                );
                 info!("[install] Needs elevation for packages: {:?}", packages);
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
                 let msg = format!("Installer exited with code {}", code);
+                diagnostics::finish_attempt(
+                    &diagnostics,
+                    &attempt,
+                    Some(status.to_string()),
+                    intentional,
+                    Some(msg.clone()),
+                );
+                clear_current_attempt(&state);
                 if event_mode.emit_terminal_events() {
                     emit_failed(&app, &msg);
                 }
@@ -403,15 +519,82 @@ fn run_install_with_event_mode(
             }
         }
         Err(msg) if msg == "Installation stopped." => {
+            diagnostics::finish_attempt(&diagnostics, &attempt, None, true, Some(msg.clone()));
+            clear_current_attempt(&state);
             info!("[install] Installation stopped intentionally");
             Err(msg)
         }
         Err(msg) => {
+            diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
+            clear_current_attempt(&state);
             if event_mode.emit_terminal_events() {
                 emit_failed(&app, &msg);
             }
             Err(msg)
         }
+    }
+}
+
+fn clear_current_attempt(state: &InstallState) {
+    if let Ok(mut install) = state.lock() {
+        install.current_attempt = None;
+    }
+}
+
+pub fn take_pending_repair_group_for_resume(state: &InstallState) -> Option<String> {
+    let mut install = state.lock().ok()?;
+    let repair_group_id = install
+        .current_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.repair_group_id.clone());
+    if repair_group_id.is_some() {
+        install.current_attempt = None;
+    }
+    repair_group_id
+}
+
+pub fn record_pending_elevation_canceled(
+    state: &InstallState,
+    diagnostics: &DiagnosticsState,
+) -> bool {
+    let attempt = state
+        .lock()
+        .ok()
+        .and_then(|mut install| install.current_attempt.take());
+    let Some(attempt) = attempt else {
+        return false;
+    };
+    diagnostics::finish_attempt(
+        diagnostics,
+        &attempt,
+        None,
+        true,
+        Some("elevation_canceled".to_string()),
+    );
+    if let Some(repair_group_id) = attempt.repair_group_id.as_deref() {
+        diagnostics::finish_repair_group(
+            diagnostics,
+            repair_group_id,
+            "canceled",
+            Some("elevation_canceled".to_string()),
+        );
+    }
+    true
+}
+
+pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &DiagnosticsState) {
+    let attempt = state
+        .lock()
+        .ok()
+        .and_then(|install| install.current_attempt.clone());
+    if let Some(attempt) = attempt {
+        diagnostics::finish_attempt(
+            diagnostics,
+            &attempt,
+            None,
+            true,
+            Some("intentional_stop".to_string()),
+        );
     }
 }
 
@@ -481,64 +664,221 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     }
 }
 
-/// Install system packages with elevated permissions (Linux only).
+/// Install apt system packages with elevated permissions (Linux only).
 /// Uses `elevated-command` crate for native auth dialog.
 #[cfg(target_os = "linux")]
-pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
+pub fn install_system_packages(
+    packages: &[String],
+    state: &InstallState,
+    diagnostics: &DiagnosticsState,
+) -> Result<(), String> {
     use regex::Regex;
     use std::path::Path;
     use std::process::Command as StdCommand;
+
+    let current_attempt = state
+        .lock()
+        .ok()
+        .and_then(|install| install.current_attempt.clone());
+    let elevation_attempt = current_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.repair_group_id.as_deref())
+        .map(|group_id| diagnostics::begin_repair_child(diagnostics, group_id, "elevation"))
+        .or_else(|| current_attempt.clone());
+    if let Some(attempt) = elevation_attempt.as_ref() {
+        diagnostics::append_phase_line(
+            &attempt.handle,
+            "meta",
+            &format!("Starting elevated apt install for: {}", packages.join(", ")),
+        );
+        diagnostics::record_elevation_packages(diagnostics, attempt, packages);
+    }
 
     // Validate package names to prevent injection via elevated command.
     let valid_pkg = Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$").unwrap();
     for pkg in packages {
         if !valid_pkg.is_match(pkg) {
-            return Err(format!("Invalid package name: {}", pkg));
+            let msg = format!("Invalid package name: {}", pkg);
+            finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
+            clear_current_attempt(state);
+            return Err(msg);
         }
     }
 
-    // AppImage bundles run on non-Debian distros too. Pick the first package
-    // manager we find. Names in `packages` are Debian-style; callers that want
-    // cross-distro support should translate before invoking.
-    let (program, base_args): (&str, &[&str]) = if Path::new("/usr/bin/apt-get").exists() {
-        ("apt-get", &["install", "-y"])
-    } else if Path::new("/usr/bin/dnf").exists() {
-        ("dnf", &["install", "-y"])
-    } else if Path::new("/usr/bin/zypper").exists() {
-        ("zypper", &["install", "-y"])
-    } else if Path::new("/usr/bin/pacman").exists() {
-        ("pacman", &["-S", "--noconfirm"])
-    } else {
-        return Err(
-            "No supported system package manager found (apt-get, dnf, zypper, pacman)".to_string(),
-        );
-    };
+    // install.sh reports Debian package names. Do not pass them to dnf,
+    // zypper, or pacman where names differ; show an explicit support boundary
+    // instead of offering an elevation flow that is likely to fail.
+    if !Path::new("/usr/bin/apt-get").exists() {
+        let msg = "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
+            .to_string();
+        finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
+        clear_current_attempt(state);
+        return Err(msg);
+    }
 
     info!(
-        "[install] Elevated install of packages via {}: {}",
-        program,
+        "[install] Elevated install of apt packages: {}",
         packages.join(", ")
     );
 
-    let mut cmd = StdCommand::new(program);
-    cmd.args(base_args).args(packages);
+    let mut update_cmd = StdCommand::new("apt-get");
+    update_cmd.args(["update", "-y"]);
+    match elevated_command::Command::new(update_cmd).output() {
+        Ok(elevated_update) => {
+            if let Some(attempt) = elevation_attempt.as_ref() {
+                diagnostics::append_phase_line(
+                    &attempt.handle,
+                    "apt-update-status",
+                    &elevated_update.status.to_string(),
+                );
+                append_capped_output(
+                    &attempt.handle,
+                    "apt-update-stdout",
+                    &elevated_update.stdout,
+                );
+                append_capped_output(
+                    &attempt.handle,
+                    "apt-update-stderr",
+                    &elevated_update.stderr,
+                );
+            }
+            if !elevated_update.status.success() {
+                let stderr = capped_output_text(&elevated_update.stderr);
+                warn!(
+                    "[install] apt-get update failed before elevated install; continuing with cached package metadata: {}",
+                    stderr
+                );
+                if let Some(attempt) = elevation_attempt.as_ref() {
+                    diagnostics::append_phase_line(
+                        &attempt.handle,
+                        "apt-update-warning",
+                        "apt-get update failed; continuing with apt-get install",
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            warn!(
+                "[install] Elevated apt update could not run before install; continuing with apt-get install: {}",
+                error
+            );
+            if let Some(attempt) = elevation_attempt.as_ref() {
+                diagnostics::append_phase_line(
+                    &attempt.handle,
+                    "apt-update-error",
+                    &format!(
+                        "apt-get update could not run; continuing with apt-get install: {error}"
+                    ),
+                );
+            }
+        }
+    }
 
-    let elevated = elevated_command::Command::new(cmd)
-        .output()
-        .map_err(|e| format!("Elevated install failed: {}", e))?;
+    let mut install_cmd = StdCommand::new("apt-get");
+    install_cmd.args(["install", "-y"]).args(packages);
 
-    if !elevated.status.success() {
-        let stderr = String::from_utf8_lossy(&elevated.stderr);
+    let elevated_install = match elevated_command::Command::new(install_cmd).output() {
+        Ok(output) => output,
+        Err(error) => {
+            let msg = format!("Elevated install failed: {}", error);
+            finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
+            clear_current_attempt(state);
+            return Err(msg);
+        }
+    };
+    if let Some(attempt) = elevation_attempt.as_ref() {
+        diagnostics::append_phase_line(
+            &attempt.handle,
+            "apt-install-status",
+            &elevated_install.status.to_string(),
+        );
+        append_capped_output(
+            &attempt.handle,
+            "apt-install-stdout",
+            &elevated_install.stdout,
+        );
+        append_capped_output(
+            &attempt.handle,
+            "apt-install-stderr",
+            &elevated_install.stderr,
+        );
+    }
+
+    if !elevated_install.status.success() {
+        let stderr = capped_output_text(&elevated_install.stderr);
+        finish_elevation_failure(
+            diagnostics,
+            elevation_attempt.as_ref(),
+            Some(elevated_install.status.to_string()),
+            format!("Package installation failed: {stderr}"),
+        );
+        clear_current_attempt(state);
         return Err(format!("Package installation failed: {}", stderr));
     }
 
-    info!("[install] Elevated package install succeeded");
+    if let Some(attempt) = elevation_attempt.as_ref() {
+        diagnostics::finish_attempt(
+            diagnostics,
+            attempt,
+            Some(elevated_install.status.to_string()),
+            false,
+            None,
+        );
+    }
+    info!("[install] Elevated apt package install succeeded");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn finish_elevation_failure(
+    diagnostics: &DiagnosticsState,
+    attempt: Option<&AttemptLog>,
+    exit_status: Option<String>,
+    message: String,
+) {
+    if let Some(attempt) = attempt {
+        diagnostics::finish_attempt(
+            diagnostics,
+            attempt,
+            exit_status,
+            false,
+            Some(message.clone()),
+        );
+        if let Some(repair_group_id) = attempt.repair_group_id.as_deref() {
+            diagnostics::finish_repair_group(diagnostics, repair_group_id, "failed", Some(message));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn append_capped_output(handle: &diagnostics::PhaseLogHandle, stream: &str, bytes: &[u8]) {
+    diagnostics::append_phase_line(handle, stream, &capped_output_text(bytes));
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn capped_output_text(bytes: &[u8]) -> String {
+    const MAX_ELEVATED_OUTPUT_BYTES: usize = 64 * 1024;
+    let text = String::from_utf8_lossy(bytes);
+    if text.len() <= MAX_ELEVATED_OUTPUT_BYTES {
+        return text.into_owned();
+    }
+    let boundary = diagnostics::valid_utf8_boundary(&text, MAX_ELEVATED_OUTPUT_BYTES);
+    let mut truncated = text[..boundary].to_string();
+    truncated.push_str("\n[elevated output truncated after 64KiB]");
+    truncated
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevated_output_cap_is_utf8_boundary_safe() {
+        let text = "é".repeat(40_000);
+        let capped = capped_output_text(text.as_bytes());
+        assert!(capped.ends_with("[elevated output truncated after 64KiB]"));
+        assert!(capped.is_char_boundary(capped.len()));
+    }
 
     #[test]
     fn repair_install_mode_uses_repair_elevation_event() {
