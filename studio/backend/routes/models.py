@@ -623,7 +623,7 @@ def _scan_ollama_dir(
             gguf_link_path: Optional[str] = None
             quant = f"-{file_type}" if file_type else ""
             safe_name = repo_name.replace("/", "-")
-            for layer in manifest.get("layers", []):
+            for layer in manifest.get("layers") or []:
                 media = layer.get("mediaType", "")
                 digest = layer.get("digest", "")
                 if not digest:
