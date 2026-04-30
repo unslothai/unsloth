@@ -998,15 +998,34 @@
 ::-webkit-scrollbar {
 	width: 8px;
 	height: 8px;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
 
 ::-webkit-scrollbar-track {
 	background: transparent;
+	border: none;
+	box-shadow: none;
+}
+
+::-webkit-scrollbar-track-piece {
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
 
 ::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.54);
 	border-radius: 9999px;
+	border: none;
+	box-shadow: none;
+}
+
+::-webkit-scrollbar-corner {
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
 
 ::-webkit-scrollbar-button {
