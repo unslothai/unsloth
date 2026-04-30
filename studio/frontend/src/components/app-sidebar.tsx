@@ -77,6 +77,7 @@ import type { TrainingRunSummary } from "@/features/training";
 import { useEffect, useState } from "react";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { WikiBehaviourDialog } from "@/components/wiki-behaviour-dialog";
+import { WikiDataDialog } from "@/components/wiki-data-dialog";
 import { toast } from "sonner";
 
 function getTourId(pathname: string): string | null {
@@ -169,6 +170,9 @@ async function parseApiErrorMessage(response: Response): Promise<string> {
     if (typeof payload.detail === "string" && payload.detail.trim()) {
       return payload.detail;
     }
+    if (payload.detail !== undefined) {
+      return `Request failed (${response.status}): ${JSON.stringify(payload.detail)}`;
+    }
   } catch {
     // Ignore JSON parse errors and fall back to status text.
   }
@@ -232,6 +236,7 @@ export function AppSidebar() {
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const [shutdownOpen, setShutdownOpen] = useState(false);
   const [wikiBehaviourOpen, setWikiBehaviourOpen] = useState(false);
+  const [wikiDataOpen, setWikiDataOpen] = useState(false);
 
   // Chat collapsible state — open by default, auto-expand on route entry
   const isChatRoute = pathname.startsWith("/chat");
@@ -631,6 +636,22 @@ export function AppSidebar() {
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       onClick={() => {
+                        setWikiDataOpen(true);
+                        closeMobileIfOpen();
+                      }}
+                      disabled={isRunningWikiMaintenance || isRunningWikiLint}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        Edit Wiki Data
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => {
                         setWikiBehaviourOpen(true);
                         closeMobileIfOpen();
                       }}
@@ -900,6 +921,10 @@ export function AppSidebar() {
     <WikiBehaviourDialog
       open={wikiBehaviourOpen}
       onOpenChange={setWikiBehaviourOpen}
+    />
+    <WikiDataDialog
+      open={wikiDataOpen}
+      onOpenChange={setWikiDataOpen}
     />
     </>
   );

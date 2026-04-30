@@ -720,6 +720,103 @@ class WikiArchiveResponse(BaseModel):
     errors: list[str]
 
 
+class WikiDeletePreviewRequest(BaseModel):
+    """Request payload for previewing wiki entry deletion and cascades."""
+
+    entry_type: Literal["source", "analysis", "entity", "concept"] = Field(
+        ...,
+        description = "Entry type to delete (source, analysis, entity, or concept)",
+    )
+    entries: list[str] = Field(
+        ...,
+        min_length = 1,
+        max_length = 256,
+        description = "Wiki entries to delete (for example sources/foo, analysis/bar, entities/baz, concepts/qux)",
+    )
+    cascade_orphan_knowledge: bool = Field(
+        True,
+        description = "When true, remove entity/concept pages only if they become orphaned after the requested deletions",
+    )
+
+    @model_validator(mode = "before")
+    @classmethod
+    def _normalize_delete_payload(cls, raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+
+        payload = dict(raw)
+        entry_type = payload.get("entry_type")
+        if isinstance(entry_type, str):
+            payload["entry_type"] = entry_type.strip().lower()
+
+        # Accept a single-entry payload shape for backwards compatibility.
+        if "entries" not in payload and "entry" in payload:
+            payload["entries"] = payload.get("entry")
+
+        entries = payload.get("entries")
+        if isinstance(entries, str):
+            payload["entries"] = [entries]
+
+        return payload
+
+
+class WikiDeleteApplyRequest(WikiDeletePreviewRequest):
+    """Request payload for applying wiki entry deletion and cascades."""
+
+    hard_delete: bool = Field(
+        False,
+        description = "If true, permanently delete files instead of moving them into wiki/.archive",
+    )
+
+
+class WikiDeleteResponse(BaseModel):
+    """Result of previewing or applying wiki entry deletion."""
+
+    status: str
+    dry_run: bool
+    hard_delete: bool
+    entry_type: str
+    cascade_orphan_knowledge: bool
+    requested_entries: list[str]
+    resolved_entries: list[str]
+    missing_entries: list[str]
+    invalid_entries: list[str]
+    planned_source_pages: list[str]
+    planned_analysis_pages: list[str]
+    planned_entity_pages: list[str]
+    planned_concept_pages: list[str]
+    planned_total_pages: int
+    archived_pages: list[str]
+    deleted_pages: list[str]
+    errors: list[str]
+
+
+class WikiDataGraphNode(BaseModel):
+    """A wiki graph node used by the edit-data graph UI."""
+
+    id: str
+    kind: Literal["source", "analysis", "entity", "concept"]
+    label: str
+    inbound_links: int
+    outbound_links: int
+
+
+class WikiDataGraphEdge(BaseModel):
+    """A directed wiki graph edge between two wiki nodes."""
+
+    id: str
+    source: str
+    target: str
+
+
+class WikiDataGraphResponse(BaseModel):
+    """Wiki graph payload for visual editing and delete preview flows."""
+
+    status: str
+    nodes: list[WikiDataGraphNode]
+    edges: list[WikiDataGraphEdge]
+
+
 class WikiIngestRequest(BaseModel):
     """Request payload for manual wiki ingestion operations."""
 

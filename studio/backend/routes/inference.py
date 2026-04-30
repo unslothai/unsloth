@@ -176,6 +176,12 @@ from models.inference import (
     RagContextSnippet,
     WikiArchiveRequest,
     WikiArchiveResponse,
+    WikiDeletePreviewRequest,
+    WikiDeleteApplyRequest,
+    WikiDeleteResponse,
+    WikiDataGraphResponse,
+    WikiDataGraphNode,
+    WikiDataGraphEdge,
     WikiIngestRequest,
     WikiIngestResponse,
     WikiEnrichRequest,
@@ -687,6 +693,7 @@ def _get_route_rag_context(
         max_chars_per_page = max(max_chars_per_page * 6, 6000),
         include_source_pages = _RAG_INCLUDE_SOURCE_PAGES,
     )
+    ranking_mode = str(result.get("ranking_mode", "unknown") or "unknown")
     blocks: list[dict] = result.get("context_blocks", [])
     if not _RAG_INCLUDE_SOURCE_PAGES:
         blocks = [
@@ -912,6 +919,7 @@ def _get_route_rag_context(
         "query": query,
         "source": debug_source,
         "wants_history": wants_history,
+        "ranking_mode": ranking_mode,
         "context": context,
         "context_characters": len(context),
         "pages_considered": len(blocks),
@@ -1062,6 +1070,144 @@ async def archive_stale_wiki_sources(
         moved_raw = [str(x) for x in report["moved_raw"]],
         errors = [str(x) for x in report["errors"]],
     )
+
+
+def _to_wiki_delete_response(report: dict[str, Any]) -> WikiDeleteResponse:
+    return WikiDeleteResponse(
+        status = str(report.get("status", "ok")),
+        dry_run = bool(report.get("dry_run", True)),
+        hard_delete = bool(report.get("hard_delete", False)),
+        entry_type = str(report.get("entry_type", "")),
+        cascade_orphan_knowledge = bool(report.get("cascade_orphan_knowledge", True)),
+        requested_entries = [str(item) for item in report.get("requested_entries", [])],
+        resolved_entries = [str(item) for item in report.get("resolved_entries", [])],
+        missing_entries = [str(item) for item in report.get("missing_entries", [])],
+        invalid_entries = [str(item) for item in report.get("invalid_entries", [])],
+        planned_source_pages = [
+            str(item) for item in report.get("planned_source_pages", [])
+        ],
+        planned_analysis_pages = [
+            str(item) for item in report.get("planned_analysis_pages", [])
+        ],
+        planned_entity_pages = [
+            str(item) for item in report.get("planned_entity_pages", [])
+        ],
+        planned_concept_pages = [
+            str(item) for item in report.get("planned_concept_pages", [])
+        ],
+        planned_total_pages = int(report.get("planned_total_pages", 0)),
+        archived_pages = [str(item) for item in report.get("archived_pages", [])],
+        deleted_pages = [str(item) for item in report.get("deleted_pages", [])],
+        errors = [str(item) for item in report.get("errors", [])],
+    )
+
+
+def _to_wiki_data_graph_response(report: dict[str, Any]) -> WikiDataGraphResponse:
+    valid_kinds = {"source", "analysis", "entity", "concept"}
+
+    nodes: list[WikiDataGraphNode] = []
+    for item in report.get("nodes", []):
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind not in valid_kinds:
+            continue
+        nodes.append(
+            WikiDataGraphNode(
+                id = str(item.get("id", "")),
+                kind = kind,
+                label = str(item.get("label", "")),
+                inbound_links = int(item.get("inbound_links", 0)),
+                outbound_links = int(item.get("outbound_links", 0)),
+            )
+        )
+
+    edges: list[WikiDataGraphEdge] = []
+    for item in report.get("edges", []):
+        if not isinstance(item, dict):
+            continue
+        edges.append(
+            WikiDataGraphEdge(
+                id = str(item.get("id", "")),
+                source = str(item.get("source", "")),
+                target = str(item.get("target", "")),
+            )
+        )
+
+    return WikiDataGraphResponse(
+        status = str(report.get("status", "ok")),
+        nodes = nodes,
+        edges = edges,
+    )
+
+
+@router.get("/wiki/data/graph", response_model = WikiDataGraphResponse)
+async def wiki_data_graph(
+    include_analysis: bool = True,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return wiki graph data (sources/entities/concepts and optional analysis)."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.get_wiki_data_graph(include_analysis = include_analysis)
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki data graph failed: {exc}",
+        )
+
+    return _to_wiki_data_graph_response(report)
+
+
+@router.post("/wiki/delete/preview", response_model = WikiDeleteResponse)
+async def wiki_delete_preview(
+    payload: WikiDeletePreviewRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview wiki entry deletion impact including orphan knowledge cascade."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.delete_wiki_entries(
+            entry_type = payload.entry_type,
+            entries = payload.entries,
+            dry_run = True,
+            cascade_orphan_knowledge = payload.cascade_orphan_knowledge,
+            hard_delete = False,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki delete preview failed: {exc}",
+        )
+
+    return _to_wiki_delete_response(report)
+
+
+@router.post("/wiki/delete/apply", response_model = WikiDeleteResponse)
+async def wiki_delete_apply(
+    payload: WikiDeleteApplyRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Apply wiki entry deletion with archive-first default and optional hard delete."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.delete_wiki_entries(
+            entry_type = payload.entry_type,
+            entries = payload.entries,
+            dry_run = False,
+            cascade_orphan_knowledge = payload.cascade_orphan_knowledge,
+            hard_delete = payload.hard_delete,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki delete apply failed: {exc}",
+        )
+
+    return _to_wiki_delete_response(report)
 
 
 @router.post("/wiki/ingest", response_model = WikiIngestResponse)
@@ -2327,6 +2473,30 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+def _looks_like_title_generation_request(
+    system_prompt: str,
+    chat_messages: list[dict],
+) -> bool:
+    prompt = str(system_prompt or "").strip().lower()
+    if not prompt:
+        return False
+
+    # Frontend auto-title requests use this explicit instruction template.
+    if "write 1 concise chat title for the user's message" not in prompt:
+        return False
+    if "output title only" not in prompt:
+        return False
+
+    # Keep detection strict so ordinary user requests that mention "title"
+    # still receive normal RAG behavior.
+    user_messages = [
+        msg
+        for msg in chat_messages
+        if str(msg.get("role", "")) == "user" and str(msg.get("content", "")).strip()
+    ]
+    return len(chat_messages) <= 2 and len(user_messages) == 1
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -2574,59 +2744,72 @@ async def openai_chat_completions(
                 )
 
         # RAG context + chat history persistence for GGUF path.
+        is_title_generation_request = _looks_like_title_generation_request(
+            system_prompt,
+            chat_messages,
+        )
         try:
-            if _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT > 0:
-                _ingest_pending_raw_files(
-                    max_files = _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT,
+            if is_title_generation_request:
+                logger.debug(
+                    "Skipping GGUF RAG/wiki-history hooks for auto-title request"
                 )
-            if chat_messages:
-                last_user_msg = next(
-                    (m for m in reversed(chat_messages) if m.get("role") == "user"),
-                    None,
-                )
-                last_user_text = (
-                    str(last_user_msg.get("content", "")).strip()
-                    if last_user_msg
-                    else ""
-                )
-                if last_user_text:
-                    rag_context, rag_debug = _get_route_rag_context(
-                        last_user_text,
-                        return_debug = True,
-                        debug_source = "last-request",
+            else:
+                if _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT > 0:
+                    _ingest_pending_raw_files(
+                        max_files = _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT,
                     )
-                    global _LAST_RAG_DEBUG
-                    _LAST_RAG_DEBUG = rag_debug
-                    selected_pages = [
-                        str(item.get("page", "unknown"))
-                        for item in rag_debug.get("selected", [])
-                    ]
-                    logger.info(
-                        "RAG selection for GGUF request: pages=%d chars=%d selected=%s query=%r",
-                        len(selected_pages),
-                        len(rag_context),
-                        selected_pages,
-                        last_user_text,
+                if chat_messages:
+                    last_user_msg = next(
+                        (m for m in reversed(chat_messages) if m.get("role") == "user"),
+                        None,
                     )
-                    if rag_context:
-                        logger.info("Injecting RAG context into GGUF prompt")
-                        if _RAG_LOG_INJECTED_CONTEXT:
-                            logger.info(
-                                "Injected RAG context:\n%s",
-                                _loggable_rag_context(rag_context),
-                            )
-                        rag_block = (
-                            "Use the following context to help answer the user's request:\n\n"
-                            f"{rag_context}"
+                    last_user_text = (
+                        str(last_user_msg.get("content", "")).strip()
+                        if last_user_msg
+                        else ""
+                    )
+                    if last_user_text:
+                        rag_context, rag_debug = _get_route_rag_context(
+                            last_user_text,
+                            return_debug = True,
+                            debug_source = "last-request",
                         )
-                        if system_prompt:
-                            system_prompt = system_prompt.rstrip() + "\n\n" + rag_block
+                        global _LAST_RAG_DEBUG
+                        _LAST_RAG_DEBUG = rag_debug
+                        selected_pages = [
+                            str(item.get("page", "unknown"))
+                            for item in rag_debug.get("selected", [])
+                        ]
+                        ranking_mode = str(
+                            rag_debug.get("ranking_mode", "unknown") or "unknown"
+                        )
+                        logger.info(
+                            "RAG selection for GGUF request: rank_mode=%s pages=%d chars=%d selected=%s query=%r",
+                            ranking_mode,
+                            len(selected_pages),
+                            len(rag_context),
+                            selected_pages,
+                            last_user_text,
+                        )
+                        if rag_context:
+                            logger.info("Injecting RAG context into GGUF prompt")
+                            if _RAG_LOG_INJECTED_CONTEXT:
+                                logger.info(
+                                    "Injected RAG context:\n%s",
+                                    _loggable_rag_context(rag_context),
+                                )
+                            rag_block = (
+                                "Use the following context to help answer the user's request:\n\n"
+                                f"{rag_context}"
+                            )
+                            if system_prompt:
+                                system_prompt = system_prompt.rstrip() + "\n\n" + rag_block
+                            else:
+                                system_prompt = rag_block
                         else:
-                            system_prompt = rag_block
-                    else:
-                        logger.info("RAG produced empty context for GGUF request")
+                            logger.info("RAG produced empty context for GGUF request")
 
-                _save_chat_history_to_route_wiki(chat_messages)
+                    _save_chat_history_to_route_wiki(chat_messages)
         except Exception as e:
             logger.warning(f"Failed to apply GGUF RAG/wiki history hooks: {e}")
 

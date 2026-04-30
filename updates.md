@@ -3,6 +3,16 @@
 ## Scope
 This document summarizes the backend RAG changes made to unblock end-to-end wiki retrieval for GGUF chat, and adds practical debugging and cleanup workflows.
 
+## Incremental Update (2026-04-30, diagnostics + logging)
+
+- Added rank-mode logging parity for transformer/safetensors RAG path (`studio/backend/core/inference/inference.py`), so logs now include `rank_mode`, selected pages, context chars, and query similar to GGUF route diagnostics.
+- Wiki `log.md` headings now include UTC hour:minute (`YYYY-MM-DD HH:MM`) instead of date-only headings.
+- Wiki behaviour UI parity audit completed: runtime env coverage is complete (68 variables, no uncategorized variables), and category rendering now preserves backend runtime-spec order within each category.
+- Chunked-ingest robustness improved for large sources: default chunk context window is now capped by extraction/query limits, propagated into per-chunk query context overrides, and auto-replanned to a smaller window when a large source still yields only one chunk.
+- Low-quality answer gating now catches shorter repeated-token degeneration runs earlier, reducing cases where repetitive gibberish slips through as `Answer Mode: llm`.
+- Added explicit adaptive chunk replan diagnostics: runtime marker (`WIKI_CHUNK_REPLAN ...`) and `wiki/log.md` fields now show whether adaptive replan was applied and the window/chunk-count before→after values.
+- Wiki data dialog now provides explicit top-row hide/show controls for source, entity, and concept nodes (alongside analysis visibility).
+
 ## Incremental Update (2026-04-28)
 
 This incremental update hardens wiki maintenance quality in three areas:
@@ -514,6 +524,11 @@ Watcher auto-analysis prompt was rewritten to be source-first and explicitly gro
 
 ### Current recommended env baseline
 ```bash
+# Model-capacity-driven wiki char budgeting baseline
+UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY=125000
+UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO=0.50
+UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN=4.0
+
 # Watcher + auto-analysis
 UNSLOTH_WIKI_WATCHER=true
 UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST=true
@@ -888,6 +903,9 @@ Runtime UI note:
 
 | Env var | What it controls | Recommended value | Notes |
 |---|---|---|---|
+| `UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY` | Model token capacity baseline used to derive char limits when per-knob overrides are unset | `125000` | Set `0` to disable derivation and keep explicit per-knob values only. |
+| `UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO` | Safe fraction of model token capacity used for wiki budgets | `0.50` | Safe token budget = `MODEL_TOKEN_CAPACITY * MODEL_SAFE_TOKEN_RATIO`. |
+| `UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN` | Token-to-character heuristic used for derived wiki char limits | `4.0` | Safe char budget = safe token budget × chars-per-token. |
 | `UNSLOTH_WIKI_ENGINE_EXTRACT_SOURCE_MAX_CHARS` | Max source text fed into extraction | `20000` | Raise for long papers only if extraction misses key sections. |
 | `UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS` | Max excerpt persisted on source pages | `8000` | Larger excerpts improve traceability but increase page size. |
 | `UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS` | Max chars read per page for ranking | `24000` | Do not set to `0` while debugging quality; unlimited can destabilize ranking. |
@@ -903,6 +921,21 @@ Runtime UI note:
 | `UNSLOTH_WIKI_ENGINE_LLM_RERANK_PREVIEW_CHARS` | Per-candidate preview chars for rerank prompt | `420` | Raise only if reranker lacks enough local context. |
 | `UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_OUTPUT` | Enable reranker output logging for diagnostics | `true` during tuning, `false` for quieter logs | Keep on while validating retrieval quality; disable in noisy/production runs. |
 | `UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_MAX_CHARS` | Max chars logged per reranker output entry | `4000` | Lower if logs are too verbose; raise only when deeper rerank debugging is needed. |
+
+Quick copy-paste preset for a 125k model-token baseline:
+
+```bash
+UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY=125000
+UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO=0.50
+UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN=4.0
+```
+
+With defaults above (and no explicit per-knob char overrides), derived budgets are:
+- Safe token budget: `62500`
+- Safe char budget: `250000`
+- Derived `EXTRACT_SOURCE_MAX_CHARS`, `QUERY_CONTEXT_MAX_CHARS`, `RANKING_MAX_CHARS`, `CHUNK_ANALYSIS_CONTEXT_WINDOW_CHARS`, `CHUNK_ANALYSIS_MAX_CHARS`: `250000`
+- Derived `SOURCE_EXCERPT_MAX_CHARS`: `50000`
+- Derived `MAX_CHARS_PER_PAGE` (with `MAX_CONTEXT_PAGES=16`): `15625`
 
 #### 6.4 Background auto-analysis and fallback controls
 

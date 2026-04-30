@@ -67,7 +67,7 @@ const CATEGORY_ORDER = [
   "Other",
 ] as const;
 
-const EXPECTED_RUNTIME_WIKI_ENV_VARS = 59;
+const EXPECTED_RUNTIME_WIKI_ENV_VARS = 68;
 
 function categoryForVariable(name: string): (typeof CATEGORY_ORDER)[number] {
   if (
@@ -123,6 +123,9 @@ async function parseApiErrorMessage(response: Response): Promise<string> {
     if (typeof payload.detail === "string" && payload.detail.trim()) {
       return payload.detail;
     }
+    if (payload.detail !== undefined) {
+      return `Request failed (${response.status}): ${JSON.stringify(payload.detail)}`;
+    }
   } catch {
     // Ignore parse failures and fall back to status text.
   }
@@ -175,7 +178,8 @@ export function WikiBehaviourDialog({
 
     return CATEGORY_ORDER.filter((category) => grouped.has(category)).map((category) => ({
       category,
-      items: (grouped.get(category) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+      // Preserve backend runtime spec ordering within each category.
+      items: grouped.get(category) ?? [],
     }));
   }, [query, variables]);
 

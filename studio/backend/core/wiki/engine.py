@@ -321,6 +321,11 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _env_is_set(name: str) -> bool:
+    raw = os.getenv(name)
+    return raw is not None and raw.strip() != ""
+
+
 _MERGE_MAINTENANCE_MAX_MERGES = 512
 _MERGE_MAINTENANCE_DEFAULT_MAX_MERGES = _env_int(
     "UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES",
@@ -407,6 +412,31 @@ class WikiConfig:
     vault_root: Path
     wiki_dirname: str = "wiki"
     raw_dirname: str = "raw"
+    model_token_capacity: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY",
+            200000,
+            minimum = 0,
+        )
+    )
+    model_safe_token_ratio: float = field(
+        default_factory = lambda: _env_float(
+            "UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO",
+            0.50,
+            minimum = 0.10,
+            maximum = 0.95,
+        )
+    )
+    model_chars_per_token: float = field(
+        default_factory = lambda: _env_float(
+            "UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN",
+            4.0,
+            minimum = 1.0,
+            maximum = 8.0,
+        )
+    )
+    model_safe_token_budget: int = field(init = False, default = 0)
+    model_safe_char_budget: int = field(init = False, default = 0)
     max_context_pages: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES", 16, minimum = 0
@@ -480,6 +510,11 @@ class WikiConfig:
     ranking_llm_rerank_log_max_chars: int = field(
         default_factory = lambda: _env_int(
             "UNSLOTH_WIKI_ENGINE_LLM_RERANK_LOG_MAX_CHARS", 4000, minimum = 200
+        )
+    )
+    ranking_analysis_first: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_ENGINE_RANKING_ANALYSIS_FIRST", True
         )
     )
     source_excerpt_max_chars: int = field(
@@ -616,7 +651,127 @@ class WikiConfig:
             "UNSLOTH_WIKI_ENGINE_ENTITY_QUERY_FOCUS_LLM_ENABLED", True
         )
     )
+    chunk_analysis_context_window_chars: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_CONTEXT_WINDOW_CHARS",
+            125000,
+            minimum = 1200,
+        )
+    )
+    chunk_analysis_target_ratio: float = field(
+        default_factory = lambda: _env_float(
+            "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_TARGET_RATIO",
+            0.70,
+            minimum = 0.35,
+            maximum = 0.95,
+        )
+    )
+    chunk_analysis_overlap_ratio: float = field(
+        default_factory = lambda: _env_float(
+            "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_OVERLAP_RATIO",
+            0.08,
+            minimum = 0.0,
+            maximum = 0.40,
+        )
+    )
+    chunk_analysis_min_chars: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_MIN_CHARS",
+            1200,
+            minimum = 300,
+        )
+    )
+    chunk_analysis_max_chars: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_MAX_CHARS",
+            125000,
+            minimum = 1200,
+        )
+    )
     stale_days: int = 30
+
+    def __post_init__(self) -> None:
+        token_capacity = max(0, int(self.model_token_capacity))
+        if token_capacity > 0:
+            safe_tokens = max(256, int(token_capacity * float(self.model_safe_token_ratio)))
+            safe_chars = max(1200, int(safe_tokens * float(self.model_chars_per_token)))
+
+            # Only apply model-derived defaults when values are still at built-in
+            # defaults and have not been explicitly overridden via env.
+            extract_default = 20000
+            query_default = 24000
+            ranking_default = 24000
+            source_excerpt_default = 8000
+            max_chars_per_page_default = 3500
+            chunk_context_default = 125000
+            chunk_max_default = 125000
+
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_EXTRACT_SOURCE_MAX_CHARS")
+                and int(self.extract_source_max_chars) == extract_default
+            ):
+                self.extract_source_max_chars = safe_chars
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS")
+                and int(self.query_context_max_chars) == query_default
+            ):
+                self.query_context_max_chars = safe_chars
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS")
+                and int(self.ranking_max_chars) == ranking_default
+            ):
+                self.ranking_max_chars = safe_chars
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_CONTEXT_WINDOW_CHARS")
+                and int(self.chunk_analysis_context_window_chars) == chunk_context_default
+            ):
+                self.chunk_analysis_context_window_chars = safe_chars
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_MAX_CHARS")
+                and int(self.chunk_analysis_max_chars) == chunk_max_default
+            ):
+                self.chunk_analysis_max_chars = safe_chars
+
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS")
+                and int(self.source_excerpt_max_chars) == source_excerpt_default
+            ):
+                self.source_excerpt_max_chars = max(1200, int(safe_chars * 0.20))
+
+            if (
+                not _env_is_set("UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE")
+                and int(self.max_chars_per_page) == max_chars_per_page_default
+            ):
+                if int(self.max_context_pages) > 0:
+                    self.max_chars_per_page = max(
+                        1200,
+                        int(safe_chars / max(1, int(self.max_context_pages))),
+                    )
+                else:
+                    self.max_chars_per_page = max(1200, int(safe_chars * 0.25))
+
+            self.model_safe_token_budget = safe_tokens
+            self.model_safe_char_budget = safe_chars
+
+        self.max_context_pages = max(0, int(self.max_context_pages))
+        self.max_chars_per_page = max(0, int(self.max_chars_per_page))
+        self.query_context_max_chars = max(0, int(self.query_context_max_chars))
+        self.extract_source_max_chars = max(1, int(self.extract_source_max_chars))
+        self.ranking_max_chars = max(0, int(self.ranking_max_chars))
+        self.source_excerpt_max_chars = max(1, int(self.source_excerpt_max_chars))
+        self.chunk_analysis_context_window_chars = max(
+            1200,
+            int(self.chunk_analysis_context_window_chars),
+        )
+        self.chunk_analysis_min_chars = max(300, int(self.chunk_analysis_min_chars))
+        self.chunk_analysis_max_chars = max(
+            self.chunk_analysis_min_chars,
+            int(self.chunk_analysis_max_chars),
+        )
+        self.chunk_analysis_context_window_chars = max(
+            self.chunk_analysis_context_window_chars,
+            self.chunk_analysis_min_chars,
+        )
 
 
 class LLMWikiEngine:
@@ -710,6 +865,268 @@ class LLMWikiEngine:
             "extraction": extraction.get("_meta", {}),
         }
 
+    def ingest_source_with_chunked_analysis(
+        self,
+        source_title: str,
+        source_text: str,
+        source_ref: Optional[str] = None,
+        context_window_chars: Optional[int] = None,
+        chunk_target_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        ingest_report = self.ingest_source(
+            source_title = source_title,
+            source_text = source_text,
+            source_ref = source_ref,
+        )
+
+        source_page = str(ingest_report.get("source_page", "")).strip()
+        if not source_page:
+            return {
+                "status": "error",
+                "reason": "source_page_missing",
+                "source_ingest": ingest_report,
+            }
+
+        normalized_source_page = self._normalize_wikilink(source_page)
+        source_slug = normalized_source_page.split("/", 1)[-1]
+        if not source_slug:
+            source_slug = self._slug(source_title)
+
+        effective_context_window_chars = (
+            int(self.cfg.chunk_analysis_context_window_chars)
+            if context_window_chars is None
+            else int(context_window_chars)
+        )
+        if context_window_chars is None:
+            # Keep default chunk windows bounded by extraction/query limits so
+            # auto-chunked analyses do not collapse into a single oversized chunk.
+            extract_cap = max(1200, int(self.cfg.extract_source_max_chars))
+            effective_context_window_chars = min(
+                effective_context_window_chars,
+                extract_cap,
+            )
+            query_cap = int(self.cfg.query_context_max_chars)
+            if query_cap > 0:
+                effective_context_window_chars = min(
+                    effective_context_window_chars,
+                    query_cap,
+                )
+        effective_context_window_chars = max(1200, effective_context_window_chars)
+        adaptive_replan_applied = False
+        adaptive_replan_initial_context_window_chars = effective_context_window_chars
+        adaptive_replan_initial_chunk_count = 0
+
+        chunk_plan = self._plan_source_chunks(
+            source_text = source_text,
+            context_window_chars = effective_context_window_chars,
+            chunk_target_chars = chunk_target_chars,
+            chunk_overlap_chars = chunk_overlap_chars,
+        )
+        chunk_items = list(chunk_plan.get("chunks", []))
+        adaptive_replan_initial_chunk_count = len(chunk_items)
+        if context_window_chars is None and len(chunk_items) <= 1:
+            source_chars = int(chunk_plan.get("source_chars", 0))
+            large_source_threshold = max(50000, int(self.cfg.chunk_analysis_min_chars) * 2)
+            if source_chars >= large_source_threshold:
+                # Auto-mode should produce multiple chunks for truly large sources
+                # even when configured context windows are very large.
+                adaptive_context_window_chars = max(
+                    1200,
+                    min(
+                        effective_context_window_chars,
+                        source_chars // 2,
+                    ),
+                )
+                if adaptive_context_window_chars < effective_context_window_chars:
+                    original_context_window_chars = effective_context_window_chars
+                    effective_context_window_chars = adaptive_context_window_chars
+                    chunk_plan = self._plan_source_chunks(
+                        source_text = source_text,
+                        context_window_chars = effective_context_window_chars,
+                        chunk_target_chars = chunk_target_chars,
+                        chunk_overlap_chars = chunk_overlap_chars,
+                    )
+                    chunk_items = list(chunk_plan.get("chunks", []))
+                    adaptive_replan_applied = True
+                    logger.info(
+                        "WIKI_CHUNK_REPLAN source=%s source_chars=%d window_chars=%d->%d chunk_count=%d->%d",
+                        source_title,
+                        source_chars,
+                        original_context_window_chars,
+                        effective_context_window_chars,
+                        adaptive_replan_initial_chunk_count,
+                        len(chunk_items),
+                    )
+
+        chunk_source_pages: List[str] = []
+        chunk_analysis_pages: List[str] = []
+        failed_chunks: List[Dict[str, Any]] = []
+        expected_chunk_source_slugs: Set[str] = set()
+        expected_chunk_analysis_slugs: Set[str] = set()
+
+        total_chunks = len(chunk_items)
+        for chunk in chunk_items:
+            chunk_index = max(1, int(chunk.get("index", len(chunk_source_pages) + 1)))
+            chunk_text = str(chunk.get("text", ""))
+
+            chunk_source_slug = self._chunk_source_slug(
+                source_slug = source_slug,
+                chunk_index = chunk_index,
+                chunk_count = total_chunks,
+            )
+            expected_chunk_source_slugs.add(chunk_source_slug)
+            chunk_source_rel = f"sources/{chunk_source_slug}"
+            chunk_source_pages.append(chunk_source_rel)
+
+            chunk_title = f"{source_title} - Chunk {chunk_index}/{total_chunks}"
+            chunk_ref = self._chunk_source_ref(
+                source_ref = source_ref,
+                source_page = source_page,
+                chunk_index = chunk_index,
+                chunk_count = total_chunks,
+            )
+
+            chunk_extraction = self._extract_from_source(chunk_title, chunk_text)
+            chunk_source_md = self._render_source_page(
+                title = chunk_title,
+                source_ref = chunk_ref,
+                extracted = chunk_extraction,
+                source_text = chunk_text,
+                ingested_at = self._now_iso(),
+            )
+            (self.sources_dir / f"{chunk_source_slug}.md").write_text(
+                chunk_source_md,
+                encoding = "utf-8",
+            )
+
+            chunk_question = self._source_first_summary_question(
+                title = chunk_title,
+                source_slug = chunk_source_rel,
+            )
+            chunk_query_report = self.query(
+                question = chunk_question,
+                save_answer = True,
+                query_context_max_chars_override = effective_context_window_chars,
+                preferred_context_page = chunk_source_rel,
+                keep_preferred_context_full = True,
+                preferred_context_only = True,
+            )
+
+            raw_answer_page = str(chunk_query_report.get("answer_page", "")).strip()
+            if not raw_answer_page:
+                failed_chunks.append(
+                    {
+                        "chunk_index": chunk_index,
+                        "source_page": chunk_source_rel,
+                        "reason": "chunk_analysis_page_missing",
+                    }
+                )
+                continue
+
+            raw_answer_rel = self._normalize_wikilink(raw_answer_page)
+            raw_answer_path = self.wiki_dir / f"{raw_answer_rel}.md"
+            chunk_analysis_slug = self._chunk_analysis_slug(
+                source_slug = source_slug,
+                chunk_index = chunk_index,
+                chunk_count = total_chunks,
+            )
+            chunk_analysis_rel = f"analysis/{chunk_analysis_slug}"
+            chunk_analysis_path = self.analysis_dir / f"{chunk_analysis_slug}.md"
+
+            if not raw_answer_path.exists():
+                failed_chunks.append(
+                    {
+                        "chunk_index": chunk_index,
+                        "source_page": chunk_source_rel,
+                        "reason": "chunk_analysis_file_not_found",
+                    }
+                )
+                continue
+
+            if chunk_analysis_path.exists() and chunk_analysis_path != raw_answer_path:
+                chunk_analysis_path.unlink()
+            if chunk_analysis_path != raw_answer_path:
+                shutil.move(str(raw_answer_path), str(chunk_analysis_path))
+
+            expected_chunk_analysis_slugs.add(chunk_analysis_slug)
+            chunk_analysis_pages.append(chunk_analysis_rel)
+
+        stale_chunk_source_pages_removed = self._cleanup_stale_chunk_source_pages(
+            source_slug = source_slug,
+            active_chunk_slugs = expected_chunk_source_slugs,
+        )
+        stale_chunk_analysis_pages_removed: List[str] = []
+        if not failed_chunks:
+            stale_chunk_analysis_pages_removed = self._cleanup_stale_chunk_analysis_pages(
+                source_slug = source_slug,
+                active_chunk_analysis_slugs = expected_chunk_analysis_slugs,
+            )
+
+        merge_report = self._merge_chunk_analysis_pages(
+            source_title = source_title,
+            source_page = source_page,
+            source_slug = source_slug,
+            context_window_chars = effective_context_window_chars,
+            chunk_plan = chunk_plan,
+            chunk_source_pages = chunk_source_pages,
+            chunk_analysis_pages = chunk_analysis_pages,
+        )
+
+        merged_analysis_page = str(merge_report.get("merged_analysis_page", "")).strip()
+        adaptive_replan_details_line = ""
+        if adaptive_replan_applied:
+            adaptive_replan_details_line = (
+                "- Adaptive replan details: "
+                f"window_chars={adaptive_replan_initial_context_window_chars}->{effective_context_window_chars}, "
+                f"chunk_count={adaptive_replan_initial_chunk_count}->{len(chunk_items)}\n"
+            )
+        self._rebuild_index()
+        self._append_log(
+            f"## [{self._today()}] chunk-analysis | {source_title}\n"
+            f"- Source page: [[{source_page}]]\n"
+            f"- Context window chars: {effective_context_window_chars}\n"
+            f"- Adaptive replan applied: {'yes' if adaptive_replan_applied else 'no'}\n"
+            f"{adaptive_replan_details_line}"
+            f"- Chunk target chars: {chunk_plan.get('chunk_target_chars', 0)}\n"
+            f"- Chunk overlap chars: {chunk_plan.get('chunk_overlap_chars', 0)}\n"
+            f"- Chunk source pages: {len(chunk_source_pages)}\n"
+            f"- Chunk analysis pages: {len(chunk_analysis_pages)}\n"
+            f"- Failed chunks: {len(failed_chunks)}\n"
+            f"- Stale chunk source pages removed: {len(stale_chunk_source_pages_removed)}\n"
+            f"- Stale chunk analysis pages removed: {len(stale_chunk_analysis_pages_removed)}\n"
+            + (
+                f"- Merged analysis page: [[{merged_analysis_page}]]\n"
+                if merged_analysis_page
+                else "- Merged analysis page: none\n"
+            )
+        )
+
+        return {
+            "status": "ok",
+            "source_page": source_page,
+            "source_ingest": ingest_report,
+            "context_window_chars": effective_context_window_chars,
+            "adaptive_replan_applied": adaptive_replan_applied,
+            "adaptive_replan_initial_context_window_chars": adaptive_replan_initial_context_window_chars,
+            "adaptive_replan_initial_chunk_count": adaptive_replan_initial_chunk_count,
+            "adaptive_replan_final_chunk_count": len(chunk_items),
+            "chunk_planner": {
+                "source_chars": chunk_plan.get("source_chars", 0),
+                "chunk_target_chars": chunk_plan.get("chunk_target_chars", 0),
+                "chunk_overlap_chars": chunk_plan.get("chunk_overlap_chars", 0),
+                "chunk_count": len(chunk_items),
+            },
+            "chunk_source_pages": chunk_source_pages,
+            "chunk_analysis_pages": chunk_analysis_pages,
+            "merged_analysis_page": merged_analysis_page,
+            "merge_answer_mode": merge_report.get("answer_mode", "unknown"),
+            "merge_fallback_reason": merge_report.get("fallback_reason"),
+            "failed_chunks": failed_chunks,
+            "stale_chunk_source_pages_removed": stale_chunk_source_pages_removed,
+            "stale_chunk_analysis_pages_removed": stale_chunk_analysis_pages_removed,
+        }
+
     def query(
         self,
         question: str,
@@ -762,6 +1179,14 @@ class LLMWikiEngine:
             preferred_entry = next(
                 (item for item in ranked if item[0] == preferred_md), None
             )
+            if preferred_entry is None:
+                preferred_path = self.wiki_dir / preferred_md
+                if preferred_path.exists():
+                    seed_score = max((score for _, score in ranked), default = 1.0)
+                    preferred_entry = (preferred_md, seed_score + 1.0)
+                    ranked = [preferred_entry] + [
+                        item for item in ranked if item[0] != preferred_md
+                    ]
             if preferred_entry is not None:
                 if effective_preferred_context_only:
                     top_pages = [preferred_entry]
@@ -911,6 +1336,7 @@ class LLMWikiEngine:
                 f"- llm_rerank_enabled: {self.cfg.ranking_llm_rerank_enabled}",
                 f"- llm_rerank_candidates: {self.cfg.ranking_llm_rerank_candidates}",
                 f"- llm_rerank_top_n: {self.cfg.ranking_llm_rerank_top_n}",
+                f"- ranking_analysis_first: {self.cfg.ranking_analysis_first}",
                 f"- max_context_pages: {self.cfg.max_context_pages}",
                 f"- max_chars_per_page: {self.cfg.max_chars_per_page}",
                 f"- query_context_max_chars: {effective_query_context_max_chars}",
@@ -973,9 +1399,9 @@ class LLMWikiEngine:
                 stale.append((rel, age_days))
 
         known_concepts = {p.stem for p in self.concepts_dir.glob("*.md")}
-        candidate_concepts: Dict[str, int] = {}
         low_coverage_sources: List[str] = []
-        for source_page in self.sources_dir.glob("*.md"):
+        semantic_source_cards: List[Dict[str, str]] = []
+        for source_page in sorted(self.sources_dir.glob("*.md")):
             source_text = source_page.read_text(encoding = "utf-8", errors = "ignore")
 
             if (
@@ -984,36 +1410,50 @@ class LLMWikiEngine:
             ) or "- status: fallback" in source_text:
                 low_coverage_sources.append(f"sources/{source_page.stem}.md")
 
-            cleaned = self._clean_source_text(source_text)
-            for concept in self._top_concepts(cleaned, limit = 6):
-                if len(concept) < 6:
-                    continue
-                slug = self._slug(concept)
-                candidate_concepts[slug] = candidate_concepts.get(slug, 0) + 1
-
-        missing_concepts = sorted(
-            [
-                slug
-                for slug, count in candidate_concepts.items()
-                if count >= 2 and slug not in known_concepts
-            ]
-        )
-        semantic_missing_concepts: Dict[str, Any] = {
-            "status": "skipped",
-            "reason": "no_missing_candidates",
-            "kept_missing": 0,
-            "rejected_candidates": 0,
-            "related_to_existing": 0,
-        }
-        if missing_concepts:
-            filtered_missing, semantic_missing_concepts = (
-                self._semantic_filter_missing_or_related_concepts(
-                    missing_candidates = missing_concepts,
-                    candidate_counts = candidate_concepts,
-                    known_concepts = known_concepts,
-                )
+            source_rel = f"sources/{source_page.stem}"
+            source_summary = self._extract_markdown_section(source_text, "Summary")
+            if not source_summary.strip():
+                source_summary = self._clean_source_text(source_text)
+            source_summary = self._normalize_web_text(
+                self._first_sentences(source_summary, 320),
+                320,
             )
-            missing_concepts = filtered_missing
+
+            entities = self._extract_markdown_bullets(
+                self._extract_markdown_section(source_text, "Entities Mentioned"),
+                limit = 6,
+            )
+            concepts = self._extract_markdown_bullets(
+                self._extract_markdown_section(source_text, "Concepts Mentioned"),
+                limit = 6,
+            )
+
+            frontmatter, _ = self._split_frontmatter_block(source_text)
+            source_title = ""
+            if frontmatter:
+                title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", frontmatter)
+                if title_match:
+                    source_title = self._normalize_web_text(
+                        title_match.group(1).strip().strip("\"'"),
+                        140,
+                    )
+
+            semantic_source_cards.append(
+                {
+                    "source": source_rel,
+                    "title": source_title,
+                    "summary": source_summary,
+                    "entities": ", ".join(entities[:4]),
+                    "concepts": ", ".join(concepts[:4]),
+                }
+            )
+
+        missing_concepts, semantic_missing_concepts = (
+            self._semantic_filter_missing_or_related_concepts(
+                source_cards = semantic_source_cards,
+                known_concepts = known_concepts,
+            )
+        )
 
         entity_merge_candidates = self._merge_candidates_for_folder(
             self.entities_dir,
@@ -1313,6 +1753,337 @@ class LLMWikiEngine:
             "errors": errors + semantic_merge_errors,
             "knowledge_compaction": knowledge_compaction,
         }
+
+    def _resolve_delete_entry_rel(self, entry_type: str, entry: str) -> Optional[str]:
+        normalized = self._normalize_wikilink(entry)
+        if not normalized:
+            return None
+
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        if normalized.startswith("wiki/"):
+            normalized = normalized[5:]
+        normalized = normalized.lstrip("/")
+
+        if entry_type == "source":
+            if normalized.startswith("sources/"):
+                return normalized
+            if "/" in normalized:
+                return None
+            return f"sources/{normalized}"
+
+        if entry_type == "analysis":
+            if normalized.startswith("analysis/"):
+                return normalized
+            if "/" in normalized:
+                return None
+            return f"analysis/{normalized}"
+
+        if entry_type == "entity":
+            if normalized.startswith("entities/"):
+                return normalized
+            if "/" in normalized:
+                return None
+            return f"entities/{normalized}"
+
+        if entry_type == "concept":
+            if normalized.startswith("concepts/"):
+                return normalized
+            if "/" in normalized:
+                return None
+            return f"concepts/{normalized}"
+
+        return None
+
+    def _collect_linked_knowledge_pages(
+        self,
+        rel_pages: Set[str],
+        existing_pages: Set[str],
+    ) -> Set[str]:
+        linked: Set[str] = set()
+        for rel in sorted(rel_pages):
+            full = self.wiki_dir / rel
+            if not full.exists() or not full.is_file():
+                continue
+
+            text = full.read_text(encoding = "utf-8", errors = "ignore")
+            for target in self._extract_link_targets(text):
+                if not (target.startswith("entities/") or target.startswith("concepts/")):
+                    continue
+                rel_target = f"{target}.md"
+                if rel_target in existing_pages:
+                    linked.add(rel_target)
+
+        return linked
+
+    def _cascade_orphan_knowledge_pages(
+        self,
+        candidate_knowledge_pages: Set[str],
+        planned_core_removals: Set[str],
+        existing_pages: Set[str],
+    ) -> Set[str]:
+        if not candidate_knowledge_pages:
+            return set()
+
+        link_graph = self._build_link_graph(sorted(existing_pages))
+        inbound = link_graph.get("inbound", {})
+
+        removed: Set[str] = set(planned_core_removals)
+        pending: Set[str] = set(candidate_knowledge_pages)
+        orphaned: Set[str] = set()
+
+        while pending:
+            newly_orphaned: Set[str] = set()
+            for rel in sorted(pending):
+                incoming = [
+                    src
+                    for src in inbound.get(rel, [])
+                    if src not in removed
+                    and src != rel
+                    and src not in {"index.md", "log.md"}
+                ]
+                if not incoming:
+                    newly_orphaned.add(rel)
+
+            if not newly_orphaned:
+                break
+
+            orphaned.update(newly_orphaned)
+            removed.update(newly_orphaned)
+            pending -= newly_orphaned
+
+        return orphaned
+
+    def _plan_delete_wiki_entries(
+        self,
+        entry_type: str,
+        entries: List[str],
+        cascade_orphan_knowledge: bool = True,
+    ) -> Dict[str, Any]:
+        normalized_entry_type = str(entry_type or "").strip().lower()
+        requested_entries = [
+            self._normalize_wikilink(str(item).strip())
+            for item in entries
+            if str(item).strip()
+        ]
+
+        report: Dict[str, Any] = {
+            "status": "ok",
+            "entry_type": normalized_entry_type,
+            "cascade_orphan_knowledge": bool(cascade_orphan_knowledge),
+            "requested_entries": requested_entries,
+            "resolved_entries": [],
+            "missing_entries": [],
+            "invalid_entries": [],
+            "planned_source_pages": [],
+            "planned_analysis_pages": [],
+            "planned_entity_pages": [],
+            "planned_concept_pages": [],
+            "planned_total_pages": 0,
+            "_planned_rel_pages": [],
+        }
+
+        if normalized_entry_type not in {"source", "analysis", "entity", "concept"}:
+            report["status"] = "error"
+            report["invalid_entries"] = requested_entries
+            return report
+
+        existing_pages = set(self._all_wiki_pages())
+        existing_source_pages = [p for p in existing_pages if p.startswith("sources/")]
+        existing_analysis_pages = [
+            p for p in existing_pages if p.startswith("analysis/")
+        ]
+
+        resolved_entries: List[str] = []
+        for raw in requested_entries:
+            resolved = self._resolve_delete_entry_rel(normalized_entry_type, raw)
+            if not resolved:
+                report["invalid_entries"].append(raw)
+                continue
+
+            rel_md = f"{resolved}.md"
+            if rel_md not in existing_pages:
+                report["missing_entries"].append(resolved)
+                continue
+
+            if resolved not in resolved_entries:
+                resolved_entries.append(resolved)
+
+        planned_source_pages: Set[str] = set()
+        planned_analysis_pages: Set[str] = set()
+        requested_entity_pages: Set[str] = set()
+        requested_concept_pages: Set[str] = set()
+
+        if normalized_entry_type == "source":
+            for resolved in resolved_entries:
+                planned_source_pages.add(f"{resolved}.md")
+
+            source_stems = {Path(rel).stem for rel in planned_source_pages}
+            for rel in existing_source_pages:
+                stem = Path(rel).stem
+                if any(stem.startswith(f"{base}--chunk-") for base in source_stems):
+                    planned_source_pages.add(rel)
+
+            source_targets = {
+                rel[:-3] if rel.endswith(".md") else rel for rel in planned_source_pages
+            }
+            for rel in existing_analysis_pages:
+                stem = Path(rel).stem
+                if any(stem.startswith(f"{base}--chunk-") for base in source_stems):
+                    planned_analysis_pages.add(rel)
+                    continue
+
+                page_path = self.wiki_dir / rel
+                if not page_path.exists():
+                    continue
+                text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                if self._extract_link_targets(text).intersection(source_targets):
+                    planned_analysis_pages.add(rel)
+        elif normalized_entry_type == "analysis":
+            for resolved in resolved_entries:
+                planned_analysis_pages.add(f"{resolved}.md")
+        elif normalized_entry_type == "entity":
+            for resolved in resolved_entries:
+                requested_entity_pages.add(f"{resolved}.md")
+        else:
+            for resolved in resolved_entries:
+                requested_concept_pages.add(f"{resolved}.md")
+
+        planned_core_removals = set(planned_source_pages) | set(planned_analysis_pages)
+        candidate_knowledge_pages = self._collect_linked_knowledge_pages(
+            planned_core_removals,
+            existing_pages,
+        )
+
+        orphan_knowledge_pages: Set[str] = set()
+        if cascade_orphan_knowledge and planned_core_removals:
+            orphan_knowledge_pages = self._cascade_orphan_knowledge_pages(
+                candidate_knowledge_pages = candidate_knowledge_pages,
+                planned_core_removals = planned_core_removals,
+                existing_pages = existing_pages,
+            )
+
+        planned_entity_pages = sorted(
+            set(
+                requested_entity_pages
+                | {
+                    rel
+                    for rel in orphan_knowledge_pages
+                    if rel.startswith("entities/") and rel.endswith(".md")
+                }
+            )
+        )
+        planned_concept_pages = sorted(
+            set(
+                requested_concept_pages
+                | {
+                    rel
+                    for rel in orphan_knowledge_pages
+                    if rel.startswith("concepts/") and rel.endswith(".md")
+                }
+            )
+        )
+
+        planned_rel_pages = sorted(
+            set(
+                sorted(planned_source_pages)
+                + sorted(planned_analysis_pages)
+                + planned_entity_pages
+                + planned_concept_pages
+            )
+        )
+
+        report["resolved_entries"] = resolved_entries
+        report["planned_source_pages"] = [
+            rel[:-3] if rel.endswith(".md") else rel for rel in sorted(planned_source_pages)
+        ]
+        report["planned_analysis_pages"] = [
+            rel[:-3] if rel.endswith(".md") else rel for rel in sorted(planned_analysis_pages)
+        ]
+        report["planned_entity_pages"] = [
+            rel[:-3] if rel.endswith(".md") else rel for rel in planned_entity_pages
+        ]
+        report["planned_concept_pages"] = [
+            rel[:-3] if rel.endswith(".md") else rel for rel in planned_concept_pages
+        ]
+        report["planned_total_pages"] = len(planned_rel_pages)
+        report["_planned_rel_pages"] = planned_rel_pages
+        return report
+
+    def delete_wiki_entries(
+        self,
+        entry_type: str,
+        entries: List[str],
+        dry_run: bool = True,
+        cascade_orphan_knowledge: bool = True,
+        hard_delete: bool = False,
+    ) -> Dict[str, Any]:
+        report = self._plan_delete_wiki_entries(
+            entry_type = entry_type,
+            entries = entries,
+            cascade_orphan_knowledge = cascade_orphan_knowledge,
+        )
+        report["dry_run"] = bool(dry_run)
+        report["hard_delete"] = bool(hard_delete)
+        report["archived_pages"] = []
+        report["deleted_pages"] = []
+        report["errors"] = []
+
+        if report.get("status") == "error":
+            report.pop("_planned_rel_pages", None)
+            return report
+
+        planned_rel_pages = [
+            str(item)
+            for item in report.get("_planned_rel_pages", [])
+            if str(item).strip()
+        ]
+        if not planned_rel_pages:
+            report.pop("_planned_rel_pages", None)
+            return report
+
+        for rel in planned_rel_pages:
+            page_path = self.wiki_dir / rel
+            if not page_path.exists() or not page_path.is_file():
+                continue
+
+            try:
+                if hard_delete:
+                    if not dry_run:
+                        page_path.unlink()
+                    report["deleted_pages"].append(
+                        rel[:-3] if rel.endswith(".md") else rel
+                    )
+                else:
+                    archive_target, archive_rel = self._archive_target_for_page(rel)
+                    if not dry_run:
+                        archive_target.parent.mkdir(parents = True, exist_ok = True)
+                        shutil.move(str(page_path), str(archive_target))
+                    report["archived_pages"].append(
+                        self._normalize_wikilink(archive_rel)
+                    )
+            except Exception as exc:
+                report["errors"].append(f"{rel}: {exc}")
+
+        had_changes = bool(report["archived_pages"] or report["deleted_pages"])
+        if not dry_run and had_changes:
+            self._rebuild_index()
+            self._append_log(
+                f"## [{self._today()}] delete | wiki\n"
+                f"- entry_type: {str(report.get('entry_type', 'unknown'))}\n"
+                f"- Requested entries: {len(report.get('requested_entries', []))}\n"
+                f"- Planned pages: {int(report.get('planned_total_pages', 0))}\n"
+                f"- hard_delete: {bool(hard_delete)}\n"
+                f"- Archived pages: {len(report['archived_pages'])}\n"
+                f"- Deleted pages: {len(report['deleted_pages'])}\n"
+                f"- Errors: {len(report['errors'])}\n"
+            )
+
+        if report["errors"]:
+            report["status"] = "partial" if had_changes else "error"
+
+        report.pop("_planned_rel_pages", None)
+        return report
 
     def compact_knowledge_pages(
         self,
@@ -1679,6 +2450,7 @@ class LLMWikiEngine:
             "queries_used": 0,
             "concepts_created": 0,
             "created_pages": [],
+            "web_discovery_audit": [],
             "failed_concepts": [],
         }
         if web_gap_fill_enabled:
@@ -2484,6 +3256,12 @@ class LLMWikiEngine:
                 "plan_reason": plan.get("reason"),
                 "selector_status": "skipped",
                 "selector_reason": "query_budget_exhausted",
+                "planned_queries": [
+                    self._normalize_web_text(str(item).strip(), 180)
+                    for item in plan.get("queries", [])
+                    if str(item).strip()
+                ],
+                "selected_urls": [],
                 "queries_consumed": 0,
                 "direct_results": 0,
             }
@@ -2501,6 +3279,8 @@ class LLMWikiEngine:
                 "plan_reason": plan.get("reason"),
                 "selector_status": "skipped",
                 "selector_reason": "no_planned_queries",
+                "planned_queries": [],
+                "selected_urls": [],
                 "queries_consumed": 0,
                 "direct_results": 0,
             }
@@ -2536,6 +3316,8 @@ class LLMWikiEngine:
                 "plan_reason": plan.get("reason"),
                 "selector_status": "skipped",
                 "selector_reason": "no_search_results",
+                "planned_queries": planned_queries,
+                "selected_urls": [],
                 "queries_consumed": queries_used,
                 "direct_results": 0,
             }
@@ -2553,62 +3335,79 @@ class LLMWikiEngine:
             "plan_reason": plan.get("reason"),
             "selector_status": selected_meta.get("status"),
             "selector_reason": selected_meta.get("reason"),
+            "planned_queries": planned_queries,
+            "selected_urls": [item.get("url", "") for item in selected if item.get("url", "")],
             "queries_consumed": queries_used,
             "direct_results": 0,
         }
 
     def _semantic_filter_missing_or_related_concepts(
         self,
-        missing_candidates: List[str],
-        candidate_counts: Dict[str, int],
+        source_cards: List[Dict[str, str]],
         known_concepts: Set[str],
     ) -> Tuple[List[str], Dict[str, Any]]:
-        lexical_missing = [
-            str(slug).strip().replace("\\", "/")
-            for slug in missing_candidates
-            if str(slug).strip()
-        ]
-        lexical_missing = list(dict.fromkeys(lexical_missing))
-        if not lexical_missing:
+        normalized_cards: List[Dict[str, str]] = []
+        for item in source_cards:
+            if not isinstance(item, dict):
+                continue
+            source_rel = self._normalize_wikilink(str(item.get("source", "")).strip())
+            if not source_rel.startswith("sources/"):
+                continue
+            normalized_cards.append(
+                {
+                    "source": source_rel,
+                    "title": self._normalize_web_text(str(item.get("title", "")).strip(), 140),
+                    "summary": self._normalize_web_text(str(item.get("summary", "")).strip(), 320),
+                    "entities": self._normalize_web_text(str(item.get("entities", "")).strip(), 240),
+                    "concepts": self._normalize_web_text(str(item.get("concepts", "")).strip(), 240),
+                }
+            )
+
+        if not normalized_cards:
             return [], {
                 "status": "skipped",
-                "reason": "no_missing_candidates",
+                "reason": "no_source_cards",
                 "kept_missing": 0,
                 "rejected_candidates": 0,
                 "related_to_existing": 0,
+                "source_cards_considered": 0,
             }
 
-        lexical_set = set(lexical_missing)
-        known_sorted = sorted(
-            {
-                str(item).strip().replace("\\", "/")
-                for item in known_concepts
-                if str(item).strip()
-            }
-        )
+        known_set = {
+            self._slug(str(item).strip())
+            for item in known_concepts
+            if str(item).strip()
+        }
+        known_sorted = sorted(known_set)
 
-        candidate_lines = [
-            f"- {slug} (frequency: {int(candidate_counts.get(slug, 0))})"
-            for slug in lexical_missing[:120]
-        ]
-        known_lines = [f"- {slug}" for slug in known_sorted[:220]]
+        id_to_source: Dict[str, str] = {}
+        source_lines: List[str] = []
+        for idx, card in enumerate(normalized_cards[:120], start = 1):
+            cid = f"S{idx:03d}"
+            id_to_source[cid] = card["source"]
+            source_lines.append(
+                f"{cid} | source: {card['source']} | title: {card['title'] or '(none)'} | "
+                f"summary: {card['summary'] or '(none)'} | concepts: {card['concepts'] or '(none)'} | "
+                f"entities: {card['entities'] or '(none)'}"
+            )
+
+        known_lines = [f"- {slug}" for slug in known_sorted[:260]]
 
         prompt = (
-            "You are a semantic filter for wiki concept maintenance.\n"
-            "Classify lexical candidate concepts into:\n"
-            "1) real missing concepts that should be created\n"
-            "2) related-to-existing concepts (aliases or near-duplicates of known concepts)\n"
-            "3) noise (generic words, verbs, adjectives, irrelevant tokens).\n"
+            "You are a semantic planner for wiki concept maintenance.\n"
+            "Given source cards and existing wiki concepts, identify truly missing concept pages to add.\n"
             "Return strict JSON only with this schema:\n"
-            '{"keep_missing":["slug"],"related_to_existing":[{"slug":"candidate-slug","existing":"known-concept-slug","reason":"string"}],"reject":[{"slug":"candidate-slug","reason":"string"}]}\n\n'
+            '{"keep_missing":[{"slug":"concept-slug","source_ids":["S001","S002"],"reason":"string"}],"related_to_existing":[{"slug":"candidate-slug","existing":"known-concept-slug","reason":"string"}],"reject":[{"slug":"candidate-slug","reason":"string"}]}\n\n'
             "Rules:\n"
-            "- Use only slugs from MISSING_CANDIDATES and KNOWN_CONCEPTS.\n"
-            "- keep_missing must include only candidates that are genuinely conceptual and worth adding.\n"
-            "- Prefer rejecting broad generic terms (for example: information, system, external, review, history).\n"
+            "- Use only SOURCE_CARDS and KNOWN_CONCEPTS context.\n"
+            "- keep_missing slug must be lowercase kebab-case.\n"
+            "- keep_missing source_ids must reference IDs from SOURCE_CARDS and include at least 2 distinct IDs.\n"
+            "- Do not include concepts already in KNOWN_CONCEPTS.\n"
+            "- Prefer rejecting broad/generic terms (for example: information, system, process, history, overview).\n"
             "- If uncertain, reject.\n"
             "- No markdown fences and no extra commentary.\n\n"
-            "MISSING_CANDIDATES:\n"
-            + "\n".join(candidate_lines)
+            "SOURCE_CARDS:\n"
+            + "\n".join(source_lines)
             + "\n\nKNOWN_CONCEPTS:\n"
             + ("\n".join(known_lines) if known_lines else "- none")
         )
@@ -2622,6 +3421,7 @@ class LLMWikiEngine:
                 "kept_missing": 0,
                 "rejected_candidates": 0,
                 "related_to_existing": 0,
+                "source_cards_considered": len(id_to_source),
             }
 
         keep_raw = parsed.get("keep_missing")
@@ -2634,15 +3434,48 @@ class LLMWikiEngine:
                 "kept_missing": 0,
                 "rejected_candidates": 0,
                 "related_to_existing": 0,
+                "source_cards_considered": len(id_to_source),
             }
 
-        keep_set: Set[str] = set()
-        for item in keep_raw:
-            normalized = self._slug(str(item).strip())
-            if normalized in lexical_set:
-                keep_set.add(normalized)
+        kept_slugs: List[str] = []
+        kept_items: List[Dict[str, Any]] = []
+        seen_slugs: Set[str] = set()
 
-        filtered_missing = [slug for slug in lexical_missing if slug in keep_set]
+        for item in keep_raw:
+            if not isinstance(item, dict):
+                continue
+            slug = self._slug(str(item.get("slug", "")).strip())
+            if not slug:
+                continue
+            if slug in seen_slugs or slug in known_set:
+                continue
+
+            raw_source_ids = item.get("source_ids", [])
+            if not isinstance(raw_source_ids, list):
+                continue
+
+            source_ids: List[str] = []
+            for sid in raw_source_ids:
+                sid_text = str(sid).strip()
+                if sid_text not in id_to_source:
+                    continue
+                if sid_text in source_ids:
+                    continue
+                source_ids.append(sid_text)
+
+            if len(source_ids) < 2:
+                continue
+
+            reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
+            seen_slugs.add(slug)
+            kept_slugs.append(slug)
+            kept_items.append(
+                {
+                    "slug": slug,
+                    "source_pages": [id_to_source[sid] for sid in source_ids],
+                    "reason": reason,
+                }
+            )
 
         related_items: List[Dict[str, str]] = []
         if isinstance(related_raw, list):
@@ -2650,14 +3483,12 @@ class LLMWikiEngine:
                 if not isinstance(item, dict):
                     continue
                 slug = self._slug(str(item.get("slug", "")).strip())
+                if not slug:
+                    continue
                 existing = self._slug(str(item.get("existing", "")).strip())
-                if slug not in lexical_set:
+                if existing and existing not in known_set:
                     continue
-                if existing and existing not in set(known_sorted):
-                    continue
-                reason = self._normalize_web_text(
-                    str(item.get("reason", "")).strip(), 180
-                )
+                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
                 related_items.append(
                     {
                         "slug": slug,
@@ -2672,11 +3503,9 @@ class LLMWikiEngine:
                 if not isinstance(item, dict):
                     continue
                 slug = self._slug(str(item.get("slug", "")).strip())
-                if slug not in lexical_set:
+                if not slug:
                     continue
-                reason = self._normalize_web_text(
-                    str(item.get("reason", "")).strip(), 180
-                )
+                reason = self._normalize_web_text(str(item.get("reason", "")).strip(), 180)
                 rejected_items.append(
                     {
                         "slug": slug,
@@ -2684,12 +3513,14 @@ class LLMWikiEngine:
                     }
                 )
 
-        return filtered_missing, {
+        return kept_slugs, {
             "status": "ok",
             "reason": "semantic_missing_ok",
-            "kept_missing": len(filtered_missing),
+            "kept_missing": len(kept_slugs),
             "rejected_candidates": len(rejected_items),
             "related_to_existing": len(related_items),
+            "source_cards_considered": len(id_to_source),
+            "kept": kept_items[:64],
             "related": related_items[:64],
             "rejected": rejected_items[:64],
         }
@@ -2907,6 +3738,7 @@ class LLMWikiEngine:
         llm_plan_ok_concepts = 0
         llm_selector_ok_concepts = 0
         llm_direct_results_used = 0
+        web_discovery_audit: List[Dict[str, Any]] = []
 
         for slug in missing_concepts:
             if queries_used >= max_queries:
@@ -2930,6 +3762,27 @@ class LLMWikiEngine:
             if str(search_meta.get("selector_status", "")).strip() == "ok":
                 llm_selector_ok_concepts += 1
             llm_direct_results_used += max(0, int(search_meta.get("direct_results", 0)))
+
+            web_discovery_audit.append(
+                {
+                    "concept": slug,
+                    "plan_status": str(search_meta.get("plan_status", "")).strip(),
+                    "plan_reason": str(search_meta.get("plan_reason", "")).strip(),
+                    "selector_status": str(search_meta.get("selector_status", "")).strip(),
+                    "selector_reason": str(search_meta.get("selector_reason", "")).strip(),
+                    "planned_queries": [
+                        self._normalize_web_text(str(item).strip(), 180)
+                        for item in search_meta.get("planned_queries", [])
+                        if str(item).strip()
+                    ],
+                    "selected_urls": [
+                        str(item).strip()
+                        for item in search_meta.get("selected_urls", [])
+                        if str(item).strip()
+                    ],
+                    "queries_consumed": max(0, int(search_meta.get("queries_consumed", 0))),
+                }
+            )
 
             if not search_results:
                 failed_concepts.append(slug)
@@ -3046,6 +3899,24 @@ class LLMWikiEngine:
             created_pages.append(f"concepts/{slug}.md")
 
         if concepts_created > 0 and not dry_run:
+            audit_lines = ["- Web discovery audit:"]
+            if not web_discovery_audit:
+                audit_lines.append("  - none")
+            else:
+                for item in web_discovery_audit:
+                    planned_queries = item.get("planned_queries", [])
+                    selected_urls = item.get("selected_urls", [])
+                    query_text = "; ".join(planned_queries) if planned_queries else "none"
+                    selected_text = ", ".join(selected_urls) if selected_urls else "none"
+                    audit_lines.append(
+                        "  - "
+                        f"{item.get('concept', 'unknown')}"
+                        f" | plan={item.get('plan_status', 'unknown')}"
+                        f" | selector={item.get('selector_status', 'unknown')}"
+                        f" | queries={query_text}"
+                        f" | selected_urls={selected_text}"
+                    )
+
             self._append_log(
                 f"## [{self._today()}] enrich-web-gaps | lint-driven\n"
                 f"- Missing concepts in lint report: {len(missing_concepts)}\n"
@@ -3056,6 +3927,8 @@ class LLMWikiEngine:
                 f"- LLM web planner ok concepts: {llm_plan_ok_concepts}\n"
                 f"- LLM web selector ok concepts: {llm_selector_ok_concepts}\n"
                 f"- LLM direct results used: {llm_direct_results_used}\n"
+                + "\n".join(audit_lines)
+                + "\n"
             )
 
         return {
@@ -3072,6 +3945,7 @@ class LLMWikiEngine:
             "llm_web_planner_ok_concepts": llm_plan_ok_concepts,
             "llm_web_selector_ok_concepts": llm_selector_ok_concepts,
             "llm_web_direct_results_used": llm_direct_results_used,
+            "web_discovery_audit": web_discovery_audit,
             "failed_concepts": failed_concepts,
             "failed_external_sources": failed_external_sources,
         }
@@ -3220,7 +4094,7 @@ class LLMWikiEngine:
             if unique_ratio < self.cfg.low_unique_ratio_threshold:
                 return "low_unique_ratio"
 
-        if len(tokens) >= 24:
+        if len(tokens) >= 12:
             max_run = 1
             run = 1
             for idx in range(1, len(tokens)):
@@ -3229,7 +4103,7 @@ class LLMWikiEngine:
                     max_run = max(max_run, run)
                 else:
                     run = 1
-            if max_run >= 5:
+            if max_run >= 4:
                 return "repetition"
 
         return None
@@ -4955,6 +5829,7 @@ class LLMWikiEngine:
         filtered_candidates = [
             (rel, score) for rel, score in candidates if rel in candidate_scores
         ]
+        filtered_candidates = self._prioritize_analysis_first(filtered_candidates)
         if not filtered_candidates:
             return []
 
@@ -5042,6 +5917,7 @@ class LLMWikiEngine:
             f"- Return at most {top_n} pages.\n"
             "- Order best first.\n"
             "- Prefer pages that directly answer the query intent.\n"
+            "- If relevance is comparable, prefer analysis/* pages before other page types.\n"
             "- Do not include explanations or markdown fences.\n\n"
             f"QUERY:\n{query}\n\n"
             "ALLOWED_PAGES:\n"
@@ -5094,6 +5970,20 @@ class LLMWikiEngine:
             reranked.append((rel, rank_signal))
 
         return reranked
+
+    def _prioritize_analysis_first(
+        self,
+        ranked: List[Tuple[str, float]],
+    ) -> List[Tuple[str, float]]:
+        if not ranked or not self.cfg.ranking_analysis_first:
+            return ranked
+
+        analysis_ranked = [item for item in ranked if item[0].startswith("analysis/")]
+        if not analysis_ranked:
+            return ranked
+
+        other_ranked = [item for item in ranked if not item[0].startswith("analysis/")]
+        return analysis_ranked + other_ranked
 
     def _select_enrichment_links(
         self,
@@ -5437,6 +6327,156 @@ class LLMWikiEngine:
             rel = str(p.relative_to(self.wiki_dir)).replace("\\", "/")
             out.append(rel)
         return sorted(out)
+
+    def _analysis_graph_labels_from_index(self) -> Dict[str, str]:
+        if not self.index_file.exists():
+            return {}
+
+        try:
+            index_text = self.index_file.read_text(encoding = "utf-8", errors = "ignore")
+        except OSError:
+            return {}
+
+        labels: Dict[str, str] = {}
+        for match in re.finditer(
+            r"(?m)^-\s+\[\[(analysis/[^\]]+)\]\]\s*(?:-\s*(.+))?$",
+            index_text,
+        ):
+            rel = self._normalize_wikilink(str(match.group(1) or "").strip())
+            if not rel:
+                continue
+
+            raw_label = re.sub(r"\s+", " ", str(match.group(2) or "").strip())
+            if not raw_label:
+                continue
+
+            cleaned = re.split(r"\s+\|\s+primary:\s*", raw_label, maxsplit = 1, flags = re.I)[
+                0
+            ].strip()
+            cleaned = re.sub(r"\s+\[[^\]]+\]\s*$", "", cleaned).strip()
+            if not cleaned:
+                continue
+
+            cleaned = re.sub(
+                r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]",
+                r"\1",
+                cleaned,
+            )
+            cleaned = self._normalize_web_text(cleaned, 220)
+            if cleaned:
+                labels[f"{rel}.md"] = cleaned
+
+        return labels
+
+    def _wiki_graph_kind_for_page(self, rel: str) -> Optional[str]:
+        if rel.startswith("sources/"):
+            return "source"
+        if rel.startswith("analysis/"):
+            return "analysis"
+        if rel.startswith("entities/"):
+            return "entity"
+        if rel.startswith("concepts/"):
+            return "concept"
+        return None
+
+    def _wiki_graph_label_for_page(
+        self,
+        rel: str,
+        text: str,
+        analysis_index_labels: Optional[Dict[str, str]] = None,
+    ) -> str:
+        if rel.startswith("analysis/"):
+            index_label = (analysis_index_labels or {}).get(rel, "").strip()
+            if index_label:
+                return index_label
+
+        frontmatter, body = self._split_frontmatter_block(text)
+        if frontmatter:
+            title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", frontmatter)
+            if title_match:
+                title = title_match.group(1).strip().strip('"').strip("'")
+                if title:
+                    return title
+
+        source = body if frontmatter else text
+        heading_match = re.search(r"(?m)^#\s+(.+?)\s*$", source)
+        if heading_match:
+            heading = heading_match.group(1).strip()
+            if heading:
+                return heading
+
+        stem = Path(rel).stem
+        cleaned = stem.replace("-", " ").replace("_", " ").strip()
+        return cleaned or stem
+
+    def get_wiki_data_graph(self, include_analysis: bool = True) -> Dict[str, Any]:
+        allowed_kinds: Set[str] = {"source", "entity", "concept"}
+        if include_analysis:
+            allowed_kinds.add("analysis")
+
+        pages = self._all_wiki_pages()
+        graph_pages = [
+            rel
+            for rel in pages
+            if (self._wiki_graph_kind_for_page(rel) or "") in allowed_kinds
+        ]
+        link_graph = self._build_link_graph(graph_pages)
+        outbound = link_graph.get("outbound", {})
+        inbound = link_graph.get("inbound", {})
+        graph_page_set = set(graph_pages)
+        analysis_index_labels = self._analysis_graph_labels_from_index()
+
+        nodes: List[Dict[str, Any]] = []
+        for rel in graph_pages:
+            kind = self._wiki_graph_kind_for_page(rel)
+            if kind is None:
+                continue
+
+            text = (self.wiki_dir / rel).read_text(encoding = "utf-8", errors = "ignore")
+            node_id = rel[:-3] if rel.endswith(".md") else rel
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": kind,
+                    "label": self._wiki_graph_label_for_page(
+                        rel,
+                        text,
+                        analysis_index_labels = analysis_index_labels,
+                    ),
+                    "inbound_links": len(inbound.get(rel, [])),
+                    "outbound_links": len(outbound.get(rel, [])),
+                }
+            )
+
+        edge_ids: Set[str] = set()
+        edges: List[Dict[str, str]] = []
+        for source_rel, target_rels in outbound.items():
+            source_id = source_rel[:-3] if source_rel.endswith(".md") else source_rel
+            for target_rel in target_rels:
+                if target_rel not in graph_page_set:
+                    continue
+                target_id = target_rel[:-3] if target_rel.endswith(".md") else target_rel
+                edge_id = f"{source_id}->{target_id}"
+                if edge_id in edge_ids:
+                    continue
+                edge_ids.add(edge_id)
+                edges.append({"id": edge_id, "source": source_id, "target": target_id})
+
+        kind_order = {"source": 0, "analysis": 1, "entity": 2, "concept": 3}
+        nodes.sort(
+            key = lambda item: (
+                int(kind_order.get(str(item.get("kind", "")), 99)),
+                str(item.get("label", "")).lower(),
+                str(item.get("id", "")),
+            )
+        )
+        edges.sort(key = lambda item: (str(item.get("source", "")), str(item.get("target", ""))))
+
+        return {
+            "status": "ok",
+            "nodes": nodes,
+            "edges": edges,
+        }
 
     def _import_graphify_module(self, module_name: str):
         try:
@@ -5794,7 +6834,17 @@ class LLMWikiEngine:
         self,
         query: str,
         include_source_pages: bool = True,
-    ) -> List[Tuple[str, float]]:
+        return_mode: bool = False,
+    ) -> List[Tuple[str, float]] | Tuple[List[Tuple[str, float]], str]:
+        def _finalize(
+            ranked_items: List[Tuple[str, float]],
+            ranking_mode: str,
+        ) -> List[Tuple[str, float]] | Tuple[List[Tuple[str, float]], str]:
+            prioritized = self._prioritize_analysis_first(ranked_items)
+            if return_mode:
+                return prioritized, ranking_mode
+            return prioritized
+
         all_pages = self._all_wiki_pages()
         effective_include_sources = bool(
             include_source_pages and self.cfg.index_include_source_pages
@@ -5806,11 +6856,11 @@ class LLMWikiEngine:
         if self.cfg.ranking_llm_rerank_enabled and len(llm_seed_ranked) > 1:
             llm_ranked = self._llm_rerank_candidates(query, llm_seed_ranked)
             if llm_ranked:
-                return llm_ranked
+                return _finalize(llm_ranked, "llm_rerank")
 
         q_terms = self._terms(query)
         if not q_terms:
-            return llm_seed_ranked
+            return _finalize(llm_seed_ranked, "lexical_fallback")
 
         entity_focus_terms, entity_focus_slug = self._entity_query_focus(query)
 
@@ -5929,7 +6979,7 @@ class LLMWikiEngine:
                 query_text = query,
             )
 
-        return ranked
+        return _finalize(ranked, "lexical_fallback")
 
     def _llm_select_link_expansion_targets(
         self,
@@ -6210,6 +7260,379 @@ class LLMWikiEngine:
             f"{diagnostics_text}\n"
         )
 
+    def _plan_source_chunks(
+        self,
+        source_text: str,
+        context_window_chars: int,
+        chunk_target_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        raw_source = str(source_text or "")
+        source_chars = len(raw_source)
+
+        effective_context_window_chars = max(1200, int(context_window_chars))
+        minimum_chunk_chars = max(300, int(self.cfg.chunk_analysis_min_chars))
+        maximum_chunk_chars = max(
+            minimum_chunk_chars,
+            int(self.cfg.chunk_analysis_max_chars),
+        )
+
+        target_chars = (
+            int(effective_context_window_chars * float(self.cfg.chunk_analysis_target_ratio))
+            if chunk_target_chars is None
+            else int(chunk_target_chars)
+        )
+        target_chars = max(minimum_chunk_chars, min(target_chars, maximum_chunk_chars))
+
+        overlap_chars = (
+            int(target_chars * float(self.cfg.chunk_analysis_overlap_ratio))
+            if chunk_overlap_chars is None
+            else int(chunk_overlap_chars)
+        )
+        overlap_cap = max(0, target_chars - max(120, minimum_chunk_chars // 2))
+        overlap_chars = max(0, min(overlap_chars, overlap_cap))
+
+        chunks = self._split_source_chunks(
+            text = raw_source,
+            target_chars = target_chars,
+            overlap_chars = overlap_chars,
+        )
+
+        return {
+            "source_chars": source_chars,
+            "context_window_chars": effective_context_window_chars,
+            "chunk_target_chars": target_chars,
+            "chunk_overlap_chars": overlap_chars,
+            "chunks": chunks,
+        }
+
+    def _split_source_chunks(
+        self,
+        text: str,
+        target_chars: int,
+        overlap_chars: int,
+    ) -> List[Dict[str, Any]]:
+        raw = str(text or "")
+        if not raw.strip():
+            return []
+
+        total_chars = len(raw)
+        target_chars = max(300, int(target_chars))
+        overlap_chars = max(0, min(int(overlap_chars), max(0, target_chars - 1)))
+        minimum_break_chars = max(160, int(target_chars * 0.55))
+
+        chunks: List[Dict[str, Any]] = []
+        start = 0
+        iteration = 0
+        while start < total_chars and iteration < 20000:
+            iteration += 1
+            hard_end = min(total_chars, start + target_chars)
+            end = hard_end
+
+            if hard_end < total_chars and (hard_end - start) > minimum_break_chars:
+                lower_bound = start + minimum_break_chars
+                candidates: List[int] = []
+
+                for marker in ("\n\n", "\n"):
+                    pos = raw.rfind(marker, lower_bound, hard_end)
+                    if pos >= 0:
+                        candidates.append(pos + len(marker))
+
+                for marker in (". ", "? ", "! ", "; "):
+                    pos = raw.rfind(marker, lower_bound, hard_end)
+                    if pos >= 0:
+                        candidates.append(pos + 1)
+
+                if candidates:
+                    end = max(candidates)
+
+            if end <= start:
+                end = hard_end
+            if end <= start:
+                break
+
+            chunk_raw = raw[start:end]
+            chunk_text = chunk_raw.strip()
+            if chunk_text:
+                chunks.append(
+                    {
+                        "index": len(chunks) + 1,
+                        "start_char": start,
+                        "end_char": end,
+                        "char_count": len(chunk_text),
+                        "text": chunk_text,
+                    }
+                )
+
+            if end >= total_chars:
+                break
+
+            next_start = end - overlap_chars
+            if next_start <= start:
+                next_start = end
+            start = next_start
+
+        return chunks
+
+    def _chunk_source_slug(
+        self,
+        source_slug: str,
+        chunk_index: int,
+        chunk_count: int,
+    ) -> str:
+        base = self._slug(source_slug or "source")
+        normalized_count = max(1, int(chunk_count))
+        normalized_index = max(1, min(int(chunk_index), normalized_count))
+        return f"{base}--chunk-{normalized_index:03d}-of-{normalized_count:03d}"
+
+    def _chunk_analysis_slug(
+        self,
+        source_slug: str,
+        chunk_index: int,
+        chunk_count: int,
+    ) -> str:
+        return (
+            self._chunk_source_slug(
+                source_slug = source_slug,
+                chunk_index = chunk_index,
+                chunk_count = chunk_count,
+            )
+            + "--analysis"
+        )
+
+    def _chunk_merged_analysis_slug(self, source_slug: str) -> str:
+        return f"{self._slug(source_slug or 'source')}--chunk-merged-analysis"
+
+    def _chunk_source_ref(
+        self,
+        source_ref: Optional[str],
+        source_page: str,
+        chunk_index: int,
+        chunk_count: int,
+    ) -> str:
+        base = str(source_ref or "").strip() or str(source_page or "").strip() or "local"
+        base = base.split("#", 1)[0].strip()
+        return f"{base}#chunk-{max(1, int(chunk_index)):03d}-of-{max(1, int(chunk_count)):03d}"
+
+    def _cleanup_stale_chunk_source_pages(
+        self,
+        source_slug: str,
+        active_chunk_slugs: Set[str],
+    ) -> List[str]:
+        base = self._slug(source_slug or "source")
+        pattern = re.compile(rf"^{re.escape(base)}--chunk-\d{{3}}-of-\d{{3}}$")
+        removed: List[str] = []
+        for page in sorted(self.sources_dir.glob(f"{base}--chunk-*.md")):
+            stem = page.stem
+            if not pattern.match(stem):
+                continue
+            if stem in active_chunk_slugs:
+                continue
+            page.unlink()
+            removed.append(f"sources/{stem}")
+        return removed
+
+    def _cleanup_stale_chunk_analysis_pages(
+        self,
+        source_slug: str,
+        active_chunk_analysis_slugs: Set[str],
+    ) -> List[str]:
+        base = self._slug(source_slug or "source")
+        pattern = re.compile(
+            rf"^{re.escape(base)}--chunk-\d{{3}}-of-\d{{3}}--analysis$"
+        )
+        removed: List[str] = []
+        for page in sorted(self.analysis_dir.glob(f"{base}--chunk-*.md")):
+            stem = page.stem
+            if not pattern.match(stem):
+                continue
+            if stem in active_chunk_analysis_slugs:
+                continue
+            page.unlink()
+            removed.append(f"analysis/{stem}")
+        return removed
+
+    def _merge_chunk_analysis_pages(
+        self,
+        source_title: str,
+        source_page: str,
+        source_slug: str,
+        context_window_chars: int,
+        chunk_plan: Dict[str, Any],
+        chunk_source_pages: List[str],
+        chunk_analysis_pages: List[str],
+    ) -> Dict[str, Any]:
+        merged_slug = self._chunk_merged_analysis_slug(source_slug)
+        merged_rel = f"analysis/{merged_slug}"
+        merged_path = self.analysis_dir / f"{merged_slug}.md"
+
+        normalized_source_page = self._normalize_wikilink(source_page) or source_page
+        question = (
+            f"Merge chunk analyses for source '{source_title}'. "
+            f"Primary source: [[{normalized_source_page}]]."
+        )
+
+        answer = ""
+        answer_mode = "chunk-merge-llm"
+        fallback_reason: Optional[str] = None
+        used_chunk_analysis_pages: List[str] = []
+
+        if not chunk_analysis_pages:
+            fallback_reason = "chunk_analysis_pages_empty"
+            answer_mode = "chunk-merge-extractive-fallback"
+            answer = self._extractive_chunk_merge_answer(
+                source_page = normalized_source_page,
+                chunk_analysis_pages = chunk_analysis_pages,
+            )
+        else:
+            merge_context_budget = max(6000, int(max(1200, context_window_chars) * 0.70))
+            context_blocks: List[str] = []
+            remaining_budget = merge_context_budget
+            pages_remaining = len(chunk_analysis_pages)
+
+            for rel in chunk_analysis_pages:
+                if remaining_budget <= 0:
+                    break
+
+                page_path = self.wiki_dir / f"{self._normalize_wikilink(rel)}.md"
+                if not page_path.exists():
+                    pages_remaining = max(0, pages_remaining - 1)
+                    continue
+
+                page_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+                answer_text = self._extract_analysis_answer(page_text) or page_text
+                if not answer_text.strip():
+                    pages_remaining = max(0, pages_remaining - 1)
+                    continue
+
+                fair_share = (
+                    remaining_budget // max(1, pages_remaining)
+                    if pages_remaining > 0
+                    else remaining_budget
+                )
+                page_cap = max(500, min(2600, fair_share))
+                snippet = answer_text[:page_cap].strip()
+                if not snippet:
+                    pages_remaining = max(0, pages_remaining - 1)
+                    continue
+
+                context_blocks.append(f"PAGE: {rel}\nCONTENT:\n{snippet}")
+                used_chunk_analysis_pages.append(rel)
+                remaining_budget -= len(snippet)
+                pages_remaining = max(0, pages_remaining - 1)
+
+            prompt = (
+                "Merge chunk analyses into one final wiki report.\n"
+                f"Source title: {source_title}\n"
+                f"Primary source page: [[{normalized_source_page}]]\n"
+                f"Chunk analysis pages: {', '.join([f'[[{rel}]]' for rel in chunk_analysis_pages])}\n\n"
+                "Return plain markdown with:\n"
+                "- concise executive summary\n"
+                "- merged key findings\n"
+                "- disagreements or uncertainty\n"
+                "- final caveats and assumptions\n"
+                "Cite evidence inline using wiki links to source/chunk pages.\n\n"
+                "CHUNK_ANALYSIS_CONTEXT:\n"
+                + "\n\n".join(context_blocks)
+            )
+
+            raw_answer = str(self.llm_fn(prompt) or "").strip()
+            low_quality_reason = self._low_quality_reason(raw_answer)
+            if low_quality_reason is None:
+                answer = raw_answer
+            else:
+                fallback_reason = low_quality_reason
+                answer_mode = "chunk-merge-extractive-fallback"
+                answer = self._extractive_chunk_merge_answer(
+                    source_page = normalized_source_page,
+                    chunk_analysis_pages = used_chunk_analysis_pages or chunk_analysis_pages,
+                )
+
+        context_pages: List[str] = []
+        for rel in [normalized_source_page] + used_chunk_analysis_pages:
+            normalized = self._normalize_wikilink(rel)
+            if not normalized:
+                continue
+            if normalized in context_pages:
+                continue
+            context_pages.append(normalized)
+
+        fallback_block = ""
+        if fallback_reason:
+            fallback_block = f"## Fallback Reason\n{fallback_reason}\n\n"
+
+        merged_path.write_text(
+            "# Query Result\n\n"
+            f"## Question\n{question}\n\n"
+            f"## Answer Mode\n{answer_mode}\n\n"
+            f"## Answer\n{answer}\n\n"
+            f"{fallback_block}"
+            "## Merge Diagnostics\n"
+            f"- source_page: [[{normalized_source_page}]]\n"
+            f"- source_chars: {int(chunk_plan.get('source_chars', 0))}\n"
+            f"- context_window_chars: {max(1200, int(context_window_chars))}\n"
+            f"- chunk_target_chars: {int(chunk_plan.get('chunk_target_chars', 0))}\n"
+            f"- chunk_overlap_chars: {int(chunk_plan.get('chunk_overlap_chars', 0))}\n"
+            f"- chunk_source_pages: {len(chunk_source_pages)}\n"
+            f"- chunk_analysis_pages: {len(chunk_analysis_pages)}\n"
+            f"- chunk_analysis_pages_used_for_merge: {len(used_chunk_analysis_pages)}\n\n"
+            "## Context Pages\n"
+            + (
+                "\n".join([f"- [[{rel}]]" for rel in context_pages])
+                if context_pages
+                else "- none"
+            )
+            + "\n",
+            encoding = "utf-8",
+        )
+
+        return {
+            "status": "ok",
+            "merged_analysis_page": merged_rel,
+            "answer_mode": answer_mode,
+            "fallback_reason": fallback_reason,
+            "context_pages": context_pages,
+        }
+
+    def _extractive_chunk_merge_answer(
+        self,
+        source_page: str,
+        chunk_analysis_pages: List[str],
+    ) -> str:
+        if not chunk_analysis_pages:
+            return (
+                "Chunk merge fallback could not extract chunk analysis evidence because "
+                "no chunk analysis pages were available."
+            )
+
+        lines = [
+            "LLM merge quality was low; using extractive chunk-merge fallback.",
+            "",
+        ]
+
+        emitted = 0
+        for rel in chunk_analysis_pages:
+            page_path = self.wiki_dir / f"{self._normalize_wikilink(rel)}.md"
+            if not page_path.exists():
+                continue
+
+            page_text = page_path.read_text(encoding = "utf-8", errors = "ignore")
+            answer = self._extract_analysis_answer(page_text) or page_text
+            summary = self._first_sentences(self._clean_source_text(answer), max_chars = 320)
+            if not summary:
+                continue
+
+            lines.append(f"- {summary} [[{self._normalize_wikilink(rel)}]]")
+            emitted += 1
+            if emitted >= 32:
+                break
+
+        if emitted == 0:
+            lines.append("- No extractive chunk details were available.")
+
+        lines.append(f"- Primary source: [[{self._normalize_wikilink(source_page)}]]")
+        return "\n".join(lines)
+
     def _safe_json(self, text: str) -> Optional[Dict]:
         text = text.strip()
 
@@ -6469,6 +7892,7 @@ class LLMWikiEngine:
             "- Keep the response specific and avoid generic filler\n"
             "- Make sure you populate caveats and limitations by looking at the content critically, especially if it's technical. If the source is very clean and straightforward, say so but still include a caveats section with a note to that effect.\n"
             f"- Prioritize [[{source_rel}]] over unrelated pages"
+            "This might be a chunked version of the source, so be mindful that some information might be missing. Focus on what's present in the text and avoid making assumptions about missing content."
         )
 
     def _compact_saved_question(self, question: str) -> str:
@@ -6851,7 +8275,8 @@ class LLMWikiEngine:
         return set(self._tokenize_terms(s))
 
     def _today(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Include hour:minute so log.md headings are easier to correlate with runtime events.
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()

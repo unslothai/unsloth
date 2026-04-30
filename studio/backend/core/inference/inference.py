@@ -1031,7 +1031,31 @@ class InferenceBackend:
                         last_user_query = self._coerce_chat_history_content(content)
                         break
 
-            rag_context = self._get_rag_context(last_user_query)
+            rag_result = self._get_rag_context(
+                last_user_query,
+                return_debug = True,
+            )
+            rag_context = ""
+            rag_debug: dict[str, object] = {}
+            if isinstance(rag_result, tuple):
+                rag_context, rag_debug = rag_result
+            else:
+                rag_context = rag_result
+
+            selected_pages = [
+                str(item)
+                for item in rag_debug.get("selected_pages", [])
+                if str(item).strip()
+            ]
+            ranking_mode = str(rag_debug.get("ranking_mode", "unknown") or "unknown")
+            logger.info(
+                "RAG selection for transformer request: rank_mode=%s pages=%d chars=%d selected=%s query=%r",
+                ranking_mode,
+                len(selected_pages),
+                len(rag_context),
+                selected_pages,
+                last_user_query,
+            )
             if rag_context:
                 logger.info("Injecting RAG context into prompt")
                 context_message = {
@@ -1043,6 +1067,8 @@ class InferenceBackend:
                     template_messages.insert(1, context_message)
                 else:
                     template_messages.insert(0, context_message)
+            else:
+                logger.info("RAG produced empty context for transformer request")
 
             # Save history for future RAG.
             self._save_chat_history_to_wiki(messages)
@@ -2184,32 +2210,68 @@ class InferenceBackend:
                 f"No built-in chat template for {model_name}, will use generic formatting"
             )
 
-    def _get_rag_context(self, query: str) -> str:
+    def _get_rag_context(
+        self,
+        query: str,
+        return_debug: bool = False,
+    ) -> str | Tuple[str, dict[str, object]]:
         """
         Retrieves relevant wiki snippets for the user query.
         This path is retrieval-first and does not depend on the wiki LLM answer path.
         """
+        def _empty_debug() -> dict[str, object]:
+            return {
+                "query": query,
+                "ranking_mode": "unknown",
+                "selected_pages": [],
+            }
+
+        def _finalize(
+            context: str,
+            debug_payload: dict[str, object],
+        ) -> str | Tuple[str, dict[str, object]]:
+            if return_debug:
+                return context, debug_payload
+            return context
+
         if not self.wiki_manager:
-            return ""
+            return _finalize("", _empty_debug())
         try:
             result = self.wiki_manager.retrieve_context(query)
             blocks = result.get("context_blocks", [])
+            ranking_mode = str(result.get("ranking_mode", "unknown") or "unknown")
             if not blocks:
-                return ""
+                return _finalize(
+                    "",
+                    {
+                        "query": query,
+                        "ranking_mode": ranking_mode,
+                        "selected_pages": [],
+                    },
+                )
 
             context_parts = []
+            selected_pages: list[str] = []
             for block in blocks:
                 page = block.get("page", "unknown")
                 score = block.get("score", 0.0)
                 content = block.get("content", "")
+                selected_pages.append(str(page))
                 context_parts.append(
                     f"PAGE: {page}\n" f"SCORE: {score:.4f}\n" f"CONTENT:\n{content}"
                 )
 
-            return "\n\n---\n\n".join(context_parts)
+            return _finalize(
+                "\n\n---\n\n".join(context_parts),
+                {
+                    "query": query,
+                    "ranking_mode": ranking_mode,
+                    "selected_pages": selected_pages,
+                },
+            )
         except Exception as e:
             logger.error(f"Error querying RAG context: {e}")
-            return ""
+            return _finalize("", _empty_debug())
 
     def _wiki_llm_fn(self, prompt: str) -> str:
         """

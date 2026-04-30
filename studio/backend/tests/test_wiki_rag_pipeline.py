@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import json
 import ast
+import re
 from pathlib import Path
 
 from core.wiki.engine import LLMWikiEngine, WikiConfig
@@ -15,6 +16,7 @@ from core.wiki.manager import WikiManager
 class _RecordingWikiManager:
     def __init__(self):
         self.calls = []
+        self.chunked_calls = []
 
     def ingest_content(self, title: str, content: str, reference: str | None = None):
         self.calls.append(
@@ -25,6 +27,85 @@ class _RecordingWikiManager:
             }
         )
         return {"status": "ok"}
+
+    def ingest_content_with_chunked_analysis(
+        self,
+        title: str,
+        content: str,
+        reference: str | None = None,
+        context_window_chars: int | None = None,
+        chunk_target_chars: int | None = None,
+        chunk_overlap_chars: int | None = None,
+    ):
+        self.chunked_calls.append(
+            {
+                "title": title,
+                "content": content,
+                "reference": reference,
+                "context_window_chars": context_window_chars,
+                "chunk_target_chars": chunk_target_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+            }
+        )
+        return {"status": "ok", "mode": "chunked"}
+
+
+def _clear_token_budget_env(monkeypatch) -> None:
+    for name in (
+        "UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY",
+        "UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO",
+        "UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN",
+        "UNSLOTH_WIKI_ENGINE_EXTRACT_SOURCE_MAX_CHARS",
+        "UNSLOTH_WIKI_ENGINE_QUERY_CONTEXT_MAX_CHARS",
+        "UNSLOTH_WIKI_ENGINE_RANKING_MAX_CHARS",
+        "UNSLOTH_WIKI_ENGINE_SOURCE_EXCERPT_MAX_CHARS",
+        "UNSLOTH_WIKI_ENGINE_MAX_CHARS_PER_PAGE",
+        "UNSLOTH_WIKI_ENGINE_MAX_CONTEXT_PAGES",
+        "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_CONTEXT_WINDOW_CHARS",
+        "UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_MAX_CHARS",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+
+def test_wikiconfig_model_token_capacity_derives_char_limits(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _clear_token_budget_env(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY", "250000")
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO", "0.5")
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN", "4")
+
+    cfg = WikiConfig(vault_root = tmp_path)
+
+    assert cfg.model_safe_token_budget == 125000
+    assert cfg.model_safe_char_budget == 500000
+    assert cfg.extract_source_max_chars == 500000
+    assert cfg.query_context_max_chars == 500000
+    assert cfg.ranking_max_chars == 500000
+    assert cfg.chunk_analysis_context_window_chars == 500000
+    assert cfg.chunk_analysis_max_chars == 500000
+    assert cfg.source_excerpt_max_chars == 100000
+    assert cfg.max_chars_per_page == 31250
+
+
+def test_wikiconfig_model_token_capacity_respects_explicit_char_overrides(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _clear_token_budget_env(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_MODEL_TOKEN_CAPACITY", "250000")
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_MODEL_SAFE_TOKEN_RATIO", "0.5")
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_MODEL_CHARS_PER_TOKEN", "4")
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_EXTRACT_SOURCE_MAX_CHARS", "12345")
+    monkeypatch.setenv("UNSLOTH_WIKI_ENGINE_CHUNK_ANALYSIS_MAX_CHARS", "88888")
+
+    cfg = WikiConfig(vault_root = tmp_path)
+
+    assert cfg.model_safe_char_budget == 500000
+    assert cfg.extract_source_max_chars == 12345
+    assert cfg.chunk_analysis_max_chars == 88888
+    assert cfg.query_context_max_chars == 500000
 
 
 def test_ingest_file_pdf_extracts_local_text(tmp_path: Path, monkeypatch):
@@ -46,6 +127,24 @@ def test_ingest_file_pdf_extracts_local_text(tmp_path: Path, monkeypatch):
     assert manager.calls[0]["title"] == "Resume"
     assert "Senior ML Engineer" in manager.calls[0]["content"]
     assert manager.calls[0]["reference"] == str(pdf_path.resolve())
+    assert manager.chunked_calls == []
+
+
+def test_ingest_file_large_text_auto_routes_to_chunked_ingest(tmp_path: Path):
+    manager = _RecordingWikiManager()
+    ingestor = WikiIngestor(manager, tmp_path / "raw")
+
+    large_file = tmp_path / "raw" / "large.txt"
+    large_file.parent.mkdir(parents = True, exist_ok = True)
+    large_file.write_text("A" * 25_500, encoding = "utf-8")
+
+    title = ingestor.ingest_file(large_file)
+
+    assert title == "large"
+    assert manager.calls == []
+    assert len(manager.chunked_calls) == 1
+    assert manager.chunked_calls[0]["title"] == "large"
+    assert manager.chunked_calls[0]["reference"] == str(large_file.resolve())
 
 
 def test_ingest_file_skips_ds_store(tmp_path: Path):
@@ -415,6 +514,293 @@ def test_engine_surfaces_extraction_diagnostics(tmp_path: Path):
     assert "John Doe" in text
 
 
+def test_ingest_source_with_chunked_analysis_creates_chunk_and_merged_pages(
+    tmp_path: Path,
+):
+    captured = {"merge_prompt": ""}
+
+    def _llm(prompt: str) -> str:
+        if "Extract structured knowledge from the source." in prompt:
+            return json.dumps(
+                {
+                    "summary": "Structured extraction summary.",
+                    "entities": [],
+                    "concepts": [],
+                }
+            )
+
+        if "Merge chunk analyses into one final wiki report." in prompt:
+            captured["merge_prompt"] = prompt
+            return (
+                "Merged report with grounded findings from chunk analyses "
+                "[[analysis/long-design-doc--chunk-001-of-004--analysis]] "
+                "[[analysis/long-design-doc--chunk-002-of-004--analysis]] "
+                "and primary source [[sources/long-design-doc]]."
+            )
+
+        return (
+            "Title: Chunk Summary\n"
+            "Section A: This chunk describes implementation details and context. [[sources/long-design-doc--chunk-001-of-004]]\n"
+            "Section B: - Key takeaway for this chunk\n"
+            "Section C: - Wiki update observed\n"
+            "Section D: - No formulas detected\n"
+            "Section E: - Caveat: sample data may be incomplete\n"
+            "Section F: - Assumption: headings are consistent\n"
+            "Section G: source\n"
+            "Section H: - Potentially disputable claim identified\n"
+            "Section I: - Not date sensitive\n"
+        )
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    long_text = "\n\n".join(
+        [f"Section {idx}: " + ("alpha beta gamma delta " * 90) for idx in range(1, 7)]
+    )
+
+    report = engine.ingest_source_with_chunked_analysis(
+        source_title = "Long Design Doc",
+        source_text = long_text,
+        source_ref = "https://example.com/long-design-doc",
+        context_window_chars = 1800,
+        chunk_target_chars = 900,
+        chunk_overlap_chars = 120,
+    )
+
+    assert report["status"] == "ok"
+    assert report["source_page"] == "sources/long-design-doc"
+    assert report["chunk_planner"]["chunk_count"] >= 3
+    assert len(report["chunk_source_pages"]) == report["chunk_planner"]["chunk_count"]
+    assert len(report["chunk_analysis_pages"]) == report["chunk_planner"]["chunk_count"]
+    assert report["merged_analysis_page"] == "analysis/long-design-doc--chunk-merged-analysis"
+    assert report["failed_chunks"] == []
+
+    for rel in report["chunk_source_pages"]:
+        assert rel.startswith("sources/long-design-doc--chunk-")
+        assert (tmp_path / "wiki" / f"{rel}.md").exists()
+
+    for rel in report["chunk_analysis_pages"]:
+        assert rel.startswith("analysis/long-design-doc--chunk-")
+        assert rel.endswith("--analysis")
+        assert (tmp_path / "wiki" / f"{rel}.md").exists()
+
+    merged_path = tmp_path / "wiki" / "analysis" / "long-design-doc--chunk-merged-analysis.md"
+    merged_text = merged_path.read_text(encoding = "utf-8")
+    assert "## Merge Diagnostics" in merged_text
+    assert "- chunk_analysis_pages:" in merged_text
+    assert "[[sources/long-design-doc]]" in merged_text
+    assert "[[analysis/long-design-doc--chunk-001-of-" in merged_text
+    assert "CHUNK_ANALYSIS_CONTEXT:" in captured["merge_prompt"]
+
+
+def test_ingest_source_with_chunked_analysis_cleans_up_stale_chunk_artifacts(
+    tmp_path: Path,
+):
+    def _llm(prompt: str) -> str:
+        if "Extract structured knowledge from the source." in prompt:
+            return json.dumps(
+                {
+                    "summary": "Structured extraction summary.",
+                    "entities": [],
+                    "concepts": [],
+                }
+            )
+
+        if "Merge chunk analyses into one final wiki report." in prompt:
+            return (
+                "Merged report using chunk analysis evidence and source grounding "
+                "[[sources/long-design-doc]]."
+            )
+
+        return (
+            "Title: Chunk Summary\n"
+            "Section A: Chunk summary with enough context for quality checks. [[sources/long-design-doc--chunk-001-of-004]]\n"
+            "Section B: - Key takeaway\n"
+            "Section C: - Wiki update\n"
+            "Section D: - No formulas\n"
+            "Section E: - Caveat\n"
+            "Section F: - Assumption\n"
+            "Section G: source\n"
+            "Section H: - Potentially disputable statement\n"
+            "Section I: - Not date sensitive\n"
+        )
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+
+    long_text = "\n\n".join(
+        [f"Part {idx}: " + ("omega sigma theta lambda " * 85) for idx in range(1, 6)]
+    )
+    first = engine.ingest_source_with_chunked_analysis(
+        source_title = "Long Design Doc",
+        source_text = long_text,
+        context_window_chars = 1800,
+        chunk_target_chars = 900,
+        chunk_overlap_chars = 120,
+    )
+    assert first["chunk_planner"]["chunk_count"] >= 2
+
+    short_text = "Short update " + ("tiny context " * 35)
+    second = engine.ingest_source_with_chunked_analysis(
+        source_title = "Long Design Doc",
+        source_text = short_text,
+        context_window_chars = 1800,
+        chunk_target_chars = 1400,
+        chunk_overlap_chars = 0,
+    )
+
+    assert second["status"] == "ok"
+    assert second["chunk_planner"]["chunk_count"] == 1
+    assert len(second["chunk_source_pages"]) == 1
+    assert len(second["chunk_analysis_pages"]) == 1
+    assert second["stale_chunk_source_pages_removed"]
+    assert second["stale_chunk_analysis_pages_removed"]
+
+    for rel in second["stale_chunk_source_pages_removed"]:
+        assert not (tmp_path / "wiki" / f"{rel}.md").exists()
+
+    for rel in second["stale_chunk_analysis_pages_removed"]:
+        assert not (tmp_path / "wiki" / f"{rel}.md").exists()
+
+    remaining_chunk_source_pages = sorted(
+        (tmp_path / "wiki" / "sources").glob("long-design-doc--chunk-*.md")
+    )
+    remaining_chunk_analysis_pages = sorted(
+        (tmp_path / "wiki" / "analysis").glob("long-design-doc--chunk-*--analysis.md")
+    )
+    assert len(remaining_chunk_source_pages) == 1
+    assert len(remaining_chunk_analysis_pages) == 1
+
+
+def test_chunked_analysis_caps_default_context_window_to_extract_limit(
+    tmp_path: Path,
+):
+    def _llm(prompt: str) -> str:
+        if "Extract structured knowledge from the source." in prompt:
+            return json.dumps(
+                {
+                    "summary": "Structured extraction summary.",
+                    "entities": [],
+                    "concepts": [],
+                }
+            )
+
+        if "Merge chunk analyses into one final wiki report." in prompt:
+            return "Merged report with source grounding [[sources/long-design-doc]]."
+
+        return (
+            "Title: Chunk Summary\n"
+            "Section A: Chunk summary with source grounding. [[sources/long-design-doc--chunk-001-of-001]]\n"
+            "Section B: - Key takeaway\n"
+            "Section C: - Wiki update\n"
+            "Section D: - No formulas\n"
+            "Section E: - Caveat\n"
+            "Section F: - Assumption\n"
+            "Section G: source\n"
+            "Section H: - Potentially disputable statement\n"
+            "Section I: - Not date sensitive\n"
+        )
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            extract_source_max_chars = 21000,
+            chunk_analysis_context_window_chars = 400000,
+            query_context_max_chars = 0,
+        ),
+        llm_fn = _llm,
+    )
+
+    long_text = "Long section: " + ("alpha beta gamma delta " * 2800)
+    report = engine.ingest_source_with_chunked_analysis(
+        source_title = "Long Design Doc",
+        source_text = long_text,
+        source_ref = "local",
+    )
+
+    assert report["status"] == "ok"
+    assert report["context_window_chars"] == 21000
+    assert report["chunk_planner"]["chunk_target_chars"] <= 21000
+    assert report["chunk_planner"]["chunk_count"] > 1
+
+    for rel in report["chunk_analysis_pages"]:
+        text = (tmp_path / "wiki" / f"{rel}.md").read_text(encoding = "utf-8")
+        assert "- query_context_max_chars: 21000" in text
+
+
+def test_chunked_analysis_replans_large_single_chunk_default_window(
+    tmp_path: Path,
+):
+    def _llm(prompt: str) -> str:
+        if "Extract structured knowledge from the source." in prompt:
+            return json.dumps(
+                {
+                    "summary": "Structured extraction summary.",
+                    "entities": [],
+                    "concepts": [],
+                }
+            )
+
+        if "Merge chunk analyses into one final wiki report." in prompt:
+            return "Merged report with source grounding [[sources/long-design-doc]]."
+
+        return (
+            "Title: Chunk Summary\n"
+            "Section A: Chunk summary with source grounding. [[sources/long-design-doc--chunk-001-of-001]]\n"
+            "Section B: - Key takeaway\n"
+            "Section C: - Wiki update\n"
+            "Section D: - No formulas\n"
+            "Section E: - Caveat\n"
+            "Section F: - Assumption\n"
+            "Section G: source\n"
+            "Section H: - Potentially disputable statement\n"
+            "Section I: - Not date sensitive\n"
+        )
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            extract_source_max_chars = 500000,
+            chunk_analysis_context_window_chars = 400000,
+            query_context_max_chars = 734003,
+        ),
+        llm_fn = _llm,
+    )
+
+    long_text = "Long section: " + ("alpha beta gamma delta " * 7200)
+    report = engine.ingest_source_with_chunked_analysis(
+        source_title = "Long Design Doc",
+        source_text = long_text,
+        source_ref = "local",
+    )
+
+    assert report["status"] == "ok"
+    assert report["chunk_planner"]["source_chars"] == len(long_text)
+    assert report["context_window_chars"] < 400000
+    assert report["context_window_chars"] <= len(long_text) // 2
+    assert report["chunk_planner"]["chunk_count"] > 1
+    assert report["adaptive_replan_applied"] is True
+    assert report["adaptive_replan_initial_context_window_chars"] == 400000
+    assert report["adaptive_replan_initial_chunk_count"] == 1
+    assert report["adaptive_replan_final_chunk_count"] == report["chunk_planner"]["chunk_count"]
+
+    first_chunk_analysis = report["chunk_analysis_pages"][0]
+    first_chunk_text = (tmp_path / "wiki" / f"{first_chunk_analysis}.md").read_text(
+        encoding = "utf-8"
+    )
+    assert (
+        f"- query_context_max_chars: {report['context_window_chars']}" in first_chunk_text
+    )
+
+    log_text = (tmp_path / "wiki" / "log.md").read_text(encoding = "utf-8")
+    assert "- Adaptive replan applied: yes" in log_text
+    assert "- Adaptive replan details: window_chars=400000->" in log_text
+
+
 def test_manager_retrieve_context_returns_snippets(tmp_path: Path):
     manager = WikiManager.create(vault_root = tmp_path, llm_fn = lambda _: "{}")
 
@@ -436,11 +822,280 @@ def test_manager_retrieve_context_returns_snippets(tmp_path: Path):
     )
 
     assert result["status"] == "ok"
+    assert result["ranking_mode"] in {"llm_rerank", "lexical_fallback"}
     assert result["context_blocks"]
     assert any(
         "python retrieval" in block["content"].lower()
         for block in result["context_blocks"]
     )
+
+
+def test_log_entries_include_hour_minute_timestamp(tmp_path: Path):
+    engine = LLMWikiEngine(cfg = WikiConfig(vault_root = tmp_path), llm_fn = lambda _: "{}")
+
+    engine._append_log(f"## [{engine._today()}] query | timestamp-check")
+    log_text = (tmp_path / "wiki" / "log.md").read_text(encoding = "utf-8")
+
+    assert re.search(
+        r"## \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] query \| timestamp-check",
+        log_text,
+    )
+
+
+def test_delete_wiki_entries_source_cascades_to_analysis_and_orphan_knowledge(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(cfg = WikiConfig(vault_root = tmp_path), llm_fn = lambda _: "{}")
+
+    source_path = tmp_path / "wiki" / "sources" / "alpha.md"
+    analysis_path = tmp_path / "wiki" / "analysis" / "alpha-summary.md"
+    entity_path = tmp_path / "wiki" / "entities" / "alpha-entity.md"
+    concept_path = tmp_path / "wiki" / "concepts" / "alpha-concept.md"
+
+    source_path.write_text(
+        "---\n"
+        "title: Alpha\n"
+        "type: source\n"
+        "source_ref: local\n"
+        "---\n\n"
+        "# Alpha\n\n"
+        "## Entities Mentioned\n"
+        "- [[entities/alpha-entity]]\n\n"
+        "## Concepts Mentioned\n"
+        "- [[concepts/alpha-concept]]\n",
+        encoding = "utf-8",
+    )
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Context Pages\n"
+        "- [[sources/alpha]]\n\n"
+        "## Answer\n"
+        "Alpha summary with links [[entities/alpha-entity]] [[concepts/alpha-concept]].\n",
+        encoding = "utf-8",
+    )
+    entity_path.write_text(
+        "# Alpha Entity\n\n"
+        "## Sources\n"
+        "- [[sources/alpha]]\n",
+        encoding = "utf-8",
+    )
+    concept_path.write_text(
+        "# Alpha Concept\n\n"
+        "## Sources\n"
+        "- [[sources/alpha]]\n",
+        encoding = "utf-8",
+    )
+    engine._rebuild_index()
+
+    preview = engine.delete_wiki_entries(
+        entry_type = "source",
+        entries = ["sources/alpha"],
+        dry_run = True,
+        cascade_orphan_knowledge = True,
+        hard_delete = False,
+    )
+
+    assert preview["status"] == "ok"
+    assert preview["planned_source_pages"] == ["sources/alpha"]
+    assert preview["planned_analysis_pages"] == ["analysis/alpha-summary"]
+    assert preview["planned_entity_pages"] == ["entities/alpha-entity"]
+    assert preview["planned_concept_pages"] == ["concepts/alpha-concept"]
+    assert preview["planned_total_pages"] == 4
+
+    apply_report = engine.delete_wiki_entries(
+        entry_type = "source",
+        entries = ["sources/alpha"],
+        dry_run = False,
+        cascade_orphan_knowledge = True,
+        hard_delete = False,
+    )
+
+    assert apply_report["status"] == "ok"
+    assert apply_report["errors"] == []
+    assert len(apply_report["archived_pages"]) == 4
+    assert apply_report["deleted_pages"] == []
+
+    assert not source_path.exists()
+    assert not analysis_path.exists()
+    assert not entity_path.exists()
+    assert not concept_path.exists()
+    assert list((tmp_path / "wiki" / ".archive" / "sources").glob("alpha*.md"))
+    assert list((tmp_path / "wiki" / ".archive" / "analysis").glob("alpha-summary*.md"))
+    assert list((tmp_path / "wiki" / ".archive" / "entities").glob("alpha-entity*.md"))
+    assert list((tmp_path / "wiki" / ".archive" / "concepts").glob("alpha-concept*.md"))
+
+
+def test_delete_wiki_entries_analysis_hard_delete_preserves_shared_knowledge(
+    tmp_path: Path,
+):
+    engine = LLMWikiEngine(cfg = WikiConfig(vault_root = tmp_path), llm_fn = lambda _: "{}")
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\n- [[entities/shared-entity]]\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "sources" / "beta.md").write_text(
+        "# Beta\n\n- [[entities/shared-entity]]\n",
+        encoding = "utf-8",
+    )
+    analysis_path = tmp_path / "wiki" / "analysis" / "alpha-analysis.md"
+    analysis_path.write_text(
+        "# Query Result\n\n"
+        "## Answer\n"
+        "Analysis reference [[entities/shared-entity]].\n",
+        encoding = "utf-8",
+    )
+    entity_path = tmp_path / "wiki" / "entities" / "shared-entity.md"
+    entity_path.write_text(
+        "# Shared Entity\n",
+        encoding = "utf-8",
+    )
+    engine._rebuild_index()
+
+    preview = engine.delete_wiki_entries(
+        entry_type = "analysis",
+        entries = ["analysis/alpha-analysis"],
+        dry_run = True,
+        cascade_orphan_knowledge = True,
+        hard_delete = False,
+    )
+    assert preview["status"] == "ok"
+    assert preview["planned_analysis_pages"] == ["analysis/alpha-analysis"]
+    assert preview["planned_entity_pages"] == []
+    assert preview["planned_concept_pages"] == []
+
+    apply_report = engine.delete_wiki_entries(
+        entry_type = "analysis",
+        entries = ["analysis/alpha-analysis"],
+        dry_run = False,
+        cascade_orphan_knowledge = True,
+        hard_delete = True,
+    )
+
+    assert apply_report["status"] == "ok"
+    assert apply_report["archived_pages"] == []
+    assert apply_report["deleted_pages"] == ["analysis/alpha-analysis"]
+    assert apply_report["errors"] == []
+    assert not analysis_path.exists()
+    assert entity_path.exists()
+
+
+def test_delete_wiki_entries_entity_hard_delete(tmp_path: Path):
+    engine = LLMWikiEngine(cfg = WikiConfig(vault_root = tmp_path), llm_fn = lambda _: "{}")
+
+    entity_path = tmp_path / "wiki" / "entities" / "alpha-entity.md"
+    entity_path.write_text(
+        "# Alpha Entity\n\nCanonical entity page.\n",
+        encoding = "utf-8",
+    )
+    engine._rebuild_index()
+
+    preview = engine.delete_wiki_entries(
+        entry_type = "entity",
+        entries = ["entities/alpha-entity"],
+        dry_run = True,
+        cascade_orphan_knowledge = True,
+        hard_delete = False,
+    )
+    assert preview["status"] == "ok"
+    assert preview["planned_source_pages"] == []
+    assert preview["planned_analysis_pages"] == []
+    assert preview["planned_entity_pages"] == ["entities/alpha-entity"]
+    assert preview["planned_concept_pages"] == []
+    assert preview["planned_total_pages"] == 1
+
+    apply_report = engine.delete_wiki_entries(
+        entry_type = "entity",
+        entries = ["entities/alpha-entity"],
+        dry_run = False,
+        cascade_orphan_knowledge = True,
+        hard_delete = True,
+    )
+
+    assert apply_report["status"] == "ok"
+    assert apply_report["archived_pages"] == []
+    assert apply_report["deleted_pages"] == ["entities/alpha-entity"]
+    assert apply_report["errors"] == []
+    assert not entity_path.exists()
+
+
+def test_get_wiki_data_graph_returns_expected_nodes_and_edges(tmp_path: Path):
+    engine = LLMWikiEngine(cfg = WikiConfig(vault_root = tmp_path), llm_fn = lambda _: "{}")
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "---\n"
+        "title: Alpha Source\n"
+        "type: source\n"
+        "source_ref: local\n"
+        "---\n\n"
+        "# Alpha Source\n\n"
+        "Links: [[entities/alpha-entity]] [[concepts/alpha-concept]].\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "analysis" / "alpha-summary.md").write_text(
+        "# Alpha Analysis\n\n"
+        "Answer cites [[entities/alpha-entity]].\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "alpha-entity.md").write_text(
+        "# Alpha Entity\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "concepts" / "alpha-concept.md").write_text(
+        "# Alpha Concept\n",
+        encoding = "utf-8",
+    )
+    engine._rebuild_index()
+
+    graph = engine.get_wiki_data_graph(include_analysis = False)
+    node_ids = {node["id"] for node in graph["nodes"]}
+    edge_ids = {edge["id"] for edge in graph["edges"]}
+
+    assert graph["status"] == "ok"
+    assert "sources/alpha" in node_ids
+    assert "entities/alpha-entity" in node_ids
+    assert "concepts/alpha-concept" in node_ids
+    assert "analysis/alpha-summary" not in node_ids
+    assert "sources/alpha->entities/alpha-entity" in edge_ids
+    assert "sources/alpha->concepts/alpha-concept" in edge_ids
+
+    graph_with_analysis = engine.get_wiki_data_graph(include_analysis = True)
+    node_ids_with_analysis = {node["id"] for node in graph_with_analysis["nodes"]}
+    assert "analysis/alpha-summary" in node_ids_with_analysis
+
+
+def test_get_wiki_data_graph_uses_index_summary_for_analysis_labels(tmp_path: Path):
+    engine = LLMWikiEngine(cfg = WikiConfig(vault_root = tmp_path), llm_fn = lambda _: "{}")
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "---\n"
+        "title: Alpha Research Paper\n"
+        "type: source\n"
+        "source_ref: local\n"
+        "---\n\n"
+        "# Alpha Research Paper\n\n"
+        "Source text here.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "analysis" / "alpha-summary.md").write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Alpha Research Paper' with a source-first lens. Primary page: [[sources/alpha]].\n\n"
+        "## Answer\n"
+        "Section A: grounded summary with source link [[sources/alpha]].\n",
+        encoding = "utf-8",
+    )
+    engine._rebuild_index()
+
+    graph = engine.get_wiki_data_graph(include_analysis = True)
+    analysis_node = next(
+        (node for node in graph["nodes"] if node.get("id") == "analysis/alpha-summary"),
+        None,
+    )
+
+    assert analysis_node is not None
+    assert str(analysis_node.get("label", "")).strip() != "Query Result"
+    assert "Alpha Research Paper" in str(analysis_node.get("label", ""))
 
 
 def test_manager_retrieve_context_zero_limits_return_full_content(tmp_path: Path):
@@ -484,6 +1139,7 @@ def test_manager_retrieve_context_can_exclude_source_pages(tmp_path: Path):
     )
 
     assert result["status"] == "ok"
+    assert result["ranking_mode"] in {"llm_rerank", "lexical_fallback"}
     assert result["context_pages"]
     assert all(not page.startswith("sources/") for page in result["context_pages"])
 
@@ -694,6 +1350,59 @@ def test_rank_pages_llm_rerank_reorders_candidates(tmp_path: Path):
     ranked_paths = [rel for rel, _ in ranked]
 
     assert ranked_paths[:2] == ["sources/beta.md", "sources/alpha.md"]
+
+
+def test_rank_pages_llm_rerank_prioritizes_analysis_pages(tmp_path: Path):
+    def _llm(prompt: str) -> str:
+        if "ordered_pages" in prompt and "INDEX_FILE:" in prompt:
+            return '{"ordered_pages": ["entities/zohair.md", "analysis/zohair-summary.md"]}'
+        return "{}"
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = _llm,
+    )
+    engine.cfg.ranking_llm_rerank_enabled = True
+    engine.cfg.ranking_llm_rerank_candidates = 8
+    engine.cfg.ranking_llm_rerank_top_n = 2
+    engine.cfg.ranking_link_depth = 0
+
+    (tmp_path / "wiki" / "analysis" / "zohair-summary.md").write_text(
+        "# Zohair Summary\n\nretrieval notes and paper summary details.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "zohair.md").write_text(
+        "# Zohair\n\nretrieval notes and profile details.\n",
+        encoding = "utf-8",
+    )
+
+    ranked = engine._rank_pages("zohair retrieval summary")
+    ranked_paths = [rel for rel, _ in ranked]
+
+    assert ranked_paths[:2] == ["analysis/zohair-summary.md", "entities/zohair.md"]
+
+
+def test_rank_pages_non_rerank_prioritizes_analysis_pages(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+    engine.cfg.ranking_llm_rerank_enabled = False
+    engine.cfg.ranking_link_depth = 0
+
+    (tmp_path / "wiki" / "analysis" / "alpha-summary.md").write_text(
+        "# Alpha Summary\n\nalpha retrieval answer details.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "alpha.md").write_text(
+        "# Alpha\n\nalpha retrieval answer details.\n",
+        encoding = "utf-8",
+    )
+
+    ranked = engine._rank_pages("alpha retrieval answer")
+    ranked_paths = [rel for rel, _ in ranked]
+
+    assert ranked_paths[:2] == ["analysis/alpha-summary.md", "entities/alpha.md"]
 
 
 def test_rank_pages_llm_rerank_invalid_output_falls_back_to_deterministic_ranking(
@@ -1045,6 +1754,20 @@ def test_low_unique_ratio_min_tokens_is_configurable(tmp_path: Path):
     )
 
     assert engine._low_quality_reason(answer) is None
+
+
+def test_low_quality_reason_flags_mid_length_repetition_runs(tmp_path: Path):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    answer = (
+        "Tensor programs tuning summary large large large large large "
+        "feature tensor scaling analysis context"
+    )
+
+    assert engine._low_quality_reason(answer) == "repetition"
 
 
 def test_enrich_analysis_pages_prepends_enrichment_section(tmp_path: Path):
@@ -1504,6 +2227,22 @@ def test_enrich_analysis_pages_can_fill_lint_gaps_from_web(tmp_path: Path):
     assert web_gap_fill["external_summary_pages_created"] == 1
     assert web_gap_fill["created_summary_pages"]
     assert "concepts/retrieval-benchmarking.md" in web_gap_fill["created_pages"]
+
+    discovery_audit = web_gap_fill.get("web_discovery_audit", [])
+    assert discovery_audit
+    assert discovery_audit[0].get("concept") == "retrieval-benchmarking"
+    assert discovery_audit[0].get("planned_queries") == [
+        "retrieval benchmarking ranking metrics"
+    ]
+    assert discovery_audit[0].get("selected_urls") == [
+        "https://example.com/retrieval-benchmarking"
+    ]
+
+    log_text = (tmp_path / "wiki" / "log.md").read_text(encoding = "utf-8")
+    assert "Web discovery audit" in log_text
+    assert "retrieval-benchmarking" in log_text
+    assert "retrieval benchmarking ranking metrics" in log_text
+    assert "https://example.com/retrieval-benchmarking" in log_text
 
 
 def test_enrich_analysis_pages_web_gap_fill_dry_run_does_not_write_pages(
@@ -2108,6 +2847,42 @@ def test_query_source_first_uses_primary_source_only_context(tmp_path: Path):
         "# Query Result\n\n## Question\nSummarize source 'Alpha'\n\n## Answer\nNoise.\n",
         encoding = "utf-8",
     )
+
+    result = engine.query(
+        "Summarize source 'Alpha' with a source-first lens. Primary page: [[sources/alpha]].",
+        save_answer = False,
+    )
+
+    assert result["context_pages"] == ["sources/alpha.md"]
+
+
+def test_query_source_first_injects_primary_source_when_ranking_omits_it(
+    tmp_path: Path,
+    monkeypatch,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            max_context_pages = 0,
+            max_chars_per_page = 0,
+            query_context_max_chars = 12000,
+        ),
+        llm_fn = lambda _: "Grounded source summary. [[sources/alpha]]",
+    )
+
+    (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
+        "# Alpha\n\nPrimary source details.\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "wiki" / "entities" / "noise.md").write_text(
+        "# Noise\n\nUnrelated content.\n",
+        encoding = "utf-8",
+    )
+
+    def _rank_without_source(_question: str):
+        return [("entities/noise.md", 0.99)]
+
+    monkeypatch.setattr(engine, "_rank_pages", _rank_without_source)
 
     result = engine.query(
         "Summarize source 'Alpha' with a source-first lens. Primary page: [[sources/alpha]].",
@@ -2927,10 +3702,10 @@ def test_lint_reports_entity_and_concept_merge_candidates(tmp_path: Path):
 
 def test_lint_semantic_filters_missing_concepts(tmp_path: Path):
     def llm_fn(prompt: str) -> str:
-        if "semantic filter for wiki concept maintenance" in prompt:
+        if "semantic planner for wiki concept maintenance" in prompt:
             return (
                 "{"
-                '"keep_missing":["retrieval-benchmarking"],'
+                '"keep_missing":[{"slug":"retrieval-benchmarking","source_ids":["S001","S002"],"reason":"Appears across multiple sources as a concrete retrieval concept"}],'
                 '"related_to_existing":[{"slug":"instances","existing":"instance","reason":"plural variant of existing concept"}],'
                 '"reject":[{"slug":"business","reason":"generic non-concept term"}]'
                 "}"
@@ -2948,18 +3723,28 @@ def test_lint_semantic_filters_missing_concepts(tmp_path: Path):
     )
 
     (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
-        "# Alpha\n",
+        "---\n"
+        "title: Alpha\n"
+        "---\n\n"
+        "# Alpha\n\n"
+        "## Summary\n"
+        "This source discusses retrieval benchmarking metrics and evaluation setup.\n\n"
+        "## Concepts Mentioned\n"
+        "- retrieval benchmarking\n"
+        "- instances\n",
         encoding = "utf-8",
     )
     (tmp_path / "wiki" / "sources" / "beta.md").write_text(
-        "# Beta\n",
+        "---\n"
+        "title: Beta\n"
+        "---\n\n"
+        "# Beta\n\n"
+        "## Summary\n"
+        "This source also covers retrieval benchmarking and ranking diagnostics.\n\n"
+        "## Concepts Mentioned\n"
+        "- retrieval benchmarking\n"
+        "- business\n",
         encoding = "utf-8",
-    )
-
-    # Force lexical candidates with one true missing concept, one related
-    # pluralization, and one generic noisy term.
-    engine._top_concepts = (  # type: ignore[assignment]
-        lambda _text, limit: ["instances", "business", "retrieval benchmarking"]
     )
 
     report = engine.lint()
@@ -2983,16 +3768,26 @@ def test_lint_missing_concepts_semantic_filter_strict_on_invalid_output(tmp_path
     )
 
     (tmp_path / "wiki" / "sources" / "alpha.md").write_text(
-        "# Alpha\n",
+        "---\n"
+        "title: Alpha\n"
+        "---\n\n"
+        "# Alpha\n\n"
+        "## Summary\n"
+        "This source discusses retrieval benchmarking metrics and evaluation setup.\n\n"
+        "## Concepts Mentioned\n"
+        "- retrieval benchmarking\n",
         encoding = "utf-8",
     )
     (tmp_path / "wiki" / "sources" / "beta.md").write_text(
-        "# Beta\n",
+        "---\n"
+        "title: Beta\n"
+        "---\n\n"
+        "# Beta\n\n"
+        "## Summary\n"
+        "This source also covers retrieval benchmarking and ranking diagnostics.\n\n"
+        "## Concepts Mentioned\n"
+        "- retrieval benchmarking\n",
         encoding = "utf-8",
-    )
-
-    engine._top_concepts = (  # type: ignore[assignment]
-        lambda _text, limit: ["instances", "business", "retrieval benchmarking"]
     )
 
     report = engine.lint()

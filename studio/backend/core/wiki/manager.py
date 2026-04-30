@@ -96,10 +96,17 @@ class WikiManager:
         include_source_pages: bool = True,
     ) -> Dict:
         """Retrieve top wiki pages and text snippets for prompt injection."""
-        ranked = self.engine._rank_pages(
+        ranked_result = self.engine._rank_pages(
             question,
             include_source_pages = include_source_pages,
+            return_mode = True,
         )
+        ranking_mode = "unknown"
+        ranked: List[Tuple[str, float]]
+        if isinstance(ranked_result, tuple):
+            ranked, ranking_mode = ranked_result
+        else:
+            ranked = ranked_result
         pages_limit = (
             self.engine.cfg.max_context_pages if max_pages is None else max_pages
         )
@@ -128,6 +135,7 @@ class WikiManager:
         return {
             "status": "ok",
             "question": question,
+            "ranking_mode": ranking_mode,
             "context_pages": [page for page, _ in top_pages],
             "context_blocks": blocks,
         }
@@ -138,6 +146,25 @@ class WikiManager:
         """Ingest new content into the wiki."""
         return self.engine.ingest_source(
             source_title = title, source_text = content, source_ref = reference
+        )
+
+    def ingest_content_with_chunked_analysis(
+        self,
+        title: str,
+        content: str,
+        reference: Optional[str] = None,
+        context_window_chars: Optional[int] = None,
+        chunk_target_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+    ) -> Dict:
+        """Ingest content, analyze chunk pages, and write a merged final analysis page."""
+        return self.engine.ingest_source_with_chunked_analysis(
+            source_title = title,
+            source_text = content,
+            source_ref = reference,
+            context_window_chars = context_window_chars,
+            chunk_target_chars = chunk_target_chars,
+            chunk_overlap_chars = chunk_overlap_chars,
         )
 
     def get_health(self) -> Dict:
@@ -202,3 +229,24 @@ class WikiManager:
             compact_knowledge_pages = compact_knowledge_pages,
             max_incremental_updates = max_incremental_updates,
         )
+
+    def delete_wiki_entries(
+        self,
+        entry_type: str,
+        entries: List[str],
+        dry_run: bool = True,
+        cascade_orphan_knowledge: bool = True,
+        hard_delete: bool = False,
+    ) -> Dict:
+        """Delete wiki entries and optionally cascade orphan knowledge pages."""
+        return self.engine.delete_wiki_entries(
+            entry_type = entry_type,
+            entries = entries,
+            dry_run = dry_run,
+            cascade_orphan_knowledge = cascade_orphan_knowledge,
+            hard_delete = hard_delete,
+        )
+
+    def get_wiki_data_graph(self, include_analysis: bool = True) -> Dict:
+        """Return source/entity/concept (+ optional analysis) graph data for UI."""
+        return self.engine.get_wiki_data_graph(include_analysis = include_analysis)
