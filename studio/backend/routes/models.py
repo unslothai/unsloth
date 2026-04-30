@@ -1697,9 +1697,7 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
     try:
         active = Path(active_model).expanduser().resolve()
         target = deleted_path.resolve()
-        return active == target or (
-            target.is_dir() and active.is_relative_to(target)
-        )
+        return active == target or (target.is_dir() and active.is_relative_to(target))
     except (OSError, RuntimeError, ValueError) as e:
         logger.debug(
             "Could not resolve loaded/deleted model paths; falling back to string comparison: %s",
@@ -1830,7 +1828,9 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.debug("Could not check inference backend loaded model before delete: %s", e)
+        logger.debug(
+            "Could not check inference backend loaded model before delete: %s", e
+        )
 
     try:
         if export_type == "gguf" and gguf_variant:
