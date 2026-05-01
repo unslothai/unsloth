@@ -36,6 +36,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -503,6 +504,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
@@ -525,6 +527,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+        env = child_env_without_native_path_secret(),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:

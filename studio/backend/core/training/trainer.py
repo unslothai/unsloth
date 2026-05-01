@@ -70,6 +70,7 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -1770,6 +1771,7 @@ class UnslothTrainer:
                     spark_code_dir,
                 ],
                 check = True,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
 
@@ -2004,6 +2006,7 @@ class UnslothTrainer:
                     outetts_code_dir,
                 ],
                 check = True,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             for fpath in [

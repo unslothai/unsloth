@@ -15,6 +15,7 @@ Key Components:
 - get_logger: Factory function for structured loggers
 """
 
+import re
 import time
 from typing import Callable
 
@@ -23,6 +24,9 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = structlog.get_logger(__name__)
+_NATIVE_PATH_LEASE_RE = re.compile(
+    r"(?i)(\bnative_path_lease[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+)
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -75,6 +79,16 @@ def filter_sensitive_data(logger, method_name, event_dict):
     """Structlog processor to filter out base64 data from logs."""
 
     def filter_value(value):
+        if isinstance(value, str):
+            try:
+                from utils.native_path_leases import redact_native_paths
+
+                value = redact_native_paths(value)
+            except Exception:
+                pass
+            value = _NATIVE_PATH_LEASE_RE.sub(
+                r"\1<redacted native path lease>", value
+            )
         if (
             isinstance(value, str)
             and len(value) > 100
@@ -83,7 +97,12 @@ def filter_sensitive_data(logger, method_name, event_dict):
             # Likely base64 data, truncate it
             return value[:20] + "..."
         elif isinstance(value, dict):
-            return {k: filter_value(v) for k, v in value.items()}
+            return {
+                k: "<redacted native path lease>"
+                if str(k).lower() == "native_path_lease"
+                else filter_value(v)
+                for k, v in value.items()
+            }
         elif isinstance(value, list):
             return [filter_value(item) for item in value]
         return value

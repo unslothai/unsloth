@@ -173,7 +173,10 @@ class JobManager:
                 kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
                 daemon = True,
             )
-            proc.start()
+            from utils.native_path_leases import native_path_secret_removed_from_environ
+
+            with native_path_secret_removed_from_environ():
+                proc.start()
 
             self._mp_q = mp_q
             self._proc = proc

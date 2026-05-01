@@ -18,6 +18,9 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    native_path_lease: Optional[str] = Field(
+        None, description = "Frontend-visible signed native path grant"
+    )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )
@@ -69,6 +72,9 @@ class ValidateModelRequest(BaseModel):
     """
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    native_path_lease: Optional[str] = Field(
+        None, description = "Frontend-visible signed native path grant"
+    )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )

@@ -7,6 +7,12 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
+import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
+import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
+import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -539,6 +545,9 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const pendingNativeModelIntent = useNativeIntentStore((state) => state.pendingModelIntent);
+  const chooseNativeModel = useChooseNativeModel();
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -569,6 +578,8 @@ export function ChatPage(): ReactElement {
     }
     return { mode: "single" };
   }, [search.thread, search.compare, search.new, activeThreadId]);
+
+  useNativeModelDrop(view.mode === "single");
 
   const handleCheckpointChange = useCallback(
     (
@@ -885,6 +896,22 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
+            {isTauri && view.mode !== "compare" ? (
+              <button
+                type="button"
+                onClick={() => void chooseNativeModel()}
+                className="h-[34px] rounded-[8px] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-[#ececec] hover:text-foreground dark:hover:bg-[#2e3035]"
+              >
+                Choose local model…
+              </button>
+            ) : null}
+            {pendingNativeModelIntent && view.mode !== "compare" ? (
+              <NativeModelChip
+                intent={pendingNativeModelIntent}
+                nativeReadsDisabled={!nativePathLeasesSupported}
+                onLoad={(selection) => selectModel(selection)}
+              />
+            ) : null}
             {loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
                 label={

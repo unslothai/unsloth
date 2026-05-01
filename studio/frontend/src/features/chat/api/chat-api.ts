@@ -68,7 +68,11 @@ export async function loadModel(
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      native_path_lease: payload.nativePathLease ?? null,
+      nativePathLease: undefined,
+    }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
@@ -81,6 +85,7 @@ export async function validateModel(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
+      native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
     }),

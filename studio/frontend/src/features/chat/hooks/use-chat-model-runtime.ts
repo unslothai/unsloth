@@ -3,6 +3,7 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import { consumeNativePathToken } from "@/features/native-intents/api";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -49,6 +50,7 @@ type SelectedModelInput = {
   isDownloaded?: boolean;
   expectedBytes?: number;
   forceReload?: boolean;
+  nativePathToken?: string;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -343,6 +345,8 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
         typeof selection === "string" ? false : selection.forceReload ?? false;
+      const nativePathToken =
+        typeof selection === "string" ? undefined : selection.nativePathToken;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
@@ -421,8 +425,12 @@ export function useChatModelRuntime() {
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
+            const validateNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
+              : undefined;
             const validation = await validateModel({
               model_path: modelId,
+              nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: maxSeqLength,
               load_in_4bit: true,
@@ -457,8 +465,12 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: activePresetSource,
             });
+            const loadNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
+              : undefined;
             const loadResponse = await loadModel({
               model_path: modelId,
+              nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: effectiveMaxSeqLength,
               load_in_4bit: true,
