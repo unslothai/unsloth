@@ -127,9 +127,7 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
 
         mock_subprocess.assert_called_once()
-        mock_raw_config.assert_called_once_with(
-            "unsloth/gemma-4-E4B-it", hf_token = None
-        )
+        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
 
 
 # ---------------------------------------------------------------------------
