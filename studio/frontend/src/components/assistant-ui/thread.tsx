@@ -30,7 +30,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { DEFAULT_THREAD_KEY, sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { db, useLiveQuery } from "@/features/chat/db";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { usePromptEvalStore } from "@/features/chat/stores/use-prompt-eval-store";
@@ -313,9 +313,9 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
   // so that the eval hidden host's generation (which uses its own ChatRuntimeProvider)
   // is recognised as "this thread running" when the visible thread is the same DB thread.
   const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const threadId = useAuiState(({ thread }) => thread.id);
   const thisThreadInStore = useChatRuntimeStore((s) =>
-    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
+    Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
   );
   const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
   const anotherThreadRunning = !thisThreadIsRunning && !thisThreadInStore && anyRunning;
