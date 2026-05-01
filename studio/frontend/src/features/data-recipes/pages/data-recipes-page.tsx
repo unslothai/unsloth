@@ -399,7 +399,7 @@ export function DataRecipesPage(): ReactElement {
   const isBusy = creatingRecipe || Boolean(loadingTemplateId);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto w-full max-w-7xl px-6 py-8">
         <div className="flex items-center justify-between gap-4">
           <div>
