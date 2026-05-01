@@ -104,7 +104,7 @@ class AudioCodecManager:
                     "https://github.com/SparkAudio/Spark-TTS",
                     spark_code_dir,
                 ],
-                check=True,
+                check = True,
                 **_windows_hidden_subprocess_kwargs(),
             )
 
@@ -142,7 +142,7 @@ class AudioCodecManager:
                     "https://github.com/edwko/OuteTTS",
                     outetts_code_dir,
                 ],
-                check=True,
+                check = True,
                 **_windows_hidden_subprocess_kwargs(),
             )
             # Remove files that pull in heavy / incompatible dependencies
@@ -164,11 +164,11 @@ class AudioCodecManager:
         from outetts.models.config import ModelConfig as OuteTTSModelConfig
 
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path="OuteAI/Llama-OuteTTS-1.0-1B",
-            device=device,
-            audio_codec_path=None,
+            tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B",
+            device = device,
+            audio_codec_path = None,
         )
-        processor = AudioProcessor(config=dummy_config)
+        processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec
         logger.info("Loaded DAC audio codec")
 
@@ -187,7 +187,7 @@ class AudioCodecManager:
         Returns (wav_bytes, 24000).
         """
         # Find START_OF_SPEECH token (128257)
-        token_indices = (generated_ids == 128257).nonzero(as_tuple=True)
+        token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
         else:
@@ -300,7 +300,7 @@ class AudioCodecManager:
         c1 = c1[:t]
         c2 = c2[:t]
 
-        codes = torch.tensor([[c1, c2]], dtype=torch.int64).to(device)
+        codes = torch.tensor([[c1, c2]], dtype = torch.int64).to(device)
         with torch.no_grad():
             audio = self._dac_audio_codec.decode(codes)
 
@@ -318,7 +318,7 @@ class AudioCodecManager:
         if audio_type == "snac":
             if not token_ids:
                 raise ValueError("SNAC decoding requires token_ids")
-            return self.decode_snac(torch.tensor([token_ids], dtype=torch.long), device)
+            return self.decode_snac(torch.tensor([token_ids], dtype = torch.long), device)
         elif audio_type == "bicodec":
             if not text:
                 raise ValueError("BiCodec decoding requires text")

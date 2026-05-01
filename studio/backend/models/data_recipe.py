@@ -13,13 +13,13 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class RecipePayload(BaseModel):
-    recipe: dict[str, Any] = Field(default_factory=dict)
+    recipe: dict[str, Any] = Field(default_factory = dict)
     run: dict[str, Any] | None = None
     ui: dict[str, Any] | None = None
 
 
 class PreviewResponse(BaseModel):
-    dataset: list[dict[str, Any]] = Field(default_factory=list)
+    dataset: list[dict[str, Any]] = Field(default_factory = list)
     processor_artifacts: dict[str, Any] | None = None
     analysis: dict[str, Any] | None = None
 
@@ -32,7 +32,7 @@ class ValidateError(BaseModel):
 
 class ValidateResponse(BaseModel):
     valid: bool
-    errors: list[ValidateError] = Field(default_factory=list)
+    errors: list[ValidateError] = Field(default_factory = list)
     raw_detail: str | None = None
 
 
@@ -41,23 +41,23 @@ class JobCreateResponse(BaseModel):
 
 
 class PublishDatasetRequest(BaseModel):
-    repo_id: str = Field(min_length=3, description="Hugging Face dataset repo ID")
+    repo_id: str = Field(min_length = 3, description = "Hugging Face dataset repo ID")
     description: str = Field(
-        min_length=1,
-        max_length=4000,
-        description="Short dataset description for the dataset card",
+        min_length = 1,
+        max_length = 4000,
+        description = "Short dataset description for the dataset card",
     )
     hf_token: str | None = Field(
-        default=None,
-        description="Optional Hugging Face token for private or write-protected repos",
+        default = None,
+        description = "Optional Hugging Face token for private or write-protected repos",
     )
     private: bool = Field(
-        default=False,
-        description="Create or update the dataset repo as private",
+        default = False,
+        description = "Create or update the dataset repo as private",
     )
     artifact_path: str | None = Field(
-        default=None,
-        description="Execution artifact path captured by the UI for completed runs",
+        default = None,
+        description = "Execution artifact path captured by the UI for completed runs",
     )
 
 
@@ -68,11 +68,11 @@ class PublishDatasetResponse(BaseModel):
 
 
 class SeedInspectRequest(BaseModel):
-    dataset_name: str = Field(min_length=1)
+    dataset_name: str = Field(min_length = 1)
     hf_token: str | None = None
     subset: str | None = None
     split: str | None = "train"
-    preview_size: int = Field(default=10, ge=1, le=50)
+    preview_size: int = Field(default = 10, ge = 1, le = 50)
 
 
 class SeedInspectUploadRequest(BaseModel):
@@ -84,12 +84,12 @@ class SeedInspectUploadRequest(BaseModel):
     file_ids: list[str] | None = None
     file_names: list[str] | None = None
     # Shared fields
-    preview_size: int = Field(default=10, ge=1, le=50)
+    preview_size: int = Field(default = 10, ge = 1, le = 50)
     seed_source_type: str | None = None
-    unstructured_chunk_size: int | None = Field(default=None, ge=1, le=20000)
-    unstructured_chunk_overlap: int | None = Field(default=None, ge=0, le=20000)
+    unstructured_chunk_size: int | None = Field(default = None, ge = 1, le = 20000)
+    unstructured_chunk_overlap: int | None = Field(default = None, ge = 0, le = 20000)
 
-    @model_validator(mode="after")
+    @model_validator(mode = "after")
     def _check_mutual_exclusivity(self) -> "SeedInspectUploadRequest":
         has_legacy = self.content_base64 is not None
         has_multi = self.file_ids is not None
@@ -115,8 +115,8 @@ class SeedInspectUploadRequest(BaseModel):
 class SeedInspectResponse(BaseModel):
     dataset_name: str
     resolved_path: str
-    columns: list[str] = Field(default_factory=list)
-    preview_rows: list[dict[str, Any]] = Field(default_factory=list)
+    columns: list[str] = Field(default_factory = list)
+    preview_rows: list[dict[str, Any]] = Field(default_factory = list)
     split: str | None = None
     subset: str | None = None
     resolved_paths: list[str] | None = None
@@ -131,16 +131,16 @@ class UnstructuredFileUploadResponse(BaseModel):
 
 
 class McpToolsListRequest(BaseModel):
-    mcp_providers: list[dict[str, Any]] = Field(default_factory=list)
-    timeout_sec: float | None = Field(default=None, gt=0)
+    mcp_providers: list[dict[str, Any]] = Field(default_factory = list)
+    timeout_sec: float | None = Field(default = None, gt = 0)
 
 
 class McpToolsProviderResult(BaseModel):
     name: str
-    tools: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory = list)
     error: str | None = None
 
 
 class McpToolsListResponse(BaseModel):
-    providers: list[McpToolsProviderResult] = Field(default_factory=list)
-    duplicate_tools: dict[str, list[str]] = Field(default_factory=dict)
+    providers: list[McpToolsProviderResult] = Field(default_factory = list)
+    duplicate_tools: dict[str, list[str]] = Field(default_factory = dict)

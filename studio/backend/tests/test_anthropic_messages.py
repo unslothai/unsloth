@@ -48,7 +48,7 @@ from io import BytesIO as _BytesIO
 class TestAnthropicModels:
     def test_minimal_request(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens is None
         assert req.model == "default"
@@ -56,49 +56,49 @@ class TestAnthropicModels:
 
     def test_max_tokens_optional(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens == 100
 
     def test_system_as_string(self):
         req = AnthropicMessagesRequest(
-            max_tokens=50,
-            messages=[{"role": "user", "content": "Hi"}],
-            system="You are helpful.",
+            max_tokens = 50,
+            messages = [{"role": "user", "content": "Hi"}],
+            system = "You are helpful.",
         )
         assert req.system == "You are helpful."
 
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[{"name": "web_search", "input_schema": {"type": "object"}}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            tools = [{"name": "web_search", "input_schema": {"type": "object"}}],
         )
         assert len(req.tools) == 1
         assert req.tools[0].name == "web_search"
 
     def test_extra_fields_accepted(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            some_future_field="hello",
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            some_future_field = "hello",
         )
         assert req.max_tokens == 100
 
     def test_stream_defaults_false(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.stream is False
 
     def test_enable_tools_shorthand(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
-            enable_tools=True,
-            enabled_tools=["web_search", "python"],
-            session_id="my-session",
+            messages = [{"role": "user", "content": "Hi"}],
+            enable_tools = True,
+            enabled_tools = ["web_search", "python"],
+            session_id = "my-session",
         )
         assert req.enable_tools is True
         assert req.enabled_tools == ["web_search", "python"]
@@ -106,7 +106,7 @@ class TestAnthropicModels:
 
     def test_extension_fields_default_none(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.enable_tools is None
         assert req.enabled_tools is None
@@ -134,7 +134,7 @@ class TestAnthropicMessagesToOpenAI:
 
     def test_system_string_prepended(self):
         msgs = [{"role": "user", "content": "Hello"}]
-        result = anthropic_messages_to_openai(msgs, system="Be brief.")
+        result = anthropic_messages_to_openai(msgs, system = "Be brief.")
         assert result[0] == {"role": "system", "content": "Be brief."}
         assert result[1] == {"role": "user", "content": "Hello"}
 
@@ -144,7 +144,7 @@ class TestAnthropicMessagesToOpenAI:
             {"type": "text", "text": "Be accurate."},
         ]
         msgs = [{"role": "user", "content": "Hello"}]
-        result = anthropic_messages_to_openai(msgs, system=system)
+        result = anthropic_messages_to_openai(msgs, system = system)
         assert result[0]["role"] == "system"
         assert "Be brief." in result[0]["content"]
         assert "Be accurate." in result[0]["content"]
@@ -426,7 +426,7 @@ class TestAnthropicToolsToOpenAI:
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(
-            name="test", description="desc", input_schema={"type": "object"}
+            name = "test", description = "desc", input_schema = {"type": "object"}
         )
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"
@@ -925,7 +925,7 @@ def _jpeg_data_url() -> str:
 
     img = Image.new("RGB", (2, 2), (255, 0, 0))
     buf = _BytesIO()
-    img.save(buf, format="JPEG")
+    img.save(buf, format = "JPEG")
     b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
 
@@ -933,7 +933,7 @@ def _jpeg_data_url() -> str:
 class TestNormalizeAnthropicOpenAIImages:
     def test_noop_when_no_images(self):
         msgs = [{"role": "user", "content": "hi"}]
-        has_image = _normalize_anthropic_openai_images(msgs, is_vision=False)
+        has_image = _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert has_image is False
         assert msgs == [{"role": "user", "content": "hi"}]
 
@@ -946,7 +946,7 @@ class TestNormalizeAnthropicOpenAIImages:
                 ],
             }
         ]
-        assert _normalize_anthropic_openai_images(msgs, is_vision=True) is True
+        assert _normalize_anthropic_openai_images(msgs, is_vision = True) is True
 
     def test_rejects_image_when_model_not_vision(self):
         msgs = [
@@ -962,7 +962,7 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         with pytest.raises(HTTPException) as exc:
-            _normalize_anthropic_openai_images(msgs, is_vision=False)
+            _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert exc.value.status_code == 400
 
     def test_reencodes_jpeg_data_url_to_png(self):
@@ -976,7 +976,7 @@ class TestNormalizeAnthropicOpenAIImages:
                 ],
             }
         ]
-        _normalize_anthropic_openai_images(msgs, is_vision=True)
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
         new_url = msgs[0]["content"][1]["image_url"]["url"]
         assert new_url.startswith("data:image/png;base64,")
         assert new_url != original_url
@@ -993,7 +993,7 @@ class TestNormalizeAnthropicOpenAIImages:
                 ],
             }
         ]
-        _normalize_anthropic_openai_images(msgs, is_vision=True)
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert msgs[0]["content"][0]["image_url"]["url"] == "https://x.example/y.png"
 
     def test_bad_base64_raises_400(self):
@@ -1009,5 +1009,5 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         with pytest.raises(HTTPException) as exc:
-            _normalize_anthropic_openai_images(msgs, is_vision=True)
+            _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert exc.value.status_code == 400

@@ -17,47 +17,47 @@ from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
-    model_path: str = Field(..., description="Model identifier or local path")
+    model_path: str = Field(..., description = "Model identifier or local path")
     hf_token: Optional[str] = Field(
-        None, description="HuggingFace token for gated models"
+        None, description = "HuggingFace token for gated models"
     )
     max_seq_length: int = Field(
         0,
-        ge=0,
-        le=1048576,
-        description="Maximum sequence length (0 = model default for GGUF)",
+        ge = 0,
+        le = 1048576,
+        description = "Maximum sequence length (0 = model default for GGUF)",
     )
-    load_in_4bit: bool = Field(True, description="Load model in 4-bit quantization")
-    is_lora: bool = Field(False, description="Whether this is a LoRA adapter")
+    load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
+    is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
-        None, description="GGUF quantization variant (e.g. 'Q4_K_M')"
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
     trust_remote_code: bool = Field(
         False,
-        description="Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
+        description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
     chat_template_override: Optional[str] = Field(
         None,
-        description="Custom Jinja2 chat template to use instead of the model's default",
+        description = "Custom Jinja2 chat template to use instead of the model's default",
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description="KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description="Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
     )
     speculative_type: Optional[str] = Field(
         None,
-        description="Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
+        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
 
 
 class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
-    model_path: str = Field(..., description="Model identifier to unload")
+    model_path: str = Field(..., description = "Model identifier to unload")
 
 
 class ValidateModelRequest(BaseModel):
@@ -68,12 +68,12 @@ class ValidateModelRequest(BaseModel):
     This does NOT actually load weights into GPU memory.
     """
 
-    model_path: str = Field(..., description="Model identifier or local path")
+    model_path: str = Field(..., description = "Model identifier or local path")
     hf_token: Optional[str] = Field(
-        None, description="HuggingFace token for gated models"
+        None, description = "HuggingFace token for gated models"
     )
     gguf_variant: Optional[str] = Field(
-        None, description="GGUF quantization variant (e.g. 'Q4_K_M')"
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
 
 
@@ -85,115 +85,115 @@ class ValidateModelResponse(BaseModel):
     introspection (GGUF / LoRA / vision flags) is available.
     """
 
-    valid: bool = Field(..., description="Whether the model identifier looks valid")
-    message: str = Field(..., description="Human-readable validation message")
-    identifier: Optional[str] = Field(None, description="Resolved model identifier")
+    valid: bool = Field(..., description = "Whether the model identifier looks valid")
+    message: str = Field(..., description = "Human-readable validation message")
+    identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     display_name: Optional[str] = Field(
-        None, description="Display name derived from identifier"
+        None, description = "Display name derived from identifier"
     )
-    is_gguf: bool = Field(False, description="Whether this is a GGUF model (llama.cpp)")
-    is_lora: bool = Field(False, description="Whether this is a LoRA adapter")
-    is_vision: bool = Field(False, description="Whether this is a vision-capable model")
+    is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
+    is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
+    is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(
         False,
-        description="Whether the model defaults require trust_remote_code to be enabled for loading.",
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
 
 
 class GenerateRequest(BaseModel):
     """Request for text generation (legacy /generate/stream endpoint)"""
 
-    messages: List[dict] = Field(..., description="Chat messages in OpenAI format")
-    system_prompt: str = Field("", description="System prompt")
-    temperature: float = Field(0.6, ge=0.0, le=2.0, description="Sampling temperature")
-    top_p: float = Field(0.95, ge=0.0, le=1.0, description="Top-p sampling")
-    top_k: int = Field(20, ge=-1, le=100, description="Top-k sampling")
+    messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
+    system_prompt: str = Field("", description = "System prompt")
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
+    top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
     max_new_tokens: int = Field(
-        2048, ge=1, le=4096, description="Maximum tokens to generate"
+        2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
     )
     repetition_penalty: float = Field(
-        1.0, ge=1.0, le=2.0, description="Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
     )
-    presence_penalty: float = Field(0.0, ge=0.0, le=2.0, description="Presence penalty")
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(
-        None, description="Base64 encoded image for vision models"
+        None, description = "Base64 encoded image for vision models"
     )
 
 
 class LoadResponse(BaseModel):
     """Response after loading a model"""
 
-    status: str = Field(..., description="Load status")
-    model: str = Field(..., description="Model identifier")
-    display_name: str = Field(..., description="Display name of the model")
-    is_vision: bool = Field(False, description="Whether model is a vision model")
-    is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
+    status: str = Field(..., description = "Load status")
+    model: str = Field(..., description = "Model identifier")
+    display_name: str = Field(..., description = "Display name of the model")
+    is_vision: bool = Field(False, description = "Whether model is a vision model")
+    is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(
-        False, description="Whether model is a GGUF model (llama.cpp)"
+        False, description = "Whether model is a GGUF model (llama.cpp)"
     )
-    is_audio: bool = Field(False, description="Whether model is a TTS audio model")
+    is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(
-        None, description="Audio codec type: snac, csm, bicodec, dac"
+        None, description = "Audio codec type: snac, csm, bicodec, dac"
     )
     has_audio_input: bool = Field(
-        False, description="Whether model accepts audio input (ASR)"
+        False, description = "Whether model accepts audio input (ASR)"
     )
     inference: dict = Field(
-        ..., description="Inference parameters (temperature, top_p, top_k, min_p)"
+        ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
     requires_trust_remote_code: bool = Field(
         False,
-        description="Whether the model defaults require trust_remote_code to be enabled for loading.",
+        description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description="Model's native context length (from GGUF metadata)"
+        None, description = "Model's native context length (from GGUF metadata)"
     )
     max_context_length: Optional[int] = Field(
-        None, description="Maximum context length currently available on this hardware"
+        None, description = "Maximum context length currently available on this hardware"
     )
     native_context_length: Optional[int] = Field(
         None,
-        description="Model's native context length from GGUF metadata (not capped by VRAM)",
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
     )
     supports_reasoning: bool = Field(
         False,
-        description="Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
+        description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
     reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
         "enable_thinking",
-        description="Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
     )
     reasoning_always_on: bool = Field(
         False,
-        description="Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
+        description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description="Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
+        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
     )
     supports_tools: bool = Field(
         False,
-        description="Whether model supports tool calling (web search, etc.)",
+        description = "Whether model supports tool calling (web search, etc.)",
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description="KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
     )
     chat_template: Optional[str] = Field(
         None,
-        description="Jinja2 chat template string (from GGUF metadata or tokenizer)",
+        description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
     )
     speculative_type: Optional[str] = Field(
         None,
-        description="Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
 
 
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
 
-    status: str = Field(..., description="Unload status")
-    model: str = Field(..., description="Model identifier that was unloaded")
+    status: str = Field(..., description = "Unload status")
+    model: str = Field(..., description = "Model identifier that was unloaded")
 
 
 class LoadProgressResponse(BaseModel):
@@ -207,7 +207,7 @@ class LoadProgressResponse(BaseModel):
 
     phase: Optional[str] = Field(
         None,
-        description=(
+        description = (
             "Load phase: 'mmap' (weights paging into RAM via mmap), "
             "'ready' (llama-server reported healthy), or null when no "
             "load is in flight."
@@ -215,17 +215,17 @@ class LoadProgressResponse(BaseModel):
     )
     bytes_loaded: int = Field(
         0,
-        description=(
+        description = (
             "Bytes of the model already resident in the llama-server "
             "process (VmRSS on Linux)."
         ),
     )
     bytes_total: int = Field(
         0,
-        description="Total bytes across all GGUF shards for the active model.",
+        description = "Total bytes across all GGUF shards for the active model.",
     )
     fraction: float = Field(
-        0.0, description="bytes_loaded / bytes_total, clamped to 0..1."
+        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
     )
 
 
@@ -233,85 +233,85 @@ class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
-        None, description="Currently active model identifier"
+        None, description = "Currently active model identifier"
     )
     is_vision: bool = Field(
-        False, description="Whether the active model is a vision model"
+        False, description = "Whether the active model is a vision model"
     )
     is_gguf: bool = Field(
-        False, description="Whether the active model is a GGUF model (llama.cpp)"
+        False, description = "Whether the active model is a GGUF model (llama.cpp)"
     )
     gguf_variant: Optional[str] = Field(
-        None, description="GGUF quantization variant (e.g. Q4_K_M)"
+        None, description = "GGUF quantization variant (e.g. Q4_K_M)"
     )
     is_audio: bool = Field(
-        False, description="Whether the active model is a TTS audio model"
+        False, description = "Whether the active model is a TTS audio model"
     )
     audio_type: Optional[str] = Field(
-        None, description="Audio codec type: snac, csm, bicodec, dac"
+        None, description = "Audio codec type: snac, csm, bicodec, dac"
     )
     has_audio_input: bool = Field(
-        False, description="Whether model accepts audio input (ASR)"
+        False, description = "Whether model accepts audio input (ASR)"
     )
     loading: List[str] = Field(
-        default_factory=list, description="Models currently being loaded"
+        default_factory = list, description = "Models currently being loaded"
     )
     loaded: List[str] = Field(
-        default_factory=list, description="Models currently loaded"
+        default_factory = list, description = "Models currently loaded"
     )
     inference: Optional[Dict[str, Any]] = Field(
-        None, description="Recommended inference parameters for the active model"
+        None, description = "Recommended inference parameters for the active model"
     )
     requires_trust_remote_code: bool = Field(
         False,
-        description="Whether the active model requires trust_remote_code to be enabled for loading.",
+        description = "Whether the active model requires trust_remote_code to be enabled for loading.",
     )
     supports_reasoning: bool = Field(
-        False, description="Whether the active model supports reasoning/thinking mode"
+        False, description = "Whether the active model supports reasoning/thinking mode"
     )
     reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
         "enable_thinking",
-        description="Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
     )
     reasoning_always_on: bool = Field(
-        False, description="Whether reasoning is always on (not toggleable)"
+        False, description = "Whether reasoning is always on (not toggleable)"
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description="Whether the active model's template understands the optional preserve_thinking kwarg",
+        description = "Whether the active model's template understands the optional preserve_thinking kwarg",
     )
     supports_tools: bool = Field(
-        False, description="Whether the active model supports tool calling"
+        False, description = "Whether the active model supports tool calling"
     )
     chat_template: Optional[str] = Field(
         None,
-        description="Jinja2 chat template string for the active model",
+        description = "Jinja2 chat template string for the active model",
     )
     context_length: Optional[int] = Field(
-        None, description="Context length of the active model"
+        None, description = "Context length of the active model"
     )
     max_context_length: Optional[int] = Field(
         None,
-        description="Maximum context length currently available for the active model",
+        description = "Maximum context length currently available for the active model",
     )
     native_context_length: Optional[int] = Field(
         None,
-        description="Model's native context length from GGUF metadata (not capped by VRAM)",
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description="KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
     )
     chat_template: Optional[str] = Field(
-        None, description="Model's default chat template (Jinja2 source), if any"
+        None, description = "Model's default chat template (Jinja2 source), if any"
     )
     chat_template_override: Optional[str] = Field(
         None,
-        description="Active chat template override applied at load time, or None if model is using its default",
+        description = "Active chat template override applied at load time, or None if model is using its default",
     )
     speculative_type: Optional[str] = Field(
         None,
-        description="Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
 
 
@@ -333,7 +333,7 @@ class TextContentPart(BaseModel):
 class ImageUrl(BaseModel):
     """Image URL object — supports data URIs and remote URLs."""
 
-    url: str = Field(..., description="data:image/png;base64,... or https://...")
+    url: str = Field(..., description = "data:image/png;base64,... or https://...")
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
 
 
@@ -376,25 +376,25 @@ class ChatMessage(BaseModel):
     """
 
     role: Literal["system", "user", "assistant", "tool"] = Field(
-        ..., description="Message role"
+        ..., description = "Message role"
     )
     content: Optional[Union[str, list[ContentPart]]] = Field(
-        None, description="Message content (string or multimodal parts)"
+        None, description = "Message content (string or multimodal parts)"
     )
     tool_call_id: Optional[str] = Field(
         None,
-        description="OpenAI tool-result messages: id of the tool call this result belongs to.",
+        description = "OpenAI tool-result messages: id of the tool call this result belongs to.",
     )
     tool_calls: Optional[list[dict]] = Field(
         None,
-        description="OpenAI assistant messages: structured tool calls the model decided to make.",
+        description = "OpenAI assistant messages: structured tool calls the model decided to make.",
     )
     name: Optional[str] = Field(
         None,
-        description="OpenAI tool-result messages: name of the tool whose result this is.",
+        description = "OpenAI tool-result messages: name of the tool whose result this is.",
     )
 
-    @model_validator(mode="after")
+    @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
         # Enforce the per-role OpenAI spec shape at the request boundary.
         # Without this, malformed messages (e.g. user entries with no
@@ -449,29 +449,29 @@ class ChatCompletionRequest(BaseModel):
 
     model: str = Field(
         "default",
-        description="Model identifier (informational; the active model is used)",
+        description = "Model identifier (informational; the active model is used)",
     )
-    messages: list[ChatMessage] = Field(..., description="Conversation messages")
+    messages: list[ChatMessage] = Field(..., description = "Conversation messages")
     stream: bool = Field(
         False,
-        description=(
+        description = (
             "Whether to stream the response via SSE. Default matches OpenAI's "
             "spec (`false`); opt into streaming by sending `stream: true`."
         ),
     )
-    temperature: float = Field(0.6, ge=0.0, le=2.0)
-    top_p: float = Field(0.95, ge=0.0, le=1.0)
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0)
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
-        None, ge=1, description="Maximum tokens to generate (None = until EOS)"
+        None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(0.0, ge=0.0, le=2.0, description="Presence penalty")
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     stop: Optional[Union[str, list[str]]] = Field(
         None,
-        description="OpenAI stop sequences: a single string or list of strings at which generation halts.",
+        description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
     )
     tools: Optional[list[dict]] = Field(
         None,
-        description=(
+        description = (
             "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
             "Studio forwards the tools to the backend so the model returns structured "
             "tool_calls for the client to execute (standard OpenAI function calling)."
@@ -479,29 +479,29 @@ class ChatCompletionRequest(BaseModel):
     )
     tool_choice: Optional[Union[str, dict]] = Field(
         None,
-        description=(
+        description = (
             "OpenAI tool choice: 'auto' | 'required' | 'none' | "
             "{'type': 'function', 'function': {'name': ...}}"
         ),
     )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
-    top_k: int = Field(20, ge=-1, le=100, description="[x-unsloth] Top-k sampling")
+    top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
     min_p: float = Field(
-        0.01, ge=0.0, le=1.0, description="[x-unsloth] Min-p sampling threshold"
+        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
-        1.0, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
     image_base64: Optional[str] = Field(
-        None, description="[x-unsloth] Base64-encoded image for vision models"
+        None, description = "[x-unsloth] Base64-encoded image for vision models"
     )
     audio_base64: Optional[str] = Field(
-        None, description="[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
+        None, description = "[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
-        description=(
+        description = (
             "[x-unsloth] Adapter control for compare mode. "
             "null = no change (default), "
             "false = disable adapters (base model), "
@@ -511,45 +511,45 @@ class ChatCompletionRequest(BaseModel):
     )
     enable_thinking: Optional[bool] = Field(
         None,
-        description="[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+        description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
     reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
         None,
-        description="[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
+        description = "[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
     )
     preserve_thinking: Optional[bool] = Field(
         None,
-        description="[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+        description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
     )
     enable_tools: Optional[bool] = Field(
         None,
-        description="[x-unsloth] Enable tool calling for supported models",
+        description = "[x-unsloth] Enable tool calling for supported models",
     )
     enabled_tools: Optional[list[str]] = Field(
         None,
-        description="[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
+        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
-        description="[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
-        ge=0,
-        description="[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
+        ge = 0,
+        description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
     tool_call_timeout: Optional[int] = Field(
         300,
-        ge=1,
-        description="[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
+        ge = 1,
+        description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
     )
     session_id: Optional[str] = Field(
         None,
-        description="[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+        description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
     cancel_id: Optional[str] = Field(
         None,
-        description="[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
+        description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
     )
 
 
@@ -574,9 +574,9 @@ class ChunkChoice(BaseModel):
 class ChatCompletionChunk(BaseModel):
     """A single SSE chunk in OpenAI streaming format."""
 
-    id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:12]}")
+    id: str = Field(default_factory = lambda: f"chatcmpl-{uuid.uuid4().hex[:12]}")
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
-    created: int = Field(default_factory=lambda: int(time.time()))
+    created: int = Field(default_factory = lambda: int(time.time()))
     model: str = "default"
     choices: list[ChunkChoice]
     usage: Optional[CompletionUsage] = None
@@ -612,12 +612,12 @@ class CompletionUsage(BaseModel):
 class ChatCompletion(BaseModel):
     """Non-streaming chat completion response."""
 
-    id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:12]}")
+    id: str = Field(default_factory = lambda: f"chatcmpl-{uuid.uuid4().hex[:12]}")
     object: Literal["chat.completion"] = "chat.completion"
-    created: int = Field(default_factory=lambda: int(time.time()))
+    created: int = Field(default_factory = lambda: int(time.time()))
     model: str = "default"
     choices: list[CompletionChoice]
-    usage: CompletionUsage = Field(default_factory=CompletionUsage)
+    usage: CompletionUsage = Field(default_factory = CompletionUsage)
 
 
 # =====================================================================
@@ -639,7 +639,7 @@ class ResponsesInputImagePart(BaseModel):
     """Image content part in a Responses API message (type=input_image)."""
 
     type: Literal["input_image"]
-    image_url: str = Field(..., description="data:image/png;base64,... or https://...")
+    image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
 
 
@@ -705,15 +705,15 @@ class ResponsesFunctionCallInputItem(BaseModel):
 
     type: Literal["function_call"]
     id: Optional[str] = Field(
-        None, description="Item id assigned by the server (e.g. fc_...)"
+        None, description = "Item id assigned by the server (e.g. fc_...)"
     )
     call_id: str = Field(
         ...,
-        description="Correlation id matching a function_call_output on the next turn.",
+        description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
     arguments: str = Field(
-        ..., description="JSON string of the arguments the model produced."
+        ..., description = "JSON string of the arguments the model produced."
     )
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -729,7 +729,7 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     id: Optional[str] = None
     call_id: str
     output: Union[str, list] = Field(
-        ..., description="String or content-array result of the tool call."
+        ..., description = "String or content-array result of the tool call."
     )
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -805,18 +805,18 @@ class ResponsesFunctionTool(BaseModel):
 class ResponsesRequest(BaseModel):
     """OpenAI Responses API request."""
 
-    model: str = Field("default", description="Model identifier")
+    model: str = Field("default", description = "Model identifier")
     input: Union[str, list[ResponsesInputItem]] = Field(
-        default=[],
-        description="Input text or list of messages / function_call / function_call_output items",
+        default = [],
+        description = "Input text or list of messages / function_call / function_call_output items",
     )
     instructions: Optional[str] = Field(
-        None, description="System / developer instructions"
+        None, description = "System / developer instructions"
     )
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
-    max_output_tokens: Optional[int] = Field(None, ge=1)
-    stream: bool = Field(False, description="Whether to stream the response via SSE")
+    temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
+    top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    max_output_tokens: Optional[int] = Field(None, ge = 1)
+    stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
     # OpenAI function-calling fields — forwarded to llama-server via the
     # Chat Completions pass-through (see routes/inference.py). Typed as a
@@ -825,7 +825,7 @@ class ResponsesRequest(BaseModel):
     # picks out only ``type=="function"`` entries for forwarding.
     tools: Optional[list[dict]] = Field(
         None,
-        description=(
+        description = (
             "Responses-shape function tool definitions. Entries with "
             '`type="function"` are translated to the Chat Completions nested '
             "shape before being forwarded to llama-server; other tool types "
@@ -835,7 +835,7 @@ class ResponsesRequest(BaseModel):
     )
     tool_choice: Optional[Any] = Field(
         None,
-        description=(
+        description = (
             "'auto' | 'required' | 'none' | {'type': 'function', 'name': ...} — "
             "the Responses-shape forcing object is translated to the Chat "
             "Completions nested shape internally."
@@ -862,17 +862,17 @@ class ResponsesOutputTextContent(BaseModel):
 
     type: Literal["output_text"] = "output_text"
     text: str
-    annotations: list = Field(default_factory=list)
+    annotations: list = Field(default_factory = list)
 
 
 class ResponsesOutputMessage(BaseModel):
     """An output message in the Responses API response."""
 
     type: Literal["message"] = "message"
-    id: str = Field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:12]}")
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
     status: Literal["completed", "in_progress"] = "completed"
     role: Literal["assistant"] = "assistant"
-    content: list[ResponsesOutputTextContent] = Field(default_factory=list)
+    content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
 class ResponsesOutputFunctionCall(BaseModel):
@@ -885,11 +885,11 @@ class ResponsesOutputFunctionCall(BaseModel):
     """
 
     type: Literal["function_call"] = "function_call"
-    id: str = Field(default_factory=lambda: f"fc_{uuid.uuid4().hex[:12]}")
+    id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
     arguments: str = Field(
-        ..., description="JSON string of the arguments the model produced."
+        ..., description = "JSON string of the arguments the model produced."
     )
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
@@ -908,24 +908,24 @@ class ResponsesUsage(BaseModel):
 class ResponsesResponse(BaseModel):
     """Top-level Responses API response object."""
 
-    id: str = Field(default_factory=lambda: f"resp_{uuid.uuid4().hex[:12]}")
+    id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
     object: Literal["response"] = "response"
-    created_at: int = Field(default_factory=lambda: int(time.time()))
+    created_at: int = Field(default_factory = lambda: int(time.time()))
     status: Literal["completed", "in_progress", "failed"] = "completed"
     model: str = "default"
-    output: list[ResponsesOutputItem] = Field(default_factory=list)
-    usage: ResponsesUsage = Field(default_factory=ResponsesUsage)
+    output: list[ResponsesOutputItem] = Field(default_factory = list)
+    usage: ResponsesUsage = Field(default_factory = ResponsesUsage)
     error: Optional[Any] = None
     incomplete_details: Optional[Any] = None
     instructions: Optional[str] = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory = dict)
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_output_tokens: Optional[int] = None
     previous_response_id: Optional[str] = None
     text: Optional[Any] = None
     tool_choice: Optional[Any] = None
-    tools: list = Field(default_factory=list)
+    tools: list = Field(default_factory = list)
     truncation: Optional[Any] = None
 
 
@@ -1001,13 +1001,13 @@ class AnthropicMessagesRequest(BaseModel):
     metadata: Optional[dict] = None
     # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
     min_p: Optional[float] = Field(
-        None, ge=0.0, le=1.0, description="[x-unsloth] Min-p sampling threshold"
+        None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: Optional[float] = Field(
-        None, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty"
+        None, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
     presence_penalty: Optional[float] = Field(
-        None, ge=0.0, le=2.0, description="[x-unsloth] Presence penalty"
+        None, ge = 0.0, le = 2.0, description = "[x-unsloth] Presence penalty"
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
@@ -1042,11 +1042,11 @@ AnthropicResponseBlock = Union[
 
 
 class AnthropicMessagesResponse(BaseModel):
-    id: str = Field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:24]}")
+    id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:24]}")
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"
-    content: list[AnthropicResponseBlock] = Field(default_factory=list)
+    content: list[AnthropicResponseBlock] = Field(default_factory = list)
     model: str = "default"
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
-    usage: AnthropicUsage = Field(default_factory=AnthropicUsage)
+    usage: AnthropicUsage = Field(default_factory = AnthropicUsage)

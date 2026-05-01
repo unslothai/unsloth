@@ -96,7 +96,7 @@ class InferenceOrchestrator:
 
         # Kick off background fetch of top models from HF
         threading.Thread(
-            target=self._fetch_top_models, daemon=True, name="top-models"
+            target = self._fetch_top_models, daemon = True, name = "top-models"
         ).start()
 
     # ------------------------------------------------------------------
@@ -106,7 +106,7 @@ class InferenceOrchestrator:
     @property
     def default_models(self) -> list[str]:
         # Wait up to 5s for background HF fetch to finish
-        self._top_models_ready.wait(timeout=5)
+        self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
         # Curated static defaults first (editorial picks like new models),
@@ -128,13 +128,13 @@ class InferenceOrchestrator:
 
             resp = httpx.get(
                 "https://huggingface.co/api/models",
-                params={
+                params = {
                     "author": "unsloth",
                     "sort": "downloads",
                     "direction": "-1",
                     "limit": "80",
                 },
-                timeout=15,
+                timeout = 15,
             )
             if resp.status_code == 200:
                 models = resp.json()
@@ -173,14 +173,14 @@ class InferenceOrchestrator:
         self._cancel_event = _CTX.Event()
 
         self._proc = _CTX.Process(
-            target=run_inference_process,
-            kwargs={
+            target = run_inference_process,
+            kwargs = {
                 "cmd_queue": self._cmd_queue,
                 "resp_queue": self._resp_queue,
                 "cancel_event": self._cancel_event,
                 "config": config,
             },
-            daemon=True,
+            daemon = True,
         )
         self._proc.start()
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
@@ -212,7 +212,7 @@ class InferenceOrchestrator:
 
         # 4. Wait for graceful shutdown
         try:
-            self._proc.join(timeout=timeout)
+            self._proc.join(timeout = timeout)
         except Exception:
             pass
 
@@ -221,14 +221,14 @@ class InferenceOrchestrator:
             logger.warning("Inference subprocess did not exit gracefully, terminating")
             try:
                 self._proc.terminate()
-                self._proc.join(timeout=5)
+                self._proc.join(timeout = 5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Subprocess still alive after terminate, killing")
                 try:
                     self._proc.kill()
-                    self._proc.join(timeout=3)
+                    self._proc.join(timeout = 3)
                 except Exception:
                     pass
 
@@ -240,7 +240,7 @@ class InferenceOrchestrator:
 
     def _cleanup(self):
         """atexit handler."""
-        self._shutdown_subprocess(timeout=5.0)
+        self._shutdown_subprocess(timeout = 5.0)
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive."""
@@ -264,7 +264,7 @@ class InferenceOrchestrator:
         if self._resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout=timeout)
+            return self._resp_queue.get(timeout = timeout)
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -286,7 +286,7 @@ class InferenceOrchestrator:
 
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout=min(remaining, 1.0))
+            resp = self._read_resp(timeout = min(remaining, 1.0))
 
             if resp is None:
                 # Check subprocess health
@@ -347,7 +347,7 @@ class InferenceOrchestrator:
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            resp = self._read_resp(timeout=min(0.5, deadline - time.monotonic()))
+            resp = self._read_resp(timeout = min(0.5, deadline - time.monotonic()))
             if resp is None:
                 if not self._ensure_subprocess_alive():
                     return
@@ -374,9 +374,9 @@ class InferenceOrchestrator:
 
         self._dispatcher_stop.clear()
         self._dispatcher_thread = threading.Thread(
-            target=self._dispatcher_loop,
-            daemon=True,
-            name="inference-dispatcher",
+            target = self._dispatcher_loop,
+            daemon = True,
+            name = "inference-dispatcher",
         )
         self._dispatcher_thread.start()
         logger.debug("Dispatcher thread started")
@@ -386,7 +386,7 @@ class InferenceOrchestrator:
         if self._dispatcher_thread is None:
             return
         self._dispatcher_stop.set()
-        self._dispatcher_thread.join(timeout=_DISPATCH_STOP_TIMEOUT)
+        self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
         self._dispatcher_thread = None
         logger.debug("Dispatcher thread stopped")
 
@@ -397,7 +397,7 @@ class InferenceOrchestrator:
                 break
 
             try:
-                resp = self._resp_queue.get(timeout=_DISPATCH_POLL_INTERVAL)
+                resp = self._resp_queue.get(timeout = _DISPATCH_POLL_INTERVAL)
             except queue.Empty:
                 continue
             except (EOFError, OSError, ValueError):
@@ -433,15 +433,15 @@ class InferenceOrchestrator:
         self,
         messages: list = None,
         system_prompt: str = "",
-        image=None,
+        image = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
-        cancel_event=None,
-        use_adapter=None,
+        cancel_event = None,
+        use_adapter = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -505,7 +505,7 @@ class InferenceOrchestrator:
         try:
             while True:
                 try:
-                    resp = mailbox.get(timeout=_DISPATCH_READ_TIMEOUT)
+                    resp = mailbox.get(timeout = _DISPATCH_READ_TIMEOUT)
                 except queue.Empty:
                     # Timeout — check subprocess health
                     if not self._ensure_subprocess_alive():
@@ -520,7 +520,7 @@ class InferenceOrchestrator:
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_generation()
                         # Drain remaining events for this request
-                        self._drain_mailbox(mailbox, timeout=5.0)
+                        self._drain_mailbox(mailbox, timeout = 5.0)
                         return
                     yield resp.get("text", "")
 
@@ -540,7 +540,7 @@ class InferenceOrchestrator:
         while time.monotonic() < deadline:
             try:
                 resp = mailbox.get(
-                    timeout=min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
+                    timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
                 )
             except queue.Empty:
                 continue
@@ -588,7 +588,7 @@ class InferenceOrchestrator:
         self,
         config,  # ModelConfig
         max_seq_length: int = 2048,
-        dtype=None,
+        dtype = None,
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
@@ -620,9 +620,9 @@ class InferenceOrchestrator:
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
-                model_name=model_name,
-                hf_token=hf_token,
-                load_in_4bit=load_in_4bit,
+                model_name = model_name,
+                hf_token = hf_token,
+                load_in_4bit = load_in_4bit,
             )
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
@@ -637,7 +637,7 @@ class InferenceOrchestrator:
 
             elif self._proc is not None:
                 # Dead subprocess — clean up
-                self._shutdown_subprocess(timeout=2)
+                self._shutdown_subprocess(timeout = 2)
 
             disable_xet = sub_config.get("disable_xet", False) or (
                 os.environ.get("HF_HUB_DISABLE_XET") == "1"
@@ -665,11 +665,11 @@ class InferenceOrchestrator:
                             "HF_HUB_DISABLE_XET=1",
                             model_name,
                         )
-                        self._shutdown_subprocess(timeout=5)
+                        self._shutdown_subprocess(timeout = 5)
                         disable_xet = True
                         continue
                     # Second stall (or already had xet disabled) -> give up
-                    self._shutdown_subprocess(timeout=5)
+                    self._shutdown_subprocess(timeout = 5)
                     raise RuntimeError(
                         f"Download stalled for '{model_name}' even with "
                         f"HF_HUB_DISABLE_XET=1 -- check your network connection"
@@ -744,34 +744,34 @@ class InferenceOrchestrator:
         self,
         messages: list,
         system_prompt: str = "",
-        image=None,
+        image = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
-        cancel_event=None,
+        cancel_event = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess."""
         yield from self._generate_inner(
-            messages=messages,
-            system_prompt=system_prompt,
-            image=image,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            max_new_tokens=max_new_tokens,
-            repetition_penalty=repetition_penalty,
-            cancel_event=cancel_event,
-            use_adapter=None,
+            messages = messages,
+            system_prompt = system_prompt,
+            image = image,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+            cancel_event = cancel_event,
+            use_adapter = None,
         )
 
     def generate_with_adapter_control(
         self,
         use_adapter: Optional[Union[bool, str]] = None,
-        cancel_event=None,
+        cancel_event = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
         """Generate with adapter control, streaming tokens from subprocess.
@@ -781,8 +781,8 @@ class InferenceOrchestrator:
         serializes them via its sequential command loop.
         """
         yield from self._generate_dispatched(
-            use_adapter=use_adapter,
-            cancel_event=cancel_event,
+            use_adapter = use_adapter,
+            cancel_event = cancel_event,
             **gen_kwargs,
         )
 
@@ -790,15 +790,15 @@ class InferenceOrchestrator:
         self,
         messages: list = None,
         system_prompt: str = "",
-        image=None,
+        image = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
-        cancel_event=None,
-        use_adapter=None,
+        cancel_event = None,
+        use_adapter = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -824,32 +824,32 @@ class InferenceOrchestrator:
         # can consume and drop each other's token events.
         with self._gen_lock:
             yield from self._generate_locked(
-                messages=messages,
-                system_prompt=system_prompt,
-                image=image,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                min_p=min_p,
-                max_new_tokens=max_new_tokens,
-                repetition_penalty=repetition_penalty,
-                cancel_event=cancel_event,
-                use_adapter=use_adapter,
+                messages = messages,
+                system_prompt = system_prompt,
+                image = image,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_new_tokens = max_new_tokens,
+                repetition_penalty = repetition_penalty,
+                cancel_event = cancel_event,
+                use_adapter = use_adapter,
             )
 
     def _generate_locked(
         self,
         messages: list = None,
         system_prompt: str = "",
-        image=None,
+        image = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
-        cancel_event=None,
-        use_adapter=None,
+        cancel_event = None,
+        use_adapter = None,
     ) -> Generator[str, None, None]:
         """Actual generation logic — must be called under _gen_lock."""
         request_id = str(uuid.uuid4())
@@ -885,7 +885,7 @@ class InferenceOrchestrator:
         # Yield tokens from response queue — we are the only reader
         # because _gen_lock is held.
         while True:
-            resp = self._read_resp(timeout=30.0)
+            resp = self._read_resp(timeout = 30.0)
 
             if resp is None:
                 # Check subprocess health
@@ -913,7 +913,7 @@ class InferenceOrchestrator:
                     # Wait for the subprocess to acknowledge cancellation
                     # (gen_done/gen_error) so stale events don't leak into
                     # the next generation request.
-                    self._drain_until_gen_done(timeout=5.0)
+                    self._drain_until_gen_done(timeout = 5.0)
                     return
                 yield resp.get("text", "")
 
@@ -982,7 +982,7 @@ class InferenceOrchestrator:
         deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout=min(remaining, 1.0))
+            resp = self._read_resp(timeout = min(remaining, 1.0))
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
@@ -1012,15 +1012,15 @@ class InferenceOrchestrator:
     def generate_whisper_response(
         self,
         audio_array,
-        cancel_event=None,
+        cancel_event = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR — sends audio to subprocess, yields text."""
         yield from self._generate_audio_input_inner(
-            audio_array=audio_array,
-            audio_type="whisper",
-            messages=[],
-            system_prompt="",
-            cancel_event=cancel_event,
+            audio_array = audio_array,
+            audio_type = "whisper",
+            messages = [],
+            system_prompt = "",
+            cancel_event = cancel_event,
         )
 
     def generate_audio_input_response(
@@ -1034,21 +1034,21 @@ class InferenceOrchestrator:
         min_p: float = 0.0,
         max_new_tokens: int = 512,
         repetition_penalty: float = 1.0,
-        cancel_event=None,
+        cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
         yield from self._generate_audio_input_inner(
-            audio_array=audio_array,
-            audio_type=None,  # worker will use generate_audio_input_response
-            messages=messages,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            max_new_tokens=max_new_tokens,
-            repetition_penalty=repetition_penalty,
-            cancel_event=cancel_event,
+            audio_array = audio_array,
+            audio_type = None,  # worker will use generate_audio_input_response
+            messages = messages,
+            system_prompt = system_prompt,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+            cancel_event = cancel_event,
         )
 
     def _generate_audio_input_inner(
@@ -1063,7 +1063,7 @@ class InferenceOrchestrator:
         min_p: float = 0.0,
         max_new_tokens: int = 512,
         repetition_penalty: float = 1.0,
-        cancel_event=None,
+        cancel_event = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
@@ -1108,7 +1108,7 @@ class InferenceOrchestrator:
 
             # Yield tokens — same pattern as _generate_locked
             while True:
-                resp = self._read_resp(timeout=30.0)
+                resp = self._read_resp(timeout = 30.0)
 
                 if resp is None:
                     if not self._ensure_subprocess_alive():
@@ -1128,7 +1128,7 @@ class InferenceOrchestrator:
                 if rtype == "token":
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_generation()
-                        self._drain_until_gen_done(timeout=5.0)
+                        self._drain_until_gen_done(timeout = 5.0)
                         return
                     yield resp.get("text", "")
 
@@ -1161,7 +1161,7 @@ class InferenceOrchestrator:
     def _pil_to_base64(img) -> str:
         """Convert a PIL Image to base64 string for IPC."""
         buf = BytesIO()
-        img.save(buf, format="PNG")
+        img.save(buf, format = "PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def get_current_model(self) -> Optional[str]:

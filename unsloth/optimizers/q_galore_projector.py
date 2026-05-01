@@ -106,7 +106,7 @@ class GaLoreProjector:
         self.gamma_proj = gamma_proj
         self.queue_size = queue_size
         self.past_ortho_vector = None
-        self.queue = deque(maxlen=queue_size)
+        self.queue = deque(maxlen = queue_size)
         self.svd_count = 0
         self._ortho_float_cache = None
 
@@ -142,9 +142,9 @@ class GaLoreProjector:
                 float_ortho = self._compute_orthogonal(
                     full_rank_grad,
                     self.rank,
-                    side="right",
+                    side = "right",
                 )
-                self._update_adaptive_schedule(float_ortho, side="right")
+                self._update_adaptive_schedule(float_ortho, side = "right")
                 self._store_ortho(float_ortho)
 
             self._ortho_float_cache = self._load_ortho()
@@ -155,9 +155,9 @@ class GaLoreProjector:
                 float_ortho = self._compute_orthogonal(
                     full_rank_grad,
                     self.rank,
-                    side="left",
+                    side = "left",
                 )
-                self._update_adaptive_schedule(float_ortho, side="left")
+                self._update_adaptive_schedule(float_ortho, side = "left")
                 self._store_ortho(float_ortho)
 
             self._ortho_float_cache = self._load_ortho()
@@ -216,17 +216,17 @@ class GaLoreProjector:
 
         m, n = matrix.shape
         if min(m, n) <= rank * 2:
-            U, s, Vh = torch.linalg.svd(matrix, full_matrices=False)
+            U, s, Vh = torch.linalg.svd(matrix, full_matrices = False)
             result = Vh[:rank, :] if side == "right" else U[:, :rank]
         else:
             # Oversampling p=10 per Halko et al. 2009 (arXiv:0909.4061)
             # recommendation of p=5..10 for large low-rank matrices.
             q = min(rank + 10, min(m, n))
-            U, s, V = torch.svd_lowrank(matrix, q=q, niter=2)
+            U, s, V = torch.svd_lowrank(matrix, q = q, niter = 2)
             result = V[:, :rank].t() if side == "right" else U[:, :rank]
 
         if original_dtype != torch.float32:
-            result = result.to(device=original_device, dtype=original_dtype)
+            result = result.to(device = original_device, dtype = original_dtype)
         return result
 
     # ------------------------------------------------------------------
@@ -268,8 +268,8 @@ class GaLoreProjector:
         if self.quant:
             q, scales, zeros, shape = _quantize(
                 float_ortho,
-                q_group_size=self.quant_group_size,
-                n_bit=self.quant_n_bit,
+                q_group_size = self.quant_group_size,
+                n_bit = self.quant_n_bit,
             )
             self.ortho_matrix = q
             self.ortho_matrix_scales = scales
@@ -314,11 +314,11 @@ def _quantize(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim=1, keepdim=True)
-    min_val = w.amin(dim=1, keepdim=True)
+    max_val = w.amax(dim = 1, keepdim = True)
+    min_val = w.amin(dim = 1, keepdim = True)
     max_int = 2**n_bit - 1
     min_int = 0
-    scales = (max_val - min_val).clamp(min=1e-5) / max_int
+    scales = (max_val - min_val).clamp(min = 1e-5) / max_int
     zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
 
     w = torch.clamp(torch.round(w / scales) + zeros, min_int, max_int)
@@ -366,11 +366,11 @@ def _quantize_stochastic(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim=1, keepdim=True)
-    min_val = w.amin(dim=1, keepdim=True)
+    max_val = w.amax(dim = 1, keepdim = True)
+    min_val = w.amin(dim = 1, keepdim = True)
     max_int = 2**n_bit - 1
     min_int = 0
-    scales = (max_val - min_val).clamp(min=1e-5) / max_int
+    scales = (max_val - min_val).clamp(min = 1e-5) / max_int
     zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
 
     w_scaled = w / scales

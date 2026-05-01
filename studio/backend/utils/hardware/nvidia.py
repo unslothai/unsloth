@@ -62,9 +62,9 @@ def get_physical_gpu_count() -> Optional[int]:
     try:
         result = subprocess.run(
             ["nvidia-smi", "-L"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -87,9 +87,9 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -104,13 +104,13 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
         return {"available": False}
 
     return _build_gpu_metrics(
-        vram_used_mb=_parse_smi_value(parts[2]),
-        vram_total_mb=_parse_smi_value(parts[3]),
-        power_draw=_parse_smi_value(parts[4]),
-        power_limit=_parse_smi_value(parts[5]),
-        available=True,
-        gpu_utilization_pct=_parse_smi_value(parts[0]),
-        temperature_c=_parse_smi_value(parts[1]),
+        vram_used_mb = _parse_smi_value(parts[2]),
+        vram_total_mb = _parse_smi_value(parts[3]),
+        power_draw = _parse_smi_value(parts[4]),
+        power_limit = _parse_smi_value(parts[5]),
+        available = True,
+        gpu_utilization_pct = _parse_smi_value(parts[0]),
+        temperature_c = _parse_smi_value(parts[1]),
     )
 
 
@@ -138,9 +138,9 @@ def get_visible_gpu_utilization(
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -177,19 +177,19 @@ def get_visible_gpu_utilization(
 
         devices.append(
             _build_gpu_metrics(
-                vram_used_mb=_parse_smi_value(parts[3]),
-                vram_total_mb=_parse_smi_value(parts[4]),
-                power_draw=_parse_smi_value(parts[5]),
-                power_limit=_parse_smi_value(parts[6]),
-                index=idx,
-                index_kind="physical",
-                visible_ordinal=(
+                vram_used_mb = _parse_smi_value(parts[3]),
+                vram_total_mb = _parse_smi_value(parts[4]),
+                power_draw = _parse_smi_value(parts[5]),
+                power_limit = _parse_smi_value(parts[6]),
+                index = idx,
+                index_kind = "physical",
+                visible_ordinal = (
                     visible_ordinals[idx]
                     if visible_ordinals is not None
                     else len(devices)
                 ),
-                gpu_utilization_pct=_parse_smi_value(parts[1]),
-                temperature_c=_parse_smi_value(parts[2]),
+                gpu_utilization_pct = _parse_smi_value(parts[1]),
+                temperature_c = _parse_smi_value(parts[2]),
             )
         )
 
@@ -224,9 +224,9 @@ def get_backend_visible_gpu_info(
                 "--query-gpu=index,name,memory.total",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output = True,
+            text = True,
+            timeout = 10,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:

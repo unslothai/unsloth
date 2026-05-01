@@ -59,20 +59,20 @@ _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
 def nvidia_host(**overrides) -> HostInfo:
     """NVIDIA Linux x86_64 host."""
     defaults = dict(
-        system="Linux",
-        machine="x86_64",
-        is_windows=False,
-        is_linux=True,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi="/usr/bin/nvidia-smi",
-        driver_cuda_version=(12, 6),
-        compute_caps=["89"],
-        visible_cuda_devices=None,
-        has_physical_nvidia=True,
-        has_usable_nvidia=True,
-        has_rocm=False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = "/usr/bin/nvidia-smi",
+        driver_cuda_version = (12, 6),
+        compute_caps = ["89"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        has_rocm = False,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -81,20 +81,20 @@ def nvidia_host(**overrides) -> HostInfo:
 def rocm_host(**overrides) -> HostInfo:
     """AMD ROCm Linux x86_64 host (no NVIDIA)."""
     defaults = dict(
-        system="Linux",
-        machine="x86_64",
-        is_windows=False,
-        is_linux=True,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        has_rocm=True,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = True,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -103,20 +103,20 @@ def rocm_host(**overrides) -> HostInfo:
 def cpu_host(**overrides) -> HostInfo:
     """CPU-only Linux x86_64 host."""
     defaults = dict(
-        system="Linux",
-        machine="x86_64",
-        is_windows=False,
-        is_linux=True,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        has_rocm=False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -125,20 +125,20 @@ def cpu_host(**overrides) -> HostInfo:
 def macos_host(**overrides) -> HostInfo:
     """macOS arm64 host."""
     defaults = dict(
-        system="Darwin",
-        machine="arm64",
-        is_windows=False,
-        is_linux=False,
-        is_macos=True,
-        is_x86_64=False,
-        is_arm64=True,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        has_rocm=False,
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -147,20 +147,20 @@ def macos_host(**overrides) -> HostInfo:
 def windows_host(**overrides) -> HostInfo:
     """Windows x86_64 host."""
     defaults = dict(
-        system="Windows",
-        machine="amd64",
-        is_windows=True,
-        is_linux=False,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        has_rocm=False,
+        system = "Windows",
+        machine = "amd64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -169,20 +169,20 @@ def windows_host(**overrides) -> HostInfo:
 def windows_rocm_host(**overrides) -> HostInfo:
     """Windows x86_64 host with ROCm."""
     defaults = dict(
-        system="Windows",
-        machine="amd64",
-        is_windows=True,
-        is_linux=False,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        has_rocm=True,
+        system = "Windows",
+        machine = "amd64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = True,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -211,7 +211,7 @@ UPSTREAM_ASSETS = {
 class TestResolveUpstreamAssetChoice:
     """Verify that the asset selection logic picks the right binary for each platform."""
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_nvidia_linux_gets_cpu_asset(self, mock_assets):
         """NVIDIA host should NOT hit the ROCm path -- gets CPU asset (CUDA handled elsewhere)."""
         host = nvidia_host()
@@ -220,7 +220,7 @@ class TestResolveUpstreamAssetChoice:
         assert "ubuntu-x64" in choice.name
         assert "rocm" not in choice.name
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_rocm_linux_gets_rocm_prebuilt(self, mock_assets):
         """AMD ROCm Linux host should get the ROCm prebuilt."""
         host = rocm_host()
@@ -228,7 +228,7 @@ class TestResolveUpstreamAssetChoice:
         assert choice.install_kind == "linux-rocm"
         assert "rocm" in choice.name
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_cpu_linux_gets_cpu_asset(self, mock_assets):
         """CPU-only Linux host should get CPU asset."""
         host = cpu_host()
@@ -236,7 +236,7 @@ class TestResolveUpstreamAssetChoice:
         assert choice.install_kind == "linux-cpu"
         assert "ubuntu-x64" in choice.name
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_macos_arm64_gets_macos_asset(self, mock_assets):
         """macOS arm64 host should get macOS asset."""
         host = macos_host()
@@ -244,7 +244,7 @@ class TestResolveUpstreamAssetChoice:
         assert choice.install_kind == "macos-arm64"
         assert "macos-arm64" in choice.name
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_windows_cpu_gets_cpu_asset(self, mock_assets):
         """Windows CPU-only host should get Windows CPU asset."""
         host = windows_host()
@@ -252,7 +252,7 @@ class TestResolveUpstreamAssetChoice:
         assert choice.install_kind == "windows-cpu"
         assert "win-cpu" in choice.name
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_windows_rocm_gets_hip_asset(self, mock_assets):
         """Windows ROCm host should get Windows HIP asset."""
         host = windows_rocm_host()
@@ -260,10 +260,10 @@ class TestResolveUpstreamAssetChoice:
         assert choice.install_kind == "windows-hip"
         assert "hip" in choice.name
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_mixed_nvidia_rocm_prefers_nvidia(self, mock_assets):
         """Host with both NVIDIA and ROCm should use NVIDIA (CPU path here, CUDA elsewhere)."""
-        host = nvidia_host(has_rocm=True)
+        host = nvidia_host(has_rocm = True)
         choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
         # NVIDIA hosts go through the normal path (CUDA handled by resolve_linux_cuda_choice)
         assert choice.install_kind == "linux-cpu"
@@ -278,7 +278,7 @@ class TestResolveUpstreamAssetChoice:
         }
         mock_assets.return_value = assets_without_rocm
         host = rocm_host()
-        with pytest.raises(PrebuiltFallback, match="ROCm detected"):
+        with pytest.raises(PrebuiltFallback, match = "ROCm detected"):
             resolve_upstream_asset_choice(host, LLAMA_TAG)
 
     @patch.object(prebuilt_mod, "github_release_assets")
@@ -290,17 +290,17 @@ class TestResolveUpstreamAssetChoice:
         choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
         assert choice.install_kind == "windows-cpu"
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_macos_rocm_impossible_has_rocm_false(self, mock_assets):
         """macOS host should never have has_rocm=True in practice; verify it gets macOS asset."""
-        host = macos_host(has_rocm=True)
+        host = macos_host(has_rocm = True)
         choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
         assert choice.install_kind == "macos-arm64"
 
-    @patch.object(prebuilt_mod, "github_release_assets", return_value=UPSTREAM_ASSETS)
+    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_linux_aarch64_rocm_gets_prebuilt_fallback(self, mock_assets):
         """Linux aarch64 with ROCm -- no x86_64 match, should raise PrebuiltFallback."""
-        host = rocm_host(machine="aarch64", is_x86_64=False, is_arm64=True)
+        host = rocm_host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
         with pytest.raises(PrebuiltFallback):
             resolve_upstream_asset_choice(host, LLAMA_TAG)
 
@@ -315,7 +315,7 @@ class TestRuntimePatterns:
 
     def test_linux_cpu_patterns(self):
         choice = AssetChoice(
-            repo="", tag="", name="", url="", source_label="", install_kind="linux-cpu"
+            repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-cpu"
         )
         patterns = runtime_patterns_for_choice(choice)
         assert "llama-server" in patterns
@@ -323,14 +323,14 @@ class TestRuntimePatterns:
 
     def test_linux_cuda_patterns(self):
         choice = AssetChoice(
-            repo="", tag="", name="", url="", source_label="", install_kind="linux-cuda"
+            repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-cuda"
         )
         patterns = runtime_patterns_for_choice(choice)
         assert "libggml-cuda.so*" in patterns
 
     def test_linux_rocm_patterns(self):
         choice = AssetChoice(
-            repo="", tag="", name="", url="", source_label="", install_kind="linux-rocm"
+            repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-rocm"
         )
         patterns = runtime_patterns_for_choice(choice)
         assert "libggml-hip.so*" in patterns
@@ -338,12 +338,12 @@ class TestRuntimePatterns:
 
     def test_windows_hip_patterns(self):
         choice = AssetChoice(
-            repo="",
-            tag="",
-            name="",
-            url="",
-            source_label="",
-            install_kind="windows-hip",
+            repo = "",
+            tag = "",
+            name = "",
+            url = "",
+            source_label = "",
+            install_kind = "windows-hip",
         )
         patterns = runtime_patterns_for_choice(choice)
         assert "*.exe" in patterns
@@ -351,12 +351,12 @@ class TestRuntimePatterns:
 
     def test_macos_patterns(self):
         choice = AssetChoice(
-            repo="",
-            tag="",
-            name="",
-            url="",
-            source_label="",
-            install_kind="macos-arm64",
+            repo = "",
+            tag = "",
+            name = "",
+            url = "",
+            source_label = "",
+            install_kind = "macos-arm64",
         )
         patterns = runtime_patterns_for_choice(choice)
         assert "lib*.dylib" in patterns
@@ -372,19 +372,19 @@ class TestHostInfoRocm:
 
     def test_has_rocm_default_false(self):
         host = HostInfo(
-            system="Linux",
-            machine="x86_64",
-            is_windows=False,
-            is_linux=True,
-            is_macos=False,
-            is_x86_64=True,
-            is_arm64=False,
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            visible_cuda_devices=None,
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Linux",
+            machine = "x86_64",
+            is_windows = False,
+            is_linux = True,
+            is_macos = False,
+            is_x86_64 = True,
+            is_arm64 = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            visible_cuda_devices = None,
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         assert host.has_rocm is False
 
@@ -424,7 +424,7 @@ class TestDetectRocmVersion:
     def test_no_rocm_returns_none(self, tmp_path):
         """No ROCm installed should return None."""
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
-            with patch("shutil.which", return_value=None):
+            with patch("shutil.which", return_value = None):
                 result = _detect_rocm_version()
                 assert result is None
 
@@ -452,8 +452,8 @@ class TestDetectRocmVersion:
             mock_result = MagicMock()
             mock_result.returncode = 0
             mock_result.stdout = b"6.3.21234.2\n"
-            with patch("shutil.which", return_value="/usr/bin/hipconfig"):
-                with patch("subprocess.run", return_value=mock_result):
+            with patch("shutil.which", return_value = "/usr/bin/hipconfig"):
+                with patch("subprocess.run", return_value = mock_result):
                     result = _detect_rocm_version()
                     assert result == (6, 3)
 
@@ -463,7 +463,7 @@ class TestDetectRocmVersion:
         info_dir.mkdir()
         (info_dir / "version").write_text("")
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
-            with patch("shutil.which", return_value=None):
+            with patch("shutil.which", return_value = None):
                 result = _detect_rocm_version()
                 assert result is None
 
@@ -495,18 +495,18 @@ class TestDetectRocmVersion:
             mock_result = MagicMock()
             mock_result.returncode = 0
             mock_result.stdout = b"6.3.21234.2\nSome extra info\n"
-            with patch("shutil.which", return_value="/usr/bin/hipconfig"):
-                with patch("subprocess.run", return_value=mock_result):
+            with patch("shutil.which", return_value = "/usr/bin/hipconfig"):
+                with patch("subprocess.run", return_value = mock_result):
                     result = _detect_rocm_version()
                     assert result == (6, 3)
 
     def test_hipconfig_timeout(self, tmp_path):
         """hipconfig that times out should return None."""
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
-            with patch("shutil.which", return_value="/usr/bin/hipconfig"):
+            with patch("shutil.which", return_value = "/usr/bin/hipconfig"):
                 with patch(
                     "subprocess.run",
-                    side_effect=subprocess.TimeoutExpired("hipconfig", 5),
+                    side_effect = subprocess.TimeoutExpired("hipconfig", 5),
                 ):
                     result = _detect_rocm_version()
                     assert result is None
@@ -521,18 +521,18 @@ class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     def test_no_rocm_skips(self, mock_nvidia, mock_pip):
         """No ROCm toolchain should skip entirely."""
-        with patch("os.path.isdir", return_value=False):
-            with patch("shutil.which", return_value=None):
+        with patch("os.path.isdir", return_value = False):
+            with patch("shutil.which", return_value = None):
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(7, 1))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_torch_already_has_cuda_skips(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip
     ):
@@ -540,15 +540,15 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"12.6\n"  # CUDA version string
-        with patch("os.path.isdir", return_value=True):
-            with patch("subprocess.run", return_value=mock_probe):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(7, 1))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_torch_already_has_hip_skips(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip
     ):
@@ -556,15 +556,15 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"7.1.12345\n"  # HIP version string
-        with patch("os.path.isdir", return_value=True):
-            with patch("subprocess.run", return_value=mock_probe):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(7, 1))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_cpu_torch_gets_rocm_reinstall(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip
     ):
@@ -572,8 +572,8 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"  # empty = no GPU backend
-        with patch("os.path.isdir", return_value=True):
-            with patch("subprocess.run", return_value=mock_probe):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         # Should call pip_install twice: once for torch, once for bitsandbytes
         assert mock_pip.call_count == 2
@@ -583,9 +583,9 @@ class TestEnsureRocmTorch:
         assert "bitsandbytes" in str(bnb_call)
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(6, 3))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
     def test_rocm_63_selects_correct_tag(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip
     ):
@@ -593,66 +593,66 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"
-        with patch("os.path.isdir", return_value=True):
-            with patch("subprocess.run", return_value=mock_probe):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         torch_call = mock_pip.call_args_list[0]
         assert "rocm6.3" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(5, 0))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (5, 0))
     def test_old_rocm_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """ROCm version too old (below 6.0) should skip."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"
-        with patch("os.path.isdir", return_value=True):
-            with patch("subprocess.run", return_value=mock_probe):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=None)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
     def test_version_unreadable_prints_warning(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, capsys
     ):
         """ROCm detected but version unreadable should print warning and skip."""
-        with patch("os.path.isdir", return_value=True):
+        with patch("os.path.isdir", return_value = True):
             _ensure_rocm_torch()
         mock_pip.assert_not_called()
         captured = capsys.readouterr()
         assert "unreadable" in captured.out
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(7, 2))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
     def test_rocm_72_selects_71_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """ROCm 7.2 should select rocm7.1 tag (capped, not in mapping)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"
-        with patch("os.path.isdir", return_value=True):
-            with patch("subprocess.run", return_value=mock_probe):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         torch_call = mock_pip.call_args_list[0]
         assert "rocm7.1" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value=(7, 1))
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_probe_timeout_triggers_reinstall(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip
     ):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
-        with patch("os.path.isdir", return_value=True):
+        with patch("os.path.isdir", return_value = True):
             with patch(
-                "subprocess.run", side_effect=subprocess.TimeoutExpired("python", 30)
+                "subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)
             ):
                 _ensure_rocm_torch()
         # If probe times out, the function should treat torch as unusable and reinstall
@@ -660,11 +660,11 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value=False)
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
     def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_nvidia, mock_pip):
         """ROCm tools present but no actual AMD GPU should skip entirely."""
-        with patch("os.path.isdir", return_value=True):
+        with patch("os.path.isdir", return_value = True):
             _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
@@ -680,7 +680,7 @@ class TestRocmTorchIndex:
     def test_mapping_is_sorted_descending(self):
         """Keys should be in descending order for the next() iteration to work."""
         keys = list(_ROCM_TORCH_INDEX.keys())
-        assert keys == sorted(keys, reverse=True)
+        assert keys == sorted(keys, reverse = True)
 
     def test_rocm_72_not_in_mapping(self):
         """ROCm 7.2 should NOT be in the active mapping (torch 2.11.0 exceeds bound)."""
@@ -707,7 +707,7 @@ class TestRocmTorchIndex:
         tag = next(
             (
                 t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse=True)
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
                 if ver >= (maj, mn)
             ),
             None,
@@ -719,7 +719,7 @@ class TestRocmTorchIndex:
         tag = next(
             (
                 t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse=True)
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
                 if ver >= (maj, mn)
             ),
             None,
@@ -972,9 +972,9 @@ class TestLiveRegression:
                 f"eval \"$(sed -n '/^get_torch_index_url()/,/^}}/p' '{sh_path}')\"; "
                 "get_torch_index_url",
             ],
-            capture_output=True,
-            text=True,
-            timeout=30,
+            capture_output = True,
+            text = True,
+            timeout = 30,
         )
         if result.returncode != 0:
             pytest.skip("Could not extract get_torch_index_url for live test")
@@ -1015,7 +1015,7 @@ class TestWorkerRocmMambaSsm:
         # Mock all the imports worker.py needs
         sys.modules["structlog"] = MagicMock()
         sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
         sys.modules["utils"] = MagicMock()
         sys.modules["utils.hardware"] = MagicMock()
 
@@ -1032,11 +1032,11 @@ class TestWorkerRocmMambaSsm:
             "cxx11abi": "TRUE",
         }
         result = worker_mod._direct_wheel_url(
-            filename_prefix="causal_conv1d",
-            package_version="1.6.1",
-            release_tag="v1.6.1.post4",
-            release_base_url="https://github.com/Dao-AILab/causal-conv1d/releases/download",
-            env=env_rocm,
+            filename_prefix = "causal_conv1d",
+            package_version = "1.6.1",
+            release_tag = "v1.6.1.post4",
+            release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+            env = env_rocm,
         )
         assert result is None
 
@@ -1091,7 +1091,7 @@ class TestAmdGpuMonitoring:
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
         sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
@@ -1129,7 +1129,7 @@ class TestAmdGpuMonitoring:
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
         sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
@@ -1150,7 +1150,7 @@ class TestAmdGpuMonitoring:
         mock_result.returncode = 0
         mock_result.stdout = mock_json
 
-        with patch.object(subprocess, "run", return_value=mock_result):
+        with patch.object(subprocess, "run", return_value = mock_result):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is True
         assert result["gpu_utilization_pct"] == 50.0
@@ -1164,14 +1164,14 @@ class TestAmdGpuMonitoring:
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
         sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
         except Exception:
             pytest.skip("Could not load amd module")
 
-        with patch.object(subprocess, "run", side_effect=OSError("amd-smi not found")):
+        with patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False
 
@@ -1183,7 +1183,7 @@ class TestAmdGpuMonitoring:
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
         sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
@@ -1193,7 +1193,7 @@ class TestAmdGpuMonitoring:
         with patch.object(
             subprocess,
             "run",
-            side_effect=subprocess.TimeoutExpired("amd-smi", 5),
+            side_effect = subprocess.TimeoutExpired("amd-smi", 5),
         ):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False

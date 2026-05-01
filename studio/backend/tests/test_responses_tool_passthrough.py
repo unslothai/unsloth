@@ -67,8 +67,8 @@ from routes.inference import (
 class TestResponsesRequestTools:
     def test_flat_function_tool_accepted(self):
         req = ResponsesRequest(
-            input="hi",
-            tools=[
+            input = "hi",
+            tools = [
                 {
                     "type": "function",
                     "name": "get_weather",
@@ -89,18 +89,18 @@ class TestResponsesRequestTools:
 
     def test_tool_choice_string_values(self):
         for choice in ("auto", "required", "none"):
-            req = ResponsesRequest(input="hi", tool_choice=choice)
+            req = ResponsesRequest(input = "hi", tool_choice = choice)
             assert req.tool_choice == choice
 
     def test_tool_choice_forcing_object(self):
         req = ResponsesRequest(
-            input="hi",
-            tool_choice={"type": "function", "name": "get_weather"},
+            input = "hi",
+            tool_choice = {"type": "function", "name": "get_weather"},
         )
         assert req.tool_choice == {"type": "function", "name": "get_weather"}
 
     def test_parallel_tool_calls(self):
-        req = ResponsesRequest(input="hi", parallel_tool_calls=True)
+        req = ResponsesRequest(input = "hi", parallel_tool_calls = True)
         assert req.parallel_tool_calls is True
 
     def test_builtin_tool_type_passes_validation(self):
@@ -108,23 +108,23 @@ class TestResponsesRequestTools:
         not raise at request validation so SDKs that default to them don't
         fail on Studio; they are filtered out during translation."""
         req = ResponsesRequest(
-            input="hi",
-            tools=[{"type": "web_search_preview"}],
+            input = "hi",
+            tools = [{"type": "web_search_preview"}],
         )
         assert req.tools == [{"type": "web_search_preview"}]
 
     def test_function_tool_model_direct(self):
         tool = ResponsesFunctionTool(
-            type="function",
-            name="send_email",
-            parameters={"type": "object", "properties": {}},
+            type = "function",
+            name = "send_email",
+            parameters = {"type": "object", "properties": {}},
         )
         assert tool.name == "send_email"
         assert tool.description is None
 
     def test_function_tool_rejects_other_type(self):
         with pytest.raises(ValidationError):
-            ResponsesFunctionTool(type="web_search", name="x")
+            ResponsesFunctionTool(type = "web_search", name = "x")
 
 
 # =====================================================================
@@ -135,7 +135,7 @@ class TestResponsesRequestTools:
 class TestResponsesMultiTurnInput:
     def test_function_call_input_item(self):
         req = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "user", "content": "Weather in Paris?"},
                 {
                     "type": "function_call",
@@ -161,14 +161,14 @@ class TestResponsesMultiTurnInput:
     def test_function_call_output_missing_call_id_rejected(self):
         with pytest.raises(ValidationError):
             ResponsesFunctionCallOutputInputItem(
-                type="function_call_output", output="x"
+                type = "function_call_output", output = "x"
             )
 
     def test_function_call_output_accepts_content_array(self):
         item = ResponsesFunctionCallOutputInputItem(
-            type="function_call_output",
-            call_id="call_1",
-            output=[{"type": "output_text", "text": "done"}],
+            type = "function_call_output",
+            call_id = "call_1",
+            output = [{"type": "output_text", "text": "done"}],
         )
         assert isinstance(item.output, list)
 
@@ -273,7 +273,7 @@ class TestToolChoiceTranslation:
 class TestNormaliseResponsesInputWithTools:
     def test_function_call_output_maps_to_tool_role(self):
         payload = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "user", "content": "Weather?"},
                 {
                     "type": "function_call",
@@ -309,8 +309,8 @@ class TestNormaliseResponsesInputWithTools:
         merged system message at the top.
         """
         payload = ResponsesRequest(
-            instructions="Base instructions.",
-            input=[
+            instructions = "Base instructions.",
+            input = [
                 {"role": "developer", "content": "Developer override."},
                 {"role": "user", "content": "Hi"},
             ],
@@ -329,7 +329,7 @@ class TestNormaliseResponsesInputWithTools:
         user turns must still produce a single leading system message, not
         a mid-conversation system that strict templates reject."""
         payload = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi!"},
                 {"role": "developer", "content": "Updated rules."},
@@ -343,13 +343,13 @@ class TestNormaliseResponsesInputWithTools:
             assert m.role != "system", "no trailing system message permitted"
 
     def test_no_system_output_when_no_system_input(self):
-        payload = ResponsesRequest(input="Hi")
+        payload = ResponsesRequest(input = "Hi")
         msgs = _normalise_responses_input(payload)
         assert all(m.role != "system" for m in msgs)
 
     def test_multiple_system_messages_in_input_are_merged(self):
         payload = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "system", "content": "A"},
                 {"role": "system", "content": "B"},
                 {"role": "user", "content": "Hi"},
@@ -361,7 +361,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_output_serialised_to_json_string(self):
         payload = ResponsesRequest(
-            input=[
+            input = [
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -438,9 +438,9 @@ class TestChatToolCallsToResponsesOutput:
 class TestResponsesOutputFunctionCall:
     def test_direct_construction(self):
         fc = ResponsesOutputFunctionCall(
-            call_id="call_1",
-            name="get_weather",
-            arguments='{"city":"Paris"}',
+            call_id = "call_1",
+            name = "get_weather",
+            arguments = '{"city":"Paris"}',
         )
         d = fc.model_dump()
         assert d["type"] == "function_call"
@@ -450,15 +450,15 @@ class TestResponsesOutputFunctionCall:
 
     def test_response_with_tool_call_output(self):
         resp = ResponsesResponse(
-            model="test",
-            output=[
+            model = "test",
+            output = [
                 ResponsesOutputFunctionCall(
-                    call_id="call_1",
-                    name="get_weather",
-                    arguments="{}",
+                    call_id = "call_1",
+                    name = "get_weather",
+                    arguments = "{}",
                 )
             ],
-            usage=ResponsesUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            usage = ResponsesUsage(input_tokens = 1, output_tokens = 1, total_tokens = 2),
         )
         d = json.loads(resp.model_dump_json())
         assert d["output"][0]["type"] == "function_call"
@@ -466,15 +466,15 @@ class TestResponsesOutputFunctionCall:
 
     def test_response_with_mixed_output(self):
         resp = ResponsesResponse(
-            model="test",
-            output=[
+            model = "test",
+            output = [
                 ResponsesOutputMessage(
-                    content=[ResponsesOutputTextContent(text="Calling...")],
+                    content = [ResponsesOutputTextContent(text = "Calling...")],
                 ),
                 ResponsesOutputFunctionCall(
-                    call_id="call_1",
-                    name="get_weather",
-                    arguments='{"city":"Paris"}',
+                    call_id = "call_1",
+                    name = "get_weather",
+                    arguments = '{"city":"Paris"}',
                 ),
             ],
         )
@@ -495,7 +495,7 @@ class TestCodexStyleRequestShapes:
         """Codex replays prior assistant turns with `output_text` content.
         Before, this triggered a 422 on every turn after the first."""
         req = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "message",
@@ -522,7 +522,7 @@ class TestCodexStyleRequestShapes:
         """`reasoning` items replayed from prior o-series turns must not
         fail validation — Codex preserves them in multi-turn."""
         req = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "reasoning",
@@ -540,7 +540,7 @@ class TestCodexStyleRequestShapes:
         """Unknown content-part types (e.g. future input_audio) validate as
         ResponsesUnknownContentPart so the whole request doesn't 422."""
         req = ResponsesRequest(
-            input=[
+            input = [
                 {
                     "role": "user",
                     "content": [
@@ -558,8 +558,8 @@ class TestCodexStyleRequestShapes:
         """End-to-end: developer + user + assistant(output_text) +
         function_call + function_call_output + reasoning in one request."""
         payload = ResponsesRequest(
-            instructions="Base instructions.",
-            input=[
+            instructions = "Base instructions.",
+            input = [
                 {
                     "type": "message",
                     "role": "developer",
@@ -622,7 +622,7 @@ class TestCodexStyleRequestShapes:
         confirm we don't forward a single-part array that would otherwise
         force legacy chat templates into multimodal handling."""
         payload = ResponsesRequest(
-            input=[
+            input = [
                 {
                     "role": "assistant",
                     "content": [
@@ -644,7 +644,7 @@ class TestTranslatedMessagesValidate:
 
     def test_round_trip_multi_turn(self):
         payload = ResponsesRequest(
-            input=[
+            input = [
                 {"role": "user", "content": "Weather in Paris?"},
                 {
                     "type": "function_call",
@@ -664,4 +664,4 @@ class TestTranslatedMessagesValidate:
         for m in msgs:
             # Constructing a fresh ChatMessage from the dump round-trips the
             # role-shape validator — the key invariant for the passthrough.
-            ChatMessage(**m.model_dump(exclude_none=True))
+            ChatMessage(**m.model_dump(exclude_none = True))

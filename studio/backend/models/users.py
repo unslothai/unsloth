@@ -13,15 +13,15 @@ class Token(BaseModel):
     """Authentication response model for session credentials."""
 
     access_token: str = Field(
-        ..., description="Session access credential used for authenticated API requests"
+        ..., description = "Session access credential used for authenticated API requests"
     )
     refresh_token: str = Field(
         ...,
-        description="Session refresh credential used to renew an expired access credential",
+        description = "Session refresh credential used to renew an expired access credential",
     )
     token_type: str = Field(
-        ..., description="Credential type for the Authorization header, always 'bearer'"
+        ..., description = "Credential type for the Authorization header, always 'bearer'"
     )
     must_change_password: bool = Field(
-        ..., description="True when the user must change the seeded default password"
+        ..., description = "True when the user must change the seeded default password"
     )
