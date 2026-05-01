@@ -3025,7 +3025,9 @@ def test_retry_fallback_analysis_pages_force_chunks_when_retries_still_fallback(
         }
 
     monkeypatch.setattr(engine, "query", _fake_query)
-    monkeypatch.setattr(engine, "ingest_source_with_chunked_analysis", _fake_chunk_ingest)
+    monkeypatch.setattr(
+        engine, "ingest_source_with_chunked_analysis", _fake_chunk_ingest
+    )
 
     report = engine.retry_fallback_analysis_pages(dry_run = False, max_analysis_pages = 20)
 
@@ -3115,7 +3117,9 @@ def test_retry_fallback_analysis_pages_force_chunk_respects_max_pages(
         }
 
     monkeypatch.setattr(engine, "query", _always_fallback)
-    monkeypatch.setattr(engine, "ingest_source_with_chunked_analysis", _fake_chunk_ingest)
+    monkeypatch.setattr(
+        engine, "ingest_source_with_chunked_analysis", _fake_chunk_ingest
+    )
 
     report = engine.retry_fallback_analysis_pages(dry_run = False, max_analysis_pages = 20)
 

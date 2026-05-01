@@ -2424,7 +2424,9 @@ class LLMWikiEngine:
                                 )
 
                                 retry_source_chars: Optional[int] = source_chars
-                                source_chars_raw = force_chunk_report.get("source_chars")
+                                source_chars_raw = force_chunk_report.get(
+                                    "source_chars"
+                                )
                                 if isinstance(source_chars_raw, int):
                                     retry_source_chars = source_chars_raw
 
@@ -3244,11 +3246,7 @@ class LLMWikiEngine:
         core_title = self._external_source_title_core(title)
         if not core_title:
             return set()
-        return {
-            term
-            for term in self._tokenize_terms(core_title)
-            if len(term) >= 3
-        }
+        return {term for term in self._tokenize_terms(core_title) if len(term) >= 3}
 
     def _extract_source_page_title(self, source_text: str) -> str:
         frontmatter, _body = self._split_frontmatter_block(str(source_text or ""))
@@ -3274,7 +3272,9 @@ class LLMWikiEngine:
         if source_host not in _SEMANTIC_EXTERNAL_PAPER_HOSTS:
             return None
 
-        target_terms = self._external_source_title_terms_for_semantic_dedupe(source_title)
+        target_terms = self._external_source_title_terms_for_semantic_dedupe(
+            source_title
+        )
         if len(target_terms) < _SEMANTIC_EXTERNAL_PAPER_MIN_TERMS:
             return None
 
@@ -5954,7 +5954,9 @@ class LLMWikiEngine:
         return fallback or normalized_source_page or "source"
 
     def _extract_source_excerpt_text(self, source_page_text: str) -> str:
-        excerpt_body = self._extract_markdown_section(source_page_text, "Source Excerpt")
+        excerpt_body = self._extract_markdown_section(
+            source_page_text, "Source Excerpt"
+        )
         if not excerpt_body:
             return ""
 
@@ -6032,7 +6034,9 @@ class LLMWikiEngine:
             f"Extraction attempts: {'; '.join(extraction_errors)}"
         )
 
-    def _read_source_ref_text_for_retry(self, source_ref: str) -> Tuple[Optional[str], str]:
+    def _read_source_ref_text_for_retry(
+        self, source_ref: str
+    ) -> Tuple[Optional[str], str]:
         raw_ref = str(source_ref or "").strip()
         if not raw_ref:
             return None, "source_ref_missing"
@@ -6178,16 +6182,12 @@ class LLMWikiEngine:
                 "chunk_report": chunk_report,
             }
 
-        chunk_count = int(
-            chunk_report.get("chunk_planner", {}).get("chunk_count", 0)
-        )
+        chunk_count = int(chunk_report.get("chunk_planner", {}).get("chunk_count", 0))
         force_status = "chunked" if chunk_count > 1 else "single_chunk"
         return {
             "status": force_status,
             "analysis_page": analysis_page,
-            "source_page": str(
-                chunk_report.get("source_page", normalized_source_page)
-            ),
+            "source_page": str(chunk_report.get("source_page", normalized_source_page)),
             "source_ref": source_ref,
             "source_ref_status": source_ref_status,
             "source_text_origin": source_text_origin,
