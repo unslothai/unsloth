@@ -1501,6 +1501,10 @@ if [ "$_MIGRATED" = true ]; then
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        substep "overlaying unsloth-zoo from git main..."
+        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+            --no-deps --reinstall-package unsloth-zoo \
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     fi
     # AMD ROCm: install bitsandbytes even in migrated environments so
     # existing ROCm installs gain the AMD bitsandbytes build without a
@@ -1668,12 +1672,20 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+            substep "overlaying unsloth-zoo from git main..."
+            run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+                --no-deps --reinstall-package unsloth-zoo \
+                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        substep "overlaying unsloth-zoo from git main..."
+        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+            --no-deps --reinstall-package unsloth-zoo \
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
@@ -1702,6 +1714,10 @@ else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.8" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        substep "overlaying unsloth-zoo from git main..."
+        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+            --no-deps --reinstall-package unsloth-zoo \
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
