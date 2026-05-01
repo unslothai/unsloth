@@ -12,7 +12,7 @@ import logging
 import importlib
 import sys
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -406,6 +406,13 @@ _ANALYSIS_SLUG_NOISE_TERMS: Set[str] = {
     "topic",
 }
 
+_SEMANTIC_EXTERNAL_PAPER_HOSTS: Set[str] = {
+    "arxiv.org",
+    "openreview.net",
+}
+_SEMANTIC_EXTERNAL_PAPER_MIN_TERMS = 4
+_SEMANTIC_EXTERNAL_PAPER_MIN_CONTAINMENT = 0.82
+
 
 @dataclass
 class WikiConfig:
@@ -579,6 +586,25 @@ class WikiConfig:
     analysis_source_only_final_retry: bool = field(
         default_factory = lambda: _env_flag(
             "UNSLOTH_WIKI_AUTO_ANALYSIS_SOURCE_ONLY_FINAL_RETRY", True
+        )
+    )
+    analysis_force_chunk_on_fallback_retry: bool = field(
+        default_factory = lambda: _env_flag(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_FORCE_CHUNK_ON_FALLBACK", True
+        )
+    )
+    analysis_force_chunk_min_source_chars: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_FORCE_CHUNK_MIN_SOURCE_CHARS",
+            50000,
+            minimum = 1000,
+        )
+    )
+    analysis_force_chunk_max_pages: int = field(
+        default_factory = lambda: _env_int(
+            "UNSLOTH_WIKI_AUTO_ANALYSIS_FORCE_CHUNK_MAX_PAGES",
+            2,
+            minimum = 0,
         )
     )
     knowledge_max_incremental_updates: int = field(
@@ -776,6 +802,14 @@ class WikiConfig:
         self.chunk_analysis_context_window_chars = max(
             self.chunk_analysis_context_window_chars,
             self.chunk_analysis_min_chars,
+        )
+        self.analysis_force_chunk_min_source_chars = max(
+            1000,
+            int(self.analysis_force_chunk_min_source_chars),
+        )
+        self.analysis_force_chunk_max_pages = max(
+            0,
+            int(self.analysis_force_chunk_max_pages),
         )
 
 
@@ -2241,6 +2275,9 @@ class LLMWikiEngine:
         fallback_still = 0
         regenerated_pages = 0
         skipped_no_question = 0
+        force_chunk_attempted = 0
+        force_chunk_actionable = 0
+        force_chunk_resolved = 0
         errors: List[str] = []
 
         for page_path in analysis_pages:
@@ -2275,6 +2312,7 @@ class LLMWikiEngine:
                 )
 
             reductions_done = 0
+            force_chunk_report: Optional[Dict[str, Any]] = None
 
             try:
                 probe_result = None
@@ -2341,6 +2379,78 @@ class LLMWikiEngine:
                     raise RuntimeError("Probe query did not return a result")
 
                 if probe_result.get("used_extractive_fallback"):
+                    if self.cfg.analysis_force_chunk_on_fallback_retry:
+                        if dry_run:
+                            force_chunk_report = {
+                                "status": "skipped",
+                                "reason": "dry_run",
+                                "analysis_page": rel_page,
+                                "source_page": preferred_source_page,
+                            }
+                        elif (
+                            force_chunk_attempted
+                            >= self.cfg.analysis_force_chunk_max_pages
+                        ):
+                            force_chunk_report = {
+                                "status": "skipped",
+                                "reason": "max_pages_reached",
+                                "analysis_page": rel_page,
+                                "source_page": preferred_source_page,
+                                "max_pages": self.cfg.analysis_force_chunk_max_pages,
+                            }
+                        else:
+                            force_chunk_attempted += 1
+                            force_chunk_report = (
+                                self._attempt_force_chunk_retry_for_analysis(
+                                    analysis_page = rel_page,
+                                    preferred_source_page = preferred_source_page,
+                                    dry_run = dry_run,
+                                )
+                            )
+
+                            if force_chunk_report.get("status") in {
+                                "chunked",
+                                "single_chunk",
+                            }:
+                                force_chunk_actionable += 1
+                                retry_source_page = (
+                                    str(
+                                        force_chunk_report.get(
+                                            "source_page",
+                                            preferred_source_page or "",
+                                        )
+                                    ).strip()
+                                    or preferred_source_page
+                                )
+
+                                retry_source_chars: Optional[int] = source_chars
+                                source_chars_raw = force_chunk_report.get("source_chars")
+                                if isinstance(source_chars_raw, int):
+                                    retry_source_chars = source_chars_raw
+
+                                retry_override = self._retry_initial_context_override(
+                                    retry_source_chars
+                                )
+                                if source_only_mode and retry_source_chars is not None:
+                                    retry_override = (
+                                        retry_source_chars
+                                        if retry_override is None
+                                        else max(retry_override, retry_source_chars)
+                                    )
+
+                                probe_result = self.query(
+                                    question,
+                                    save_answer = False,
+                                    query_context_max_chars_override = retry_override,
+                                    preferred_context_page = retry_source_page,
+                                    keep_preferred_context_full = True,
+                                    preferred_context_only = source_only_mode,
+                                )
+                                attempt_override = retry_override
+                                if not probe_result.get("used_extractive_fallback"):
+                                    force_chunk_resolved += 1
+
+                if probe_result.get("used_extractive_fallback"):
                     fallback_still += 1
                     retried.append(
                         {
@@ -2351,6 +2461,7 @@ class LLMWikiEngine:
                             "context_chars_override": attempt_override,
                             "source_only": source_only_mode,
                             "retries_attempted": reductions_done,
+                            "force_chunk_retry": force_chunk_report,
                             "new_answer_page": None,
                         }
                     )
@@ -2379,7 +2490,14 @@ class LLMWikiEngine:
                         context_lines = ["- (none)"]
 
                     diagnostics_lines = [
-                        "- retry_strategy: fallback_retry",
+                        "- retry_strategy: "
+                        + (
+                            "fallback_retry_force_chunk"
+                            if force_chunk_report
+                            and force_chunk_report.get("status")
+                            in {"chunked", "single_chunk"}
+                            else "fallback_retry"
+                        ),
                         f"- refreshed_at: {refreshed_at}",
                         f"- max_context_pages: {self.cfg.max_context_pages}",
                         f"- max_chars_per_page: {self.cfg.max_chars_per_page}",
@@ -2388,6 +2506,38 @@ class LLMWikiEngine:
                         f"- retries_attempted: {reductions_done}",
                         f"- source_only: {source_only_mode}",
                     ]
+                    if force_chunk_report:
+                        diagnostics_lines.append(
+                            f"- force_chunk_status: {force_chunk_report.get('status')}"
+                        )
+                        if force_chunk_report.get("reason"):
+                            diagnostics_lines.append(
+                                f"- force_chunk_reason: {force_chunk_report.get('reason')}"
+                            )
+                        if force_chunk_report.get("source_text_origin"):
+                            diagnostics_lines.append(
+                                "- force_chunk_source_text_origin: "
+                                f"{force_chunk_report.get('source_text_origin')}"
+                            )
+                        if force_chunk_report.get("source_chars") is not None:
+                            diagnostics_lines.append(
+                                "- force_chunk_source_chars: "
+                                f"{force_chunk_report.get('source_chars')}"
+                            )
+                        if force_chunk_report.get("context_window_chars") is not None:
+                            diagnostics_lines.append(
+                                "- force_chunk_context_window_chars: "
+                                f"{force_chunk_report.get('context_window_chars')}"
+                            )
+                        if force_chunk_report.get("chunk_count") is not None:
+                            diagnostics_lines.append(
+                                f"- force_chunk_chunk_count: {force_chunk_report.get('chunk_count')}"
+                            )
+                        if force_chunk_report.get("merged_analysis_page"):
+                            diagnostics_lines.append(
+                                "- force_chunk_merged_analysis_page: "
+                                f"[[{force_chunk_report.get('merged_analysis_page')}]]"
+                            )
 
                     updated_text = text
                     updated_text = self._remove_markdown_section(
@@ -2449,6 +2599,7 @@ class LLMWikiEngine:
                         "context_chars_override": attempt_override,
                         "source_only": source_only_mode,
                         "retries_attempted": reductions_done,
+                        "force_chunk_retry": force_chunk_report,
                         "new_answer_page": new_answer_page,
                     }
                 )
@@ -2462,6 +2613,7 @@ class LLMWikiEngine:
                         "context_chars_override": attempt_override,
                         "source_only": source_only_mode,
                         "retries_attempted": reductions_done,
+                        "force_chunk_retry": force_chunk_report,
                         "error": str(exc),
                     }
                 )
@@ -2477,6 +2629,9 @@ class LLMWikiEngine:
                 f"- Regenerated pages: {regenerated_pages}\n"
                 f"- Still fallback: {fallback_still}\n"
                 f"- Skipped (missing question): {skipped_no_question}\n"
+                f"- Force-chunk attempts: {force_chunk_attempted}\n"
+                f"- Force-chunk actionable retries: {force_chunk_actionable}\n"
+                f"- Force-chunk resolved pages: {force_chunk_resolved}\n"
             )
 
         return {
@@ -2488,6 +2643,9 @@ class LLMWikiEngine:
             "regenerated_pages": regenerated_pages,
             "fallback_still": fallback_still,
             "skipped_no_question": skipped_no_question,
+            "force_chunk_attempted": force_chunk_attempted,
+            "force_chunk_actionable": force_chunk_actionable,
+            "force_chunk_resolved": force_chunk_resolved,
             "errors": errors,
             "results": retried,
         }
@@ -3058,6 +3216,171 @@ class LLMWikiEngine:
             fragment = "",
         )
         return normalized.geturl()
+
+    def _normalize_external_source_host(self, source_ref: str) -> str:
+        parsed = urlparse(str(source_ref or "").strip())
+        host = (parsed.netloc or "").strip().lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+
+    def _external_source_title_core(self, raw_title: str) -> str:
+        title = str(raw_title or "").strip().strip("\"'")
+        if not title:
+            return ""
+
+        if title.lower().startswith("external source:"):
+            title = title.split(":", 1)[1].strip()
+
+        title = re.sub(
+            r"\s+\[[A-Za-z0-9.\-]+#[0-9a-f]{8}\]\s*$",
+            "",
+            title,
+        ).strip()
+        title = title.replace("...", " ")
+        return self._normalize_web_text(title, 260)
+
+    def _external_source_title_terms_for_semantic_dedupe(self, title: str) -> Set[str]:
+        core_title = self._external_source_title_core(title)
+        if not core_title:
+            return set()
+        return {
+            term
+            for term in self._tokenize_terms(core_title)
+            if len(term) >= 3
+        }
+
+    def _extract_source_page_title(self, source_text: str) -> str:
+        frontmatter, _body = self._split_frontmatter_block(str(source_text or ""))
+        if not frontmatter:
+            return ""
+
+        title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", frontmatter)
+        if not title_match:
+            return ""
+
+        return title_match.group(1).strip().strip("\"'")
+
+    def _find_semantic_equivalent_external_source_page(
+        self,
+        source_title: str,
+        source_ref: str,
+    ) -> Optional[str]:
+        normalized_source_ref = self._normalize_source_ref_url(source_ref)
+        if not normalized_source_ref:
+            return None
+
+        source_host = self._normalize_external_source_host(normalized_source_ref)
+        if source_host not in _SEMANTIC_EXTERNAL_PAPER_HOSTS:
+            return None
+
+        target_terms = self._external_source_title_terms_for_semantic_dedupe(source_title)
+        if len(target_terms) < _SEMANTIC_EXTERNAL_PAPER_MIN_TERMS:
+            return None
+
+        best_match: Optional[str] = None
+        best_score: Tuple[float, float, int] = (0.0, 0.0, 0)
+
+        for source_path in sorted(
+            self.sources_dir.glob("*.md"),
+            key = lambda path: path.stat().st_mtime,
+            reverse = True,
+        ):
+            source_text = source_path.read_text(encoding = "utf-8", errors = "ignore")
+            page_ref = self._extract_source_ref_from_page(source_text)
+            if not page_ref:
+                continue
+
+            normalized_page_ref = self._normalize_source_ref_url(page_ref)
+            if not normalized_page_ref or normalized_page_ref == normalized_source_ref:
+                continue
+
+            page_host = self._normalize_external_source_host(normalized_page_ref)
+            if page_host not in _SEMANTIC_EXTERNAL_PAPER_HOSTS:
+                continue
+
+            page_title = self._extract_source_page_title(source_text)
+            if not page_title:
+                continue
+
+            candidate_terms = self._external_source_title_terms_for_semantic_dedupe(
+                page_title
+            )
+            if len(candidate_terms) < _SEMANTIC_EXTERNAL_PAPER_MIN_TERMS:
+                continue
+
+            shared_count = len(target_terms.intersection(candidate_terms))
+            smallest = min(len(target_terms), len(candidate_terms))
+            required_shared = max(3, smallest - 1)
+            if shared_count < required_shared:
+                continue
+
+            containment = shared_count / max(1, smallest)
+            if containment < _SEMANTIC_EXTERNAL_PAPER_MIN_CONTAINMENT:
+                continue
+
+            union_size = len(target_terms.union(candidate_terms))
+            jaccard = shared_count / max(1, union_size)
+            score = (containment, jaccard, shared_count)
+            if score > best_score:
+                best_score = score
+                best_match = f"sources/{source_path.stem}"
+
+        return best_match
+
+    def _reuse_external_source_page(
+        self,
+        source_page: str,
+        source_url: str,
+        source_title: str,
+        reuse_reason: str,
+    ) -> Dict[str, Any]:
+        existing_summary_page = self._find_source_first_summary_page_for_source(
+            source_page
+        )
+        if existing_summary_page:
+            return {
+                "status": "ok",
+                "source_page": source_page,
+                "summary_page": existing_summary_page,
+                "url": source_url,
+                "title": source_title,
+                "reused_source": True,
+                "reused_summary": True,
+                "reuse_reason": reuse_reason,
+            }
+
+        question = self._source_first_summary_question(
+            title = source_title,
+            source_slug = source_page,
+        )
+        summary_result = self.query(
+            question,
+            save_answer = True,
+            preferred_context_page = source_page,
+            keep_preferred_context_full = True,
+            preferred_context_only = True,
+        )
+
+        answer_page = str(summary_result.get("answer_page", "")).strip()
+        if not answer_page:
+            return {
+                "status": "error",
+                "reason": "summary_page_missing",
+                "source_page": source_page,
+                "url": source_url,
+            }
+
+        return {
+            "status": "ok",
+            "source_page": source_page,
+            "summary_page": answer_page,
+            "url": source_url,
+            "title": source_title,
+            "reused_source": True,
+            "reused_summary": False,
+            "reuse_reason": reuse_reason,
+        }
 
     def _extract_source_ref_from_page(self, text: str) -> Optional[str]:
         frontmatter, _body = self._split_frontmatter_block(str(text or ""))
@@ -3685,50 +4008,24 @@ class LLMWikiEngine:
 
         existing_source_page = self._find_source_page_by_source_ref(source_url)
         if existing_source_page:
-            existing_summary_page = self._find_source_first_summary_page_for_source(
-                existing_source_page
-            )
-            if existing_summary_page:
-                return {
-                    "status": "ok",
-                    "source_page": existing_source_page,
-                    "summary_page": existing_summary_page,
-                    "url": source_url,
-                    "title": source_title,
-                    "reused_source": True,
-                    "reused_summary": True,
-                }
-
-            question = self._source_first_summary_question(
-                title = source_title,
-                source_slug = existing_source_page,
-            )
-            summary_result = self.query(
-                question,
-                save_answer = True,
-                preferred_context_page = existing_source_page,
-                keep_preferred_context_full = True,
-                preferred_context_only = True,
+            return self._reuse_external_source_page(
+                source_page = existing_source_page,
+                source_url = source_url,
+                source_title = source_title,
+                reuse_reason = "exact_source_ref",
             )
 
-            answer_page = str(summary_result.get("answer_page", "")).strip()
-            if not answer_page:
-                return {
-                    "status": "error",
-                    "reason": "summary_page_missing",
-                    "source_page": existing_source_page,
-                    "url": source_url,
-                }
-
-            return {
-                "status": "ok",
-                "source_page": existing_source_page,
-                "summary_page": answer_page,
-                "url": source_url,
-                "title": source_title,
-                "reused_source": True,
-                "reused_summary": False,
-            }
+        semantic_source_page = self._find_semantic_equivalent_external_source_page(
+            source_title = source_title,
+            source_ref = source_url,
+        )
+        if semantic_source_page:
+            return self._reuse_external_source_page(
+                source_page = semantic_source_page,
+                source_url = source_url,
+                source_title = source_title,
+                reuse_reason = "semantic_paper_variant",
+            )
 
         fetched_text = self._fetch_external_page_text(
             source_url,
@@ -5630,6 +5927,276 @@ class LLMWikiEngine:
             return source_link, None
 
         return source_link, source_chars
+
+    def _extract_source_page_title_for_retry(
+        self,
+        source_page: str,
+        source_text: str,
+    ) -> str:
+        frontmatter, _body = self._split_frontmatter_block(str(source_text or ""))
+        if frontmatter:
+            title_match = re.search(r"(?mi)^title:\s*(.+?)\s*$", frontmatter)
+            if title_match:
+                raw_title = title_match.group(1).strip().strip("\"'")
+                if raw_title.lower().startswith("external source:"):
+                    raw_title = raw_title.split(":", 1)[1].strip()
+                cleaned = re.sub(r"\s+", " ", raw_title).strip(" -:;,.")
+                if cleaned:
+                    return cleaned
+
+        inferred = self._analysis_index_title_from_source_page(source_page)
+        if inferred:
+            return inferred
+
+        normalized_source_page = self._normalize_wikilink(source_page)
+        source_slug = normalized_source_page.split("/", 1)[-1]
+        fallback = source_slug.replace("-", " ").replace("_", " ").strip()
+        return fallback or normalized_source_page or "source"
+
+    def _extract_source_excerpt_text(self, source_page_text: str) -> str:
+        excerpt_body = self._extract_markdown_section(source_page_text, "Source Excerpt")
+        if not excerpt_body:
+            return ""
+
+        lines = excerpt_body.strip().splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+            while lines and lines[-1].strip().startswith("```"):
+                lines.pop()
+
+        return "\n".join(lines).strip()
+
+    def _resolve_local_source_ref_path(self, source_ref: str) -> Optional[Path]:
+        raw = str(source_ref or "").strip()
+        if not raw:
+            return None
+
+        parsed = urlparse(raw)
+        scheme = str(parsed.scheme or "").lower()
+        if scheme in {"http", "https"}:
+            return None
+
+        if scheme == "file":
+            file_path = unquote(parsed.path or "")
+            netloc = str(parsed.netloc or "").strip()
+            if netloc:
+                file_path = f"/{netloc}{file_path}"
+            candidate = Path(file_path)
+        else:
+            candidate = Path(os.path.expanduser(raw))
+
+        if not candidate.is_absolute():
+            candidate = (self.cfg.vault_root / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        return None
+
+    def _read_pdf_text_for_retry(self, file_path: Path) -> str:
+        extraction_errors: List[str] = []
+
+        try:
+            import pymupdf4llm
+
+            text = pymupdf4llm.to_markdown(
+                str(file_path),
+                write_images = False,
+                show_progress = False,
+                use_ocr = False,
+            )
+            if text and text.strip():
+                return text
+            extraction_errors.append("pymupdf4llm returned empty content")
+        except Exception as exc:
+            extraction_errors.append(f"pymupdf4llm failed: {exc}")
+
+        try:
+            pypdf_module = importlib.import_module("pypdf")
+            reader = pypdf_module.PdfReader(str(file_path))
+            chunks: List[str] = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text and text.strip():
+                    chunks.append(text)
+            extracted = "\n".join(chunks).strip()
+            if extracted:
+                return extracted
+            extraction_errors.append("pypdf returned empty content")
+        except Exception as exc:
+            extraction_errors.append(f"pypdf failed: {exc}")
+
+        raise RuntimeError(
+            f"No extractable text found in PDF {file_path}. "
+            f"Extraction attempts: {'; '.join(extraction_errors)}"
+        )
+
+    def _read_source_ref_text_for_retry(self, source_ref: str) -> Tuple[Optional[str], str]:
+        raw_ref = str(source_ref or "").strip()
+        if not raw_ref:
+            return None, "source_ref_missing"
+
+        parsed = urlparse(raw_ref)
+        scheme = str(parsed.scheme or "").lower()
+
+        local_path = self._resolve_local_source_ref_path(raw_ref)
+        if local_path is None:
+            if scheme in {"http", "https"}:
+                return None, "source_ref_remote"
+            return None, "source_ref_not_found"
+
+        try:
+            if local_path.suffix.lower() == ".pdf":
+                text = self._read_pdf_text_for_retry(local_path)
+            else:
+                try:
+                    text = local_path.read_text(encoding = "utf-8")
+                except UnicodeDecodeError:
+                    text = local_path.read_text(encoding = "latin-1")
+
+            cleaned = str(text or "").strip()
+            if not cleaned:
+                return None, "source_ref_empty"
+            return cleaned, "source_ref_local"
+        except Exception as exc:
+            return None, f"source_ref_read_error: {exc}"
+
+    def _force_chunk_context_window_chars(self, source_chars: int) -> int:
+        source_len = max(0, int(source_chars))
+        min_chunk_chars = max(300, int(self.cfg.chunk_analysis_min_chars))
+        default_window = max(
+            min_chunk_chars,
+            int(self.cfg.chunk_analysis_context_window_chars),
+        )
+        if source_len <= 0:
+            return default_window
+
+        half_source = max(min_chunk_chars, source_len // 2)
+        return max(min_chunk_chars, min(default_window, half_source))
+
+    def _attempt_force_chunk_retry_for_analysis(
+        self,
+        *,
+        analysis_page: str,
+        preferred_source_page: Optional[str],
+        dry_run: bool,
+    ) -> Dict[str, Any]:
+        if not self.cfg.analysis_force_chunk_on_fallback_retry:
+            return {
+                "status": "skipped",
+                "reason": "disabled",
+                "analysis_page": analysis_page,
+            }
+
+        if dry_run:
+            return {
+                "status": "skipped",
+                "reason": "dry_run",
+                "analysis_page": analysis_page,
+            }
+
+        normalized_source_page = self._normalize_wikilink(preferred_source_page or "")
+        if not normalized_source_page.startswith("sources/"):
+            return {
+                "status": "skipped",
+                "reason": "missing_source_page",
+                "analysis_page": analysis_page,
+            }
+
+        source_path = self.wiki_dir / f"{normalized_source_page}.md"
+        if not source_path.exists():
+            return {
+                "status": "skipped",
+                "reason": "source_page_not_found",
+                "analysis_page": analysis_page,
+                "source_page": normalized_source_page,
+            }
+
+        source_page_text = source_path.read_text(encoding = "utf-8", errors = "ignore")
+        source_ref = self._extract_source_ref_from_page(source_page_text)
+        source_ref_text: Optional[str] = None
+        source_ref_status = "source_ref_missing"
+
+        if source_ref:
+            source_ref_text, source_ref_status = self._read_source_ref_text_for_retry(
+                source_ref
+            )
+
+        source_excerpt_text = self._extract_source_excerpt_text(source_page_text)
+        source_text_origin = "source_ref" if source_ref_text else "source_excerpt"
+        source_text = source_ref_text or source_excerpt_text
+
+        if not str(source_text or "").strip():
+            return {
+                "status": "skipped",
+                "reason": "source_text_missing",
+                "analysis_page": analysis_page,
+                "source_page": normalized_source_page,
+                "source_ref": source_ref,
+                "source_ref_status": source_ref_status,
+            }
+
+        source_chars = len(source_text)
+        min_chars = int(self.cfg.analysis_force_chunk_min_source_chars)
+        if source_chars < min_chars:
+            return {
+                "status": "skipped",
+                "reason": "below_min_source_chars",
+                "analysis_page": analysis_page,
+                "source_page": normalized_source_page,
+                "source_ref": source_ref,
+                "source_ref_status": source_ref_status,
+                "source_text_origin": source_text_origin,
+                "source_chars": source_chars,
+                "min_source_chars": min_chars,
+            }
+
+        source_title = self._extract_source_page_title_for_retry(
+            source_page = normalized_source_page,
+            source_text = source_page_text,
+        )
+        context_window_chars = self._force_chunk_context_window_chars(source_chars)
+        chunk_report = self.ingest_source_with_chunked_analysis(
+            source_title = source_title,
+            source_text = source_text,
+            source_ref = source_ref,
+            context_window_chars = context_window_chars,
+        )
+
+        if str(chunk_report.get("status", "")) != "ok":
+            return {
+                "status": "error",
+                "reason": "chunk_ingest_failed",
+                "analysis_page": analysis_page,
+                "source_page": normalized_source_page,
+                "source_ref": source_ref,
+                "source_ref_status": source_ref_status,
+                "source_text_origin": source_text_origin,
+                "source_chars": source_chars,
+                "context_window_chars": context_window_chars,
+                "chunk_report": chunk_report,
+            }
+
+        chunk_count = int(
+            chunk_report.get("chunk_planner", {}).get("chunk_count", 0)
+        )
+        force_status = "chunked" if chunk_count > 1 else "single_chunk"
+        return {
+            "status": force_status,
+            "analysis_page": analysis_page,
+            "source_page": str(
+                chunk_report.get("source_page", normalized_source_page)
+            ),
+            "source_ref": source_ref,
+            "source_ref_status": source_ref_status,
+            "source_text_origin": source_text_origin,
+            "source_chars": source_chars,
+            "min_source_chars": min_chars,
+            "context_window_chars": context_window_chars,
+            "chunk_count": chunk_count,
+            "merged_analysis_page": chunk_report.get("merged_analysis_page"),
+        }
 
     def _retry_initial_context_override(
         self, source_chars: Optional[int]

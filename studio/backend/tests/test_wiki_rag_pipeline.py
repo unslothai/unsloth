@@ -2538,6 +2538,76 @@ def test_external_source_summary_reuses_existing_source_and_summary(
     assert len(list((tmp_path / "wiki" / "analysis").glob("*.md"))) == 1
 
 
+def test_external_source_summary_semantic_dedupe_reuses_paper_variant_source(
+    tmp_path: Path,
+    monkeypatch,
+):
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(vault_root = tmp_path),
+        llm_fn = lambda _: "{}",
+    )
+
+    source_slug = "external-source-forge-foundational-optimization-representations-arxiv-org-1cfa5103"
+    source_page = tmp_path / "wiki" / "sources" / f"{source_slug}.md"
+    source_page.write_text(
+        "---\n"
+        "title: External Source: Forge Foundational Optimization Representations from Graph Embedding [arxiv.org#1cfa5103]\n"
+        "type: source\n"
+        "source_ref: https://arxiv.org/abs/2508.20330v4\n"
+        "ingested_at: 2026-04-29T00:00:00+00:00\n"
+        "---\n\n"
+        "# Forge\n\n"
+        "## Summary\n"
+        "Canonical arXiv source page content.\n",
+        encoding = "utf-8",
+    )
+
+    analysis_slug = "2026-04-29-forge-foundational-optimization-source-first"
+    analysis_page = tmp_path / "wiki" / "analysis" / f"{analysis_slug}.md"
+    analysis_page.write_text(
+        "# Query Result\n\n"
+        "## Question\n"
+        "Summarize source 'Forge Foundational Optimization Representations from Graph Embedding' with a source-first lens.\n"
+        f"Primary page to ground on: [[sources/{source_slug}]].\n\n"
+        "## Answer Mode\n"
+        "llm\n\n"
+        "## Answer\n"
+        "Existing canonical source-first summary.\n\n"
+        "## Context Pages\n"
+        f"- [[sources/{source_slug}]]\n",
+        encoding = "utf-8",
+    )
+
+    def _unexpected_fetch(_url: str, _max_chars: int) -> str:
+        raise AssertionError("Should not fetch content for semantic duplicate")
+
+    def _unexpected_ingest(*_args, **_kwargs):
+        raise AssertionError("Should not ingest semantic duplicate source")
+
+    def _unexpected_query(*_args, **_kwargs):
+        raise AssertionError("Should not regenerate summary for semantic duplicate")
+
+    monkeypatch.setattr(engine, "_fetch_external_page_text", _unexpected_fetch)
+    monkeypatch.setattr(engine, "ingest_source", _unexpected_ingest)
+    monkeypatch.setattr(engine, "query", _unexpected_query)
+
+    report = engine._ingest_and_summarize_external_source(
+        concept_title = "Forge",
+        search_result = {
+            "title": "Forge: Foundational Optimization Representations from Graph Embedding",
+            "url": "https://openreview.net/forum?id=forge-paper-2025",
+            "snippet": "OpenReview mirror of the Forge paper.",
+        },
+    )
+
+    assert report["status"] == "ok"
+    assert report["source_page"] == f"sources/{source_slug}"
+    assert report["summary_page"] == f"analysis/{analysis_slug}"
+    assert report["reused_source"] is True
+    assert report["reused_summary"] is True
+    assert report["reuse_reason"] == "semantic_paper_variant"
+
+
 def test_enrich_analysis_pages_can_compact_knowledge_updates(tmp_path: Path):
     engine = LLMWikiEngine(
         cfg = WikiConfig(vault_root = tmp_path),
@@ -2851,6 +2921,221 @@ def test_retry_fallback_analysis_pages_reduces_context_before_regeneration(
     )
     assert all(entry["keep_preferred_context_full"] is True for entry in call_history)
     assert all(entry["preferred_context_only"] is False for entry in call_history)
+
+
+def test_retry_fallback_analysis_pages_force_chunks_when_retries_still_fallback(
+    tmp_path: Path,
+    monkeypatch,
+):
+    raw_source = tmp_path / "raw" / "alpha.txt"
+    raw_source.parent.mkdir(parents = True, exist_ok = True)
+    raw_source.write_text(("alpha evidence line\n" * 160).strip(), encoding = "utf-8")
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            query_context_max_chars = 18000,
+            analysis_retry_on_fallback = True,
+            analysis_max_retries = 0,
+            analysis_source_only = False,
+            analysis_source_only_final_retry = False,
+            analysis_force_chunk_on_fallback_retry = True,
+            analysis_force_chunk_min_source_chars = 200,
+            analysis_force_chunk_max_pages = 2,
+        ),
+        llm_fn = lambda _: "{}",
+    )
+
+    engine.ingest_source(
+        source_title = "Alpha",
+        source_text = "Short alpha source excerpt used only for source page metadata.",
+        source_ref = str(raw_source),
+    )
+
+    fallback_page = tmp_path / "wiki" / "analysis" / "fallback-force-chunk.md"
+    fallback_page.write_text(
+        "# Query Result\n\n"
+        "## Question\nWhat is alpha?\n\n"
+        "## Answer Mode\nextractive-fallback\n\n"
+        "## Answer\nFallback answer\n\n"
+        "## Fallback Reason\nrepetition\n\n"
+        "## Context Pages\n- [[sources/alpha]]\n",
+        encoding = "utf-8",
+    )
+
+    query_calls = []
+
+    def _fake_query(
+        question: str,
+        save_answer: bool = True,
+        query_context_max_chars_override = None,
+        preferred_context_page = None,
+        keep_preferred_context_full: bool = False,
+        preferred_context_only: bool = False,
+    ):
+        query_calls.append(
+            {
+                "question": question,
+                "save_answer": save_answer,
+                "query_context_max_chars_override": query_context_max_chars_override,
+                "preferred_context_page": preferred_context_page,
+                "keep_preferred_context_full": keep_preferred_context_full,
+                "preferred_context_only": preferred_context_only,
+            }
+        )
+
+        if len(query_calls) == 1:
+            return {
+                "used_extractive_fallback": True,
+                "fallback_reason": "repetition",
+            }
+
+        return {
+            "used_extractive_fallback": False,
+            "answer": "Recovered answer from force chunking. [[sources/alpha]]",
+            "context_pages": ["sources/alpha.md"],
+            "query_context_max_chars": query_context_max_chars_override,
+        }
+
+    chunk_calls = []
+
+    def _fake_chunk_ingest(
+        source_title: str,
+        source_text: str,
+        source_ref: str | None = None,
+        context_window_chars: int | None = None,
+        chunk_target_chars: int | None = None,
+        chunk_overlap_chars: int | None = None,
+    ):
+        chunk_calls.append(
+            {
+                "source_title": source_title,
+                "source_text": source_text,
+                "source_ref": source_ref,
+                "context_window_chars": context_window_chars,
+                "chunk_target_chars": chunk_target_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+            }
+        )
+        return {
+            "status": "ok",
+            "source_page": "sources/alpha",
+            "chunk_planner": {"chunk_count": 3},
+            "merged_analysis_page": "analysis/alpha-merged",
+        }
+
+    monkeypatch.setattr(engine, "query", _fake_query)
+    monkeypatch.setattr(engine, "ingest_source_with_chunked_analysis", _fake_chunk_ingest)
+
+    report = engine.retry_fallback_analysis_pages(dry_run = False, max_analysis_pages = 20)
+
+    assert report["status"] == "ok"
+    assert report["fallback_pages_found"] == 1
+    assert report["regenerated_pages"] == 1
+    assert report["fallback_still"] == 0
+    assert report["force_chunk_attempted"] == 1
+    assert report["force_chunk_actionable"] == 1
+    assert report["force_chunk_resolved"] == 1
+
+    assert len(query_calls) == 2
+    assert query_calls[0]["preferred_context_page"] == "sources/alpha"
+    assert query_calls[1]["preferred_context_page"] == "sources/alpha"
+    assert query_calls[0]["save_answer"] is False
+    assert query_calls[1]["save_answer"] is False
+
+    assert len(chunk_calls) == 1
+    assert chunk_calls[0]["source_ref"] == str(raw_source)
+    assert "alpha evidence line" in chunk_calls[0]["source_text"]
+
+    result = report["results"][0]
+    force_chunk_retry = result.get("force_chunk_retry", {})
+    assert result["status"] == "regenerated"
+    assert force_chunk_retry.get("status") == "chunked"
+    assert force_chunk_retry.get("chunk_count") == 3
+
+    fallback_text = fallback_page.read_text(encoding = "utf-8")
+    assert "retry_strategy: fallback_retry_force_chunk" in fallback_text
+    assert "force_chunk_chunk_count: 3" in fallback_text
+
+
+def test_retry_fallback_analysis_pages_force_chunk_respects_max_pages(
+    tmp_path: Path,
+    monkeypatch,
+):
+    raw_source = tmp_path / "raw" / "alpha.txt"
+    raw_source.parent.mkdir(parents = True, exist_ok = True)
+    raw_source.write_text(("alpha evidence line\n" * 120).strip(), encoding = "utf-8")
+
+    engine = LLMWikiEngine(
+        cfg = WikiConfig(
+            vault_root = tmp_path,
+            analysis_retry_on_fallback = False,
+            analysis_max_retries = 0,
+            analysis_source_only = False,
+            analysis_source_only_final_retry = False,
+            analysis_force_chunk_on_fallback_retry = True,
+            analysis_force_chunk_min_source_chars = 100,
+            analysis_force_chunk_max_pages = 1,
+        ),
+        llm_fn = lambda _: "{}",
+    )
+
+    engine.ingest_source(
+        source_title = "Alpha",
+        source_text = "Alpha source seed for metadata.",
+        source_ref = str(raw_source),
+    )
+
+    for idx in (1, 2):
+        (tmp_path / "wiki" / "analysis" / f"fallback-limit-{idx}.md").write_text(
+            "# Query Result\n\n"
+            "## Question\nWhat is alpha?\n\n"
+            "## Answer Mode\nextractive-fallback\n\n"
+            "## Answer\nFallback answer\n\n"
+            "## Fallback Reason\nrepetition\n\n"
+            "## Context Pages\n- [[sources/alpha]]\n",
+            encoding = "utf-8",
+        )
+
+    def _always_fallback(*_args, **_kwargs):
+        return {
+            "used_extractive_fallback": True,
+            "fallback_reason": "repetition",
+        }
+
+    chunk_calls = {"count": 0}
+
+    def _fake_chunk_ingest(*_args, **_kwargs):
+        chunk_calls["count"] += 1
+        return {
+            "status": "ok",
+            "source_page": "sources/alpha",
+            "chunk_planner": {"chunk_count": 2},
+            "merged_analysis_page": "analysis/alpha-merged",
+        }
+
+    monkeypatch.setattr(engine, "query", _always_fallback)
+    monkeypatch.setattr(engine, "ingest_source_with_chunked_analysis", _fake_chunk_ingest)
+
+    report = engine.retry_fallback_analysis_pages(dry_run = False, max_analysis_pages = 20)
+
+    assert report["fallback_pages_found"] == 2
+    assert report["fallback_still"] == 2
+    assert report["regenerated_pages"] == 0
+    assert report["force_chunk_attempted"] == 1
+    assert report["force_chunk_actionable"] == 1
+    assert report["force_chunk_resolved"] == 0
+    assert chunk_calls["count"] == 1
+
+    retry_statuses = [
+        item.get("force_chunk_retry", {}).get("status") for item in report["results"]
+    ]
+    retry_reasons = [
+        item.get("force_chunk_retry", {}).get("reason") for item in report["results"]
+    ]
+    assert retry_statuses.count("chunked") == 1
+    assert retry_statuses.count("skipped") == 1
+    assert "max_pages_reached" in retry_reasons
 
 
 def test_query_source_first_uses_primary_source_only_context(tmp_path: Path):

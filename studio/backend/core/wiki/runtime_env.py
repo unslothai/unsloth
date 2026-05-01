@@ -375,6 +375,26 @@ WIKI_ENV_SPECS: tuple[WikiEnvSpec, ...] = (
         description = "Force source-only mode on final retry.",
     ),
     WikiEnvSpec(
+        name = "UNSLOTH_WIKI_AUTO_ANALYSIS_FORCE_CHUNK_ON_FALLBACK",
+        kind = "bool",
+        default = "true",
+        description = "Force chunked source re-ingestion when fallback retries still fail.",
+    ),
+    WikiEnvSpec(
+        name = "UNSLOTH_WIKI_AUTO_ANALYSIS_FORCE_CHUNK_MIN_SOURCE_CHARS",
+        kind = "int",
+        default = "50000",
+        description = "Minimum source chars required before force-chunk retry activates.",
+        minimum = 1000,
+    ),
+    WikiEnvSpec(
+        name = "UNSLOTH_WIKI_AUTO_ANALYSIS_FORCE_CHUNK_MAX_PAGES",
+        kind = "int",
+        default = "2",
+        description = "Maximum fallback pages force-chunked in a single maintenance retry run.",
+        minimum = 0,
+    ),
+    WikiEnvSpec(
         name = "UNSLOTH_WIKI_LOW_UNIQUE_RATIO_MIN_TOKENS",
         kind = "int",
         default = "40",

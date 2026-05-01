@@ -164,6 +164,8 @@ type WikiEnrichResult = {
   };
 };
 
+type WikiMaintenanceMode = "with-web-fill" | "without-web-fill";
+
 async function parseApiErrorMessage(response: Response): Promise<string> {
   try {
     const payload = (await response.clone().json()) as { detail?: unknown };
@@ -246,6 +248,8 @@ export function AppSidebar() {
   const [wikiOptionsOpen, setWikiOptionsOpen] = useState(false);
   const [isRunningWikiLint, setIsRunningWikiLint] = useState(false);
   const [isRunningWikiMaintenance, setIsRunningWikiMaintenance] = useState(false);
+  const [activeWikiMaintenanceMode, setActiveWikiMaintenanceMode] =
+    useState<WikiMaintenanceMode | null>(null);
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
   useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
@@ -320,10 +324,15 @@ export function AppSidebar() {
     }
   }
 
-  async function handleWikiMaintenance(): Promise<void> {
+  async function handleWikiMaintenance(
+    mode: WikiMaintenanceMode,
+  ): Promise<void> {
     if (isRunningWikiMaintenance || isRunningWikiLint) return;
 
+    const fillGapsFromWeb = mode === "with-web-fill";
+
     setIsRunningWikiMaintenance(true);
+    setActiveWikiMaintenanceMode(mode);
     try {
       const mergeResponse = await authFetch("/api/inference/wiki/merge-maintenance", {
         method: "POST",
@@ -354,6 +363,7 @@ export function AppSidebar() {
           dry_run: false,
           max_analysis_pages: 256,
           run_fallback_retry_first: false,
+          fill_gaps_from_web: fillGapsFromWeb,
         }),
       });
       if (!enrichResponse.ok) {
@@ -413,7 +423,11 @@ export function AppSidebar() {
             ? " Answer-section link repair mode was enabled."
             : "";
 
-      toast.success("Wiki maintenance completed", {
+      const maintenanceTitle = fillGapsFromWeb
+        ? "Wiki maintenance (with web fill) completed"
+        : "Wiki maintenance (without web fill) completed";
+
+      toast.success(maintenanceTitle, {
         description:
           `Fallbacks found: ${fallbackFound}, regenerated: ${fallbackRegenerated}, still fallback: ${fallbackStill}. ` +
           `Applied merges: ${appliedMerges}, rewritten links: ${rewrittenLinks}, archived pages: ${archived}. ` +
@@ -426,6 +440,7 @@ export function AppSidebar() {
       toast.error("Wiki maintenance failed", { description: message });
     } finally {
       setIsRunningWikiMaintenance(false);
+      setActiveWikiMaintenanceMode(null);
     }
   }
 
@@ -622,13 +637,36 @@ export function AppSidebar() {
 
                   <SidebarMenuItem>
                     <SidebarMenuButton
-                      onClick={handleWikiMaintenance}
+                      onClick={() => {
+                        void handleWikiMaintenance("without-web-fill");
+                      }}
                       disabled={isRunningWikiMaintenance || isRunningWikiLint}
                       className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
                     >
                       <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
                       <span className="text-[14px] leading-[18px] tracking-[0.01em]">
-                        {isRunningWikiMaintenance ? "Running..." : "Run Maintenance"}
+                        {isRunningWikiMaintenance
+                          && activeWikiMaintenanceMode === "without-web-fill"
+                          ? "Running..."
+                          : "Run Maintenance"}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => {
+                        void handleWikiMaintenance("with-web-fill");
+                      }}
+                      disabled={isRunningWikiMaintenance || isRunningWikiLint}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={NewReleasesIcon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        {isRunningWikiMaintenance
+                          && activeWikiMaintenanceMode === "with-web-fill"
+                          ? "Running..."
+                          : "Run Maintenance + Web Fill"}
                       </span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
