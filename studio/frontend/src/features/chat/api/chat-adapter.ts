@@ -50,7 +50,7 @@ type RunMessage = RunMessages[number];
 export const sentAudioNames = new Map<string, string>();
 
 /** Thread key used in runningByThreadId before a new thread is persisted to the DB. */
-export const DEFAULT_THREAD_KEY = DEFAULT_THREAD_KEY as const;
+export const DEFAULT_THREAD_KEY = "__default" as const;
 
 /**
  * Match error messages that indicate the request filled or would fill
