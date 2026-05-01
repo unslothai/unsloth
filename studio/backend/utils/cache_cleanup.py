@@ -91,8 +91,8 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
 
                 elif item.is_dir():
                     # Always clear __pycache__ and other subdirectories
-                    shutil.rmtree(item, ignore_errors = True)
+                    shutil.rmtree(item, ignore_errors=True)
         else:
             # Legacy behavior: nuke the entire directory
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
-            shutil.rmtree(cache_dir, ignore_errors = True)
+            shutil.rmtree(cache_dir, ignore_errors=True)

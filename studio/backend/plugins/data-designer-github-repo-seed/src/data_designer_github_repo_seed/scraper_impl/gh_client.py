@@ -90,8 +90,8 @@ class GitHubClient:
             try:
                 r = self.session.post(
                     GRAPHQL_URL,
-                    json = {"query": query, "variables": variables or {}},
-                    timeout = 120,
+                    json={"query": query, "variables": variables or {}},
+                    timeout=120,
                 )
                 self.calls_graphql += 1
                 # Update rate info from response headers
@@ -168,7 +168,7 @@ class GitHubClient:
         for attempt in range(max_retries):
             try:
                 r = self.session.request(
-                    method, url, params = params, json = json_body, timeout = 120
+                    method, url, params=params, json=json_body, timeout=120
                 )
                 self.calls_rest += 1
                 rem = r.headers.get("X-RateLimit-Remaining")
@@ -217,7 +217,7 @@ class GitHubClient:
         params.setdefault("per_page", per_page)
         url = path
         while True:
-            r = self.rest("GET", url, params = params if url == path else None)
+            r = self.rest("GET", url, params=params if url == path else None)
             if r.status_code != 200:
                 log.error(
                     "REST paginate got %s at %s: %s", r.status_code, url, r.text[:200]

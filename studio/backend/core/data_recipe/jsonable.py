@@ -11,7 +11,7 @@ from typing import Any
 
 def _pil_to_preview_payload(image: Any) -> dict[str, Any]:
     buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, format = "JPEG", quality = 85)
+    image.convert("RGB").save(buffer, format="JPEG", quality=85)
     return {
         "type": "image",
         "mime": "image/jpeg",

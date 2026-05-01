@@ -45,9 +45,9 @@ def _resolve_external_ip() -> str:
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
-            headers = {"Metadata-Flavor": "Google"},
+            headers={"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(req, timeout = 1) as resp:
+        with urllib.request.urlopen(req, timeout=1) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -56,7 +56,7 @@ def _resolve_external_ip() -> str:
 
     # 2. Try public IP service
     try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
+        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -87,7 +87,7 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     except ImportError:
         return None
     try:
-        for conn in psutil.net_connections(kind = "tcp"):
+        for conn in psutil.net_connections(kind="tcp"):
             if conn.status == "LISTEN" and conn.laddr.port == port:
                 if conn.pid is None:
                     return None
@@ -165,7 +165,7 @@ _PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
 def _write_pid_file():
     """Write the current process PID to the studio PID file."""
     try:
-        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
+        _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         _PID_FILE.write_text(str(os.getpid()))
     except OSError:
         pass
@@ -177,12 +177,12 @@ def _remove_pid_file():
         if _PID_FILE.is_file():
             stored = _PID_FILE.read_text().strip()
             if stored == str(os.getpid()):
-                _PID_FILE.unlink(missing_ok = True)
+                _PID_FILE.unlink(missing_ok=True)
     except OSError:
         pass
 
 
-def _graceful_shutdown(server = None):
+def _graceful_shutdown(server=None):
     """Explicitly shut down all subprocess backends and the uvicorn server.
 
     Called from signal handlers to ensure child processes are cleaned up
@@ -201,7 +201,7 @@ def _graceful_shutdown(server = None):
         from core.inference.orchestrator import _inference_backend
 
         if _inference_backend is not None:
-            _inference_backend._shutdown_subprocess(timeout = 5.0)
+            _inference_backend._shutdown_subprocess(timeout=5.0)
     except Exception as e:
         logger.warning("Error shutting down inference subprocess: %s", e)
 
@@ -210,7 +210,7 @@ def _graceful_shutdown(server = None):
         from core.export.orchestrator import _export_backend
 
         if _export_backend is not None:
-            _export_backend._shutdown_subprocess(timeout = 5.0)
+            _export_backend._shutdown_subprocess(timeout=5.0)
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
@@ -273,7 +273,7 @@ def run_server(
     # Reconfigure stdout to UTF-8 so startup messages do not crash the server.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
-            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
 
@@ -318,7 +318,7 @@ def run_server(
 
     # Output port for Tauri to parse when in api-only mode
     if api_only:
-        print(f"TAURI_PORT={port}", flush = True)
+        print(f"TAURI_PORT={port}", flush=True)
 
     # Setup frontend if path provided (skip in api-only mode)
     if frontend_path and not api_only:
@@ -331,7 +331,7 @@ def run_server(
 
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
-        app, host = host, port = port, log_level = "info", access_log = False
+        app, host=host, port=port, log_level="info", access_log=False
     )
     _server = uvicorn.Server(config)
     _shutdown_event = Event()
@@ -349,7 +349,7 @@ def run_server(
     def _run():
         asyncio.run(_server.serve())
 
-    thread = Thread(target = _run, daemon = True)
+    thread = Thread(target=_run, daemon=True)
     thread.start()
     time.sleep(3)
 
@@ -370,9 +370,9 @@ def run_server(
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         print_studio_access_banner(
-            port = port,
-            bind_host = host,
-            display_host = display_host,
+            port=port,
+            bind_host=host,
+            display_host=display_host,
         )
 
     return app
@@ -387,30 +387,30 @@ if __name__ == "__main__":
     # Ensure stderr can handle Unicode on Windows (tracebacks with non-ASCII paths)
     if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
         try:
-            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
-    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
-    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
+    parser = argparse.ArgumentParser(description="Run Unsloth UI Backend server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8888, help="Port to bind to")
     parser.add_argument(
         "--frontend",
-        type = str,
-        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
-        help = "Path to frontend build",
+        type=str,
+        default=Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        help="Path to frontend build",
     )
-    parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    parser.add_argument("--silent", action="store_true", help="Suppress output")
     parser.add_argument(
         "--api-only",
-        action = "store_true",
-        help = "API server only, no frontend (for Tauri)",
+        action="store_true",
+        help="API server only, no frontend (for Tauri)",
     )
 
     args = parser.parse_args()
 
     kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+        host=args.host, port=args.port, silent=args.silent, api_only=args.api_only
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
@@ -422,7 +422,7 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
         sys.stderr.write("=" * 60 + "\n")
-        traceback.print_exc(file = sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         sys.stderr.write("\n")
         sys.stderr.write(
             "If a package is missing, try re-running: unsloth studio setup\n"
@@ -447,4 +447,4 @@ if __name__ == "__main__":
     # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
     # short timeout in a loop lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(timeout = 1)
+        _shutdown_event.wait(timeout=1)

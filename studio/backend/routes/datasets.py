@@ -33,7 +33,7 @@ def _get_dataset_size_cached(repo_id: str) -> int:
     try:
         from huggingface_hub import dataset_info as hf_dataset_info
 
-        info = hf_dataset_info(repo_id, token = None, files_metadata = True)
+        info = hf_dataset_info(repo_id, token=None, files_metadata=True)
         total = sum(s.size for s in info.siblings if getattr(s, "size", None))
         _dataset_size_cache[repo_id] = total
         return total
@@ -53,7 +53,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
         if snapshots_dir.is_dir():
             snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
             if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
+                latest = max(snaps, key=lambda s: s.stat().st_mtime)
                 return str(latest.resolve())
         return str(repo_dir.resolve())
     except Exception:
@@ -100,7 +100,7 @@ def _serialize_preview_value(value):
 
         if isinstance(value, PILImage):
             buffer = io.BytesIO()
-            value.convert("RGB").save(buffer, format = "JPEG", quality = 85)
+            value.convert("RGB").save(buffer, format="JPEG", quality=85)
             return {
                 "type": "image",
                 "mime": "image/jpeg",
@@ -144,7 +144,7 @@ DATASET_UPLOAD_DIR = dataset_uploads_root()
 
 def _safe_read_metadata(path: Path) -> dict | None:
     try:
-        payload = json.loads(path.read_text(encoding = "utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return None
     if not isinstance(payload, dict):
@@ -245,16 +245,16 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 
         items.append(
             LocalDatasetItem(
-                id = entry.name,
-                label = entry.name,
-                path = str(parquet_dir.resolve()),
-                rows = rows,
-                updated_at = updated_at,
-                metadata = metadata_summary,
+                id=entry.name,
+                label=entry.name,
+                path=str(parquet_dir.resolve()),
+                rows=rows,
+                updated_at=updated_at,
+                metadata=metadata_summary,
             )
         )
 
-    items.sort(key = lambda item: item.updated_at or 0, reverse = True)
+    items.sort(key=lambda item: item.updated_at or 0, reverse=True)
     return items
 
 
@@ -273,8 +273,8 @@ def _load_local_preview_slice(
         if parquet_files:
             dataset = load_dataset(
                 "parquet",
-                data_files = [str(path) for path in parquet_files],
-                split = train_split,
+                data_files=[str(path) for path in parquet_files],
+                split=train_split,
             )
             total_rows = len(dataset)
             preview_slice = dataset.select(range(min(preview_size, total_rows)))
@@ -285,22 +285,22 @@ def _load_local_preview_slice(
                 candidate_files.extend(sorted(dataset_path.glob(f"*{ext}")))
             if not candidate_files:
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
+                    status_code=400,
+                    detail="Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
                 )
             dataset_path = candidate_files[0]
 
     if dataset_path.suffix in [".json", ".jsonl"]:
-        dataset = load_dataset("json", data_files = str(dataset_path), split = train_split)
+        dataset = load_dataset("json", data_files=str(dataset_path), split=train_split)
     elif dataset_path.suffix == ".csv":
-        dataset = load_dataset("csv", data_files = str(dataset_path), split = train_split)
+        dataset = load_dataset("csv", data_files=str(dataset_path), split=train_split)
     elif dataset_path.suffix == ".parquet":
         dataset = load_dataset(
-            "parquet", data_files = str(dataset_path), split = train_split
+            "parquet", data_files=str(dataset_path), split=train_split
         )
     else:
         raise HTTPException(
-            status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
+            status_code=400, detail=f"Unsupported file format: {dataset_path.suffix}"
         )
 
     total_rows = len(dataset)
@@ -315,7 +315,7 @@ def _sanitize_filename(filename: str) -> str:
     return name
 
 
-@router.post("/upload", response_model = UploadDatasetResponse)
+@router.post("/upload", response_model=UploadDatasetResponse)
 async def upload_dataset(
     file: UploadFile,
     current_subject: str = Depends(get_current_subject),
@@ -325,8 +325,8 @@ async def upload_dataset(
     if ext not in LOCAL_UPLOAD_EXTS:
         allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
         raise HTTPException(
-            status_code = 400,
-            detail = f"Unsupported file type: {ext}. Allowed: {allowed}",
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Allowed: {allowed}",
         )
 
     ensure_dir(DATASET_UPLOAD_DIR)
@@ -340,23 +340,23 @@ async def upload_dataset(
             f.write(chunk)
 
     if stored_path.stat().st_size == 0:
-        stored_path.unlink(missing_ok = True)
-        raise HTTPException(status_code = 400, detail = "Empty upload payload")
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Empty upload payload")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    return UploadDatasetResponse(filename=filename, stored_path=str(stored_path))
 
 
-@router.get("/local", response_model = LocalDatasetsResponse)
+@router.get("/local", response_model=LocalDatasetsResponse)
 def list_local_datasets(
     current_subject: str = Depends(get_current_subject),
 ) -> LocalDatasetsResponse:
-    return LocalDatasetsResponse(datasets = _build_local_dataset_items())
+    return LocalDatasetsResponse(datasets=_build_local_dataset_items())
 
 
 @router.get("/download-progress")
 async def get_dataset_download_progress(
     repo_id: str = Query(
-        ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
+        ..., description="HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -436,7 +436,7 @@ async def get_dataset_download_progress(
         return _empty
 
 
-@router.post("/check-format", response_model = CheckFormatResponse)
+@router.post("/check-format", response_model=CheckFormatResponse)
 def check_format(
     request: CheckFormatRequest,
     current_subject: str = Depends(get_current_subject),
@@ -470,9 +470,9 @@ def check_format(
             # ── Local file ──────────────────────────────────────────
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
-                dataset_path = dataset_path,
-                train_split = train_split,
-                preview_size = PREVIEW_SIZE,
+                dataset_path=dataset_path,
+                train_split=train_split,
+                preview_size=PREVIEW_SIZE,
             )
         else:
             # ── HuggingFace dataset ─────────────────────────────────
@@ -485,8 +485,8 @@ def check_format(
                 api = HfApi()
                 repo_files = api.list_repo_files(
                     request.dataset_name,
-                    repo_type = "dataset",
-                    token = request.hf_token or None,
+                    repo_type="dataset",
+                    token=request.hf_token or None,
                 )
                 data_files = [
                     f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)
@@ -547,15 +547,15 @@ def check_format(
                 rows = list(islice(streamed_ds, PREVIEW_SIZE))
                 if not rows:
                     raise HTTPException(
-                        status_code = 400,
-                        detail = "Dataset appears to be empty or could not be streamed",
+                        status_code=400,
+                        detail="Dataset appears to be empty or could not be streamed",
                     )
 
                 preview_slice = Dataset.from_list(rows)
             total_rows = None
 
         # Run lightweight format check on the preview slice
-        result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
+        result = check_dataset_format(preview_slice, is_vlm=request.is_vlm)
 
         logger.info(
             f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}, is_image={result.get('is_image', False)}"
@@ -572,8 +572,8 @@ def check_format(
                 try:
                     format_result = format_dataset(
                         preview_slice,
-                        format_type = "auto",
-                        num_proc = None,  # Only 10 preview rows -- no need for multiprocessing
+                        format_type="auto",
+                        num_proc=None,  # Only 10 preview rows -- no need for multiprocessing
                     )
                     processed = format_result["dataset"]
                     preview_samples = _serialize_preview_rows(processed)
@@ -604,32 +604,32 @@ def check_format(
                 pass
 
         return CheckFormatResponse(
-            requires_manual_mapping = result["requires_manual_mapping"],
-            detected_format = result["detected_format"],
-            columns = result["columns"],
-            is_image = result.get("is_image", False),
-            is_audio = result.get("is_audio", False),
-            multimodal_columns = result.get("multimodal_columns"),
-            suggested_mapping = result.get("suggested_mapping"),
-            detected_image_column = result.get("detected_image_column"),
-            detected_audio_column = result.get("detected_audio_column"),
-            detected_text_column = result.get("detected_text_column"),
-            detected_speaker_column = result.get("detected_speaker_column"),
-            preview_samples = preview_samples,
-            total_rows = total_rows,
-            warning = warning,
+            requires_manual_mapping=result["requires_manual_mapping"],
+            detected_format=result["detected_format"],
+            columns=result["columns"],
+            is_image=result.get("is_image", False),
+            is_audio=result.get("is_audio", False),
+            multimodal_columns=result.get("multimodal_columns"),
+            suggested_mapping=result.get("suggested_mapping"),
+            detected_image_column=result.get("detected_image_column"),
+            detected_audio_column=result.get("detected_audio_column"),
+            detected_text_column=result.get("detected_text_column"),
+            detected_speaker_column=result.get("detected_speaker_column"),
+            preview_samples=preview_samples,
+            total_rows=total_rows,
+            warning=warning,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error checking dataset format: {e}", exc_info = True)
+        logger.error(f"Error checking dataset format: {e}", exc_info=True)
         raise HTTPException(
-            status_code = 500, detail = f"Failed to check dataset format: {str(e)}"
+            status_code=500, detail=f"Failed to check dataset format: {str(e)}"
         )
 
 
-@router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
+@router.post("/ai-assist-mapping", response_model=AiAssistMappingResponse)
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
     current_subject: str = Depends(get_current_subject),
@@ -654,32 +654,32 @@ def ai_assist_mapping(
         ]
 
         result = llm_conversion_advisor(
-            column_names = request.columns,
-            samples = truncated,
-            dataset_name = request.dataset_name,
-            hf_token = request.hf_token,
-            model_name = request.model_name,
-            model_type = request.model_type,
+            column_names=request.columns,
+            samples=truncated,
+            dataset_name=request.dataset_name,
+            hf_token=request.hf_token,
+            model_name=request.model_name,
+            model_type=request.model_type,
         )
 
         if result and result.get("success"):
             return AiAssistMappingResponse(
-                success = True,
-                suggested_mapping = result.get("suggested_mapping"),
-                system_prompt = result.get("system_prompt"),
-                user_template = result.get("user_template"),
-                assistant_template = result.get("assistant_template"),
-                label_mapping = result.get("label_mapping"),
-                dataset_type = result.get("dataset_type"),
-                is_conversational = result.get("is_conversational"),
-                user_notification = result.get("user_notification"),
+                success=True,
+                suggested_mapping=result.get("suggested_mapping"),
+                system_prompt=result.get("system_prompt"),
+                user_template=result.get("user_template"),
+                assistant_template=result.get("assistant_template"),
+                label_mapping=result.get("label_mapping"),
+                dataset_type=result.get("dataset_type"),
+                is_conversational=result.get("is_conversational"),
+                user_notification=result.get("user_notification"),
             )
 
         return AiAssistMappingResponse(
-            success = False,
-            warning = "AI could not determine column roles. Please assign them manually.",
+            success=False,
+            warning="AI could not determine column roles. Please assign them manually.",
         )
 
     except Exception as e:
-        logger.error(f"AI assist mapping failed: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"AI assist failed: {str(e)}")
+        logger.error(f"AI assist mapping failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI assist failed: {str(e)}")

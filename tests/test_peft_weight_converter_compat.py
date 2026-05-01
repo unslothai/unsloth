@@ -36,7 +36,7 @@ def _install_fake_peft(twc_namespace):
     return twc
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _restore_peft_modules():
     saved = {
         k: sys.modules.get(k)
@@ -69,8 +69,8 @@ class _ModernConverter:
         source_patterns,
         target_patterns,
         operations,
-        distributed_operation = None,
-        quantization_operation = None,
+        distributed_operation=None,
+        quantization_operation=None,
     ):
         self.source_patterns = source_patterns
         self.target_patterns = target_patterns
@@ -87,16 +87,16 @@ def _make_modern_converter():
     return _ModernConverter(["src.*"], ["tgt.*"], [])
 
 
-def _build_that_calls_init(weight_conversions, adapter_name, peft_config = None):
+def _build_that_calls_init(weight_conversions, adapter_name, peft_config=None):
     out = []
     for c in weight_conversions or []:
         out.append(
             c.__class__(
-                source_patterns = c.source_patterns,
-                target_patterns = c.target_patterns,
-                operations = c.operations,
-                distributed_operation = "dist-x",
-                quantization_operation = "quant-y",
+                source_patterns=c.source_patterns,
+                target_patterns=c.target_patterns,
+                operations=c.operations,
+                distributed_operation="dist-x",
+                quantization_operation="quant-y",
             )
         )
     return out
@@ -149,7 +149,7 @@ def test_class_init_restored_after_call():
 
 
 def test_class_init_restored_after_original_build_raises():
-    def _raise(weight_conversions, adapter_name, peft_config = None):
+    def _raise(weight_conversions, adapter_name, peft_config=None):
         raise RuntimeError("simulated PEFT failure")
 
     twc = _install_fake_peft({"build_peft_weight_mapping": _raise})
@@ -211,7 +211,7 @@ def test_idempotent_install_does_not_double_wrap():
 def test_concurrent_legacy_calls_no_typeerror():
     import time
 
-    def _slow_build(weight_conversions, adapter_name, peft_config = None):
+    def _slow_build(weight_conversions, adapter_name, peft_config=None):
         time.sleep(0.05)
         return _build_that_calls_init(weight_conversions, adapter_name, peft_config)
 
@@ -224,7 +224,7 @@ def test_concurrent_legacy_calls_no_typeerror():
     start = threading.Event()
 
     def _worker():
-        start.wait(timeout = 10)
+        start.wait(timeout=10)
         try:
             out = twc.build_peft_weight_mapping(
                 [_make_legacy_converter()], "default", None
@@ -233,12 +233,12 @@ def test_concurrent_legacy_calls_no_typeerror():
         except Exception as e:
             errors.append(e)
 
-    threads = [threading.Thread(target = _worker) for _ in range(8)]
+    threads = [threading.Thread(target=_worker) for _ in range(8)]
     for t in threads:
         t.start()
     start.set()
     for t in threads:
-        t.join(timeout = 15)
+        t.join(timeout=15)
 
     assert errors == []
     assert len(results) == 8

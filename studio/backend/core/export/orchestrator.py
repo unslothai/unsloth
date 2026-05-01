@@ -64,7 +64,7 @@ class ExportOrchestrator:
         # Thread-safe ring buffer of log lines forwarded from the
         # worker subprocess. Powers the GET /api/export/logs/stream
         # SSE endpoint that the export dialog consumes.
-        self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
+        self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen=_LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
         # Monotonically increasing sequence number. Never reset across
         # operations, so SSE clients can use it as a stable cursor even
@@ -169,13 +169,13 @@ class ExportOrchestrator:
         self._resp_queue = _CTX.Queue()
 
         self._proc = _CTX.Process(
-            target = run_export_process,
-            kwargs = {
+            target=run_export_process,
+            kwargs={
                 "cmd_queue": self._cmd_queue,
                 "resp_queue": self._resp_queue,
                 "config": config,
             },
-            daemon = True,
+            daemon=True,
         )
         self._proc.start()
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
@@ -197,7 +197,7 @@ class ExportOrchestrator:
 
         # 3. Wait for graceful shutdown
         try:
-            self._proc.join(timeout = timeout)
+            self._proc.join(timeout=timeout)
         except Exception:
             pass
 
@@ -206,14 +206,14 @@ class ExportOrchestrator:
             logger.warning("Export subprocess did not exit gracefully, terminating")
             try:
                 self._proc.terminate()
-                self._proc.join(timeout = 5)
+                self._proc.join(timeout=5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Subprocess still alive after terminate, killing")
                 try:
                     self._proc.kill()
-                    self._proc.join(timeout = 3)
+                    self._proc.join(timeout=3)
                 except Exception:
                     pass
 
@@ -224,7 +224,7 @@ class ExportOrchestrator:
 
     def _cleanup(self):
         """atexit handler."""
-        self._shutdown_subprocess(timeout = 5.0)
+        self._shutdown_subprocess(timeout=5.0)
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive."""
@@ -248,7 +248,7 @@ class ExportOrchestrator:
         if self._resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout = timeout)
+            return self._resp_queue.get(timeout=timeout)
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -265,7 +265,7 @@ class ExportOrchestrator:
 
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 2.0))
+            resp = self._read_resp(timeout=min(remaining, 2.0))
 
             if resp is None:
                 # Check subprocess health
@@ -362,7 +362,7 @@ class ExportOrchestrator:
                 if self._ensure_subprocess_alive():
                     self._shutdown_subprocess()
                 elif self._proc is not None:
-                    self._shutdown_subprocess(timeout = 2)
+                    self._shutdown_subprocess(timeout=2)
 
                 logger.info(
                     "Spawning fresh export subprocess for '%s'", checkpoint_path
@@ -372,7 +372,7 @@ class ExportOrchestrator:
                 try:
                     resp = self._wait_response("loaded")
                 except RuntimeError as exc:
-                    self._shutdown_subprocess(timeout = 5)
+                    self._shutdown_subprocess(timeout=5)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -506,7 +506,7 @@ class ExportOrchestrator:
                     self._send_cmd(cmd)
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600,  # GGUF for 30B+ models can take 30+ min
+                        timeout=3600,  # GGUF for 30B+ models can take 30+ min
                     )
                     return (
                         resp.get("success", False),
@@ -532,7 +532,7 @@ class ExportOrchestrator:
             try:
                 try:
                     self._send_cmd({"type": "cleanup"})
-                    resp = self._wait_response("cleanup_done", timeout = 30)
+                    resp = self._wait_response("cleanup_done", timeout=30)
                     success = resp.get("success", False)
                 except RuntimeError:
                     success = False
@@ -553,7 +553,7 @@ class ExportOrchestrator:
         """Scan for checkpoints — no ML imports needed, runs locally."""
         from utils.models.checkpoints import scan_checkpoints
 
-        return scan_checkpoints(outputs_dir = outputs_dir)
+        return scan_checkpoints(outputs_dir=outputs_dir)
 
 
 # ========== GLOBAL INSTANCE ==========

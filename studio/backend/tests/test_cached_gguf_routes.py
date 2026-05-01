@@ -16,8 +16,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _DummyLogger,
-        get_logger = lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger=_DummyLogger,
+        get_logger=lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.models as models_route
@@ -31,10 +31,10 @@ def _repo(
     revisions: list[SimpleNamespace] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = repo_path,
-        revisions = revisions or [SimpleNamespace(files = files)],
+        repo_id=repo_id,
+        repo_type="model",
+        repo_path=repo_path,
+        revisions=revisions or [SimpleNamespace(files=files)],
     )
 
 
@@ -45,15 +45,15 @@ def _file(
     blob_path: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        file_name = name,
-        size_on_disk = size_on_disk,
-        blob_path = blob_path,
+        file_name=name,
+        size_on_disk=size_on_disk,
+        blob_path=blob_path,
     )
 
 
 def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
     nested = tmp_path / "snapshots" / "rev"
-    nested.mkdir(parents = True)
+    nested.mkdir(parents=True)
     lower = nested / "Q4_K_M.gguf"
     upper = nested / "Q8_0.GGUF"
     other = nested / "README.md"
@@ -74,11 +74,11 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(
         [_file("Q4_K_M.gguf", 5_000), _file("README.md", 10)],
         tmp_path / "models--HauhauCS--Gemma",
     )
-    scan = SimpleNamespace(repos = [repo])
+    scan = SimpleNamespace(repos=[repo])
 
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -95,11 +95,11 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
         [_file("Q8_0.GGUF", 7_000)],
         tmp_path / "models--Org--Model-Without-Suffix",
     )
-    scan = SimpleNamespace(repos = [repo])
+    scan = SimpleNamespace(repos=[repo])
 
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -121,11 +121,11 @@ def test_list_cached_gguf_skips_repos_without_positive_gguf_size(monkeypatch, tm
         [_file("Q4_K_M.gguf", 0)],
         tmp_path / "models--Org--ZeroSize",
     )
-    scan = SimpleNamespace(repos = [missing, zero])
+    scan = SimpleNamespace(repos=[missing, zero])
 
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == []
 
@@ -148,12 +148,12 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(
         models_route,
         "_all_hf_cache_scans",
         lambda: [
-            SimpleNamespace(repos = [smaller]),
-            SimpleNamespace(repos = [larger]),
+            SimpleNamespace(repos=[smaller]),
+            SimpleNamespace(repos=[larger]),
         ],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -170,19 +170,19 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
         "Org/SharedBlobRepo",
         [],
         tmp_path / "models--Org--SharedBlobRepo",
-        revisions = [
-            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000, blob_path = shared)]),
-            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000, blob_path = shared)]),
+        revisions=[
+            SimpleNamespace(files=[_file("Q4_K_M.gguf", 5_000, blob_path=shared)]),
+            SimpleNamespace(files=[_file("Q4_K_M.gguf", 5_000, blob_path=shared)]),
         ],
     )
 
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [repo])],
+        lambda: [SimpleNamespace(repos=[repo])],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -208,10 +208,10 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [mixed])],
+        lambda: [SimpleNamespace(repos=[mixed])],
     )
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
 
     assert result["cached"] == []
 
@@ -233,10 +233,10 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [mixed])],
+        lambda: [SimpleNamespace(repos=[mixed])],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -260,10 +260,10 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [partial])],
+        lambda: [SimpleNamespace(repos=[partial])],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -298,10 +298,10 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [_ExplodingRepo(), healthy])],
+        lambda: [SimpleNamespace(repos=[_ExplodingRepo(), healthy])],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -328,10 +328,10 @@ def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [mmproj_only])],
+        lambda: [SimpleNamespace(repos=[mmproj_only])],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == []
 
@@ -352,10 +352,10 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [mmproj_aux])],
+        lambda: [SimpleNamespace(repos=[mmproj_aux])],
     )
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -384,10 +384,10 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [vision_repo])],
+        lambda: [SimpleNamespace(repos=[vision_repo])],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {

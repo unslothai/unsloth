@@ -8,7 +8,7 @@ SAVE_PY = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
 
 
 def _function_calls(source: str, function_name: str) -> list[ast.Call]:
-    tree = ast.parse(source, filename = str(SAVE_PY))
+    tree = ast.parse(source, filename=str(SAVE_PY))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             return [child for child in ast.walk(node) if isinstance(child, ast.Call)]
@@ -65,7 +65,7 @@ def _assert_safe_ggml_calls(calls: list[ast.Call]) -> None:
 
 
 def test_ggml_conversion_paths_do_not_use_shell() -> None:
-    source = SAVE_PY.read_text(encoding = "utf-8")
+    source = SAVE_PY.read_text(encoding="utf-8")
     for function_name in (
         "unsloth_convert_lora_to_ggml_and_push_to_hub",
         "unsloth_convert_lora_to_ggml_and_save_locally",

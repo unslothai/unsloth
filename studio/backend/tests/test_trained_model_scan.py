@@ -72,9 +72,9 @@ def test_get_base_model_from_lora_rejects_full_finetune_dirs(tmp_path: Path):
     assert get_base_model_from_lora(str(tmp_path)) is None
 
 
-@patch("utils.models.model_config.is_audio_input_type", return_value = False)
-@patch("utils.models.model_config.detect_audio_type", return_value = None)
-@patch("utils.models.model_config.is_vision_model", return_value = False)
+@patch("utils.models.model_config.is_audio_input_type", return_value=False)
+@patch("utils.models.model_config.detect_audio_type", return_value=None)
+@patch("utils.models.model_config.is_vision_model", return_value=False)
 def test_model_config_full_finetune_local_path_is_not_lora(
     _mock_vision,
     _mock_audio_type,

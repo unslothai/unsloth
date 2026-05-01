@@ -46,9 +46,9 @@ from routes.inference import _build_passthrough_payload, _friendly_error
 class TestChatMessageToolRoles:
     def test_tool_role_with_tool_call_id(self):
         msg = ChatMessage(
-            role = "tool",
-            tool_call_id = "call_abc123",
-            content = '{"temperature": 72}',
+            role="tool",
+            tool_call_id="call_abc123",
+            content='{"temperature": 72}',
         )
         assert msg.role == "tool"
         assert msg.tool_call_id == "call_abc123"
@@ -56,18 +56,18 @@ class TestChatMessageToolRoles:
 
     def test_tool_role_with_name(self):
         msg = ChatMessage(
-            role = "tool",
-            tool_call_id = "call_abc123",
-            name = "get_weather",
-            content = '{"temperature": 72}',
+            role="tool",
+            tool_call_id="call_abc123",
+            name="get_weather",
+            content='{"temperature": 72}',
         )
         assert msg.name == "get_weather"
 
     def test_assistant_with_tool_calls_no_content(self):
         msg = ChatMessage(
-            role = "assistant",
-            content = None,
-            tool_calls = [
+            role="assistant",
+            content=None,
+            tool_calls=[
                 {
                     "id": "call_1",
                     "type": "function",
@@ -86,9 +86,9 @@ class TestChatMessageToolRoles:
 
     def test_assistant_with_content_and_tool_calls(self):
         msg = ChatMessage(
-            role = "assistant",
-            content = "Let me check the weather.",
-            tool_calls = [
+            role="assistant",
+            content="Let me check the weather.",
+            tool_calls=[
                 {
                     "id": "call_1",
                     "type": "function",
@@ -100,7 +100,7 @@ class TestChatMessageToolRoles:
         assert msg.tool_calls[0]["id"] == "call_1"
 
     def test_plain_user_message_still_works(self):
-        msg = ChatMessage(role = "user", content = "Hello")
+        msg = ChatMessage(role="user", content="Hello")
         assert msg.role == "user"
         assert msg.tool_call_id is None
         assert msg.tool_calls is None
@@ -108,14 +108,14 @@ class TestChatMessageToolRoles:
 
     def test_invalid_role_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "function", content = "x")
+            ChatMessage(role="function", content="x")
 
     def test_content_absent_on_assistant_tool_call_defaults_to_none(self):
         # Assistant messages that carry only tool_calls are the one
         # documented case where `content=None` is permitted.
         msg = ChatMessage(
-            role = "assistant",
-            tool_calls = [
+            role="assistant",
+            tool_calls=[
                 {
                     "id": "call_1",
                     "type": "function",
@@ -131,40 +131,40 @@ class TestChatMessageToolRoles:
         # Pin the boundary-level rejection so a malformed tool-result
         # message never reaches the passthrough path.
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "tool", content = '{"temperature": 72}')
+            ChatMessage(role="tool", content='{"temperature": 72}')
         assert "tool_call_id" in str(exc_info.value)
 
     def test_tool_role_empty_tool_call_id_rejected(self):
         with pytest.raises(ValidationError):
             ChatMessage(
-                role = "tool",
-                tool_call_id = "",
-                content = '{"temperature": 72}',
+                role="tool",
+                tool_call_id="",
+                content='{"temperature": 72}',
             )
 
     # ── Role-aware content requirements ────────────────────────────
 
     @pytest.mark.parametrize("role", ["user", "system"])
     def test_empty_string_content_allowed(self, role):
-        msg = ChatMessage(role = role, content = "")
+        msg = ChatMessage(role=role, content="")
         assert msg.content == ""
 
     def test_user_missing_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "user")
+            ChatMessage(role="user")
 
     def test_user_empty_list_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "user", content = [])
+            ChatMessage(role="user", content=[])
 
     def test_tool_empty_content_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
+            ChatMessage(role="tool", tool_call_id="call_1", content="")
         assert "content" in str(exc_info.value)
 
     def test_assistant_without_content_or_tool_calls_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "assistant")
+            ChatMessage(role="assistant")
         assert "content" in str(exc_info.value) or "tool_calls" in str(exc_info.value)
 
     # ── Role-constrained tool-call metadata ────────────────────────
@@ -172,9 +172,9 @@ class TestChatMessageToolRoles:
     def test_tool_calls_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
             ChatMessage(
-                role = "user",
-                content = "Hi",
-                tool_calls = [
+                role="user",
+                content="Hi",
+                tool_calls=[
                     {
                         "id": "c1",
                         "type": "function",
@@ -186,12 +186,12 @@ class TestChatMessageToolRoles:
 
     def test_tool_call_id_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
+            ChatMessage(role="user", content="Hi", tool_call_id="call_1")
         assert "tool_call_id" in str(exc_info.value)
 
     def test_name_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", name = "get_weather")
+            ChatMessage(role="user", content="Hi", name="get_weather")
         assert "name" in str(exc_info.value)
 
 
@@ -208,7 +208,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_tools_parses(self):
         req = self._make(
-            tools = [
+            tools=[
                 {
                     "type": "function",
                     "function": {
@@ -229,30 +229,30 @@ class TestChatCompletionRequestToolFields:
 
     def test_image_base64_allows_empty_user_text(self):
         req = ChatCompletionRequest(
-            messages = [{"role": "user", "content": ""}],
-            image_base64 = "aW1hZ2U=",
+            messages=[{"role": "user", "content": ""}],
+            image_base64="aW1hZ2U=",
         )
         assert req.messages[0].content == ""
         assert req.image_base64 == "aW1hZ2U="
 
     def test_tool_choice_string_auto(self):
-        assert self._make(tool_choice = "auto").tool_choice == "auto"
+        assert self._make(tool_choice="auto").tool_choice == "auto"
 
     def test_tool_choice_string_required(self):
-        assert self._make(tool_choice = "required").tool_choice == "required"
+        assert self._make(tool_choice="required").tool_choice == "required"
 
     def test_tool_choice_string_none(self):
-        assert self._make(tool_choice = "none").tool_choice == "none"
+        assert self._make(tool_choice="none").tool_choice == "none"
 
     def test_tool_choice_named_function(self):
         tc = {"type": "function", "function": {"name": "get_weather"}}
-        assert self._make(tool_choice = tc).tool_choice == tc
+        assert self._make(tool_choice=tc).tool_choice == tc
 
     def test_stop_string(self):
-        assert self._make(stop = "\nUser:").stop == "\nUser:"
+        assert self._make(stop="\nUser:").stop == "\nUser:"
 
     def test_stop_list(self):
-        assert self._make(stop = ["\nUser:", "\nAssistant:"]).stop == [
+        assert self._make(stop=["\nUser:", "\nAssistant:"]).stop == [
             "\nUser:",
             "\nAssistant:",
         ]
@@ -268,9 +268,9 @@ class TestChatCompletionRequestToolFields:
         # explicitly declared but must survive Pydantic parsing now that
         # extra="allow" is set.
         req = self._make(
-            frequency_penalty = 0.5,
-            seed = 42,
-            response_format = {"type": "json_object"},
+            frequency_penalty=0.5,
+            seed=42,
+            response_format={"type": "json_object"},
         )
         # Extras land in model_extra
         assert req.model_extra is not None
@@ -280,9 +280,9 @@ class TestChatCompletionRequestToolFields:
 
     def test_unsloth_extensions_still_work(self):
         req = self._make(
-            enable_tools = True,
-            enabled_tools = ["web_search", "python"],
-            session_id = "abc",
+            enable_tools=True,
+            enabled_tools=["web_search", "python"],
+            session_id="abc",
         )
         assert req.enable_tools is True
         assert req.enabled_tools == ["web_search", "python"]
@@ -298,7 +298,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
-            messages = [
+            messages=[
                 {"role": "user", "content": "What's the weather in Paris?"},
                 {
                     "role": "assistant",
@@ -320,7 +320,7 @@ class TestChatCompletionRequestToolFields:
                     "content": '{"temperature": 14, "unit": "celsius"}',
                 },
             ],
-            tools = [
+            tools=[
                 {
                     "type": "function",
                     "function": {
@@ -382,18 +382,18 @@ class TestAnthropicToolChoiceToOpenAI:
 class TestBuildPassthroughPayloadToolChoice:
     def _args(self):
         return dict(
-            openai_messages = [{"role": "user", "content": "Hi"}],
-            openai_tools = [
+            openai_messages=[{"role": "user", "content": "Hi"}],
+            openai_tools=[
                 {
                     "type": "function",
                     "function": {"name": "f", "parameters": {"type": "object"}},
                 }
             ],
-            temperature = 0.6,
-            top_p = 0.95,
-            top_k = 20,
-            max_tokens = 128,
-            stream = False,
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            max_tokens=128,
+            stream=False,
         )
 
     def test_default_tool_choice_is_auto(self):
@@ -401,16 +401,16 @@ class TestBuildPassthroughPayloadToolChoice:
         assert body["tool_choice"] == "auto"
 
     def test_override_tool_choice_required(self):
-        body = _build_passthrough_payload(**self._args(), tool_choice = "required")
+        body = _build_passthrough_payload(**self._args(), tool_choice="required")
         assert body["tool_choice"] == "required"
 
     def test_override_tool_choice_none(self):
-        body = _build_passthrough_payload(**self._args(), tool_choice = "none")
+        body = _build_passthrough_payload(**self._args(), tool_choice="none")
         assert body["tool_choice"] == "none"
 
     def test_override_tool_choice_named_function(self):
         tc = {"type": "function", "function": {"name": "f"}}
-        body = _build_passthrough_payload(**self._args(), tool_choice = tc)
+        body = _build_passthrough_payload(**self._args(), tool_choice=tc)
         assert body["tool_choice"] == tc
 
     def test_stream_adds_include_usage(self):
@@ -420,7 +420,7 @@ class TestBuildPassthroughPayloadToolChoice:
         assert body.get("stream_options") == {"include_usage": True}
 
     def test_repetition_penalty_renamed(self):
-        body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
+        body = _build_passthrough_payload(**self._args(), repetition_penalty=1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
 
@@ -444,19 +444,19 @@ class TestFriendlyErrorHttpx:
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
     def test_connect_error_mapped(self):
-        exc = httpx.ConnectError("All connection attempts failed", request = self._req())
+        exc = httpx.ConnectError("All connection attempts failed", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_read_error_mapped(self):
-        exc = httpx.ReadError("EOF", request = self._req())
+        exc = httpx.ReadError("EOF", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_remote_protocol_error_mapped(self):
-        exc = httpx.RemoteProtocolError("peer closed", request = self._req())
+        exc = httpx.RemoteProtocolError("peer closed", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_read_timeout_mapped(self):
-        exc = httpx.ReadTimeout("timed out", request = self._req())
+        exc = httpx.ReadTimeout("timed out", request=self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
