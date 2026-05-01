@@ -1339,7 +1339,7 @@ class LlamaCppBackend:
             # Prefer F16 variant
             target = None
             for f in mmproj_files:
-                if "f16" in f.lower():
+                if f.lower().endswith("-f16.gguf"):
                     target = f
                     break
             if target is None:
@@ -1618,8 +1618,10 @@ class LlamaCppBackend:
                 # Model fits on selected GPU(s) -- offload all layers
                 cmd.extend(["-ngl", "-1"])
 
-            if n_threads is not None:
-                cmd.extend(["--threads", str(n_threads)])
+            # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
+            # do not inherit llama-server's internal default, which has historically
+            # varied (hardware concurrency incl. hyperthreads on some builds).
+            cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
 
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])
@@ -1698,6 +1700,18 @@ class LlamaCppBackend:
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
+
+                self._chat_template = chat_template_override
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF chat template override",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
 
                 self._chat_template_file = tempfile.NamedTemporaryFile(
                     mode = "w",

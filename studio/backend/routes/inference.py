@@ -985,6 +985,7 @@ async def get_status(
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
+                chat_template = llama_backend.chat_template,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
@@ -998,12 +999,19 @@ async def get_status(
         is_audio = False
         audio_type = None
         has_audio_input = False
+        model_info = {}
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+        chat_template_info = model_info.get("chat_template_info", {})
+        chat_template = (
+            chat_template_info.get("template")
+            if isinstance(chat_template_info, dict)
+            else None
+        )
 
         # Non-GGUF: only gpt-oss Harmony is wired through the transformers
         # generation path. Other template-level reasoning / tool kwargs
@@ -1041,6 +1049,7 @@ async def get_status(
             reasoning_always_on = False,
             supports_preserve_thinking = False,
             supports_tools = False,
+            chat_template = chat_template,
         )
 
     except Exception as e:
@@ -1286,6 +1295,20 @@ async def openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
+    # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``,
+    # which the SDK spreads into the request body at the top level. Studio's
+    # ChatCompletionRequest has ``extra="allow"`` so pydantic stashes them in
+    # ``model_extra``, but the typed ``payload.enable_thinking`` path is what
+    # downstream generators actually consume. Lift ``enable_thinking`` from
+    # the extra-body chat_template_kwargs onto the typed field so clients
+    # that only know the OpenAI shape (data_designer recipe runs, etc.)
+    # can still control the reasoning preamble.
+    _extra = getattr(payload, "model_extra", None)
+    if payload.enable_thinking is None and isinstance(_extra, dict):
+        _tpl_kw = _extra.get("chat_template_kwargs")
+        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
+            payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
+
     # ── Determine which backend is active ─────────────────────
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
@@ -1440,11 +1463,22 @@ async def openai_chat_completions(
     # carry `tool_calls` (content=None) — both of which are valid in
     # multi-turn client-side tool loops.
     _has_tool_messages = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    # Route guided-decoding requests through the verbatim passthrough so
+    # ``response_format`` (JSON schema) actually reaches llama-server and
+    # the model's GBNF-constrained output comes back unmodified. The
+    # non-passthrough GGUF path below calls ``generate_chat_completion``
+    # which has no response_format kwarg, so the schema gets silently
+    # dropped and data_designer falls back to free-form sampling. Guided
+    # decoding does not require ``supports_tools`` - the grammar machinery
+    # is independent of tool-call parsing.
+    _has_response_format = _extract_response_format(payload) is not None
+    _tools_passthrough = llama_backend.supports_tools and (
+        (payload.tools and len(payload.tools) > 0) or _has_tool_messages
+    )
     if (
         using_gguf
-        and llama_backend.supports_tools
         and not payload.enable_tools
-        and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
+        and (_tools_passthrough or _has_response_format)
     ):
         # Preserve the vision guard that would otherwise run in the
         # non-passthrough path below: text-only tool-capable GGUFs
@@ -3652,6 +3686,8 @@ def _build_passthrough_payload(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    response_format = None,
+    chat_template_kwargs = None,
     backend_ctx = None,
 ):
     body = {
@@ -3680,6 +3716,17 @@ def _build_passthrough_payload(
         body["repeat_penalty"] = repetition_penalty
     if presence_penalty is not None:
         body["presence_penalty"] = presence_penalty
+    if response_format is not None:
+        # llama-server applies a GBNF grammar derived from the JSON schema
+        # when response_format is present. Field is documented flat at the
+        # request root (tools/server/README.md), which is also what the
+        # OpenAI SDK produces by spreading extra_body into the body top.
+        body["response_format"] = response_format
+    if chat_template_kwargs is not None:
+        # Propagate reasoning / template overrides (e.g. enable_thinking)
+        # so llama-server renders the Jinja template in the mode the caller
+        # asked for instead of whatever default the model was loaded with.
+        body["chat_template_kwargs"] = chat_template_kwargs
     return body
 
 
@@ -3990,6 +4037,20 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     return messages
 
 
+def _extract_response_format(payload):
+    """Return the ``response_format`` field on an incoming ChatCompletionRequest
+    (or None). The model is declared with ``extra="allow"`` so pydantic stashes
+    unknown top-level fields in ``model_extra``; OpenAI-SDK clients spread
+    ``extra_body`` into the request body top level, which is where guided-
+    decoding recipes park their JSON-schema response_format.
+    """
+    extra = getattr(payload, "model_extra", None)
+    if not isinstance(extra, dict):
+        return None
+    rf = extra.get("response_format")
+    return rf if isinstance(rf, dict) else None
+
+
 def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
@@ -3999,6 +4060,12 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     """
     messages = _openai_messages_for_passthrough(payload)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
+    # When the caller asked for a specific reasoning mode, forward it to
+    # llama-server via chat_template_kwargs so the Jinja template renders
+    # with (or without) the reasoning preamble.
+    tpl_kwargs = None
+    if payload.enable_thinking is not None:
+        tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
     return _build_passthrough_payload(
         messages,
         payload.tools,
@@ -4012,6 +4079,8 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
         tool_choice = tool_choice,
+        response_format = _extract_response_format(payload),
+        chat_template_kwargs = tpl_kwargs,
         backend_ctx = backend_ctx,
     )
 
@@ -4213,6 +4282,41 @@ async def _openai_passthrough_non_streaming(
             status_code = resp.status_code,
             detail = f"llama-server error: {resp.text[:500]}",
         )
+
+    # Guided-decoding fence wrap. llama-server returns raw JSON that matches
+    # the schema (no surrounding markdown) because the GBNF grammar only
+    # emits the JSON object itself. data_designer's llm-structured parser
+    # looks for a ```json ... ``` markdown fence and discards unfenced
+    # output, which collapses a 100%-valid guided-decoding run to 0/N.
+    # Wrap each choice's content in the expected fence when the caller
+    # asked for guided decoding, leaving already-fenced content alone.
+    if _extract_response_format(payload) is not None:
+        try:
+            data = resp.json()
+            changed = False
+            for choice in data.get("choices", []):
+                if not isinstance(choice, dict):
+                    continue
+                msg = choice.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, str):
+                    continue
+                stripped = content.strip()
+                if not stripped or stripped.startswith("```"):
+                    continue
+                msg["content"] = f"```json\n{stripped}\n```"
+                changed = True
+            if changed:
+                return JSONResponse(content = data)
+        except Exception as exc:
+            # Wrap is best-effort; fall through to the verbatim body if
+            # the response is not JSON-shaped or the structure is unusual.
+            logger.warning(
+                "response_format fence wrap skipped: %s",
+                exc,
+            )
 
     # Pass the upstream body through as raw bytes — skips a redundant
     # parse+re-serialize round-trip and keeps the response truly
