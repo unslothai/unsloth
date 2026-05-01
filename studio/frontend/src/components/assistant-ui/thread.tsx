@@ -30,7 +30,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { DEFAULT_THREAD_KEY, sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
@@ -290,9 +290,9 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const threadId = useAuiState(({ thread }) => thread.id);
   const thisThreadInStore = useChatRuntimeStore((s) =>
-    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
+    Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
   );
   const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
   const anotherThreadRunning = !thisThreadIsRunning && !thisThreadInStore && anyRunning;
