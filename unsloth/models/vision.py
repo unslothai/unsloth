@@ -1584,7 +1584,7 @@ class FastBaseModel:
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
-            def _gc_enable_reentrant(gradient_checkpointing_kwargs=None, **kwargs):
+            def _gc_enable_reentrant(gradient_checkpointing_kwargs = None, **kwargs):
                 # Accept gradient_checkpointing_kwargs positionally or by keyword so
                 # callers like trl.models.utils.disable_gradient_checkpointing, which
                 # pass it positionally, do not raise TypeError.
@@ -1595,7 +1595,7 @@ class FastBaseModel:
                 ) or {}
                 gc_kwargs["use_reentrant"] = True
                 return _original_gc_enable(
-                    gradient_checkpointing_kwargs=gc_kwargs, **kwargs
+                    gradient_checkpointing_kwargs = gc_kwargs, **kwargs
                 )
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
