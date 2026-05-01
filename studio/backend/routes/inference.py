@@ -990,7 +990,6 @@ async def get_status(
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
-                chat_template = llama_backend.chat_template,
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
             )
