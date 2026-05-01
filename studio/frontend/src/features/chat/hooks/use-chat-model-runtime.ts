@@ -443,6 +443,9 @@ export function useChatModelRuntime() {
             if (validation.requires_trust_remote_code && !trustRemoteCode) {
               throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
             }
+            const loadNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
+              : undefined;
 
             if (currentCheckpoint) {
               await unloadModel({ model_path: currentCheckpoint });
@@ -468,9 +471,6 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: activePresetSource,
             });
-            const loadNativePathLease = nativePathToken
-              ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
-              : undefined;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
