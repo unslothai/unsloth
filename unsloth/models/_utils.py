@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.4.6"
+__version__ = "2026.4.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -415,13 +415,31 @@ def resolve_model_class(auto_model, config):
     try:
         result = mapping[config.__class__]
     except Exception:
-        for config_class, model_class in mapping.items():
-            if isinstance(config, config_class):
-                result = model_class
-                break
-        else:
+        result = None
+        for key in list(getattr(mapping, "_model_mapping", {})):
+            try:
+                config_class = mapping._load_attr_from_module(
+                    key, mapping._config_mapping[key]
+                )
+                if isinstance(config, config_class):
+                    result = mapping._load_attr_from_module(
+                        key, mapping._model_mapping[key]
+                    )
+                    break
+            except Exception:
+                continue
+        if result is None:
+            for extra_cls, extra_model in getattr(
+                mapping, "_extra_content", {}
+            ).items():
+                try:
+                    if isinstance(config, extra_cls):
+                        result = extra_model
+                        break
+                except Exception:
+                    continue
+        if result is None:
             return None
-
     return result[0] if isinstance(result, (list, tuple)) else result
 
 

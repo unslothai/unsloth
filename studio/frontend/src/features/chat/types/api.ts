@@ -92,7 +92,9 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
+  reasoning_style?: "enable_thinking" | "reasoning_effort";
   reasoning_always_on?: boolean;
+  supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
@@ -123,7 +125,9 @@ export interface InferenceStatusResponse {
   };
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
+  reasoning_style?: "enable_thinking" | "reasoning_effort";
   reasoning_always_on?: boolean;
+  supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   context_length?: number | null;
   max_context_length?: number | null;
@@ -167,12 +171,15 @@ export interface OpenAIChatCompletionsRequest {
   audio_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
+  reasoning_effort?: "low" | "medium" | "high" | null;
+  preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   auto_heal_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  cancel_id?: string;
 }
 
 export interface OpenAIChatDelta {

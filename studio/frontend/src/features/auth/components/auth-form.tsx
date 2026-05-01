@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -49,7 +50,7 @@ async function loginWithPassword(
   username: string,
   password: string,
 ): Promise<TokenResponse> {
-  const response = await fetch("/api/auth/login", {
+  const response = await fetch(apiUrl("/api/auth/login"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -96,7 +97,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // (e.g. tokens from a previous install attempt).  The server's
       // /api/auth/status is the source of truth for requires_password_change.
       try {
-        const response = await fetch("/api/auth/status");
+        const response = await fetch(apiUrl("/api/auth/status"));
         if (!response.ok) throw new Error("Failed to load auth status.");
         const result = (await response.json()) as AuthStatusResponse;
         if (!canceled) {
@@ -147,14 +148,15 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     };
   }, [navigate]);
 
-  // Seed password from bootstrap credentials injected into HTML
+  // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {
-    const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
-    if (bootstrap) {
-      if (!isLoginMode && !password) {
+    function loadBootstrap() {
+      const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
+      if (bootstrap && !isLoginMode && !password) {
         setPassword(bootstrap.password);
       }
     }
+    loadBootstrap();
   }, []);
 
   const blockedByState =
@@ -241,7 +243,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           accessToken = bootstrapToken.access_token;
         }
 
-        const response = await fetch("/api/auth/change-password", {
+        const response = await fetch(apiUrl("/api/auth/change-password"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

@@ -6,6 +6,10 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
 
 
@@ -61,6 +65,7 @@ def get_physical_gpu_count() -> Optional[int]:
             capture_output = True,
             text = True,
             timeout = 5,
+            **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
             return len(result.stdout.strip().splitlines())
@@ -85,6 +90,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
             capture_output = True,
             text = True,
             timeout = 5,
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_primary_gpu_utilization: %s", e)
@@ -135,6 +141,7 @@ def get_visible_gpu_utilization(
             capture_output = True,
             text = True,
             timeout = 5,
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)
@@ -220,6 +227,7 @@ def get_backend_visible_gpu_info(
             capture_output = True,
             text = True,
             timeout = 10,
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_backend_visible_gpu_info: %s", e)

@@ -36,6 +36,7 @@ substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth @ git+https://github.com/Manan17/unsloth.git@main"
 UNSLOTH_ZOO_PACKAGE="unsloth-zoo @ git+https://github.com/Manan17/unsloth-zoo.git@main"
+TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _VERBOSE=false
@@ -55,6 +56,7 @@ for arg in "$@"; do
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
+        --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
@@ -143,9 +145,137 @@ if [ "$_next_is_python" = true ]; then
     exit 1
 fi
 
+# Validate --package to prevent injection into shell/Python commands.
+# Must start with a letter/digit (rejects leading dashes that uv would parse as flags).
+case "$PACKAGE_NAME" in
+    [!a-zA-Z0-9]*)
+        echo "❌ ERROR: --package name must start with a letter or digit." >&2
+        exit 1 ;;
+    *[!a-zA-Z0-9._-]*)
+        echo "❌ ERROR: --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" >&2
+        exit 1 ;;
+esac
+
+# ── Tauri structured output ──
+tauri_log() {
+    if [ "$TAURI_MODE" = true ]; then
+        echo "[TAURI:$1] $2"
+    fi
+}
+
+tauri_diag_marker() {
+    _diag_gpu_branch="${1:-unknown}"
+    _diag_torch_index_family="${2:-none}"
+    tauri_log "DIAG" "diag_schema=1 platform=${OS:-unknown} arch=${_ARCH:-unknown} python_version=${PYTHON_VERSION:-unknown} skip_torch=${SKIP_TORCH:-false} mac_intel=${MAC_INTEL:-false} gpu_branch=${_diag_gpu_branch} torch_index_family=${_diag_torch_index_family}"
+}
+
+_tauri_torch_index_family() {
+    if [ "${SKIP_TORCH:-false}" = true ]; then
+        echo "none"
+        return
+    fi
+    _diag_url="${1:-}"
+    case "$_diag_url" in
+        */cu118) echo "cu118" ;;
+        */cu124) echo "cu124" ;;
+        */cu126) echo "cu126" ;;
+        */cu128) echo "cu128" ;;
+        */cu130) echo "cu130" ;;
+        */cpu) echo "cpu" ;;
+        */rocm[0-9]*.[0-9]*)
+            _diag_family=${_diag_url##*/}
+            case "$_diag_family" in
+                rocm[0-9]*.[0-9]*) echo "$_diag_family" ;;
+                *) echo "auto" ;;
+            esac ;;
+        "") echo "none" ;;
+        *) echo "auto" ;;
+    esac
+}
+
+_tauri_gpu_branch() {
+    _diag_family="${1:-unknown}"
+    _diag_radeon="${2:-false}"
+    if [ "${SKIP_TORCH:-false}" = true ]; then
+        echo "no_torch"
+        return
+    fi
+    if [ "${OS:-}" = "macos" ]; then
+        echo "mac"
+        return
+    fi
+    case "$_diag_family" in
+        cu*) echo "cuda" ;;
+        rocm*)
+            if [ "$_diag_radeon" = true ]; then
+                echo "rocm_radeon"
+            else
+                echo "rocm"
+            fi ;;
+        radeon) echo "rocm_radeon" ;;
+        cpu) echo "cpu" ;;
+        none) echo "no_torch" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
 PYTHON_VERSION=""  # resolved after platform detection
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+_VENV_ROLLBACK_DIR=""
+_VENV_ROLLBACK_TARGET="$VENV_DIR"
+_VENV_ROLLBACK_ACTIVE=false
+
+_start_studio_venv_replacement() {
+    _existing_dir="$1"
+    _stamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo "time")
+    _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$"
+    _suffix=0
+    while [ -e "$_candidate" ]; do
+        _suffix=$((_suffix + 1))
+        _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$.$_suffix"
+    done
+    mv "$_existing_dir" "$_candidate"
+    _VENV_ROLLBACK_DIR="$_candidate"
+    _VENV_ROLLBACK_TARGET="$_existing_dir"
+    _VENV_ROLLBACK_ACTIVE=true
+    substep "previous environment preserved for rollback"
+}
+
+_restore_studio_venv_replacement() {
+    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
+    [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ] || {
+        _VENV_ROLLBACK_ACTIVE=false
+        return 0
+    }
+    substep "restoring previous environment after failed install..." "$C_WARN"
+    rm -rf "$_VENV_ROLLBACK_TARGET"
+    if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
+        substep "restored previous environment"
+        _VENV_ROLLBACK_ACTIVE=false
+        _VENV_ROLLBACK_DIR=""
+    else
+        echo "⚠️  Could not restore previous environment from $_VENV_ROLLBACK_DIR to $_VENV_ROLLBACK_TARGET" >&2
+    fi
+}
+
+_commit_studio_venv_replacement() {
+    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
+    if [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ]; then
+        rm -rf "$_VENV_ROLLBACK_DIR" || true
+    fi
+    _VENV_ROLLBACK_ACTIVE=false
+    _VENV_ROLLBACK_DIR=""
+}
+
+_on_install_exit() {
+    _status=$?
+    if [ "$_status" -ne 0 ]; then
+        _restore_studio_venv_replacement
+    fi
+    exit "$_status"
+}
+trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -191,6 +321,12 @@ _smart_apt_install() {
 
     if [ -z "$_STILL_MISSING" ]; then
         return 0
+    fi
+
+    # In Tauri mode, report needed packages and exit — Rust handles elevation
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "NEED_SUDO" "$_STILL_MISSING"
+        exit 2
     fi
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
@@ -753,6 +889,7 @@ printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
 # ── Detect platform ──
+tauri_log "STEP" "Detecting platform"
 OS="linux"
 if [ "$(uname)" = "Darwin" ]; then
     OS="macos"
@@ -802,9 +939,18 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+_TAURI_INITIAL_GPU_BRANCH="unknown"
+if [ "$SKIP_TORCH" = true ]; then
+    _TAURI_INITIAL_GPU_BRANCH="no_torch"
+elif [ "$OS" = "macos" ]; then
+    _TAURI_INITIAL_GPU_BRANCH="mac"
+fi
+tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
+
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+tauri_log "STEP" "Checking system dependencies"
 MISSING=""
 
 command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
@@ -856,9 +1002,15 @@ if [ -n "$MISSING" ]; then
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
-                echo "    apt-get is not available. Please install with your package manager:"
+                echo "    Automatic system package installation is supported on apt-based"
+                echo "    Linux distributions (Ubuntu/Debian) only. Please install the"
+                echo "    missing dependencies with your package manager, then re-run setup:"
                 echo "    $MISSING"
-                echo "    Then re-run Unsloth Studio setup."
+                echo ""
+                echo "    Examples:"
+                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel"
+                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl"
+                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
                 exit 1
             fi
             ;;
@@ -869,6 +1021,7 @@ else
 fi
 
 # ── Install uv ──
+tauri_log "STEP" "Installing uv package manager"
 UV_MIN_VERSION="0.7.14"
 
 version_ge() {
@@ -923,17 +1076,25 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
 fi
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
+tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
 
 _MIGRATED=false
 
 if [ -x "$VENV_DIR/bin/python" ]; then
-    # New layout already exists — nuke for fresh install
-    rm -rf "$VENV_DIR"
+    # New layout already exists — replace only after preserving rollback copy.
+    substep "preserving existing environment for rollback..."
+    _start_studio_venv_replacement "$VENV_DIR"
 elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
-    # Old layout exists — validate before migrating
+    # Old layout exists — validate before migrating.
+    # In no-torch mode, a missing torch package is expected; validate Python only.
     substep "found legacy Studio environment, validating..."
-    if "$STUDIO_HOME/.venv/bin/python" -c "
+    _legacy_ok=false
+    if [ "$SKIP_TORCH" = true ]; then
+        if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
+            _legacy_ok=true
+        fi
+    elif "$STUDIO_HOME/.venv/bin/python" -c "
 import torch
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 A = torch.ones((10, 10), device=device)
@@ -943,13 +1104,17 @@ D = A + B
 E = D @ C
 torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
 " >/dev/null 2>&1; then
+        _legacy_ok=true
+    fi
+    if [ "$_legacy_ok" = true ]; then
         echo "✅ Legacy environment is healthy — migrating..."
         mv "$STUDIO_HOME/.venv" "$VENV_DIR"
         echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
         _MIGRATED=true
     else
         echo "⚠️  Legacy environment failed validation — creating fresh environment"
-        rm -rf "$STUDIO_HOME/.venv"
+        _invalid_venv="$STUDIO_HOME/.venv.invalid.$(date +%Y%m%d%H%M%S 2>/dev/null || echo time).$$"
+        mv "$STUDIO_HOME/.venv" "$_invalid_venv" 2>/dev/null || true
     fi
 fi
 
@@ -1279,6 +1444,12 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+_TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
+if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
+    _TAURI_TORCH_INDEX_FAMILY="radeon"
+fi
+_TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
+tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
 # ── Print CPU-only hint when no GPU detected ──
 case "$TORCH_INDEX_URL" in
@@ -1305,6 +1476,7 @@ case "$TORCH_INDEX_URL" in
 esac
 
 # ── Install unsloth directly into the venv (no activation needed) ──
+tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
@@ -1317,7 +1489,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.5" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1325,7 +1497,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.4.5" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -1482,13 +1654,14 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         esac
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.4.5" unsloth-zoo
+            "unsloth>=2026.4.8" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1499,12 +1672,12 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.4.5" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$PACKAGE_NAME"
         run_install_cmd "install unsloth-zoo (branch)" uv pip install --python "$_VENV_PY" "$UNSLOTH_ZOO_PACKAGE"
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
@@ -1525,13 +1698,14 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+    tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.5" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.4.8" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
         run_install_cmd "install unsloth-zoo (branch)" uv pip install --python "$_VENV_PY" "$UNSLOTH_ZOO_PACKAGE"
     fi
 fi
@@ -1543,6 +1717,7 @@ if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
 fi
 
 # ── Run studio setup ──
+tauri_log "STEP" "Running Studio setup"
 # When --local, use the repo's own setup.sh directly.
 # Otherwise, find it inside the installed package.
 SETUP_SH=""
@@ -1563,6 +1738,7 @@ if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
 fi
 
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    tauri_log "ERROR" "Could not find studio/setup.sh in the installed package"
     echo "❌ ERROR: Could not find studio/setup.sh in the installed package."
     exit 1
 fi
@@ -1580,24 +1756,32 @@ if ! command -v bash >/dev/null 2>&1; then
 fi
 
 step "setup" "running unsloth studio update..."
-# install.sh already installs base packages (unsloth + unsloth-zoo) and
-# no-torch-runtime.txt above, so tell install_python_stack.py to skip
-# the base step to avoid redundant reinstallation.
 _SKIP_BASE=1
-# Run setup.sh outside set -e so that a llama.cpp build failure (exit 1)
-# does not skip PATH setup, shortcuts, and launch below.  We capture the
-# exit code and propagate it after post-install steps finish.
 _SETUP_EXIT=0
+# Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+_SKIP_FRONTEND=0
+if [ "$TAURI_MODE" = true ]; then
+    _SKIP_FRONTEND=1
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
+    SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
+    # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
+    # value inherited from the parent shell (e.g. a previous --local run in
+    # the same session) does not silently flip a normal install onto the
+    # local-dev path in setup.sh and install_python_stack.py. Mirrors the
+    # reset already done in install.ps1 for PowerShell.
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
+    SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    STUDIO_LOCAL_INSTALL=0 \
+    STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
@@ -1631,21 +1815,26 @@ case ":$PATH:" in
         ;;
 esac
 
-create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
+# Non-Tauri installs keep shortcuts even if setup reports failure.
+if [ "$TAURI_MODE" != true ]; then
+    create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
+fi
 
 # If setup.sh failed, report and exit now.
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
-    substep "Check the output above for details, then re-run:"
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        substep "  unsloth studio update --local"
-    else
-        substep "  unsloth studio update"
-    fi
     echo ""
     exit "$_SETUP_EXIT"
+fi
+
+_commit_studio_venv_replacement
+
+# ── Tauri mode: done, skip shortcuts and auto-launch ──
+if [ "$TAURI_MODE" = true ]; then
+    tauri_log "DONE" ""
+    exit 0
 fi
 
 echo ""
