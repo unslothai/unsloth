@@ -15,6 +15,7 @@ import {
   unloadModel,
   validateModel,
 } from "../api/chat-api";
+import { DEFAULT_THREAD_KEY } from "../api/chat-adapter";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -154,7 +155,7 @@ export function useChatModelRuntime() {
     const activeId = s.activeThreadId;
     const thisThreadRunning = activeId
       ? Boolean(s.runningByThreadId[activeId])
-      : Boolean(s.runningByThreadId["__default"]);
+      : Boolean(s.runningByThreadId[DEFAULT_THREAD_KEY]);
     return !thisThreadRunning;
   });
   const setModels = useChatRuntimeStore((state) => state.setModels);
@@ -223,7 +224,6 @@ export function useChatModelRuntime() {
         id: ANOTHER_MODEL_TOAST_ID,
         description: "You can send a message once it finishes.",
         duration: Infinity,
-        closeButton: false,
       });
     } else {
       toast.dismiss(ANOTHER_MODEL_TOAST_ID);
