@@ -655,7 +655,7 @@ export function AppSidebar() {
                       className="!size-8"
                     />
                   </div>
-                  <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
+                  <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
                     <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
                   </div>
