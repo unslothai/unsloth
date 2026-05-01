@@ -313,7 +313,7 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
   // so that the eval hidden host's generation (which uses its own ChatRuntimeProvider)
   // is recognised as "this thread running" when the visible thread is the same DB thread.
   const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const threadId = useAuiState(({ threadListItem }) => threadListItem.id);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const thisThreadInStore = useChatRuntimeStore((s) =>
     Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
   );
