@@ -86,9 +86,7 @@ def filter_sensitive_data(logger, method_name, event_dict):
                 value = redact_native_paths(value)
             except Exception:
                 pass
-            value = _NATIVE_PATH_LEASE_RE.sub(
-                r"\1<redacted native path lease>", value
-            )
+            value = _NATIVE_PATH_LEASE_RE.sub(r"\1<redacted native path lease>", value)
         if (
             isinstance(value, str)
             and len(value) > 100

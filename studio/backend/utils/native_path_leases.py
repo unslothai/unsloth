@@ -54,7 +54,9 @@ def native_path_leases_supported() -> bool:
     return bool(os.environ.get(LEASE_SECRET_ENV))
 
 
-def child_env_without_native_path_secret(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def child_env_without_native_path_secret(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Return a child-process env with the native path lease secret removed."""
 
     cleaned = dict(os.environ if env is None else env)
@@ -101,8 +103,12 @@ def verify_native_path_lease(
     path = Path(str(payload["canonical_path"]))
     _reject_network_or_device_path(path)
     resolved = path.resolve(strict = True)
-    if os.path.normcase(str(resolved)) != os.path.normcase(str(payload["canonical_path"])):
-        raise NativePathLeaseError("Native path grant no longer resolves to the selected path.")
+    if os.path.normcase(str(resolved)) != os.path.normcase(
+        str(payload["canonical_path"])
+    ):
+        raise NativePathLeaseError(
+            "Native path grant no longer resolves to the selected path."
+        )
 
     grant = NativePathGrant(
         operation = str(payload["operation"]),
@@ -157,7 +163,9 @@ def redact_native_paths(value: str) -> str:
 def _decode_secret() -> bytes:
     encoded = os.environ.get(LEASE_SECRET_ENV)
     if not encoded:
-        raise NativePathLeaseError("Native path grants require the managed desktop backend.")
+        raise NativePathLeaseError(
+            "Native path grants require the managed desktop backend."
+        )
     try:
         return _b64decode(encoded)
     except Exception as exc:
@@ -198,7 +206,9 @@ def _validate_payload(
     )
     missing = [key for key in required if key not in payload]
     if missing:
-        raise NativePathLeaseError("Native path grant payload is missing required fields.")
+        raise NativePathLeaseError(
+            "Native path grant payload is missing required fields."
+        )
     if int(payload["version"]) != 1:
         raise NativePathLeaseError("Native path grant version is unsupported.")
     if payload["operation"] != operation:
@@ -262,18 +272,22 @@ def _reject_network_or_device_path(path: Path) -> None:
         normalized = text.replace("/", "\\").lower()
         if normalized.startswith("\\\\?\\"):
             rest = normalized[4:]
-            is_local_drive = (
-                len(rest) >= 3 and rest[0].isalpha() and rest[1:3] == ":\\"
-            )
+            is_local_drive = len(rest) >= 3 and rest[0].isalpha() and rest[1:3] == ":\\"
             if not is_local_drive:
-                raise NativePathLeaseError("Network paths are not supported for native grants.")
+                raise NativePathLeaseError(
+                    "Network paths are not supported for native grants."
+                )
         elif normalized.startswith("\\\\"):
-            raise NativePathLeaseError("Network paths are not supported for native grants.")
+            raise NativePathLeaseError(
+                "Network paths are not supported for native grants."
+            )
     if os.name != "nt":
         for root in ("/dev", "/proc", "/sys"):
             try:
                 path.relative_to(root)
-                raise NativePathLeaseError("Device and virtual filesystem paths are not supported.")
+                raise NativePathLeaseError(
+                    "Device and virtual filesystem paths are not supported."
+                )
             except ValueError:
                 pass
     if "\x00" in text:

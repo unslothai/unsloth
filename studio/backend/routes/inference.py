@@ -363,7 +363,9 @@ def _resolve_model_identifier_for_request(
         )
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    display_label = grant.display_label or Path(request.model_path).name or "Native model"
+    display_label = (
+        grant.display_label or Path(request.model_path).name or "Native model"
+    )
     return str(grant.canonical_path), display_label, True
 
 
@@ -393,8 +395,8 @@ async def load_model(
     native_grant_backed = False
     model_log_label = request.model_path
     try:
-        model_identifier, model_log_label, native_grant_backed = _resolve_model_identifier_for_request(
-            request, operation = "load-model"
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "load-model")
         )
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
@@ -425,8 +427,12 @@ async def load_model(
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
                 return LoadResponse(
                     status = "already_loaded",
-                    model = model_log_label if native_grant_backed else llama_backend.model_identifier,
-                    display_name = model_log_label if native_grant_backed else llama_backend.model_identifier,
+                    model = model_log_label
+                    if native_grant_backed
+                    else llama_backend.model_identifier,
+                    display_name = model_log_label
+                    if native_grant_backed
+                    else llama_backend.model_identifier,
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
@@ -484,8 +490,12 @@ async def load_model(
                         pass
                 return LoadResponse(
                     status = "already_loaded",
-                    model = model_log_label if native_grant_backed else backend.active_model_name,
-                    display_name = model_log_label if native_grant_backed else backend.active_model_name,
+                    model = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
+                    display_name = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
                     is_vision = _model_info.get("is_vision", False),
                     is_lora = _model_info.get("is_lora", False),
                     is_gguf = False,
@@ -581,7 +591,9 @@ async def load_model(
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
                 )
 
-            logger.info(f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}")
+            logger.info(
+                f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
+            )
 
             # Detect TTS audio by probing the loaded model's vocabulary
             from utils.models import is_audio_input_type
@@ -599,7 +611,9 @@ async def load_model(
             return LoadResponse(
                 status = "loaded",
                 model = model_log_label if native_grant_backed else config.identifier,
-                display_name = model_log_label if native_grant_backed else config.display_name,
+                display_name = model_log_label
+                if native_grant_backed
+                else config.display_name,
                 is_vision = config.is_vision,
                 is_lora = False,
                 is_gguf = True,
@@ -726,7 +740,9 @@ async def load_model(
                 detail = f"Failed to load model: {model_log_label if native_grant_backed else config.display_name}",
             )
 
-        logger.info(f"Loaded model: {model_log_label if native_grant_backed else config.identifier}")
+        logger.info(
+            f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
+        )
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
@@ -757,7 +773,9 @@ async def load_model(
         return LoadResponse(
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
-            display_name = model_log_label if native_grant_backed else config.display_name,
+            display_name = model_log_label
+            if native_grant_backed
+            else config.display_name,
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
@@ -821,8 +839,8 @@ async def validate_model(
     native_grant_backed = False
     model_log_label = request.model_path
     try:
-        model_identifier, model_log_label, native_grant_backed = _resolve_model_identifier_for_request(
-            request, operation = "validate-model"
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
         config = ModelConfig.from_identifier(
             model_id = model_identifier,
@@ -840,7 +858,9 @@ async def validate_model(
             valid = True,
             message = "Model identifier is valid.",
             identifier = model_log_label if native_grant_backed else config.identifier,
-            display_name = model_log_label if native_grant_backed else getattr(config, "display_name", config.identifier),
+            display_name = model_log_label
+            if native_grant_backed
+            else getattr(config, "display_name", config.identifier),
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
@@ -887,7 +907,9 @@ async def unload_model(
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
             llama_backend.model_identifier == request.model_path
-            or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
+            or is_registered_native_path_label(
+                llama_backend.model_identifier, request.model_path
+            )
             or not llama_backend.is_loaded
         ):
             llama_backend.unload_model()
