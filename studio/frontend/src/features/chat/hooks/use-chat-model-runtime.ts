@@ -18,14 +18,15 @@ import {
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
+  mergeBackendRecommendedInference,
+  resolveLoadMaxSeqLength,
+} from "../presets/preset-policy";
+import {
   isMultimodalResponse,
-  type InferenceStatusResponse,
-  type LoadModelResponse,
 } from "../types/api";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
-  InferenceParams,
 } from "../types/runtime";
 
 type SelectedModelInput = {
@@ -123,44 +124,14 @@ function toLoraSummary(lora: {
   };
 }
 
-function toFiniteNumber(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return undefined;
-  }
-  return value;
-}
-
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
 }
 
-function mergeRecommendedInference(
-  current: InferenceParams,
-  response: LoadModelResponse | InferenceStatusResponse,
-  modelId: string,
-): InferenceParams {
-  const inference = response.inference;
-  // GGUF: use actual context length from GGUF metadata, fallback to 131072
-  // Non-GGUF: 4096
-  const defaultMaxTokens = response.is_gguf
-    ? (response.context_length ?? 131072)
-    : 4096;
-  return {
-    ...current,
-    checkpoint: modelId,
-    maxTokens: defaultMaxTokens,
-    temperature:
-      toFiniteNumber(inference?.temperature) ?? current.temperature,
-    topP: toFiniteNumber(inference?.top_p) ?? current.topP,
-    topK: toFiniteNumber(inference?.top_k) ?? current.topK,
-    minP: toFiniteNumber(inference?.min_p) ?? current.minP,
-    presencePenalty:
-      toFiniteNumber(inference?.presence_penalty) ?? current.presencePenalty,
-    trustRemoteCode:
-      typeof inference?.trust_remote_code === "boolean"
-        ? inference.trust_remote_code
-        : current.trustRemoteCode,
-  };
+function normalizeSpeculativeType(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  if (v === "default" || v === "off") return v;
+  return "default";
 }
 
 export function useChatModelRuntime() {
@@ -242,29 +213,13 @@ export function useChatModelRuntime() {
         // Apply inference defaults on reconnect (page refresh with model already loaded)
         if (statusRes.inference) {
           const currentParams = useChatRuntimeStore.getState().params;
-          const reconnectResponse: LoadModelResponse = {
-            status: "already_loaded",
-            model: statusRes.active_model,
-            display_name: statusRes.active_model,
-            is_vision: statusRes.is_vision,
-            is_lora: false,
-            is_gguf: statusRes.is_gguf,
-            is_audio: statusRes.is_audio,
-            audio_type: statusRes.audio_type,
-            has_audio_input: statusRes.has_audio_input,
-            inference: statusRes.inference,
-            context_length: statusRes.context_length,
-            max_context_length: statusRes.max_context_length,
-            native_context_length: statusRes.native_context_length,
-            supports_reasoning: statusRes.supports_reasoning,
-            reasoning_style: statusRes.reasoning_style,
-            reasoning_always_on: statusRes.reasoning_always_on,
-            supports_preserve_thinking: statusRes.supports_preserve_thinking,
-            supports_tools: statusRes.supports_tools,
-            speculative_type: statusRes.speculative_type,
-          };
           setParams(
-            mergeRecommendedInference(currentParams, statusRes, statusRes.active_model),
+            mergeBackendRecommendedInference({
+              current: currentParams,
+              response: statusRes,
+              modelId: statusRes.active_model,
+              presetSource: useChatRuntimeStore.getState().activePresetSource,
+            }),
           );
         }
 
@@ -283,7 +238,9 @@ export function useChatModelRuntime() {
         const ggufNativeContextLength = statusRes.is_gguf
           ? (statusRes.native_context_length ?? null)
           : null;
-        const currentSpecType = statusRes.speculative_type ?? null;
+        const currentSpecType = normalizeSpeculativeType(
+          statusRes.speculative_type,
+        );
         // Refresh runs both on F5 (fresh store needs hydration) AND right
         // after a fresh load (store was already set by the load path). For
         // the user-configurable model params we only hydrate when the shadow
@@ -481,13 +438,25 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
-            // GGUF: use custom context length, or 0 = model's native context
-            // Non-GGUF: use the Max Seq Length slider value
-            const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
-            const effectiveMaxSeqLength = customContextLength != null
-              ? customContextLength
-              : (ggufVariant != null || isDirectGgufFile) ? (ggufContextLength ?? 0) : maxSeqLength;
+            const {
+              chatTemplateOverride,
+              kvCacheDtype,
+              customContextLength,
+              ggufContextLength,
+              speculativeType,
+              activePresetSource,
+              activeGgufVariant,
+            } = useChatRuntimeStore.getState();
+            const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+              modelId,
+              ggufVariant,
+              customContextLength,
+              ggufContextLength,
+              currentCheckpoint,
+              activeGgufVariant,
+              maxSeqLength,
+              presetSource: activePresetSource,
+            });
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: hfToken,
@@ -507,7 +476,12 @@ export function useChatModelRuntime() {
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
-              mergeRecommendedInference(currentParams, loadResponse, modelId),
+              mergeBackendRecommendedInference({
+                current: currentParams,
+                response: loadResponse,
+                modelId,
+                presetSource: useChatRuntimeStore.getState().activePresetSource,
+              }),
             );
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
@@ -521,7 +495,9 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
-            const loadedSpec = loadResponse.speculative_type ?? null;
+            const loadedSpec = normalizeSpeculativeType(
+              loadResponse.speculative_type,
+            );
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -561,14 +537,36 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
             });
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
-            if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
+            if (
+              modelId.toLowerCase().includes("qwen3") &&
+              (loadResponse.supports_reasoning ?? false)
+            ) {
               const store = useChatRuntimeStore.getState();
-              const mid = modelId.toLowerCase();
-              const needsPresencePenalty = mid.includes("qwen3.5") || mid.includes("qwen3.6");
-              const p = reasoningDefault
-                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
-                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
-              store.setParams({ ...store.params, ...p });
+              if (store.activePresetSource === "builtin-default") {
+                const mid = modelId.toLowerCase();
+                const needsPresencePenalty =
+                  mid.includes("qwen3.5") || mid.includes("qwen3.6");
+                const p = reasoningDefault
+                  ? {
+                      temperature: 0.6,
+                      topP: 0.95,
+                      topK: 20,
+                      minP: 0.0,
+                      ...(needsPresencePenalty
+                        ? { presencePenalty: 1.5 }
+                        : {}),
+                    }
+                  : {
+                      temperature: 0.7,
+                      topP: 0.8,
+                      topK: 20,
+                      minP: 0.0,
+                      ...(needsPresencePenalty
+                        ? { presencePenalty: 1.5 }
+                        : {}),
+                    };
+                store.setParams({ ...store.params, ...p });
+              }
             }
             await refresh();
           } catch (error) {
