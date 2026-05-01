@@ -857,8 +857,9 @@ async def stream_training_progress(
 
 
 @router.get("/activations")
-async def get_activations(
+def get_activations(
     output_dir: Optional[str] = None,
+    since_step: Optional[int] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -917,11 +918,14 @@ async def get_activations(
             with open(log_path, "r", encoding = "utf-8") as f:
                 for line in f:
                     line = line.strip()
-                    if line:
-                        try:
-                            records.append(_json_mod.loads(line))
-                        except _json_mod.JSONDecodeError:
-                            pass
+                    if not line:
+                        continue
+                    try:
+                        record = _json_mod.loads(line)
+                        if since_step is None or record.get("step", 0) > since_step:
+                            records.append(record)
+                    except _json_mod.JSONDecodeError:
+                        pass
         except Exception as exc:
             logger.warning("Failed to read activation log: %s", exc)
 

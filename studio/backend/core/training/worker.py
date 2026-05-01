@@ -778,7 +778,7 @@ def run_training_process(
                 # Target ~30 replay frames; fall back to every step when total unknown
                 _cfg_max_steps = config.get("max_steps", 0) or 0
                 _act_interval = (
-                    max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 1
+                    max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
                 )
                 _act_config = ActivationCaptureConfig(
                     output_dir = os.path.join(output_dir, "activation_logs"),

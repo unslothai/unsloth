@@ -212,10 +212,12 @@ export type ActivationData = {
   records: ActivationRecord[];
 };
 
-export async function fetchActivations(outputDir?: string): Promise<ActivationData> {
-  const url = outputDir
-    ? `/api/train/activations?output_dir=${encodeURIComponent(outputDir)}`
-    : "/api/train/activations";
+export async function fetchActivations(outputDir?: string, sinceStep?: number): Promise<ActivationData> {
+  const params = new URLSearchParams();
+  if (outputDir) params.set("output_dir", outputDir);
+  if (sinceStep !== undefined) params.set("since_step", String(sinceStep));
+  const query = params.toString();
+  const url = query ? `/api/train/activations?${query}` : "/api/train/activations";
   const response = await authFetch(url);
   return parseJson<ActivationData>(response);
 }

@@ -432,8 +432,9 @@ class ActivationCapture:
                 # Index K channels BEFORE casting to fp32 — avoids allocating a
                 # full [B, S, H] fp32 copy; instead only [B, S, K] is cast.
                 # Reduces peak VRAM spike by H/K (e.g. 64x for K=64, d=4096).
-                h_sampled = hidden.detach()[:, :, sampled].float()  # [B, S, K]
-                flat = h_sampled.reshape(-1, n_channels)  # [B*S, K]
+                # flatten(0, -2) merges all leading dims before channels,
+                # making this robust to 2-D, 3-D, and 4-D hidden states.
+                flat = hidden.detach().flatten(0, -2)[..., sampled].float()  # [*, K]
                 mean_abs = flat.abs().mean(dim = 0).tolist()
                 mean = flat.mean(dim = 0).tolist()
 

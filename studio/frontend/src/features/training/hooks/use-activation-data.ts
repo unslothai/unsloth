@@ -7,6 +7,8 @@ import { fetchActivations, type ActivationData } from "../api/train-api";
 type UseActivationDataOptions = {
   /** Whether training is currently running — drives polling vs. one-shot. */
   isTraining: boolean;
+  /** Identifies the active training job. State resets when this changes. */
+  jobId?: string | null;
   /** Polling interval in ms while training is running. Default: 10 000 ms. */
   pollIntervalMs?: number;
   /** Optional output directory override passed to the endpoint. */
@@ -22,6 +24,7 @@ type UseActivationDataResult = ActivationData & {
 
 export function useActivationData({
   isTraining,
+  jobId,
   pollIntervalMs = 10_000,
   outputDir,
 }: UseActivationDataOptions): UseActivationDataResult {
@@ -30,6 +33,8 @@ export function useActivationData({
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  // High-water mark: highest step number received so far for incremental fetches.
+  const lastStepRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -38,12 +43,30 @@ export function useActivationData({
     };
   }, []);
 
+  // Reset accumulated state whenever the active job changes.
+  useEffect(() => {
+    setData({ metadata: null, records: [] });
+    lastStepRef.current = undefined;
+  }, [jobId]);
+
   const doFetch = useCallback(async () => {
     try {
       setLoading(true);
-      const result = await fetchActivations(outputDir);
+      const result = await fetchActivations(outputDir, lastStepRef.current);
       if (mountedRef.current) {
-        setData(result);
+        if (result.records.length > 0) {
+          const maxStep = Math.max(...result.records.map((r) => (r as { step?: number }).step ?? 0));
+          lastStepRef.current = maxStep;
+          setData((prev) => ({
+            metadata: result.metadata ?? prev.metadata,
+            records: lastStepRef.current === undefined
+              ? result.records
+              : [...prev.records, ...result.records],
+          }));
+        } else if (lastStepRef.current === undefined) {
+          // First fetch, no records yet — still update metadata.
+          setData({ metadata: result.metadata, records: [] });
+        }
         setError(null);
       }
     } catch (err) {
@@ -86,7 +109,7 @@ export function useActivationData({
         timerRef.current = null;
       }
     };
-  }, [isTraining, pollIntervalMs, doFetch]);
+  }, [isTraining, pollIntervalMs, doFetch, jobId]);
 
   return {
     ...data,

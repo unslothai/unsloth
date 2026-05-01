@@ -670,8 +670,8 @@ function ReplayControls({
 
 // ── Main section ──────────────────────────────────────────────────────────────
 
-export function NeuronHeatmapSection({ isTraining }: Props): ReactElement {
-  const { metadata, records, loading } = useActivationData({ isTraining });
+export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement {
+  const { metadata, records, loading } = useActivationData({ isTraining, jobId });
 
   const [stepIndex, setStepIndex] = useState<number>(0);
 
