@@ -221,6 +221,13 @@ class TestCheckConfigNeeds550:
 
         assert _check_config_needs_550(str(tmp_path)) is True
 
+    def test_gemma4audio_model_type(self, tmp_path: Path):
+        """Gemma 4 family model_type values should return True."""
+        cfg = {"model_type": "gemma4audio"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_550(str(tmp_path)) is True
+
     def test_llama_architecture(self, tmp_path: Path):
         """config.json with LlamaForCausalLM should return False."""
         cfg = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}

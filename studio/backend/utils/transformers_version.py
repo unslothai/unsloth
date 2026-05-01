@@ -279,7 +279,10 @@ def _check_config_needs_550(model_name: str) -> bool:
         archs = cfg.get("architectures", [])
         if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
             return True
-        if cfg.get("model_type") in _TRANSFORMERS_550_MODEL_TYPES:
+        model_type = cfg.get("model_type")
+        if model_type is not None and any(
+            model_type.startswith(t) for t in _TRANSFORMERS_550_MODEL_TYPES
+        ):
             return True
         return False
 

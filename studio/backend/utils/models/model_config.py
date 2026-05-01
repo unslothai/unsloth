@@ -495,12 +495,76 @@ _VLM_MODEL_TYPES = {
     "internvl_chat",
     "cogvlm2",
     "minicpmv",
+    "gemma4",
 }
+_AUDIO_ONLY_MODEL_TYPES = {"csm", "whisper"}
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses 5.5.0 (newest, recognizes all architectures).
 _VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
+
+
+def _is_vlm_model_type(model_type: Optional[str]) -> bool:
+    return model_type is not None and any(
+        model_type.startswith(vlm_type) for vlm_type in _VLM_MODEL_TYPES
+    )
+
+
+def _load_raw_model_config(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    local_config = Path(normalize_path(model_name)).expanduser() / "config.json"
+    if is_local_path(model_name) and local_config.is_file():
+        try:
+            return json.loads(local_config.read_text())
+        except Exception as exc:
+            logger.warning(
+                "Could not read raw config.json for '%s': %s", model_name, exc
+            )
+            return None
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        config_path = hf_hub_download(
+            repo_id = model_name,
+            filename = "config.json",
+            token = hf_token,
+        )
+        return json.loads(Path(config_path).read_text())
+    except Exception as exc:
+        logger.warning(
+            "Could not fetch raw config.json for '%s': %s", model_name, exc
+        )
+        return None
+
+
+def _is_vision_model_raw_config(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
+    config = _load_raw_model_config(model_name, hf_token = hf_token)
+    if config is None:
+        return None
+
+    model_type = config.get("model_type")
+    if model_type in _AUDIO_ONLY_MODEL_TYPES:
+        is_vlm = False
+    else:
+        architectures = config.get("architectures") or []
+        is_vlm = any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+        if not is_vlm:
+            is_vlm = _is_vlm_model_type(model_type)
+
+    logger.info(
+        "Vision check (raw config) for '%s': model_type=%s, architectures=%s, "
+        "is_vision=%s",
+        model_name,
+        model_type,
+        config.get("architectures", []),
+        is_vlm,
+    )
+    return is_vlm
 
 # Inline script executed in a subprocess with transformers 5.x activated.
 # Receives model_name and token via argv, prints JSON result to stdout.
@@ -539,8 +603,10 @@ try:
         is_vlm = True
     if not is_vlm and hasattr(config, "model_type"):
         vlm_types = {"phi3_v","llava","llava_next","llava_onevision",
-                      "internvl_chat","cogvlm2","minicpmv"}
-        if config.model_type in vlm_types:
+                      "internvl_chat","cogvlm2","minicpmv","gemma4"}
+        if config.model_type and any(
+            config.model_type.startswith(vlm_type) for vlm_type in vlm_types
+        ):
             is_vlm = True
 
     model_type = getattr(config, "model_type", "unknown")
@@ -570,6 +636,17 @@ def _is_vision_model_subprocess(
     token_arg = hf_token or ""
 
     try:
+        from utils.transformers_version import _ensure_venv_t5_550_exists
+
+        if not _ensure_venv_t5_550_exists():
+            logger.warning(
+                "Vision check subprocess cannot use transformers 5.5.0 for '%s': "
+                ".venv_t5_550 missing or incomplete at %s",
+                model_name,
+                _VENV_T5_DIR,
+            )
+            return None
+
         result = subprocess.run(
             [
                 sys.executable,
@@ -717,16 +794,26 @@ def _is_vision_model_uncached(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        subprocess_result = _is_vision_model_subprocess(
+            model_name, hf_token = hf_token
+        )
+        if subprocess_result is not None:
+            return subprocess_result
+
+        logger.info(
+            "Vision subprocess for '%s' did not return a definitive result -- "
+            "falling back to raw config.json",
+            model_name,
+        )
+        return _is_vision_model_raw_config(model_name, hf_token = hf_token)
 
     try:
         config = load_model_config(model_name, use_auth = True, token = hf_token)
 
         # Exclude audio-only models that share ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
-        _audio_only_model_types = {"csm", "whisper"}
         model_type = getattr(config, "model_type", None)
-        if model_type in _audio_only_model_types:
+        if model_type in _AUDIO_ONLY_MODEL_TYPES:
             return False
 
         # Check 1: Architecture class name patterns
@@ -755,7 +842,7 @@ def _is_vision_model_uncached(
 
         # Check 5: Known VLM model_type values that may not match above checks
         if hasattr(config, "model_type"):
-            if config.model_type in _VLM_MODEL_TYPES:
+            if _is_vlm_model_type(config.model_type):
                 logger.info(
                     f"Model {model_name} detected as VLM: model_type={config.model_type}"
                 )
