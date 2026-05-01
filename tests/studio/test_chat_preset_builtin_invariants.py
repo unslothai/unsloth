@@ -232,8 +232,20 @@ def test_apply_preset_params_preserves_model_owned_fields():
         textwrap.dedent(
             f"""
             // @ts-nocheck
-            import {{ BUILTIN_PRESETS, applyPresetParams }} from "{_policy_path()}";
-            const creative = BUILTIN_PRESETS.find((p) => p.name === "Creative");
+            import {{ applyPresetParams }} from "{_policy_path()}";
+            const samplingPreset = {{
+                temperature: 1.5,
+                topP: 1,
+                topK: 0,
+                minP: 0.1,
+                repetitionPenalty: 1,
+                presencePenalty: 0,
+                maxSeqLength: 4096,
+                maxTokens: 2048,
+                systemPrompt: "",
+                checkpoint: "",
+                trustRemoteCode: false,
+            }};
             const applied = applyPresetParams(
                 {{
                     temperature: 0.6,
@@ -248,7 +260,7 @@ def test_apply_preset_params_preserves_model_owned_fields():
                     checkpoint: "foo/bar",
                     trustRemoteCode: true,
                 }},
-                creative.params,
+                samplingPreset,
             );
             console.log(JSON.stringify({{
                 checkpoint: applied.checkpoint,
