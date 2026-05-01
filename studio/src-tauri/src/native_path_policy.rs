@@ -191,8 +191,20 @@ fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
 fn reject_network_or_device_path(path: &Path) -> Result<(), String> {
     let text = path.to_string_lossy();
     #[cfg(windows)]
-    if text.starts_with(r"\\") || text.starts_with(r"//") {
-        return Err("Network paths are not supported for native intake.".to_string());
+    {
+        let normalized = text.replace('/', "\\").to_ascii_lowercase();
+        if let Some(rest) = normalized.strip_prefix("\\\\?\\") {
+            let bytes = rest.as_bytes();
+            if !(bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\')
+            {
+                return Err("Network paths are not supported for native intake.".to_string());
+            }
+        } else if normalized.starts_with("\\\\") {
+            return Err("Network paths are not supported for native intake.".to_string());
+        }
     }
     #[cfg(unix)]
     {

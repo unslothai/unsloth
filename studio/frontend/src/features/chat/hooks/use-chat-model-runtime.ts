@@ -51,6 +51,7 @@ type SelectedModelInput = {
   expectedBytes?: number;
   forceReload?: boolean;
   nativePathToken?: string;
+  throwOnError?: boolean;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -347,6 +348,8 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.forceReload ?? false;
       const nativePathToken =
         typeof selection === "string" ? undefined : selection.nativePathToken;
+      const throwOnError =
+        typeof selection === "string" ? false : selection.throwOnError ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
@@ -894,6 +897,9 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        if (throwOnError) {
+          throw error instanceof Error ? error : new Error(message);
+        }
       }
     },
     [

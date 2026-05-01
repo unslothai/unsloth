@@ -16,12 +16,11 @@ import hashlib
 import hmac
 import json
 import os
-from contextlib import contextmanager
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
 _MAX_NATIVE_PATH_REDACTIONS = 100
@@ -63,16 +62,15 @@ def child_env_without_native_path_secret(env: Mapping[str, str] | None = None) -
     return cleaned
 
 
-@contextmanager
-def native_path_secret_removed_from_environ():
-    """Temporarily prevent multiprocessing children from inheriting the lease secret."""
+def run_without_native_path_secret(
+    target: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run a multiprocessing child target without the native path lease secret."""
 
-    prior = os.environ.pop(LEASE_SECRET_ENV, None)
-    try:
-        yield
-    finally:
-        if prior is not None:
-            os.environ[LEASE_SECRET_ENV] = prior
+    os.environ.pop(LEASE_SECRET_ENV, None)
+    return target(*args, **kwargs)
 
 
 def verify_native_path_lease(
@@ -260,8 +258,17 @@ def _remember_native_path_for_redaction(path: str, display_label: str) -> None:
 
 def _reject_network_or_device_path(path: Path) -> None:
     text = str(path)
-    if os.name == "nt" and (text.startswith("\\\\") or text.startswith("//")):
-        raise NativePathLeaseError("Network paths are not supported for native grants.")
+    if os.name == "nt":
+        normalized = text.replace("/", "\\").lower()
+        if normalized.startswith("\\\\?\\"):
+            rest = normalized[4:]
+            is_local_drive = (
+                len(rest) >= 3 and rest[0].isalpha() and rest[1:3] == ":\\"
+            )
+            if not is_local_drive:
+                raise NativePathLeaseError("Network paths are not supported for native grants.")
+        elif normalized.startswith("\\\\"):
+            raise NativePathLeaseError("Network paths are not supported for native grants.")
     if os.name != "nt":
         for root in ("/dev", "/proc", "/sys"):
             try:

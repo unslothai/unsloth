@@ -13,6 +13,7 @@ import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
+  FolderSearchIcon,
   Logout01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -35,6 +36,7 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onPickLocalModel?: () => void | Promise<void>;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -109,6 +111,7 @@ function ModelSelectorContent({
   onSelect,
   onEject,
   onFoldersChange,
+  onPickLocalModel,
   className,
   dataTour,
 }: {
@@ -118,6 +121,7 @@ function ModelSelectorContent({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onPickLocalModel?: () => void;
   className?: string;
   dataTour?: string;
 }) {
@@ -168,6 +172,18 @@ function ModelSelectorContent({
             Eject loaded model
           </button>
         </div>
+      ) : !hasSelection && onPickLocalModel ? (
+        <div className="mt-2 border-t border-border/70 pt-2">
+          <button
+            type="button"
+            onClick={onPickLocalModel}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+            title="Pick a model file from disk"
+          >
+            <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+            Pick a model file from disk
+          </button>
+        </div>
       ) : null}
     </PopoverContent>
   );
@@ -182,6 +198,7 @@ export function ModelSelector({
   onValueChange,
   onEject,
   onFoldersChange,
+  onPickLocalModel,
   variant = "outline",
   size = "default",
   className,
@@ -259,6 +276,11 @@ export function ModelSelector({
     setOpen(false);
   }
 
+  function handlePickLocalModel() {
+    setOpen(false);
+    void onPickLocalModel?.();
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -276,6 +298,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
+        onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         className={contentClassName}
         dataTour={contentDataTour}
       />

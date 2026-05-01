@@ -166,7 +166,7 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
-        from utils.native_path_leases import native_path_secret_removed_from_environ
+        from utils.native_path_leases import run_without_native_path_secret
 
         from .worker import run_inference_process
 
@@ -175,7 +175,8 @@ class InferenceOrchestrator:
         self._cancel_event = _CTX.Event()
 
         self._proc = _CTX.Process(
-            target = run_inference_process,
+            target = run_without_native_path_secret,
+            args = (run_inference_process,),
             kwargs = {
                 "cmd_queue": self._cmd_queue,
                 "resp_queue": self._resp_queue,
@@ -184,8 +185,7 @@ class InferenceOrchestrator:
             },
             daemon = True,
         )
-        with native_path_secret_removed_from_environ():
-            self._proc.start()
+        self._proc.start()
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:

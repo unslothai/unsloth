@@ -14,6 +14,7 @@ interface NativeModelChipProps {
     isDownloaded: boolean;
     loadingDescription: string;
     forceReload: boolean;
+    throwOnError?: boolean;
   }) => Promise<void> | void;
 }
 
@@ -36,12 +37,11 @@ export function NativeModelChip({
         isDownloaded: true,
         loadingDescription: "Loading selected local GGUF model.",
         forceReload: true,
+        throwOnError: true,
       });
       clearModelIntent(intent.id);
-    } catch (error) {
-      toast.error("Could not load local model", {
-        description: error instanceof Error ? error.message : String(error),
-      });
+    } catch {
+      // selectModel reports the failure; keep the chip available for retry.
     } finally {
       setLoading(false);
     }

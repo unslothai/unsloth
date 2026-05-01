@@ -1,18 +1,58 @@
 import { toast } from "sonner";
 import { pickNativeModel } from "./api";
 import { useNativeIntentStore } from "./store";
+import type { NativeIntent } from "./types";
 
-export function useChooseNativeModel() {
+interface ChooseNativeModelOptions {
+  shouldAutoLoad?: (intent: NativeIntent) => boolean;
+  onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
+}
+
+function isGgufModelIntent(intent: NativeIntent): boolean {
+  const label = intent.path.displayLabel || intent.displayLabel;
+  return (
+    intent.kind === "model" &&
+    intent.path.kind === "model" &&
+    label.toLowerCase().endsWith(".gguf") &&
+    intent.path.allowedOperations.includes("validate-model") &&
+    intent.path.allowedOperations.includes("load-model")
+  );
+}
+
+export function useChooseNativeModel(options: ChooseNativeModelOptions = {}) {
   const addIntent = useNativeIntentStore((state) => state.addIntent);
 
   return async () => {
+    let intent: NativeIntent | null = null;
     try {
-      const intent = await pickNativeModel();
-      if (intent) addIntent(intent);
+      intent = await pickNativeModel();
     } catch (error) {
       toast.error("Could not choose local model", {
         description: error instanceof Error ? error.message : String(error),
       });
+      return;
+    }
+
+    if (!intent) return;
+
+    let shouldAutoLoad = false;
+    try {
+      shouldAutoLoad =
+        Boolean(options.onAutoLoad) &&
+        isGgufModelIntent(intent) &&
+        options.shouldAutoLoad?.(intent) === true;
+    } catch {
+      shouldAutoLoad = false;
+    }
+    if (!shouldAutoLoad) {
+      addIntent(intent);
+      return;
+    }
+
+    try {
+      await options.onAutoLoad?.(intent);
+    } catch {
+      addIntent(intent);
     }
   };
 }
