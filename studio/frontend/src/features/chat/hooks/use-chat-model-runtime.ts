@@ -248,6 +248,10 @@ export function useChatModelRuntime() {
         // Otherwise we'd clobber the values the load path just applied and
         // the UI would appear to revert the user's changes.
         const prevState = useChatRuntimeStore.getState();
+        const nextDefaultChatTemplate =
+          statusRes.chat_template === undefined
+            ? prevState.defaultChatTemplate
+            : statusRes.chat_template;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
@@ -264,6 +268,7 @@ export function useChatModelRuntime() {
           ggufNativeContextLength,
           modelRequiresTrustRemoteCode:
             statusRes.requires_trust_remote_code ?? false,
+          defaultChatTemplate: nextDefaultChatTemplate,
           loadedIsMultimodal: isMultimodalResponse(statusRes),
           ...(prevState.loadedSpeculativeType === null && {
             speculativeType: currentSpecType,
@@ -274,9 +279,6 @@ export function useChatModelRuntime() {
               kvCacheDtype: statusRes.cache_type_kv,
               loadedKvCacheDtype: statusRes.cache_type_kv,
             }),
-          ...(statusRes.chat_template !== undefined && {
-            defaultChatTemplate: statusRes.chat_template,
-          }),
           ...(statusRes.chat_template_override !== undefined &&
             prevState.loadedChatTemplateOverride === null &&
             prevState.chatTemplateOverride === null && {

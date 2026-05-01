@@ -283,6 +283,10 @@ class InferenceStatusResponse(BaseModel):
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Jinja2 chat template string for the active model",
+    )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
     )
