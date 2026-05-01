@@ -776,7 +776,7 @@ export function RecipeStudioPage({
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="w-full px-6 py-8">
         <div
           className="relative w-full overflow-hidden rounded-2xl corner-squircle border"
